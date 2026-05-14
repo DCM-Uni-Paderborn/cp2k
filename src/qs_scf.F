@@ -530,7 +530,8 @@ CONTAINS
                   scf_control%smear%do_smear = .FALSE.
                   CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, dft_control%probe)
                ELSE
-                  CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step)
+                  CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, &
+                                         added_mos_auto_grow=added_mos_auto_grow)
                END IF
             ELSE
                ! Gamma points only
@@ -545,6 +546,11 @@ CONTAINS
             END IF
 
             IF (added_mos_auto_grow) THEN
+               IF (do_kpoints) THEN
+                  CALL cp_abort(__LOCATION__, &
+                                "K-point ADDED_MOS AUTO detected an occupied highest band and needs to grow "// &
+                                "the virtual-space buffer. K-point MO resizing is not implemented yet.")
+               END IF
                CALL qs_scf_grow_added_mos_auto(qs_env, scf_env, scf_control, output_unit)
                total_steps = MAX(0, total_steps - 1)
                iter_count = MAX(0, iter_count - 1)

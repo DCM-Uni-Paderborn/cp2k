@@ -318,18 +318,20 @@ CONTAINS
 !> \param diis_step ...
 !> \param probe ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, probe)
+   SUBROUTINE qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, probe, added_mos_auto_grow)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       LOGICAL                                            :: diis_step
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_scf_new_mos_kp'
 
       INTEGER                                            :: handle, ispin
-      LOGICAL                                            :: disable_diis, has_unit_metric
+      LOGICAL                                            :: disable_diis, has_unit_metric, &
+                                                            my_added_mos_auto_grow
       REAL(dp)                                           :: diis_error, saved_eps_diis
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -340,6 +342,8 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       NULLIFY (dft_control, kpoints, matrix_ks, matrix_s)
+      my_added_mos_auto_grow = .FALSE.
+      IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
 
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, kpoints=kpoints)
       scf_env%iter_param = 0.0_dp
@@ -367,7 +371,14 @@ CONTAINS
                                     diis_step, diis_error, qs_env, probe)
          ELSE
             CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .TRUE., &
-                                    diis_step, diis_error, qs_env)
+                                    diis_step, diis_error, qs_env, &
+                                    added_mos_auto_grow=my_added_mos_auto_grow)
+         END IF
+         IF (my_added_mos_auto_grow) THEN
+            IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .TRUE.
+            IF (disable_diis) scf_control%eps_diis = saved_eps_diis
+            CALL timestop(handle)
+            RETURN
          END IF
          IF (diis_step) THEN
             scf_env%iter_param = diis_error

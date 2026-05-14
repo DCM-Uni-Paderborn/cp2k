@@ -436,7 +436,7 @@ CONTAINS
 !>      08.2014 created [JGH]
 ! **************************************************************************************************
    SUBROUTINE do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, update_p, &
-                                 diis_step, diis_error, qs_env, probe)
+                                 diis_step, diis_error, qs_env, probe, added_mos_auto_grow)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -448,6 +448,7 @@ CONTAINS
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
 
       CHARACTER(len=*), PARAMETER :: routineN = 'do_general_diag_kp'
 
@@ -458,7 +459,8 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: do_diis, my_kpgrp, use_real_wfn
+      LOGICAL                                            :: do_diis, my_added_mos_auto_grow, &
+                                                            my_kpgrp, use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :) :: info
@@ -477,6 +479,9 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: scf_section
 
       CALL timeset(routineN, handle)
+
+      my_added_mos_auto_grow = .FALSE.
+      IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
 
       NULLIFY (sab_nl)
       CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
@@ -749,13 +754,19 @@ CONTAINS
             CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                           probe=probe)
          ELSE
-            CALL kpoint_set_mo_occupation(kpoints, scf_control%smear)
+            CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
+                                          added_mos_auto=scf_control%added_mos_auto, &
+                                          added_mos_auto_grow=my_added_mos_auto_grow)
          END IF
-         ! density matrices
-         CALL kpoint_density_matrices(kpoints)
-         ! density matrices in real space
-         CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
-                                       matrix_s(1, 1)%matrix, sab_nl, fmwork)
+         IF (my_added_mos_auto_grow) THEN
+            IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .TRUE.
+         ELSE
+            ! density matrices
+            CALL kpoint_density_matrices(kpoints)
+            ! density matrices in real space
+            CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
+                                          matrix_s(1, 1)%matrix, sab_nl, fmwork)
+         END IF
       END IF
 
       CALL dbcsr_deallocate_matrix(rmatrix)
