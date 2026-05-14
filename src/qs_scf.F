@@ -148,6 +148,7 @@ MODULE qs_scf
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_init,&
                                               ot_scf_read_input
+   USE qs_ot_types,                     ONLY: qs_ot_number_of_channels
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
                                               outer_loop_purge_history,&
@@ -1104,8 +1105,8 @@ CONTAINS
          IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) THEN
 
             ! restricted calculations require just one set of OT orbitals
-            number_of_OT_envs = dft_control%nspins
-            IF (dft_control%restricted) number_of_OT_envs = 1
+            number_of_OT_envs = qs_ot_number_of_channels(dft_control%nspins, &
+                                                         restricted=dft_control%restricted)
 
             ALLOCATE (scf_env%qs_ot_env(number_of_OT_envs))
 

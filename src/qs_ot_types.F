@@ -53,7 +53,9 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_settings_type
    PUBLIC  :: qs_ot_destroy
    PUBLIC  :: qs_ot_allocate
+   PUBLIC  :: qs_ot_channel_index
    PUBLIC  :: qs_ot_init
+   PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_settings_init
    PUBLIC  :: qs_ot_set_context
    PUBLIC  :: ot_readwrite_input
@@ -274,6 +276,49 @@ CONTAINS
       qs_ot_env%has_kpoint_context = PRESENT(kpoint_index) .OR. PRESENT(local_kpoint_index)
 
    END SUBROUTINE qs_ot_set_context
+
+! **************************************************************************************************
+!> \brief number of OT optimization channels for spin and k-point resolved state
+!> \param nspin ...
+!> \param nkpoint ...
+!> \param restricted ...
+! **************************************************************************************************
+   INTEGER FUNCTION qs_ot_number_of_channels(nspin, nkpoint, restricted)
+      INTEGER, INTENT(IN)                                :: nspin
+      INTEGER, INTENT(IN), OPTIONAL                      :: nkpoint
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restricted
+
+      INTEGER                                            :: nkpoint_eff, nspin_eff
+
+      nspin_eff = nspin
+      IF (PRESENT(restricted)) THEN
+         IF (restricted) nspin_eff = 1
+      END IF
+      nkpoint_eff = 1
+      IF (PRESENT(nkpoint)) nkpoint_eff = nkpoint
+
+      CPASSERT(nspin_eff >= 1)
+      CPASSERT(nkpoint_eff >= 1)
+      qs_ot_number_of_channels = nspin_eff*nkpoint_eff
+
+   END FUNCTION qs_ot_number_of_channels
+
+! **************************************************************************************************
+!> \brief flat OT channel index for a spin/k-point pair
+!> \param ispin ...
+!> \param ikpoint ...
+!> \param nspin ...
+! **************************************************************************************************
+   INTEGER FUNCTION qs_ot_channel_index(ispin, ikpoint, nspin)
+      INTEGER, INTENT(IN)                                :: ispin, ikpoint, nspin
+
+      CPASSERT(ispin >= 1)
+      CPASSERT(ikpoint >= 1)
+      CPASSERT(nspin >= 1)
+      CPASSERT(ispin <= nspin)
+      qs_ot_channel_index = (ikpoint - 1)*nspin + ispin
+
+   END FUNCTION qs_ot_channel_index
 
 ! **************************************************************************************************
 !> \brief init matrices, needs c0 and sc0 so that c0*sc0=1
