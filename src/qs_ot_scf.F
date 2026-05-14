@@ -135,11 +135,10 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_mini'
 
-      INTEGER                                            :: handle, imo, ispin, k, n, nspin
-      REAL(KIND=dp)                                      :: ener_nondiag, occ_denom, thermal_scale, &
-                                                            trace
+      INTEGER                                            :: handle, ispin, k, n, nspin
+      REAL(KIND=dp)                                      :: ener_nondiag, trace
       TYPE(cp_1d_r_p_type), ALLOCATABLE, DIMENSION(:)    :: expectation_values, occupation_numbers, &
-                                                            scaling_factor
+                                                            orbital_scaling_factor
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_dedc_scaled
       TYPE(dbcsr_type), POINTER                          :: mo_coeff
@@ -152,7 +151,7 @@ CONTAINS
       nspin = SIZE(mo_array)
 
       ALLOCATE (occupation_numbers(nspin))
-      ALLOCATE (scaling_factor(nspin))
+      ALLOCATE (orbital_scaling_factor(nspin))
 
       IF (qs_ot_env(1)%settings%do_ener) THEN
          ALLOCATE (expectation_values(nspin))
@@ -160,8 +159,8 @@ CONTAINS
 
       DO ispin = 1, nspin
          CALL get_mo_set(mo_set=mo_array(ispin), occupation_numbers=occupation_numbers(ispin)%array)
-         ALLOCATE (scaling_factor(ispin)%array(SIZE(occupation_numbers(ispin)%array)))
-         scaling_factor(ispin)%array = 2.0_dp*occupation_numbers(ispin)%array
+         ALLOCATE (orbital_scaling_factor(ispin)%array(SIZE(occupation_numbers(ispin)%array)))
+         orbital_scaling_factor(ispin)%array = 2.0_dp*occupation_numbers(ispin)%array
          IF (qs_ot_env(1)%settings%do_ener) THEN
             ALLOCATE (expectation_values(ispin)%array(SIZE(occupation_numbers(ispin)%array)))
          END IF
@@ -186,7 +185,8 @@ CONTAINS
                                    0.0_dp, qs_ot_env(ispin)%rot_mat_chc)
                CALL dbcsr_copy(qs_ot_env(ispin)%matrix_buf1, qs_ot_env(ispin)%rot_mat_chc)
 
-               CALL dbcsr_scale_by_vector(qs_ot_env(ispin)%matrix_buf1, alpha=scaling_factor(ispin)%array, side='right')
+               CALL dbcsr_scale_by_vector(qs_ot_env(ispin)%matrix_buf1, alpha=orbital_scaling_factor(ispin)%array, &
+                                          side='right')
                ! create the derivative of the energy wrt to rot_mat_u
                CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env(ispin)%rot_mat_u, qs_ot_env(ispin)%matrix_buf1, &
                                    0.0_dp, qs_ot_env(ispin)%rot_mat_dedu)
@@ -256,23 +256,8 @@ CONTAINS
          END DO
       END IF
 
-      IF (qs_ot_env(1)%settings%occupation_preconditioner .AND. &
-          qs_ot_env(1)%settings%do_ener .AND. ASSOCIATED(smear)) THEN
-         IF (smear%do_smear .AND. smear%method == smear_fermi_dirac .AND. &
-             smear%electronic_temperature > 0.0_dp) THEN
-            DO ispin = 1, SIZE(qs_ot_env)
-               thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
-               DO imo = 1, SIZE(qs_ot_env(ispin)%ener_gx)
-                  occ_denom = occupation_numbers(ispin)%array(imo)* &
-                              (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
-                  IF (occ_denom > thermal_scale) THEN
-                     qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)* &
-                                                     thermal_scale/occ_denom
-                  END IF
-               END DO
-            END DO
-         END IF
-      END IF
+      IF (qs_ot_env(1)%settings%occupation_preconditioner) &
+         CALL precondition_ot_energy_gradient(qs_ot_env, mo_array, occupation_numbers, smear)
 
       ! this is kind of a hack so far (costly memory wise), we locally recreate the scaled matrix_hc, and
       ! use it in the following, eventually, as occupations numbers get more integrated, it should become possible
@@ -285,9 +270,10 @@ CONTAINS
          ! as a preconditioner, one might want to scale only with a constant, not with f(i)
          ! for the convergence criterion, maybe take it back out
          IF (qs_ot_env(1)%settings%occupation_preconditioner) THEN
-            scaling_factor(ispin)%array = 2.0_dp
+            orbital_scaling_factor(ispin)%array = 2.0_dp
          END IF
-         CALL dbcsr_scale_by_vector(matrix_dedc_scaled(ispin)%matrix, alpha=scaling_factor(ispin)%array, side='right')
+         CALL dbcsr_scale_by_vector(matrix_dedc_scaled(ispin)%matrix, alpha=orbital_scaling_factor(ispin)%array, &
+                                    side='right')
       END DO
 
       ! notice we use qs_ot_env(1) for driving all output and the minimization in case of LSD
@@ -336,10 +322,10 @@ CONTAINS
       END IF
 
       ! cleanup
-      DO ispin = 1, SIZE(scaling_factor)
-         DEALLOCATE (scaling_factor(ispin)%array)
+      DO ispin = 1, SIZE(orbital_scaling_factor)
+         DEALLOCATE (orbital_scaling_factor(ispin)%array)
       END DO
-      DEALLOCATE (scaling_factor)
+      DEALLOCATE (orbital_scaling_factor)
       IF (qs_ot_env(1)%settings%do_ener) THEN
          DO ispin = 1, SIZE(expectation_values)
             DEALLOCATE (expectation_values(ispin)%array)
@@ -356,6 +342,66 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE ot_scf_mini
+
+! **************************************************************************************************
+!> \brief precondition OT energy-variable gradients with the fixed-N smearing curvature
+!> \param qs_ot_env ...
+!> \param mo_array ...
+!> \param occupation_numbers ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE precondition_ot_energy_gradient(qs_ot_env, mo_array, occupation_numbers, smear)
+
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mo_array
+      TYPE(cp_1d_r_p_type), DIMENSION(:), INTENT(IN)     :: occupation_numbers
+      TYPE(smear_type), POINTER                          :: smear
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'precondition_ot_energy_gradient'
+
+      INTEGER                                            :: handle, imo, ispin
+      REAL(KIND=dp)                                      :: curvature, occ_denom, thermal_scale
+
+      CALL timeset(routineN, handle)
+
+      IF (.NOT. qs_ot_env(1)%settings%do_ener) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      IF (.NOT. ASSOCIATED(smear)) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      IF (.NOT. smear%do_smear) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      IF (smear%method /= smear_fermi_dirac) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      IF (smear%electronic_temperature <= 0.0_dp) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+
+      ! Fermi-Dirac fixed-N response has curvature scale
+      ! f_i(maxocc-f_i)/(maxocc*kT); damp only modes stiffer than 1 Ha^-1.
+      DO ispin = 1, SIZE(qs_ot_env)
+         thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
+         DO imo = 1, SIZE(qs_ot_env(ispin)%ener_gx)
+            occ_denom = occupation_numbers(ispin)%array(imo)* &
+                        (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
+            curvature = occ_denom/thermal_scale
+            IF (curvature > 1.0_dp) THEN
+               qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)/curvature
+            END IF
+         END DO
+      END DO
+
+      CALL timestop(handle)
+
+   END SUBROUTINE precondition_ot_energy_gradient
 
 ! **************************************************************************************************
 !> \brief initialises qs_ot_env so that mo_coeff is the current point
