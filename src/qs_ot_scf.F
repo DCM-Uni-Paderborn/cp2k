@@ -27,6 +27,7 @@ MODULE qs_ot_scf
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
+   USE input_constants,                 ONLY: smear_fermi_dirac
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type
@@ -134,8 +135,9 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_mini'
 
-      INTEGER                                            :: handle, ispin, k, n, nspin
-      REAL(KIND=dp)                                      :: ener_nondiag, trace
+      INTEGER                                            :: handle, imo, ispin, k, n, nspin
+      REAL(KIND=dp)                                      :: ener_nondiag, occ_denom, thermal_scale, &
+                                                            trace
       TYPE(cp_1d_r_p_type), ALLOCATABLE, DIMENSION(:)    :: expectation_values, occupation_numbers, &
                                                             scaling_factor
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -198,7 +200,8 @@ CONTAINS
                   CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, expectation_values(ispin)%array)
                   qs_ot_env(ispin)%ener_gx = expectation_values(ispin)%array
                   CALL set_mo_occupation(mo_set=mo_array(ispin), &
-                                         smear=smear, eval_deriv=qs_ot_env(ispin)%ener_gx)
+                                         smear=smear, eval_deriv=qs_ot_env(ispin)%ener_gx, &
+                                         emit_warnings=.FALSE.)
                END DO
             END IF
 
@@ -251,6 +254,24 @@ CONTAINS
                                    1.0_dp, qs_ot_env(ispin)%rot_mat_dedu)
             END IF
          END DO
+      END IF
+
+      IF (qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+          qs_ot_env(1)%settings%do_ener .AND. ASSOCIATED(smear)) THEN
+         IF (smear%do_smear .AND. smear%method == smear_fermi_dirac .AND. &
+             smear%electronic_temperature > 0.0_dp) THEN
+            DO ispin = 1, SIZE(qs_ot_env)
+               thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
+               DO imo = 1, SIZE(qs_ot_env(ispin)%ener_gx)
+                  occ_denom = occupation_numbers(ispin)%array(imo)* &
+                              (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
+                  IF (occ_denom > thermal_scale) THEN
+                     qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)* &
+                                                     thermal_scale/occ_denom
+                  END IF
+               END DO
+            END DO
+         END IF
       END IF
 
       ! this is kind of a hack so far (costly memory wise), we locally recreate the scaled matrix_hc, and
@@ -310,7 +331,7 @@ CONTAINS
          DO ispin = 1, SIZE(mo_array)
             mo_array(ispin)%eigenvalues = qs_ot_env(ispin)%ener_x
             CALL set_mo_occupation(mo_set=mo_array(ispin), &
-                                   smear=smear)
+                                   smear=smear, emit_warnings=.NOT. energy_only)
          END DO
       END IF
 
@@ -343,14 +364,16 @@ CONTAINS
 !> \param matrix_s ...
 !> \param qs_ot_env ...
 !> \param matrix_ks ...
+!> \param smear ...
 !> \param broyden_adaptive_sigma ...
 ! **************************************************************************************************
-   SUBROUTINE ot_scf_init(mo_array, matrix_s, qs_ot_env, matrix_ks, broyden_adaptive_sigma)
+   SUBROUTINE ot_scf_init(mo_array, matrix_s, qs_ot_env, matrix_ks, smear, broyden_adaptive_sigma)
 
-      TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mo_array
+      TYPE(mo_set_type), DIMENSION(:), INTENT(INOUT)     :: mo_array
       TYPE(dbcsr_type), POINTER                          :: matrix_s
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(dbcsr_type), POINTER                          :: matrix_ks
+      TYPE(smear_type), POINTER                          :: smear
       REAL(KIND=dp)                                      :: broyden_adaptive_sigma
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_init'
@@ -416,6 +439,7 @@ CONTAINS
          END IF
 
          IF (qs_ot_env(ispin)%settings%do_ener) THEN
+            CALL init_ot_smearing_energies(mo_array(ispin), smear)
             is_equal = SIZE(qs_ot_env(ispin)%ener_x) == SIZE(mo_array(ispin)%eigenvalues)
             CPASSERT(is_equal)
             qs_ot_env(ispin)%ener_x = mo_array(ispin)%eigenvalues
@@ -437,6 +461,51 @@ CONTAINS
    END SUBROUTINE ot_scf_init
 
 ! **************************************************************************************************
+!> \brief initializes degenerate OT energy variables for finite-temperature occupations
+!> \param mo_set ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE init_ot_smearing_energies(mo_set, smear)
+
+      TYPE(mo_set_type), INTENT(INOUT)                   :: mo_set
+      TYPE(smear_type), POINTER                          :: smear
+
+      INTEGER                                            :: imo, nmo, nomo
+      REAL(KIND=dp)                                      :: denom_left, denom_right, eps_occ, &
+                                                            maxocc, spacing, tail, width
+
+      IF (.NOT. ASSOCIATED(smear)) RETURN
+      IF (.NOT. smear%do_smear) RETURN
+      IF (smear%method /= smear_fermi_dirac) RETURN
+      IF (smear%electronic_temperature <= 0.0_dp) RETURN
+      IF (.NOT. ASSOCIATED(mo_set%eigenvalues)) RETURN
+
+      nmo = mo_set%nmo
+      IF (nmo < 2) RETURN
+
+      width = MAXVAL(mo_set%eigenvalues(1:nmo)) - MINVAL(mo_set%eigenvalues(1:nmo))
+      IF (width > 1.0E-12_dp) RETURN
+
+      maxocc = mo_set%maxocc
+      nomo = CEILING(REAL(mo_set%nelectron, KIND=dp)/maxocc)
+      nomo = MAX(1, MIN(nomo, nmo - 1))
+
+      eps_occ = MAX(smear%eps_fermi_dirac, 10.0_dp*EPSILON(1.0_dp))
+      tail = 2.0_dp*smear%electronic_temperature*LOG(MAX(maxocc/eps_occ - 1.0_dp, 1.0_dp))
+      tail = MAX(tail, 8.0_dp*smear%electronic_temperature)
+
+      denom_left = MAX(0.5_dp, REAL(nomo, KIND=dp) - 0.5_dp)
+      denom_right = MAX(0.5_dp, REAL(nmo - nomo, KIND=dp) + 0.5_dp)
+      spacing = tail/MIN(denom_left, denom_right)
+
+      DO imo = 1, nmo
+         mo_set%eigenvalues(imo) = (REAL(imo - nomo, KIND=dp) - 0.5_dp)*spacing
+      END DO
+      mo_set%mu = 0.0_dp
+
+   END SUBROUTINE init_ot_smearing_energies
+
+! **************************************************************************************************
 !> \brief ...
 !> \param qs_ot_env ...
 ! **************************************************************************************************
@@ -449,4 +518,3 @@ CONTAINS
    END SUBROUTINE ot_scf_destroy
 
 END MODULE qs_ot_scf
-

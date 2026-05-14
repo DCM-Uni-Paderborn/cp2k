@@ -940,7 +940,8 @@ CONTAINS
 
             CALL ot_scf_init(mo_array=mos, matrix_s=orthogonality_metric, &
                              broyden_adaptive_sigma=qs_env%broyden_adaptive_sigma, &
-                             qs_ot_env=scf_env%qs_ot_env, matrix_ks=matrix_ks(1)%matrix)
+                             qs_ot_env=scf_env%qs_ot_env, matrix_ks=matrix_ks(1)%matrix, &
+                             smear=scf_control%smear)
 
             SELECT CASE (scf_env%qs_ot_env(1)%settings%preconditioner_type)
             CASE (ot_precond_none)

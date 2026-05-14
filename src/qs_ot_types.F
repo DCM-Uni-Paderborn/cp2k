@@ -902,8 +902,15 @@ CONTAINS
       CALL section_vals_val_get(ot_section, "NONDIAG_ENERGY", l_val=settings%add_nondiag_energy)
       CALL section_vals_val_get(ot_section, "NONDIAG_ENERGY_STRENGTH", &
                                 r_val=settings%nondiag_energy_strength)
-      ! not yet fully implemented
-      CPASSERT(.NOT. settings%do_ener)
+      IF (settings%do_ener .AND. .NOT. settings%do_rotation) THEN
+         CPABORT("OT%ENERGIES requires OT%ROTATION.")
+      END IF
+      IF (settings%occupation_preconditioner .AND. .NOT. settings%do_ener) THEN
+         CPABORT("OT%OCCUPATION_PRECONDITIONER requires OT%ENERGIES.")
+      END IF
+      IF (settings%add_nondiag_energy .AND. .NOT. settings%do_ener) THEN
+         CPABORT("OT%NONDIAG_ENERGY requires OT%ENERGIES.")
+      END IF
 
       ! write OT output
 
@@ -913,7 +920,14 @@ CONTAINS
             WRITE (output_unit, '(A)') "  Allowing for rotations "
          END IF
          IF (settings%do_ener) THEN
-            WRITE (output_unit, '(A,L2)') "  Optimizing orbital energies "
+            WRITE (output_unit, '(A)') "  Optimizing orbital energies "
+         END IF
+         IF (settings%occupation_preconditioner) THEN
+            WRITE (output_unit, '(A)') "  Using occupation preconditioner "
+         END IF
+         IF (settings%add_nondiag_energy) THEN
+            WRITE (output_unit, '(A,E14.5)') &
+               "  Non-diagonal energy strength:", settings%nondiag_energy_strength
          END IF
          SELECT CASE (settings%OT_METHOD)
          CASE ("SD")

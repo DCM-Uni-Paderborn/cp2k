@@ -61,10 +61,11 @@ CONTAINS
 !> \author  MI
 !> \version 1.0
 ! **************************************************************************************************
-   SUBROUTINE set_mo_occupation_3(mo_array, smear)
+   SUBROUTINE set_mo_occupation_3(mo_array, smear, emit_warnings)
 
       TYPE(mo_set_type), DIMENSION(2), INTENT(INOUT)     :: mo_array
       TYPE(smear_type)                                   :: smear
+      LOGICAL, INTENT(IN), OPTIONAL                      :: emit_warnings
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'set_mo_occupation_3'
 
@@ -72,13 +73,16 @@ CONTAINS
                                                             lfomo_a, lfomo_b, nmo_a, nmo_b, &
                                                             xas_estate
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: all_index
-      LOGICAL                                            :: is_large
+      LOGICAL                                            :: is_large, my_emit_warnings
       REAL(KIND=dp)                                      :: all_nelec, kTS, mu, nelec_a, nelec_b, &
                                                             occ_estate
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: all_eigval, all_occ
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigval_a, eigval_b, occ_a, occ_b
 
       CALL timeset(routineN, handle)
+
+      my_emit_warnings = .TRUE.
+      IF (PRESENT(emit_warnings)) my_emit_warnings = emit_warnings
 
       NULLIFY (eigval_a, eigval_b, occ_a, occ_b)
       CALL get_mo_set(mo_set=mo_array(1), nmo=nmo_a, eigenvalues=eigval_a, &
@@ -118,17 +122,17 @@ CONTAINS
 
       is_large = ABS(MAXVAL(all_occ) - 1.0_dp) > smear%eps_fermi_dirac
       ! this is not a real problem, but the temperature might be a bit large
-      CPWARN_IF(is_large, "Fermi-Dirac smearing includes the first MO")
+      CPWARN_IF(is_large .AND. my_emit_warnings, "Fermi-Dirac smearing includes the first MO")
 
       is_large = ABS(MINVAL(all_occ)) > smear%eps_fermi_dirac
-      IF (is_large) &
+      IF (is_large .AND. my_emit_warnings) &
          CALL cp_warn(__LOCATION__, &
                       "Fermi-Dirac smearing includes the last MO => "// &
                       "Add more MOs for proper smearing.")
 
       ! check that the total electron count is accurate
       is_large = (ABS(all_nelec - accurate_sum(all_occ(:))) > smear%eps_fermi_dirac*all_nelec)
-      CPWARN_IF(is_large, "Total number of electrons is not accurate")
+      CPWARN_IF(is_large .AND. my_emit_warnings, "Total number of electrons is not accurate")
 
       DO i = 1, all_nmo
          IF (all_index(i) <= nmo_a) THEN
@@ -197,7 +201,7 @@ CONTAINS
 !> \author  Matthias Krack (MK)
 !> \version 1.0
 ! **************************************************************************************************
-   SUBROUTINE set_mo_occupation_2(mo_array, smear, eval_deriv, tot_zeff_corr, probe)
+   SUBROUTINE set_mo_occupation_2(mo_array, smear, eval_deriv, tot_zeff_corr, probe, emit_warnings)
 
       TYPE(mo_set_type), DIMENSION(:), INTENT(INOUT)     :: mo_array
       TYPE(smear_type)                                   :: smear
@@ -205,6 +209,7 @@ CONTAINS
       REAL(KIND=dp), OPTIONAL                            :: tot_zeff_corr
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      LOGICAL, INTENT(IN), OPTIONAL                      :: emit_warnings
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'set_mo_occupation_2'
 
@@ -219,15 +224,18 @@ CONTAINS
       ! Fall back for the case that we have only one MO set
       IF (SIZE(mo_array) == 1) THEN
          IF (PRESENT(probe)) THEN
-            CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe)
+            CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe, &
+                                     emit_warnings=emit_warnings)
          ELSE IF (PRESENT(eval_deriv)) THEN
 ! Change of MO occupancy to account for CORE_CORRECTION is not yet implemented
-            CALL set_mo_occupation_1(mo_array(1), smear=smear, eval_deriv=eval_deriv)
+            CALL set_mo_occupation_1(mo_array(1), smear=smear, eval_deriv=eval_deriv, &
+                                     emit_warnings=emit_warnings)
          ELSE
             IF (PRESENT(tot_zeff_corr)) THEN
-               CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr)
+               CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                        emit_warnings=emit_warnings)
             ELSE
-               CALL set_mo_occupation_1(mo_array(1), smear=smear)
+               CALL set_mo_occupation_1(mo_array(1), smear=smear, emit_warnings=emit_warnings)
             END IF
          END IF
          CALL timestop(handle)
@@ -235,8 +243,10 @@ CONTAINS
       END IF
 
       IF (PRESENT(probe)) THEN
-         CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe)
-         CALL set_mo_occupation_1(mo_array(2), smear=smear, probe=probe)
+         CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe, &
+                                  emit_warnings=emit_warnings)
+         CALL set_mo_occupation_1(mo_array(2), smear=smear, probe=probe, &
+                                  emit_warnings=emit_warnings)
       END IF
 
       IF (smear%do_smear) THEN
@@ -251,7 +261,7 @@ CONTAINS
             END IF
             IF (smear%fixed_mag_mom /= -1.0_dp) THEN
                CPASSERT(.NOT. (PRESENT(eval_deriv)))
-               CALL set_mo_occupation_3(mo_array, smear=smear)
+               CALL set_mo_occupation_3(mo_array, smear=smear, emit_warnings=emit_warnings)
                CALL timestop(handle)
                RETURN
             END IF
@@ -263,11 +273,13 @@ CONTAINS
             END IF
             CPASSERT(.NOT. (PRESENT(eval_deriv)))
             IF (PRESENT(tot_zeff_corr)) THEN
-               CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr)
-               CALL set_mo_occupation_1(mo_array(2), smear=smear, tot_zeff_corr=tot_zeff_corr)
+               CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                        emit_warnings=emit_warnings)
+               CALL set_mo_occupation_1(mo_array(2), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                        emit_warnings=emit_warnings)
             ELSE
-               CALL set_mo_occupation_1(mo_array(1), smear=smear)
-               CALL set_mo_occupation_1(mo_array(2), smear=smear)
+               CALL set_mo_occupation_1(mo_array(1), smear=smear, emit_warnings=emit_warnings)
+               CALL set_mo_occupation_1(mo_array(2), smear=smear, emit_warnings=emit_warnings)
             END IF
          END IF
       END IF
@@ -275,18 +287,24 @@ CONTAINS
       IF (.NOT. ((mo_array(1)%flexible_electron_count > 0.0_dp) .AND. &
                  (mo_array(2)%flexible_electron_count > 0.0_dp))) THEN
          IF (PRESENT(probe)) THEN
-            CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe)
-            CALL set_mo_occupation_1(mo_array(2), smear=smear, probe=probe)
+            CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe, &
+                                     emit_warnings=emit_warnings)
+            CALL set_mo_occupation_1(mo_array(2), smear=smear, probe=probe, &
+                                     emit_warnings=emit_warnings)
          ELSE IF (PRESENT(eval_deriv)) THEN
-            CALL set_mo_occupation_1(mo_array(1), smear=smear, eval_deriv=eval_deriv)
-            CALL set_mo_occupation_1(mo_array(2), smear=smear, eval_deriv=eval_deriv)
+            CALL set_mo_occupation_1(mo_array(1), smear=smear, eval_deriv=eval_deriv, &
+                                     emit_warnings=emit_warnings)
+            CALL set_mo_occupation_1(mo_array(2), smear=smear, eval_deriv=eval_deriv, &
+                                     emit_warnings=emit_warnings)
          ELSE
             IF (PRESENT(tot_zeff_corr)) THEN
-               CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr)
-               CALL set_mo_occupation_1(mo_array(2), smear=smear, tot_zeff_corr=tot_zeff_corr)
+               CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                        emit_warnings=emit_warnings)
+               CALL set_mo_occupation_1(mo_array(2), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                        emit_warnings=emit_warnings)
             ELSE
-               CALL set_mo_occupation_1(mo_array(1), smear=smear)
-               CALL set_mo_occupation_1(mo_array(2), smear=smear)
+               CALL set_mo_occupation_1(mo_array(1), smear=smear, emit_warnings=emit_warnings)
+               CALL set_mo_occupation_1(mo_array(2), smear=smear, emit_warnings=emit_warnings)
             END IF
          END IF
          CALL timestop(handle)
@@ -368,18 +386,24 @@ CONTAINS
                       TRIM(ADJUSTL(cp_to_string(multiplicity_new))))
 
       IF (PRESENT(probe)) THEN
-         CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe)
-         CALL set_mo_occupation_1(mo_array(2), smear=smear, probe=probe)
+         CALL set_mo_occupation_1(mo_array(1), smear=smear, probe=probe, &
+                                  emit_warnings=emit_warnings)
+         CALL set_mo_occupation_1(mo_array(2), smear=smear, probe=probe, &
+                                  emit_warnings=emit_warnings)
       ELSE IF (PRESENT(eval_deriv)) THEN
-         CALL set_mo_occupation_1(mo_array(1), smear=smear, eval_deriv=eval_deriv)
-         CALL set_mo_occupation_1(mo_array(2), smear=smear, eval_deriv=eval_deriv)
+         CALL set_mo_occupation_1(mo_array(1), smear=smear, eval_deriv=eval_deriv, &
+                                  emit_warnings=emit_warnings)
+         CALL set_mo_occupation_1(mo_array(2), smear=smear, eval_deriv=eval_deriv, &
+                                  emit_warnings=emit_warnings)
       ELSE
          IF (PRESENT(tot_zeff_corr)) THEN
-            CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr)
-            CALL set_mo_occupation_1(mo_array(2), smear=smear, tot_zeff_corr=tot_zeff_corr)
+            CALL set_mo_occupation_1(mo_array(1), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                     emit_warnings=emit_warnings)
+            CALL set_mo_occupation_1(mo_array(2), smear=smear, tot_zeff_corr=tot_zeff_corr, &
+                                     emit_warnings=emit_warnings)
          ELSE
-            CALL set_mo_occupation_1(mo_array(1), smear=smear)
-            CALL set_mo_occupation_1(mo_array(2), smear=smear)
+            CALL set_mo_occupation_1(mo_array(1), smear=smear, emit_warnings=emit_warnings)
+            CALL set_mo_occupation_1(mo_array(2), smear=smear, emit_warnings=emit_warnings)
          END IF
       END IF
 
@@ -406,7 +430,8 @@ CONTAINS
 !> \author  Matthias Krack
 !> \version 1.1
 ! **************************************************************************************************
-   SUBROUTINE set_mo_occupation_1(mo_set, smear, eval_deriv, xas_env, tot_zeff_corr, probe)
+   SUBROUTINE set_mo_occupation_1(mo_set, smear, eval_deriv, xas_env, tot_zeff_corr, probe, &
+                                  emit_warnings)
 
       TYPE(mo_set_type), INTENT(INOUT)                   :: mo_set
       TYPE(smear_type), OPTIONAL                         :: smear
@@ -415,19 +440,23 @@ CONTAINS
       REAL(KIND=dp), OPTIONAL                            :: tot_zeff_corr
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      LOGICAL, INTENT(IN), OPTIONAL                      :: emit_warnings
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'set_mo_occupation_1'
 
       CHARACTER(LEN=20)                                  :: method_label
       INTEGER                                            :: handle, i_first, imo, ir, irmo, nmo, &
                                                             nomo, xas_estate
-      LOGICAL                                            :: equal_size, is_large
+      LOGICAL                                            :: equal_size, is_large, my_emit_warnings
       REAL(KIND=dp)                                      :: delectron, e1, e2, edelta, edist, &
                                                             el_count, nelec, occ_estate, &
                                                             total_zeff_corr, xas_nelectron
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: tmp_v
 
       CALL timeset(routineN, handle)
+
+      my_emit_warnings = .TRUE.
+      IF (PRESENT(emit_warnings)) my_emit_warnings = emit_warnings
 
       CPASSERT(ASSOCIATED(mo_set%eigenvalues))
       CPASSERT(ASSOCIATED(mo_set%occupation_numbers))
@@ -559,7 +588,7 @@ CONTAINS
          END DO
          is_large = ABS(MAXVAL(mo_set%occupation_numbers) - mo_set%maxocc) > probe(1)%eps_hp
          ! this is not a real problem, but the temperature might be a bit large
-         IF (is_large) &
+         IF (is_large .AND. my_emit_warnings) &
             CPWARN("Hair-probes occupancy distribution includes the first MO")
 
          ! Find the highest (fractional) occupied MO which will be now the HOMO
@@ -570,14 +599,14 @@ CONTAINS
             END IF
          END DO
          is_large = ABS(MINVAL(mo_set%occupation_numbers)) > probe(1)%eps_hp
-         IF (is_large) &
+         IF (is_large .AND. my_emit_warnings) &
             CALL cp_warn(__LOCATION__, &
                          "Hair-probes occupancy distribution includes the last MO => "// &
                          "Add more MOs for proper smearing.")
 
          ! check that the total electron count is accurate
          is_large = (ABS(nelec - accurate_sum(mo_set%occupation_numbers(:))) > probe(1)%eps_hp*nelec)
-         IF (is_large) &
+         IF (is_large .AND. my_emit_warnings) &
             CPWARN("Total number of electrons is not accurate")
 
       END IF
@@ -640,7 +669,7 @@ CONTAINS
             END DO
             is_large = ABS(MAXVAL(mo_set%occupation_numbers) - mo_set%maxocc) > smear%eps_fermi_dirac
             ! this is not a real problem, but the temperature might be a bit large
-            CPWARN_IF(is_large, "Fermi-Dirac smearing includes the first MO")
+            CPWARN_IF(is_large .AND. my_emit_warnings, "Fermi-Dirac smearing includes the first MO")
 
             ! Find the highest (fractional) occupied MO which will be now the HOMO
             DO imo = nmo, mo_set%lfomo, -1
@@ -650,14 +679,14 @@ CONTAINS
                END IF
             END DO
             is_large = ABS(MINVAL(mo_set%occupation_numbers)) > smear%eps_fermi_dirac
-            IF (is_large) &
+            IF (is_large .AND. my_emit_warnings) &
                CALL cp_warn(__LOCATION__, &
                             "Fermi-Dirac smearing includes the last MO => "// &
                             "Add more MOs for proper smearing.")
 
             ! check that the total electron count is accurate
             is_large = (ABS(nelec - accurate_sum(mo_set%occupation_numbers(:))) > smear%eps_fermi_dirac*nelec)
-            CPWARN_IF(is_large, "Total number of electrons is not accurate")
+            CPWARN_IF(is_large .AND. my_emit_warnings, "Total number of electrons is not accurate")
 
          CASE (smear_gaussian, smear_mp, smear_mv)
             IF (.NOT. PRESENT(eval_deriv)) THEN
@@ -692,7 +721,9 @@ CONTAINS
                END IF
             END DO
             is_large = ABS(mo_set%occupation_numbers(1) - mo_set%maxocc) > smear%eps_fermi_dirac
-            CPWARN_IF(is_large, TRIM(method_label)//" smearing includes the first MO")
+            IF (is_large .AND. my_emit_warnings) THEN
+               CPWARN(TRIM(method_label)//" smearing includes the first MO")
+            END IF
 
             ! Find the highest (fractional) occupied MO which will be now the HOMO
             DO imo = nmo, mo_set%lfomo, -1
@@ -702,14 +733,14 @@ CONTAINS
                END IF
             END DO
             is_large = ABS(mo_set%occupation_numbers(nmo)) > smear%eps_fermi_dirac
-            IF (is_large) &
+            IF (is_large .AND. my_emit_warnings) &
                CALL cp_warn(__LOCATION__, &
                             TRIM(method_label)//" smearing includes the last MO => "// &
                             "Add more MOs for proper smearing.")
 
             ! Check that the total electron count is accurate
             is_large = (ABS(nelec - accurate_sum(mo_set%occupation_numbers(:))) > smear%eps_fermi_dirac*nelec)
-            CPWARN_IF(is_large, "Total number of electrons is not accurate")
+            CPWARN_IF(is_large .AND. my_emit_warnings, "Total number of electrons is not accurate")
 
          CASE (smear_energy_window)
             ! not implemented
@@ -717,12 +748,12 @@ CONTAINS
 
             ! Define the energy window for the eigenvalues
             e1 = mo_set%eigenvalues(mo_set%homo) - 0.5_dp*smear%window_size
-            IF (e1 <= mo_set%eigenvalues(1)) THEN
+            IF (e1 <= mo_set%eigenvalues(1) .AND. my_emit_warnings) THEN
                CPWARN("Energy window for smearing includes the first MO")
             END IF
 
             e2 = mo_set%eigenvalues(mo_set%homo) + 0.5_dp*smear%window_size
-            IF (e2 >= mo_set%eigenvalues(nmo)) &
+            IF (e2 >= mo_set%eigenvalues(nmo) .AND. my_emit_warnings) &
                CALL cp_warn(__LOCATION__, &
                             "Energy window for smearing includes the last MO => "// &
                             "Add more MOs for proper smearing.")

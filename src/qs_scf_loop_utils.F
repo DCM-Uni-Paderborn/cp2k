@@ -454,11 +454,14 @@ CONTAINS
       INTEGER                                            :: handle, ispin
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: rho_ao
       TYPE(dbcsr_type), POINTER                          :: orthogonality_metric
+      TYPE(scf_control_type), POINTER                    :: scf_control
 
       CALL timeset(routineN, handle)
       NULLIFY (rho_ao)
+      NULLIFY (scf_control)
 
       CALL qs_rho_get(rho, rho_ao=rho_ao)
+      CALL get_qs_env(qs_env=qs_env, scf_control=scf_control)
 
       IF (has_unit_metric) THEN
          NULLIFY (orthogonality_metric)
@@ -474,8 +477,11 @@ CONTAINS
                        scf_env%qs_ot_env)
 
       DO ispin = 1, SIZE(mos)
-         CALL set_mo_occupation(mo_set=mos(ispin), smear=smear)
+         CALL set_mo_occupation(mo_set=mos(ispin), smear=smear, &
+                                emit_warnings=(.NOT. energy_only .AND. &
+                                               .NOT. scf_env%qs_ot_env(1)%settings%do_ener))
       END DO
+      IF (.NOT. energy_only) CALL check_added_mos_auto_occupation(mos, scf_control, smear)
 
       DO ispin = 1, SIZE(mos)
          CALL calculate_density_matrix(mos(ispin), &
@@ -490,6 +496,49 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_loop_do_ot
+
+! **************************************************************************************************
+!> \brief checks whether an automatic smearing virtual-space buffer is still sufficient
+!> \param mos ...
+!> \param scf_control ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE check_added_mos_auto_occupation(mos, scf_control, smear)
+
+      TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      TYPE(smear_type), POINTER                          :: smear
+
+      INTEGER                                            :: ispin, nmo
+      REAL(KIND=dp)                                      :: last_occ, threshold
+
+      IF (.NOT. ASSOCIATED(scf_control)) RETURN
+      IF (.NOT. ANY(scf_control%added_mos_auto)) RETURN
+      IF (.NOT. ASSOCIATED(smear)) RETURN
+      IF (.NOT. smear%do_smear) RETURN
+
+      threshold = MAX(smear%eps_fermi_dirac, 10.0_dp*EPSILON(1.0_dp))
+      DO ispin = 1, MIN(SIZE(mos), SIZE(scf_control%added_mos_auto))
+         IF (.NOT. scf_control%added_mos_auto(ispin)) CYCLE
+         IF (.NOT. ASSOCIATED(mos(ispin)%occupation_numbers)) CYCLE
+
+         nmo = mos(ispin)%nmo
+         IF (nmo < 1) CYCLE
+         last_occ = ABS(mos(ispin)%occupation_numbers(nmo))
+         IF (last_occ > threshold) THEN
+            IF (nmo >= mos(ispin)%nao) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "ADDED_MOS AUTO exhausted the AO basis but the highest MO is still occupied. "// &
+                             "Use a larger basis or a lower electronic temperature.")
+            ELSE
+               CALL cp_abort(__LOCATION__, &
+                             "ADDED_MOS AUTO virtual-space buffer is too small after the occupation update. "// &
+                             "The current SCF state would need more MOs; use a larger explicit ADDED_MOS for now.")
+            END IF
+         END IF
+      END DO
+
+   END SUBROUTINE check_added_mos_auto_occupation
 
 ! **************************************************************************************************
 !> \brief Performs the requested density mixing if any needed
