@@ -1289,6 +1289,7 @@ CONTAINS
                             0.0_dp, 1.0_dp, smear_gaussian)
             END IF
          END IF
+         IF (smear%do_smear) CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
          DO ikpgr = 1, kplocal
             ik = kp_range(1) + ikpgr - 1
             kp => kpoint%kp_env(ikpgr)%kpoint_env
@@ -1309,6 +1310,64 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_set_mo_occupation
+
+! **************************************************************************************************
+!> \brief warn if k-point smearing reaches the first or last available band
+!> \param wocc ...
+!> \param wkp ...
+!> \param smear ...
+!> \param nspin ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
+
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: wocc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      INTEGER, INTENT(IN)                                :: nspin
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_check_smearing_occupation'
+
+      INTEGER                                            :: handle, ik, ispin, nmo
+      LOGICAL                                            :: first_fractional, has_weight, &
+                                                            last_occupied
+      REAL(KIND=dp)                                      :: eps_occ, maxocc, weight_threshold
+
+      CALL timeset(routineN, handle)
+
+      IF (.NOT. smear%do_smear) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+
+      nmo = SIZE(wocc, 1)
+      eps_occ = MAX(smear%eps_fermi_dirac, 10.0_dp*EPSILON(1.0_dp))
+      weight_threshold = 10.0_dp*EPSILON(1.0_dp)
+      first_fractional = .FALSE.
+      last_occupied = .FALSE.
+      has_weight = .FALSE.
+
+      DO ispin = 1, MIN(nspin, SIZE(wocc, 3))
+         maxocc = 1.0_dp
+         IF (nspin == 1) maxocc = 2.0_dp
+         DO ik = 1, MIN(SIZE(wkp), SIZE(wocc, 2))
+            IF (ABS(wkp(ik)) <= weight_threshold) CYCLE
+            has_weight = .TRUE.
+            first_fractional = first_fractional .OR. &
+                               ABS(wocc(1, ik, ispin) - maxocc) > eps_occ
+            last_occupied = last_occupied .OR. &
+                            ABS(wocc(nmo, ik, ispin)) > eps_occ
+         END DO
+      END DO
+
+      IF (has_weight .AND. first_fractional) &
+         CALL cp_warn(__LOCATION__, "K-point smearing includes the first band")
+      IF (has_weight .AND. last_occupied) &
+         CALL cp_warn(__LOCATION__, &
+                      "K-point smearing includes the last band => Add more MOs for proper smearing.")
+
+      CALL timestop(handle)
+
+   END SUBROUTINE kpoint_check_smearing_occupation
 
 ! **************************************************************************************************
 !> \brief Calculate kpoint density matrices (rho(k), owned by kpoint groups)
