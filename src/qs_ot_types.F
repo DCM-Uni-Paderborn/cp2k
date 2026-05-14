@@ -55,6 +55,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_allocate
    PUBLIC  :: qs_ot_init
    PUBLIC  :: qs_ot_settings_init
+   PUBLIC  :: qs_ot_set_context
    PUBLIC  :: ot_readwrite_input
 
 ! **************************************************************************************************
@@ -102,6 +103,9 @@ MODULE qs_ot_types
       ! this sets the method to be used
       TYPE(qs_ot_settings_type) :: settings = qs_ot_settings_type()
       LOGICAL                   :: restricted = .FALSE.
+      INTEGER                   :: spin_index = 0, kpoint_index = 0, local_kpoint_index = 0
+      REAL(KIND=dp)             :: kpoint_weight = 1.0_dp
+      LOGICAL                   :: has_kpoint_context = .FALSE.
 
       ! first part of the variables, for occupied subspace invariant optimisation
 
@@ -248,6 +252,28 @@ CONTAINS
       settings%nondiag_energy_strength = 0.0_dp
 
    END SUBROUTINE qs_ot_settings_init
+
+! **************************************************************************************************
+!> \brief label an OT environment by spin and optional irreducible k-point context
+!> \param qs_ot_env ...
+!> \param spin_index ...
+!> \param kpoint_index ...
+!> \param local_kpoint_index ...
+!> \param kpoint_weight ...
+! **************************************************************************************************
+   SUBROUTINE qs_ot_set_context(qs_ot_env, spin_index, kpoint_index, local_kpoint_index, kpoint_weight)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      INTEGER, INTENT(IN), OPTIONAL                      :: spin_index, kpoint_index, &
+                                                            local_kpoint_index
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: kpoint_weight
+
+      IF (PRESENT(spin_index)) qs_ot_env%spin_index = spin_index
+      IF (PRESENT(kpoint_index)) qs_ot_env%kpoint_index = kpoint_index
+      IF (PRESENT(local_kpoint_index)) qs_ot_env%local_kpoint_index = local_kpoint_index
+      IF (PRESENT(kpoint_weight)) qs_ot_env%kpoint_weight = kpoint_weight
+      qs_ot_env%has_kpoint_context = PRESENT(kpoint_index) .OR. PRESENT(local_kpoint_index)
+
+   END SUBROUTINE qs_ot_set_context
 
 ! **************************************************************************************************
 !> \brief init matrices, needs c0 and sc0 so that c0*sc0=1
