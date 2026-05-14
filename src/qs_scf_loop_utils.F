@@ -120,7 +120,7 @@ CONTAINS
 !> \param probe ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_new_mos(qs_env, scf_env, scf_control, scf_section, diis_step, &
-                             energy_only, probe)
+                             energy_only, probe, added_mos_auto_grow)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -128,12 +128,13 @@ CONTAINS
       LOGICAL                                            :: diis_step, energy_only
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_scf_new_mos'
 
       INTEGER                                            :: handle, ispin
       LOGICAL                                            :: disable_diis, has_unit_metric, &
-                                                            skip_diag_sub
+                                                            my_added_mos_auto_grow, skip_diag_sub
       REAL(KIND=dp)                                      :: saved_eps_diis
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -145,6 +146,8 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       NULLIFY (energy, ks_env, matrix_ks, matrix_s, rho, mos, dft_control)
+      my_added_mos_auto_grow = .FALSE.
+      IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
 
       CALL get_qs_env(qs_env=qs_env, &
                       matrix_s=matrix_s, energy=energy, &
@@ -283,9 +286,15 @@ CONTAINS
       CASE (ot_method_nr)
          CALL qs_scf_loop_do_ot(qs_env, scf_env, scf_control%smear, mos, rho, &
                                 qs_env%mo_derivs, energy%total, &
-                                matrix_s, energy_only=energy_only, has_unit_metric=has_unit_metric)
+                                matrix_s, energy_only=energy_only, has_unit_metric=has_unit_metric, &
+                                added_mos_auto_grow=my_added_mos_auto_grow)
       END SELECT
       IF (disable_diis) scf_control%eps_diis = saved_eps_diis
+      IF (my_added_mos_auto_grow) THEN
+         IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .TRUE.
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       energy%kTS = 0.0_dp
       energy%efermi = 0.0_dp
@@ -436,7 +445,7 @@ CONTAINS
 !>      2013    moved from qs_scf [Florian Schiffmann]
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_do_ot(qs_env, scf_env, smear, mos, rho, mo_derivs, total_energy, &
-                                matrix_s, energy_only, has_unit_metric)
+                                matrix_s, energy_only, has_unit_metric, added_mos_auto_grow)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
@@ -448,10 +457,12 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
       LOGICAL, INTENT(INOUT)                             :: energy_only
       LOGICAL, INTENT(IN)                                :: has_unit_metric
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_scf_loop_do_ot'
 
       INTEGER                                            :: handle, ispin
+      LOGICAL                                            :: my_added_mos_auto_grow
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: rho_ao
       TYPE(dbcsr_type), POINTER                          :: orthogonality_metric
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -459,6 +470,8 @@ CONTAINS
       CALL timeset(routineN, handle)
       NULLIFY (rho_ao)
       NULLIFY (scf_control)
+      my_added_mos_auto_grow = .FALSE.
+      IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
 
       CALL qs_rho_get(rho, rho_ao=rho_ao)
       CALL get_qs_env(qs_env=qs_env, scf_control=scf_control)
@@ -481,7 +494,13 @@ CONTAINS
                                 emit_warnings=(.NOT. energy_only .AND. &
                                                .NOT. scf_env%qs_ot_env(1)%settings%do_ener))
       END DO
-      IF (.NOT. energy_only) CALL check_added_mos_auto_occupation(mos, scf_control, smear)
+      IF (.NOT. energy_only) &
+         CALL check_added_mos_auto_occupation(mos, scf_control, smear, my_added_mos_auto_grow)
+      IF (my_added_mos_auto_grow) THEN
+         IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .TRUE.
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       DO ispin = 1, SIZE(mos)
          CALL calculate_density_matrix(mos(ispin), &
@@ -503,15 +522,17 @@ CONTAINS
 !> \param scf_control ...
 !> \param smear ...
 ! **************************************************************************************************
-   SUBROUTINE check_added_mos_auto_occupation(mos, scf_control, smear)
+   SUBROUTINE check_added_mos_auto_occupation(mos, scf_control, smear, added_mos_auto_grow)
 
       TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(smear_type), POINTER                          :: smear
+      LOGICAL, INTENT(OUT)                               :: added_mos_auto_grow
 
       INTEGER                                            :: ispin, nmo
       REAL(KIND=dp)                                      :: last_occ, threshold
 
+      added_mos_auto_grow = .FALSE.
       IF (.NOT. ASSOCIATED(scf_control)) RETURN
       IF (.NOT. ANY(scf_control%added_mos_auto)) RETURN
       IF (.NOT. ASSOCIATED(smear)) RETURN
@@ -531,9 +552,8 @@ CONTAINS
                              "ADDED_MOS AUTO exhausted the AO basis but the highest MO is still occupied. "// &
                              "Use a larger basis or a lower electronic temperature.")
             ELSE
-               CALL cp_abort(__LOCATION__, &
-                             "ADDED_MOS AUTO virtual-space buffer is too small after the occupation update. "// &
-                             "The current SCF state would need more MOs; use a larger explicit ADDED_MOS for now.")
+               added_mos_auto_grow = .TRUE.
+               RETURN
             END IF
          END IF
       END DO

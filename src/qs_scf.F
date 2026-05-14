@@ -46,18 +46,19 @@
 ! **************************************************************************************************
 MODULE qs_scf
    USE atomic_kind_types,               ONLY: atomic_kind_type
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
-                                              dbcsr_deallocate_matrix,&
-                                              dbcsr_get_info,&
-                                              dbcsr_init_p,&
-                                              dbcsr_p_type,&
-                                              dbcsr_set,&
-                                              dbcsr_type
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_init_p, &
+        dbcsr_p_type, dbcsr_release_p, dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              copy_fm_to_dbcsr,&
+                                              cp_dbcsr_m_by_n_from_row_template,&
                                               dbcsr_deallocate_matrix_set
    USE cp_files,                        ONLY: close_file
+   USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_init_random,&
                                               cp_fm_release,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
@@ -129,17 +130,23 @@ MODULE qs_scf
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
                                               qs_ks_env_type
+   USE qs_matrix_pools,                 ONLY: mpools_get,&
+                                              mpools_rebuild_fm_pools
    USE qs_mo_io,                        ONLY: write_mo_set_to_restart
    USE qs_mo_methods,                   ONLY: make_basis_simple,&
                                               make_basis_sm
    USE qs_mo_occupation,                ONLY: set_mo_occupation
-   USE qs_mo_types,                     ONLY: deallocate_mo_set,&
+   USE qs_mo_types,                     ONLY: allocate_mo_set,&
+                                              deallocate_mo_set,&
                                               duplicate_mo_set,&
                                               get_mo_set,&
+                                              init_mo_set,&
+                                              mo_set_restrict,&
                                               mo_set_type,&
                                               reassign_allocated_mos
    USE qs_ot,                           ONLY: qs_ot_new_preconditioner
-   USE qs_ot_scf,                       ONLY: ot_scf_init,&
+   USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
+                                              ot_scf_init,&
                                               ot_scf_read_input
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
@@ -360,9 +367,10 @@ CONTAINS
       INTEGER                                            :: ext_master_id, handle, handle2, i_tmp, &
                                                             ic, ispin, iter_count, output_unit, &
                                                             scf_energy_message_tag, total_steps
-      LOGICAL :: density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
-         exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
-         internal_tblite_mixer, just_energy, outer_loop_converged, tblite_native_mixer
+      LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
+         exit_inner_loop, exit_outer_loop, inner_loop_converged, &
+         internal_tblite_density_full_step, internal_tblite_mixer, just_energy, &
+         outer_loop_converged, tblite_native_mixer
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -515,6 +523,7 @@ CONTAINS
             ! print 'heavy weight' or relatively expensive quantities
             CALL qs_scf_loop_print(qs_env, scf_env, para_env)
 
+            added_mos_auto_grow = .FALSE.
             IF (do_kpoints) THEN
                ! kpoints
                IF (dft_control%hairy_probes .EQV. .TRUE.) THEN
@@ -528,10 +537,20 @@ CONTAINS
                IF (dft_control%hairy_probes .EQV. .TRUE.) THEN
                   scf_control%smear%do_smear = .FALSE.
                   CALL qs_scf_new_mos(qs_env, scf_env, scf_control, scf_section, diis_step, energy_only, &
-                                      dft_control%probe)
+                                      dft_control%probe, added_mos_auto_grow=added_mos_auto_grow)
                ELSE
-                  CALL qs_scf_new_mos(qs_env, scf_env, scf_control, scf_section, diis_step, energy_only)
+                  CALL qs_scf_new_mos(qs_env, scf_env, scf_control, scf_section, diis_step, energy_only, &
+                                      added_mos_auto_grow=added_mos_auto_grow)
                END IF
+            END IF
+
+            IF (added_mos_auto_grow) THEN
+               CALL qs_scf_grow_added_mos_auto(qs_env, scf_env, scf_control, output_unit)
+               total_steps = MAX(0, total_steps - 1)
+               iter_count = MAX(0, iter_count - 1)
+               IF (.NOT. just_energy) scf_env%iter_count = MAX(0, scf_env%iter_count - 1)
+               CALL timestop(handle2)
+               CYCLE scf_outer_loop
             END IF
 
             ! Print requested MO information (can be computationally expensive with OT)
@@ -703,6 +722,218 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE scf_env_do_scf
+
+! **************************************************************************************************
+!> \brief grow the automatic smearing virtual space and reset OT objects
+!> \param qs_env ...
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param output_unit ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_grow_added_mos_auto(qs_env, scf_env, scf_control, output_unit)
+
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      INTEGER, INTENT(IN)                                :: output_unit
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_grow_added_mos_auto'
+
+      INTEGER                                            :: base_nmo, current_added, grow_by, &
+                                                            handle, ispin, j, nmo_mat, nspins, &
+                                                            old_nmo
+      INTEGER, DIMENSION(2)                              :: new_added, new_nmo
+      LOGICAL                                            :: has_unit_metric, need_resize
+      REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
+                                                            last_occ, maxocc, n_el_f, threshold
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, &
+                                                            old_eigenvalues, old_occupation_numbers
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_mo_fm_pools
+      TYPE(cp_fm_type), POINTER                          :: mo_coeff, old_mo_coeff
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mo_set_type), ALLOCATABLE, DIMENSION(:)       :: old_mos
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (ao_mo_fm_pools, blacs_env, dft_control, eigenvalues, matrix_s, mo_coeff, mos, &
+               occupation_numbers, old_eigenvalues, old_mo_coeff, old_occupation_numbers, para_env)
+
+      CALL get_qs_env(qs_env=qs_env, blacs_env=blacs_env, dft_control=dft_control, &
+                      has_unit_metric=has_unit_metric, matrix_s=matrix_s, mos=mos, para_env=para_env)
+
+      CPASSERT(ASSOCIATED(mos))
+      CPASSERT(ASSOCIATED(dft_control))
+      CPASSERT(ASSOCIATED(scf_control))
+      CPASSERT(ASSOCIATED(matrix_s))
+
+      nspins = dft_control%nspins
+      new_added = scf_control%added_mos
+      new_nmo(:) = 0
+      need_resize = .FALSE.
+      threshold = MAX(scf_control%smear%eps_fermi_dirac, 10.0_dp*EPSILON(1.0_dp))
+
+      DO ispin = 1, nspins
+         new_nmo(ispin) = mos(ispin)%nmo
+         IF (.NOT. scf_control%added_mos_auto(ispin)) CYCLE
+         IF (.NOT. ASSOCIATED(mos(ispin)%occupation_numbers)) CYCLE
+         IF (mos(ispin)%nmo < 1) CYCLE
+
+         last_occ = ABS(mos(ispin)%occupation_numbers(mos(ispin)%nmo))
+         IF (last_occ <= threshold) CYCLE
+         IF (mos(ispin)%nmo >= mos(ispin)%nao) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "ADDED_MOS AUTO exhausted the AO basis but the highest MO is still occupied. "// &
+                          "Use a larger basis or a lower electronic temperature.")
+         END IF
+
+         current_added = MAX(0, scf_control%added_mos(ispin))
+         base_nmo = MAX(0, mos(ispin)%nmo - current_added)
+         grow_by = MAX(4, current_added)
+         new_added(ispin) = MIN(mos(ispin)%nao - base_nmo, current_added + grow_by)
+         new_nmo(ispin) = base_nmo + new_added(ispin)
+         IF (new_nmo(ispin) <= mos(ispin)%nmo) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "ADDED_MOS AUTO cannot grow further although the highest MO is still occupied.")
+         END IF
+         need_resize = .TRUE.
+      END DO
+
+      IF (nspins == 2) THEN
+         IF (new_nmo(2) > new_nmo(1)) THEN
+            IF (.NOT. scf_control%added_mos_auto(1)) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "ADDED_MOS AUTO needs to grow beta beyond alpha, but alpha uses explicit ADDED_MOS.")
+            END IF
+            base_nmo = MAX(0, mos(1)%nmo - MAX(0, scf_control%added_mos(1)))
+            IF (new_nmo(2) > mos(1)%nao) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "ADDED_MOS AUTO exhausted the alpha AO basis while matching the beta buffer.")
+            END IF
+            new_nmo(1) = new_nmo(2)
+            new_added(1) = new_nmo(1) - base_nmo
+            need_resize = .TRUE.
+         END IF
+      END IF
+
+      IF (.NOT. need_resize) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+
+      scf_control%added_mos(1:nspins) = new_added(1:nspins)
+      IF (output_unit > 0) THEN
+         IF (nspins == 2) THEN
+            WRITE (UNIT=output_unit, FMT="(T2,A,2I5)") &
+               "ADDED_MOS AUTO: growing virtual-space buffer to:", scf_control%added_mos(1:nspins)
+         ELSE
+            WRITE (UNIT=output_unit, FMT="(T2,A,I0)") &
+               "ADDED_MOS AUTO: growing virtual-space buffer to: ", scf_control%added_mos(1)
+         END IF
+      END IF
+
+      ALLOCATE (old_mos(nspins))
+      DO ispin = 1, nspins
+         CALL duplicate_mo_set(old_mos(ispin), mos(ispin))
+      END DO
+
+      DO ispin = 1, nspins
+         CALL get_mo_set(old_mos(ispin), maxocc=maxocc, n_el_f=n_el_f, &
+                         flexible_electron_count=flexible_electron_count)
+         CALL deallocate_mo_set(mos(ispin))
+         CALL allocate_mo_set(mo_set=mos(ispin), nao=old_mos(ispin)%nao, nmo=new_nmo(ispin), &
+                              nelectron=old_mos(ispin)%nelectron, n_el_f=n_el_f, maxocc=maxocc, &
+                              flexible_electron_count=flexible_electron_count)
+         mos(ispin)%use_mo_coeff_b = old_mos(ispin)%use_mo_coeff_b
+      END DO
+
+      CALL mpools_rebuild_fm_pools(qs_env%mpools, mos=mos, blacs_env=blacs_env, para_env=para_env)
+      CALL mpools_get(qs_env%mpools, ao_mo_fm_pools=ao_mo_fm_pools)
+
+      DO ispin = 1, nspins
+         CALL init_mo_set(mos(ispin), fm_pool=ao_mo_fm_pools(ispin)%pool, &
+                          name="qs_env%mo"//TRIM(ADJUSTL(cp_to_string(ispin))))
+         CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues, &
+                         occupation_numbers=occupation_numbers)
+         CALL get_mo_set(old_mos(ispin), mo_coeff=old_mo_coeff, eigenvalues=old_eigenvalues, &
+                         occupation_numbers=old_occupation_numbers)
+
+         old_nmo = old_mos(ispin)%nmo
+         CALL cp_fm_init_random(mo_coeff, mos(ispin)%nmo)
+         CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
+         IF (has_unit_metric) THEN
+            CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
+         ELSE
+            CALL make_basis_sm(mo_coeff, mos(ispin)%nmo, matrix_s(1)%matrix)
+         END IF
+
+         eigenvalues(1:old_nmo) = old_eigenvalues(1:old_nmo)
+         occupation_numbers(:) = 0.0_dp
+         occupation_numbers(1:old_nmo) = old_occupation_numbers(1:old_nmo)
+         IF (mos(ispin)%nmo > old_nmo) THEN
+            energy_step = MAX(scf_control%smear%electronic_temperature, 1.0E-3_dp)
+            DO j = old_nmo + 1, mos(ispin)%nmo
+               eigenvalues(j) = eigenvalues(old_nmo) + energy_step*REAL(j - old_nmo, KIND=dp)
+            END DO
+         END IF
+         mos(ispin)%homo = old_mos(ispin)%homo
+         mos(ispin)%lfomo = old_mos(ispin)%lfomo
+         mos(ispin)%kTS = old_mos(ispin)%kTS
+         mos(ispin)%mu = old_mos(ispin)%mu
+         mos(ispin)%uniform_occupation = old_mos(ispin)%uniform_occupation
+      END DO
+
+      IF (dft_control%restricted) CALL mo_set_restrict(mos)
+
+      DO ispin = 1, nspins
+         IF (.NOT. mos(ispin)%use_mo_coeff_b) CYCLE
+         CALL get_mo_set(mos(ispin), mo_coeff=mo_coeff)
+         CALL dbcsr_init_p(mos(ispin)%mo_coeff_b)
+         CALL cp_dbcsr_m_by_n_from_row_template(mos(ispin)%mo_coeff_b, template=matrix_s(1)%matrix, &
+                                                n=mos(ispin)%nmo, sym=dbcsr_type_no_symmetry)
+         CALL copy_fm_to_dbcsr(mo_coeff, mos(ispin)%mo_coeff_b)
+      END DO
+
+      IF (ASSOCIATED(qs_env%mo_derivs)) THEN
+         DO ispin = 1, SIZE(qs_env%mo_derivs)
+            IF (ASSOCIATED(qs_env%mo_derivs(ispin)%matrix)) &
+               CALL dbcsr_release_p(qs_env%mo_derivs(ispin)%matrix)
+         END DO
+         DEALLOCATE (qs_env%mo_derivs)
+         NULLIFY (qs_env%mo_derivs)
+      END IF
+      IF (qs_env%requires_mo_derivs) THEN
+         nmo_mat = nspins
+         IF (dft_control%restricted) nmo_mat = 1
+         ALLOCATE (qs_env%mo_derivs(nmo_mat))
+         DO ispin = 1, nmo_mat
+            NULLIFY (qs_env%mo_derivs(ispin)%matrix)
+            CALL dbcsr_init_p(qs_env%mo_derivs(ispin)%matrix)
+            CALL dbcsr_create(qs_env%mo_derivs(ispin)%matrix, template=mos(ispin)%mo_coeff_b, &
+                              name="mo_derivs", matrix_type=dbcsr_type_no_symmetry)
+         END DO
+      END IF
+
+      IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
+         DO ispin = 1, SIZE(scf_env%qs_ot_env)
+            CALL ot_scf_destroy(scf_env%qs_ot_env(ispin))
+         END DO
+         DEALLOCATE (scf_env%qs_ot_env)
+         NULLIFY (scf_env%qs_ot_env)
+      END IF
+      reuse_precond = .FALSE.
+
+      DO ispin = 1, nspins
+         CALL deallocate_mo_set(old_mos(ispin))
+      END DO
+      DEALLOCATE (old_mos)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE qs_scf_grow_added_mos_auto
 
 ! **************************************************************************************************
 !> \brief inits those objects needed if you want to restart the scf with, say
