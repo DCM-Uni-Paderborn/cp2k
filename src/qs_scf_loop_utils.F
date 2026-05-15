@@ -43,6 +43,7 @@ MODULE qs_scf_loop_utils
    USE mathconstants,                   ONLY: rootpi,&
                                               sqrt2,&
                                               sqrthalf
+   USE mathlib,                         ONLY: diag_complex
    USE message_passing,                 ONLY: mp_para_env_type
    USE qs_density_matrices,             ONLY: calculate_density_matrix
    USE qs_density_mixing_types,         ONLY: broyden_mixing_nr,&
@@ -65,7 +66,8 @@ MODULE qs_scf_loop_utils
                                               mo_set_type
    USE qs_mom_methods,                  ONLY: do_mom_diag
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
-   USE qs_ot,                           ONLY: qs_ot_generate_rotation_complex,&
+   USE qs_ot,                           ONLY: qs_ot_complex_exp_frechet_kernel,&
+                                              qs_ot_generate_rotation_complex,&
                                               qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_rot_mat_derivative_complex
    USE qs_ot_minimizer,                 ONLY: ot_mini
@@ -1024,28 +1026,25 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: target_group
       LOGICAL, INTENT(OUT)                               :: group_done
 
-      INTEGER, PARAMETER                                 :: max_schur_rot = 2000
-      REAL(KIND=dp), PARAMETER :: max_norm_ratio = 1.0E6_dp, rotation_schur_fraction = 0.0125_dp
+      INTEGER, PARAMETER                                 :: max_schur_rot = 800
+      REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp
 
-      INTEGER                                            :: group, ie, ikpoint, imo, info, ispin, &
-                                                            ivar, jmo, local_channel, &
-                                                            local_kpoint, nchannels, ne, nmo, &
-                                                            nrot, r, s
+      INTEGER                                            :: channel_var_start, group, ie, ikpoint, &
+                                                            imo, info, ispin, ivar, jmo, &
+                                                            local_channel, local_kpoint, &
+                                                            nchannels, ne, nmo, nrot, r, s
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: failed
-      REAL(KIND=dp) :: curvature, dense_term, diag_shift, gdotp, gnorm, gvalue, maxocc, mu, normp, &
-         occ_diff, projected_term, rx_shift, rx_weight, z_shift, z_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: bare, coeff_i, coeff_j, curv, grad_e, &
-                                                            grad_rot, rhs, rtd, rx_e, sol, z_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, schur
+      REAL(KIND=dp) :: dense_term, diag_shift, gdotp, gnorm, gvalue, maxocc, mu, normp, &
+         projected_term, row_abs, rx_shift, rx_weight, z_shift, z_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rtd, rx_e, &
+                                                            sol, z_e
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
+                                                            rot_hessian, schur
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(kpoint_env_type), POINTER                     :: kp
-
-         ! The rotation Hessian is still approximate for finite complex REF steps.
-         ! Keep the Schur rotation channel damped while taking the dense fixed-N
-         ! energy response from the coupled block.
 
          group_done = .FALSE.
          IF (ABS(gsum(target_group)) <= EPSILON(gsum(target_group))) RETURN
@@ -1078,21 +1077,20 @@ CONTAINS
          END IF
 
          ALLOCATE (curv(ne), grad_e(ne), z_e(ne), rx_e(ne))
-         ALLOCATE (bare(nrot), coeff_i(nrot), coeff_j(nrot), grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
+         ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
-         ALLOCATE (schur(nrot, nrot), ipiv(nrot))
+         ALLOCATE (response(ne, nrot), rot_hessian(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
          z_e(:) = 0.0_dp
          rx_e(:) = 0.0_dp
-         bare(:) = curvature_floor
-         coeff_i(:) = 0.0_dp
-         coeff_j(:) = 0.0_dp
          grad_rot(:) = 0.0_dp
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
          sol(:) = 0.0_dp
+         response(:, :) = 0.0_dp
+         rot_hessian(:, :) = 0.0_dp
          failed = .FALSE.
          ivar = 0
 
@@ -1123,12 +1121,9 @@ CONTAINS
                   grad_e(ie) = local_ot_env(local_channel)%ener_gx(imo)
                END DO
 
+               channel_var_start = ivar + 1
                DO imo = 1, nmo - 1
                   DO jmo = imo + 1, nmo
-                     occ_diff = occupation_numbers(imo) - occupation_numbers(jmo)
-                     curvature = 4.0_dp*wkp(ikpoint)*occ_diff*(h_re(jmo, jmo) - h_re(imo, imo))
-                     curvature = MAX(ABS(curvature), curvature_floor)
-
                      ivar = ivar + 1
                      var_channel(ivar) = local_channel
                      var_i(ivar) = imo
@@ -1136,9 +1131,6 @@ CONTAINS
                      var_kind(ivar) = 1
                      var_ei(ivar) = e_offset(local_channel) + imo - 1
                      var_ej(ivar) = e_offset(local_channel) + jmo - 1
-                     coeff_i(ivar) = -2.0_dp*h_re(imo, jmo)
-                     coeff_j(ivar) = 2.0_dp*h_re(imo, jmo)
-                     bare(ivar) = curvature
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
 
                      ivar = ivar + 1
@@ -1148,17 +1140,25 @@ CONTAINS
                      var_kind(ivar) = 2
                      var_ei(ivar) = e_offset(local_channel) + imo - 1
                      var_ej(ivar) = e_offset(local_channel) + jmo - 1
-                     coeff_i(ivar) = -2.0_dp*h_im(imo, jmo)
-                     coeff_j(ivar) = 2.0_dp*h_im(imo, jmo)
-                     bare(ivar) = curvature
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
                   END DO
                END DO
+               CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
+                                                    e_offset(local_channel), h_re, h_im, &
+                                                    occupation_numbers, wkp(ikpoint), &
+                                                    var_i, var_j, var_kind, rot_hessian, response, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
 
          CPASSERT(ivar == nrot)
+         IF (failed) THEN
+            DEALLOCATE (curv, grad_e, z_e, rx_e)
+            DEALLOCATE (grad_rot, rhs, rtd, sol)
+            DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
+            DEALLOCATE (response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
+            RETURN
+         END IF
 
          z_shift = 0.0_dp
          z_weight = 0.0_dp
@@ -1173,27 +1173,24 @@ CONTAINS
          CALL para_env_inter_kp%sum(z_weight)
          IF (z_weight > EPSILON(z_weight)) z_e(:) = z_e(:) - z_shift/z_weight
 
-         schur(:, :) = 0.0_dp
+         rot_hessian(:, :) = 0.5_dp*(rot_hessian(:, :) + TRANSPOSE(rot_hessian(:, :)))
+         schur(:, :) = rot_hessian(:, :)
          DO r = 1, nrot
-            rtd(r) = curv(var_ei(r))*coeff_i(r) + curv(var_ej(r))*coeff_j(r)
-            rhs(r) = grad_rot(r) + coeff_i(r)*grad_e(var_ei(r)) + coeff_j(r)*grad_e(var_ej(r))
-            schur(r, r) = bare(r)
+            rtd(r) = DOT_PRODUCT(curv, response(:, r))
+            rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
          END DO
 
          DO s = 1, nrot
             DO r = 1, nrot
-               dense_term = 0.0_dp
-               IF (var_ei(r) == var_ei(s)) dense_term = dense_term + curv(var_ei(r))*coeff_i(r)*coeff_i(s)
-               IF (var_ei(r) == var_ej(s)) dense_term = dense_term + curv(var_ei(r))*coeff_i(r)*coeff_j(s)
-               IF (var_ej(r) == var_ei(s)) dense_term = dense_term + curv(var_ej(r))*coeff_j(r)*coeff_i(s)
-               IF (var_ej(r) == var_ej(s)) dense_term = dense_term + curv(var_ej(r))*coeff_j(r)*coeff_j(s)
+               dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
                projected_term = dense_term - rtd(r)*rtd(s)/gsum(target_group)
                schur(r, s) = schur(r, s) - projected_term
             END DO
          END DO
          DO r = 1, nrot
-            IF (schur(r, r) < curvature_floor) THEN
-               diag_shift = curvature_floor - schur(r, r)
+            row_abs = SUM(ABS(schur(r, :))) - ABS(schur(r, r))
+            IF (schur(r, r) < row_abs + curvature_floor) THEN
+               diag_shift = row_abs + curvature_floor - schur(r, r)
                schur(r, r) = schur(r, r) + diag_shift
             END IF
          END DO
@@ -1201,15 +1198,9 @@ CONTAINS
          sol(:) = rhs(:)
          CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
          IF (info /= 0) failed = .TRUE.
-         IF (.NOT. failed) &
-            sol(:) = rotation_schur_fraction*sol(:) + (1.0_dp - rotation_schur_fraction)*0.5_dp*grad_rot(:)
 
          IF (.NOT. failed) THEN
-            rx_e(:) = 0.0_dp
-            DO r = 1, nrot
-               rx_e(var_ei(r)) = rx_e(var_ei(r)) + coeff_i(r)*sol(r)
-               rx_e(var_ej(r)) = rx_e(var_ej(r)) + coeff_j(r)*sol(r)
-            END DO
+            rx_e(:) = MATMUL(response, sol)
             rx_shift = 0.0_dp
             rx_weight = 0.0_dp
             DO ie = 1, ne
@@ -1273,10 +1264,149 @@ CONTAINS
          END IF
 
          DEALLOCATE (curv, grad_e, z_e, rx_e)
-         DEALLOCATE (bare, coeff_i, coeff_j, grad_rot, rhs, rtd, sol)
+         DEALLOCATE (grad_rot, rhs, rtd, sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (schur, ipiv, channel_nmo, e_offset)
+         DEALLOCATE (response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
+
+      SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
+                                                 chc_re, chc_im, occupation_numbers, kpoint_weight, &
+                                                 var_i, var_j, var_kind, rot_hessian, response, failed)
+      INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
+                                                            first_energy
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, response
+      LOGICAL, INTENT(INOUT)                             :: failed
+
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, u
+      INTEGER                                            :: ie, imo, jmo, r, s
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, occ_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
+                                                            grad_p_re, u_im, u_re, x_im, x_m_im, &
+                                                            x_m_re, x_p_im, x_p_re, x_re
+
+         IF (failed) RETURN
+         IF (first_var > last_var) RETURN
+
+         ALLOCATE (x_re(nmo, nmo), x_im(nmo, nmo), u_re(nmo, nmo), u_im(nmo, nmo))
+         CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_x, x_re)
+         CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_x_im, x_im)
+         CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_u, u_re)
+         CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_u_im, u_im)
+         CALL local_ot_env(local_channel)%para_env%sum(x_re)
+         CALL local_ot_env(local_channel)%para_env%sum(x_im)
+         CALL local_ot_env(local_channel)%para_env%sum(u_re)
+         CALL local_ot_env(local_channel)%para_env%sum(u_im)
+
+         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), occ_scale(nmo))
+         chc = CMPLX(chc_re, chc_im, KIND=dp)
+         u = CMPLX(u_re, u_im, KIND=dp)
+         base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
+         occ_scale(:) = 2.0_dp*kpoint_weight*occupation_numbers(1:nmo)
+
+         ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))
+         ALLOCATE (grad_p_re(nmo, nmo), grad_p_im(nmo, nmo), grad_m_re(nmo, nmo), grad_m_im(nmo, nmo))
+         ALLOCATE (eps_p(nmo), eps_m(nmo))
+
+         DO s = first_var, last_var
+            x_p_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            imo = var_i(s)
+            jmo = var_j(s)
+            SELECT CASE (var_kind(s))
+            CASE (1)
+               x_p_re(imo, jmo) = x_p_re(imo, jmo) + fd_step
+               x_p_re(jmo, imo) = x_p_re(jmo, imo) - fd_step
+               x_m_re(imo, jmo) = x_m_re(imo, jmo) - fd_step
+               x_m_re(jmo, imo) = x_m_re(jmo, imo) + fd_step
+            CASE (2)
+               x_p_im(imo, jmo) = x_p_im(imo, jmo) + fd_step
+               x_p_im(jmo, imo) = x_p_im(jmo, imo) + fd_step
+               x_m_im(imo, jmo) = x_m_im(imo, jmo) - fd_step
+               x_m_im(jmo, imo) = x_m_im(jmo, imo) - fd_step
+            END SELECT
+
+            CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_scale, grad_p_re, grad_p_im, eps_p)
+            CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_scale, grad_m_re, grad_m_im, eps_m)
+
+            DO r = first_var, last_var
+               imo = var_i(r)
+               jmo = var_j(r)
+               SELECT CASE (var_kind(r))
+               CASE (1)
+                  rot_hessian(r, s) = 2.0_dp*(grad_p_re(imo, jmo) - grad_m_re(imo, jmo))/(2.0_dp*fd_step)
+               CASE (2)
+                  rot_hessian(r, s) = 2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
+               END SELECT
+            END DO
+            DO ie = 1, nmo
+               response(first_energy + ie - 1, s) = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
+            END DO
+         END DO
+
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, occ_scale)
+         DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
+         DEALLOCATE (eps_p, eps_m)
+      END SUBROUTINE build_finite_ref_rotation_model
+
+      SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
+
+      COMPLEX(KIND=dp)                                   :: kernel
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, inner, &
+                                                            outer, u, work
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+         n = SIZE(x_re, 1)
+         ALLOCATE (generator(n, n), evec(n, n), u(n, n), work(n, n), dedu(n, n))
+         ALLOCATE (inner(n, n), outer(n, n), frechet(n, n), evals(n))
+
+         generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+         CALL diag_complex(generator, evec, evals)
+
+         u(:, :) = evec(:, :)
+         DO j = 1, n
+            u(:, j) = EXP(CMPLX(0.0_dp, -evals(j), KIND=dp))*u(:, j)
+         END DO
+         u(:, :) = MATMUL(u, CONJG(TRANSPOSE(evec)))
+
+         work(:, :) = MATMUL(base, u)
+         dedu(:, :) = work(:, :)
+         DO j = 1, n
+            dedu(:, j) = occ_scale(j)*dedu(:, j)
+         END DO
+
+         work(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+         DO i = 1, n
+            eps_diag(i) = REAL(work(i, i), KIND=dp)
+         END DO
+
+         inner(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dedu, evec))
+         DO j = 1, n
+            DO i = 1, n
+               kernel = qs_ot_complex_exp_frechet_kernel(evals(i), evals(j))
+               outer(i, j) = inner(i, j)*kernel
+            END DO
+         END DO
+         frechet(:, :) = MATMUL(evec, MATMUL(outer, CONJG(TRANSPOSE(evec))))
+
+         grad_re(:, :) = REAL(frechet, KIND=dp) - TRANSPOSE(REAL(frechet, KIND=dp))
+         grad_im(:, :) = AIMAG(frechet) + TRANSPOSE(AIMAG(frechet))
+
+         DEALLOCATE (generator, evec, u, work, dedu, inner, outer, frechet, evals)
+      END SUBROUTINE dense_ref_rotation_gradient
 
       SUBROUTINE dbcsr_square_to_dense(matrix, dense)
       TYPE(dbcsr_type), POINTER                          :: matrix
