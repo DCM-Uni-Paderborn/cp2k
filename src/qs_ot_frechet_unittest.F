@@ -45,6 +45,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
+   CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
                                                      2.0E-7_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -435,6 +436,42 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_weighted_kpoint_mermin_gradient
+
+! **************************************************************************************************
+!> \brief Check the exact auxiliary-energy projection for the fixed-N Mermin subproblem.
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_energy_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nkp = 2, nmo = 4
+      REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp, nel = 4.35_dp, &
+                                                            sigma = 0.030_dp
+
+      REAL(KIND=dp)                                      :: err, gauge_shift
+      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, grad, h, projected
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+
+      wk = [0.35_dp, 0.65_dp]
+      eps(:, 1) = [-0.34_dp, -0.07_dp, 0.025_dp, 0.18_dp]
+      eps(:, 2) = [-0.29_dp, -0.02_dp, 0.075_dp, 0.22_dp]
+      h(:, 1) = [-0.31_dp, -0.035_dp, 0.045_dp, 0.16_dp]
+      h(:, 2) = [-0.27_dp, -0.055_dp, 0.055_dp, 0.20_dp]
+
+      gauge_shift = SUM(eps(:, :) - h(:, :))/REAL(nkp*nmo, KIND=dp)
+      projected(:, :) = h(:, :) + gauge_shift
+      CALL dense_kpoint_mermin_gradient(projected, h, wk, nel, sigma, maxocc, grad)
+      err = MAXVAL(ABS(grad))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_energy_projection
 
 ! **************************************************************************************************
 !> \brief Dense weighted k-point Mermin free-energy model.
