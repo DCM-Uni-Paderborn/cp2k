@@ -242,7 +242,11 @@ CONTAINS
       CASE ("3PNT")
          CALL do_line_search_3pnt(qs_ot_env)
       CASE ("2PNT")
-         CALL do_line_search_2pnt(qs_ot_env)
+         IF (use_three_point_mermin_search(qs_ot_env)) THEN
+            CALL do_line_search_3pnt(qs_ot_env)
+         ELSE
+            CALL do_line_search_2pnt(qs_ot_env)
+         END IF
       CASE ("ADPT")
          CALL do_line_search_adapt(qs_ot_env)
       CASE ("NONE")
@@ -251,6 +255,28 @@ CONTAINS
          CPABORT("NYI")
       END SELECT
    END SUBROUTINE do_line_search
+
+! **************************************************************************************************
+!> \brief guard the strong complex Mermin preconditioner with an extra energy point
+!> \param qs_ot_env ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION use_three_point_mermin_search(qs_ot_env) RESULT(res)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      LOGICAL                                            :: res
+
+      INTEGER                                            :: ispin
+
+      res = .FALSE.
+      IF (.NOT. qs_ot_env(1)%settings%occupation_preconditioner) RETURN
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+            res = .TRUE.
+            RETURN
+         END IF
+      END DO
+
+   END FUNCTION use_three_point_mermin_search
 
 ! **************************************************************************************************
 !> \brief moves x adding the right amount (ds) of the gradient or search direction

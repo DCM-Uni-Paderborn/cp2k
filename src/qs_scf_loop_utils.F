@@ -1037,8 +1037,8 @@ CONTAINS
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: failed
-      REAL(KIND=dp) :: dense_term, diag_shift, gdotp, gnorm, gvalue, maxocc, mu, normp, &
-         projected_term, row_abs, rx_shift, rx_weight, z_shift, z_weight
+      REAL(KIND=dp) :: dense_term, diag_shift, direction_scale, gdotp, gnorm, gvalue, maxocc, mu, &
+         normp, projected_term, row_abs, rx_shift, rx_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rtd, rx_e, &
                                                             sol, z_e
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
@@ -1217,6 +1217,17 @@ CONTAINS
             normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(sol, sol)
             IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) failed = .TRUE.
             IF (.NOT. failed .AND. normp > max_norm_ratio*MAX(gnorm, EPSILON(1.0_dp))) failed = .TRUE.
+            IF (.NOT. failed) THEN
+               ! The generic OT line searches assume that the stored search vector z has
+               ! z.z = g.z.  Rescale the external Schur direction to preserve that slope.
+               direction_scale = gdotp/MAX(normp, EPSILON(normp))
+               IF (direction_scale <= 0.0_dp .OR. direction_scale /= direction_scale) THEN
+                  failed = .TRUE.
+               ELSE
+                  z_e(:) = direction_scale*z_e(:)
+                  sol(:) = direction_scale*sol(:)
+               END IF
+            END IF
          END IF
 
          IF (.NOT. failed) THEN

@@ -569,7 +569,12 @@ CONTAINS
       CASE ("CG")
          SELECT CASE (qs_ot_env1%settings%line_search_method)
          CASE ("2PNT")
-            IF (qs_ot_env1%line_search_count == 2) update = .TRUE.
+            IF (qs_ot_env1%settings%occupation_preconditioner .AND. &
+                qs_ot_env1%has_complex_kpoint_state) THEN
+               IF (qs_ot_env1%line_search_count == 3) update = .TRUE.
+            ELSE
+               IF (qs_ot_env1%line_search_count == 2) update = .TRUE.
+            END IF
          CASE ("3PNT")
             IF (qs_ot_env1%line_search_count == 3) update = .TRUE.
          CASE ("GOLD", "ADPT")
