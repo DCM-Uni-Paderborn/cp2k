@@ -218,11 +218,17 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_im => NULL()
 
       ! third part of the variables, if we need to optimize orbital energies
-      REAL(KIND=dp) :: ener_x_trust_radius = -1.0_dp
+      REAL(KIND=dp) :: ener_x_trust_radius = -1.0_dp, ener_x_trust_edge_window = -1.0_dp
+      REAL(KIND=dp) :: ener_x_trust_mu = 0.0_dp, ener_x_trust_sigma = 0.0_dp
+      REAL(KIND=dp) :: ener_x_trust_frac_weight = 0.0_dp, ener_x_trust_entropy = 0.0_dp
+      REAL(KIND=dp) :: ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
+      REAL(KIND=dp) :: ener_x_step_max = 0.0_dp, ener_x_trusted_step_max = 0.0_dp
+      REAL(KIND=dp) :: ener_x_trust_scale = 1.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx_old => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:, :) :: ener_h_e => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:, :) :: ener_h_x => NULL()
    END TYPE qs_ot_type
@@ -482,6 +488,17 @@ CONTAINS
       END IF
       IF (qs_ot_env%settings%do_ener) THEN
          qs_ot_env%ener_gx(:) = 0.0_dp
+         qs_ot_env%ener_x_trust_radius = -1.0_dp
+         qs_ot_env%ener_x_trust_edge_window = -1.0_dp
+         qs_ot_env%ener_x_trust_mu = 0.0_dp
+         qs_ot_env%ener_x_trust_sigma = 0.0_dp
+         qs_ot_env%ener_x_trust_frac_weight = 0.0_dp
+         qs_ot_env%ener_x_trust_entropy = 0.0_dp
+         qs_ot_env%ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
+         qs_ot_env%ener_x_step_max = 0.0_dp
+         qs_ot_env%ener_x_trusted_step_max = 0.0_dp
+         qs_ot_env%ener_x_trust_scale = 1.0_dp
+         IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
          IF (qs_ot_env%use_dx) &
             qs_ot_env%ener_dx(:) = 0.0_dp
          IF (qs_ot_env%use_gx_old) &
@@ -822,6 +839,8 @@ CONTAINS
       IF (qs_ot_env%settings%do_ener) THEN
          ncoef = k
          ALLOCATE (qs_ot_env%ener_x(ncoef))
+         ALLOCATE (qs_ot_env%ener_x_trust_weight(ncoef))
+         qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
 
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             ALLOCATE (qs_ot_env%ener_h_e(m_diis, ncoef))
@@ -944,6 +963,7 @@ CONTAINS
 
       IF (qs_ot_env%settings%do_ener) THEN
          IF (ASSOCIATED(qs_ot_env%ener_x)) DEALLOCATE (qs_ot_env%ener_x)
+         IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) DEALLOCATE (qs_ot_env%ener_x_trust_weight)
          IF (ASSOCIATED(qs_ot_env%ener_gx)) DEALLOCATE (qs_ot_env%ener_gx)
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)

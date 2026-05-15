@@ -160,6 +160,14 @@ CONTAINS
          END DO
       END IF
 
+      IF (do_ener) THEN
+         DO ispin = 1, nspin
+            qs_ot_env(ispin)%ener_x_step_max = 0.0_dp
+            qs_ot_env(ispin)%ener_x_trusted_step_max = 0.0_dp
+            qs_ot_env(ispin)%ener_x_trust_scale = 1.0_dp
+         END DO
+      END IF
+
       SELECT CASE (qs_ot_env(1)%settings%OT_METHOD)
       CASE ("CG")
          IF (current_point_is_fine(qs_ot_env)) THEN
@@ -188,6 +196,8 @@ CONTAINS
       CASE DEFAULT
          CPABORT("OT_METHOD NYI")
       END SELECT
+
+      IF (do_ener) CALL print_energy_step_diagnostic(qs_ot_env)
 
       CALL timestop(handle)
 
@@ -367,19 +377,108 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: alpha
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: direction
 
-      REAL(KIND=dp)                                      :: max_step, step_scale
+      INTEGER                                            :: i, n
+      LOGICAL                                            :: has_response_trust
+      REAL(KIND=dp)                                      :: max_projected_step, raw_step_max, response_weight, &
+                                                            step_scale, step_shift, trusted_step_max
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: limited_step, raw_step
 
-      IF (SIZE(direction) == 0) RETURN
+      n = SIZE(direction)
+      IF (n == 0) RETURN
 
+      ALLOCATE (raw_step(n), limited_step(n))
+      raw_step(:) = alpha*direction(:)
+      limited_step(:) = raw_step(:)
+      raw_step_max = MAXVAL(ABS(raw_step))
+      trusted_step_max = raw_step_max
       step_scale = 1.0_dp
+
       IF (qs_ot_env%ener_x_trust_radius > 0.0_dp) THEN
-         max_step = ABS(alpha)*MAXVAL(ABS(direction))
-         IF (max_step > qs_ot_env%ener_x_trust_radius) &
-            step_scale = qs_ot_env%ener_x_trust_radius/max_step
+         has_response_trust = .FALSE.
+         IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) &
+            has_response_trust = SIZE(qs_ot_env%ener_x_trust_weight) == n
+
+         IF (has_response_trust) THEN
+            response_weight = 0.0_dp
+            step_shift = 0.0_dp
+            DO i = 1, n
+               IF (qs_ot_env%ener_x_trust_weight(i) > 0.0_dp) THEN
+                  response_weight = response_weight + qs_ot_env%ener_x_trust_weight(i)
+                  step_shift = step_shift + qs_ot_env%ener_x_trust_weight(i)*raw_step(i)
+               END IF
+            END DO
+
+            IF (response_weight > EPSILON(response_weight)) THEN
+               step_shift = step_shift/response_weight
+               max_projected_step = 0.0_dp
+               DO i = 1, n
+                  IF (qs_ot_env%ener_x_trust_weight(i) > 0.0_dp) &
+                     max_projected_step = MAX(max_projected_step, ABS(raw_step(i) - step_shift))
+               END DO
+               IF (max_projected_step > qs_ot_env%ener_x_trust_radius) &
+                  step_scale = qs_ot_env%ener_x_trust_radius/max_projected_step
+               DO i = 1, n
+                  IF (qs_ot_env%ener_x_trust_weight(i) > 0.0_dp) &
+                     limited_step(i) = step_scale*(raw_step(i) - step_shift)
+               END DO
+            END IF
+         END IF
+
+         DO i = 1, n
+            IF (ABS(limited_step(i)) > qs_ot_env%ener_x_trust_radius) &
+               limited_step(i) = SIGN(qs_ot_env%ener_x_trust_radius, limited_step(i))
+         END DO
+         trusted_step_max = MAXVAL(ABS(limited_step))
+         IF (raw_step_max > EPSILON(raw_step_max)) step_scale = trusted_step_max/raw_step_max
       END IF
-      qs_ot_env%ener_x = qs_ot_env%ener_x + step_scale*alpha*direction
+      qs_ot_env%ener_x = qs_ot_env%ener_x + limited_step
+      qs_ot_env%ener_x_step_max = raw_step_max
+      qs_ot_env%ener_x_trusted_step_max = trusted_step_max
+      qs_ot_env%ener_x_trust_scale = MIN(qs_ot_env%ener_x_trust_scale, step_scale)
+
+      DEALLOCATE (raw_step, limited_step)
 
    END SUBROUTINE take_energy_step
+
+! **************************************************************************************************
+!> \brief high-print diagnostic for auxiliary-energy trust-region steps
+!> \param qs_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE print_energy_step_diagnostic(qs_ot_env)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+
+      INTEGER                                            :: ispin
+      REAL(KIND=dp)                                      :: entropy, frac_weight, min_abs_eps_mu, &
+                                                            raw_step_max, scale_min, trusted_step_max
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level < high_print_level) RETURN
+
+      raw_step_max = 0.0_dp
+      trusted_step_max = 0.0_dp
+      scale_min = 1.0_dp
+      entropy = 0.0_dp
+      frac_weight = 0.0_dp
+      min_abs_eps_mu = HUGE(1.0_dp)
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (qs_ot_env(ispin)%ener_x_trust_radius <= 0.0_dp) CYCLE
+         raw_step_max = MAX(raw_step_max, qs_ot_env(ispin)%ener_x_step_max)
+         trusted_step_max = MAX(trusted_step_max, qs_ot_env(ispin)%ener_x_trusted_step_max)
+         scale_min = MIN(scale_min, qs_ot_env(ispin)%ener_x_trust_scale)
+         entropy = entropy + qs_ot_env(ispin)%ener_x_trust_entropy
+         frac_weight = frac_weight + qs_ot_env(ispin)%ener_x_trust_frac_weight
+         min_abs_eps_mu = MIN(min_abs_eps_mu, qs_ot_env(ispin)%ener_x_trust_min_abs_eps_mu)
+      END DO
+
+      IF (raw_step_max > 0.0_dp .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
+            " OT ener_x step raw kept scale ds kTS frac min_abs ls:", &
+            raw_step_max, trusted_step_max, scale_min, qs_ot_env(1)%ds_min, entropy, &
+            frac_weight, min_abs_eps_mu, qs_ot_env(1)%line_search_count
+      END IF
+
+   END SUBROUTINE print_energy_step_diagnostic
 
 ! implements a golden ratio search as a robust way of minimizing
 ! **************************************************************************************************

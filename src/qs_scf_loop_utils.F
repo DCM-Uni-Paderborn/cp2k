@@ -514,7 +514,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
-      REAL(KIND=dp)                                      :: ener_nondiag, energy_trust_radius
+      REAL(KIND=dp)                                      :: ener_nondiag
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
@@ -673,16 +673,8 @@ CONTAINS
 
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                      kp_range, wkp, para_env_inter_kp, scf_control%smear)
-
-      energy_trust_radius = -1.0_dp
-      IF (local_ot_env(1)%settings%do_ener .AND. &
-          local_ot_env(1)%settings%occupation_preconditioner .AND. &
-          scf_control%smear%do_smear .AND. scf_control%smear%method == smear_fermi_dirac) THEN
-         energy_trust_radius = 4.0_dp*scf_control%smear%electronic_temperature
-      END IF
-      DO local_channel = 1, nlocal_channels
-         local_ot_env(local_channel)%ener_x_trust_radius = energy_trust_radius
-      END DO
+      CALL qs_scf_loop_prepare_ot_kp_energy_trust(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                  wkp, scf_control%smear)
 
       local_ot_env(1)%etotal = energy%total + ener_nondiag
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
@@ -818,6 +810,98 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_scf_loop_print_ot_kp_smearing
+
+! **************************************************************************************************
+!> \brief prepare per-channel Fermi-window trust data for k-point OT energy variables
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param wkp ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_trust(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                     wkp, smear)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+
+      REAL(KIND=dp), PARAMETER                           :: edge_window_factor = 8.0_dp, &
+                                                            partial_tol = 1.0E-8_dp, &
+                                                            trust_radius_factor = 4.0_dp
+
+      INTEGER                                            :: ikpoint, imo, ispin, local_channel, &
+                                                            local_kpoint, nmo
+      LOGICAL                                            :: active, has_trust_weight
+      REAL(KIND=dp)                                      :: edge_window, fi_norm, frac_weight, gvalue, &
+                                                            maxocc, min_abs_eps_mu, mu, occ_tail, sigma, &
+                                                            trust_radius
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      DO local_channel = 1, SIZE(local_ot_env)
+         local_ot_env(local_channel)%ener_x_trust_radius = -1.0_dp
+         local_ot_env(local_channel)%ener_x_trust_edge_window = -1.0_dp
+         local_ot_env(local_channel)%ener_x_trust_mu = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trust_sigma = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trust_frac_weight = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trust_entropy = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
+         local_ot_env(local_channel)%ener_x_step_max = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trusted_step_max = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trust_scale = 1.0_dp
+         IF (ASSOCIATED(local_ot_env(local_channel)%ener_x_trust_weight)) &
+            local_ot_env(local_channel)%ener_x_trust_weight(:) = 0.0_dp
+      END DO
+
+      IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
+      IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
+      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+
+      sigma = smear%electronic_temperature
+      IF (sigma <= 1.0E-14_dp) RETURN
+      trust_radius = trust_radius_factor*sigma
+      edge_window = edge_window_factor*sigma
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                            occupation_numbers=occupation_numbers, mu=mu)
+            has_trust_weight = .FALSE.
+            IF (ASSOCIATED(local_ot_env(local_channel)%ener_x_trust_weight)) &
+               has_trust_weight = SIZE(local_ot_env(local_channel)%ener_x_trust_weight) >= nmo
+            local_ot_env(local_channel)%ener_x_trust_radius = trust_radius
+            local_ot_env(local_channel)%ener_x_trust_edge_window = edge_window
+            local_ot_env(local_channel)%ener_x_trust_mu = mu
+            local_ot_env(local_channel)%ener_x_trust_sigma = sigma
+            local_ot_env(local_channel)%ener_x_trust_entropy = kp%mos(1, ispin)%kTS
+            frac_weight = 0.0_dp
+            min_abs_eps_mu = HUGE(1.0_dp)
+
+            DO imo = 1, nmo
+               occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
+               frac_weight = frac_weight + wkp(ikpoint)*occ_tail
+               min_abs_eps_mu = MIN(min_abs_eps_mu, ABS(eigenvalues(imo) - mu))
+               active = occ_tail > partial_tol*MAX(maxocc, 1.0_dp) .OR. &
+                        ABS(eigenvalues(imo) - mu) < edge_window
+               IF (active .AND. has_trust_weight) THEN
+                  fi_norm = occupation_numbers(imo)/MAX(maxocc, EPSILON(maxocc))
+                  gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
+                  local_ot_env(local_channel)%ener_x_trust_weight(imo) = wkp(ikpoint)*MAX(gvalue, 0.0_dp)
+               END IF
+            END DO
+            local_ot_env(local_channel)%ener_x_trust_frac_weight = frac_weight
+            local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = min_abs_eps_mu
+         END DO
+      END DO
+
+   END SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_trust
 
 ! **************************************************************************************************
 !> \brief prepare complex rotation and band-energy gradients for one local k-point OT channel
