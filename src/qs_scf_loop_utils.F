@@ -12,8 +12,9 @@ MODULE qs_scf_loop_utils
                                               hairy_probes_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
-        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type, &
-        dbcsr_type_antisymmetric, dbcsr_type_symmetric
+        dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
+        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_p_type, dbcsr_release, &
+        dbcsr_scale, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
    USE cp_dbcsr_contrib,                ONLY: dbcsr_get_diag,&
                                               dbcsr_scale_by_vector
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
@@ -848,11 +849,12 @@ CONTAINS
                                                             local_kpoint, ngroups, nmo
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
-      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, sigma, v
+      REAL(KIND=dp)                                      :: gvalue, maxocc, mu, sigma, v
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum, precond_count, &
                                                             precond_shift, precond_sum
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       LOGICAL                                            :: active_preconditioner
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: schur_group_done
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
@@ -860,12 +862,13 @@ CONTAINS
       ngroups = 1
       IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
       ALLOCATE (gsum(ngroups), gdotv(ngroups), precond_count(ngroups), &
-                precond_shift(ngroups), precond_sum(ngroups))
+                precond_shift(ngroups), precond_sum(ngroups), schur_group_done(ngroups))
       gsum(:) = 0.0_dp
       gdotv(:) = 0.0_dp
       precond_count(:) = 0.0_dp
       precond_shift(:) = 0.0_dp
       precond_sum(:) = 0.0_dp
+      schur_group_done(:) = .FALSE.
       active_preconditioner = local_ot_env(1)%settings%occupation_preconditioner .AND. &
                               smear%do_smear .AND. smear%method == smear_fermi_dirac
 
@@ -924,11 +927,46 @@ CONTAINS
                ELSE
                   local_ot_env(local_channel)%ener_gx(imo) = 0.0_dp
                END IF
+            END DO
+         END DO
+      END DO
 
-               IF (active_preconditioner) THEN
-                  ! Diagonal part of the same fixed-N Mermin Hessian. The exact
-                  ! projector also has a dense constant-shift null mode, removed
-                  ! below after summing over all irreducible k-points.
+      IF (active_preconditioner) THEN
+         CALL precondition_kpoint_ot_schur(schur_group_done)
+         CALL precondition_kpoint_ot_energy_diagonal(schur_group_done)
+      END IF
+
+      DEALLOCATE (gsum, gdotv, precond_count, precond_shift, precond_sum, schur_group_done)
+
+      CPASSERT(kp_range(2) - kp_range(1) + 1 == SIZE(kpoints%kp_env))
+
+   CONTAINS
+
+      SUBROUTINE precondition_kpoint_ot_energy_diagonal(skip_group)
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: skip_group
+
+      INTEGER                                            :: group, ikpoint, imo, ispin, &
+                                                            local_channel, local_kpoint, nmo
+      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+         precond_count(:) = 0.0_dp
+         precond_shift(:) = 0.0_dp
+         precond_sum(:) = 0.0_dp
+
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (skip_group(group)) CYCLE
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                               occupation_numbers=occupation_numbers, mu=mu)
+               DO imo = 1, nmo
+                  gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                                                sigma, maxocc, smear%method)
                   curvature = wkp(ikpoint)*gvalue
                   IF (curvature > EPSILON(curvature)) THEN
                      local_ot_env(local_channel)%ener_gx(imo) = &
@@ -938,16 +976,14 @@ CONTAINS
                   ELSE
                      local_ot_env(local_channel)%ener_gx(imo) = 0.0_dp
                   END IF
-               END IF
+               END DO
             END DO
          END DO
-      END DO
 
-      IF (active_preconditioner) THEN
          CALL para_env_inter_kp%sum(precond_sum)
          CALL para_env_inter_kp%sum(precond_count)
-         precond_shift(:) = 0.0_dp
          DO group = 1, ngroups
+            IF (skip_group(group)) CYCLE
             IF (precond_count(group) > 0.0_dp) precond_shift(group) = precond_sum(group)/precond_count(group)
          END DO
 
@@ -956,6 +992,7 @@ CONTAINS
             ikpoint = kp%nkpoint
             DO ispin = 1, nspin_ot
                group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (skip_group(group)) CYCLE
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
                                occupation_numbers=occupation_numbers, mu=mu)
@@ -969,13 +1006,339 @@ CONTAINS
                END DO
             END DO
          END DO
-      END IF
+      END SUBROUTINE precondition_kpoint_ot_energy_diagonal
 
-      DEALLOCATE (gsum, gdotv, precond_count, precond_shift, precond_sum)
+      SUBROUTINE precondition_kpoint_ot_schur(group_done)
+      LOGICAL, DIMENSION(:), INTENT(OUT)                 :: group_done
 
-      CPASSERT(kp_range(2) - kp_range(1) + 1 == SIZE(kpoints%kp_env))
+      INTEGER                                            :: group
 
-   CONTAINS
+         group_done(:) = .FALSE.
+         IF (.NOT. local_ot_env(1)%settings%do_rotation) RETURN
+         DO group = 1, ngroups
+            CALL precondition_kpoint_ot_schur_group(group, group_done(group))
+         END DO
+      END SUBROUTINE precondition_kpoint_ot_schur
+
+      SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done)
+      INTEGER, INTENT(IN)                                :: target_group
+      LOGICAL, INTENT(OUT)                               :: group_done
+
+      INTEGER, PARAMETER                                 :: max_schur_rot = 2000
+      REAL(KIND=dp), PARAMETER :: max_norm_ratio = 1.0E6_dp, rotation_schur_fraction = 0.0125_dp
+
+      INTEGER                                            :: group, ie, ikpoint, imo, info, ispin, &
+                                                            ivar, jmo, local_channel, &
+                                                            local_kpoint, nchannels, ne, nmo, &
+                                                            nrot, r, s
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
+                                                            var_channel, var_ei, var_ej, var_i, &
+                                                            var_j, var_kind
+      LOGICAL                                            :: failed
+      REAL(KIND=dp) :: curvature, dense_term, diag_shift, gdotp, gnorm, gvalue, maxocc, mu, normp, &
+         occ_diff, projected_term, rx_shift, rx_weight, z_shift, z_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: bare, coeff_i, coeff_j, curv, grad_e, &
+                                                            grad_rot, rhs, rtd, rx_e, sol, z_e
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, schur
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+         ! The rotation Hessian is still approximate for finite complex REF steps.
+         ! Keep the Schur rotation channel damped while taking the dense fixed-N
+         ! energy response from the coupled block.
+
+         group_done = .FALSE.
+         IF (ABS(gsum(target_group)) <= EPSILON(gsum(target_group))) RETURN
+
+         nchannels = SIZE(local_ot_env)
+         ALLOCATE (channel_nmo(nchannels), e_offset(nchannels))
+         channel_nmo(:) = 0
+         e_offset(:) = 0
+
+         ne = 0
+         nrot = 0
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (group /= target_group) CYCLE
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), nmo=nmo)
+               e_offset(local_channel) = ne + 1
+               channel_nmo(local_channel) = nmo
+               ne = ne + nmo
+               nrot = nrot + nmo*(nmo - 1)
+            END DO
+         END DO
+
+         IF (ne == 0 .OR. nrot == 0 .OR. nrot > max_schur_rot) THEN
+            DEALLOCATE (channel_nmo, e_offset)
+            RETURN
+         END IF
+
+         ALLOCATE (curv(ne), grad_e(ne), z_e(ne), rx_e(ne))
+         ALLOCATE (bare(nrot), coeff_i(nrot), coeff_j(nrot), grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
+         ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
+         ALLOCATE (schur(nrot, nrot), ipiv(nrot))
+
+         curv(:) = 0.0_dp
+         grad_e(:) = 0.0_dp
+         z_e(:) = 0.0_dp
+         rx_e(:) = 0.0_dp
+         bare(:) = curvature_floor
+         coeff_i(:) = 0.0_dp
+         coeff_j(:) = 0.0_dp
+         grad_rot(:) = 0.0_dp
+         rhs(:) = 0.0_dp
+         rtd(:) = 0.0_dp
+         sol(:) = 0.0_dp
+         failed = .FALSE.
+         ivar = 0
+
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (group /= target_group) CYCLE
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                               occupation_numbers=occupation_numbers, mu=mu)
+               ALLOCATE (h_re(nmo, nmo), h_im(nmo, nmo), grad_re(nmo, nmo), grad_im(nmo, nmo))
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc, h_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc_im, h_im)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx, grad_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx_im, grad_im)
+               CALL local_ot_env(local_channel)%para_env%sum(h_re)
+               CALL local_ot_env(local_channel)%para_env%sum(h_im)
+               CALL local_ot_env(local_channel)%para_env%sum(grad_re)
+               CALL local_ot_env(local_channel)%para_env%sum(grad_im)
+
+               DO imo = 1, nmo
+                  ie = e_offset(local_channel) + imo - 1
+                  gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                                                sigma, maxocc, smear%method)
+                  curv(ie) = wkp(ikpoint)*gvalue
+                  grad_e(ie) = local_ot_env(local_channel)%ener_gx(imo)
+               END DO
+
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     occ_diff = occupation_numbers(imo) - occupation_numbers(jmo)
+                     curvature = 4.0_dp*wkp(ikpoint)*occ_diff*(h_re(jmo, jmo) - h_re(imo, imo))
+                     curvature = MAX(ABS(curvature), curvature_floor)
+
+                     ivar = ivar + 1
+                     var_channel(ivar) = local_channel
+                     var_i(ivar) = imo
+                     var_j(ivar) = jmo
+                     var_kind(ivar) = 1
+                     var_ei(ivar) = e_offset(local_channel) + imo - 1
+                     var_ej(ivar) = e_offset(local_channel) + jmo - 1
+                     coeff_i(ivar) = -2.0_dp*h_re(imo, jmo)
+                     coeff_j(ivar) = 2.0_dp*h_re(imo, jmo)
+                     bare(ivar) = curvature
+                     grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
+
+                     ivar = ivar + 1
+                     var_channel(ivar) = local_channel
+                     var_i(ivar) = imo
+                     var_j(ivar) = jmo
+                     var_kind(ivar) = 2
+                     var_ei(ivar) = e_offset(local_channel) + imo - 1
+                     var_ej(ivar) = e_offset(local_channel) + jmo - 1
+                     coeff_i(ivar) = -2.0_dp*h_im(imo, jmo)
+                     coeff_j(ivar) = 2.0_dp*h_im(imo, jmo)
+                     bare(ivar) = curvature
+                     grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
+                  END DO
+               END DO
+               DEALLOCATE (h_re, h_im, grad_re, grad_im)
+            END DO
+         END DO
+
+         CPASSERT(ivar == nrot)
+
+         z_shift = 0.0_dp
+         z_weight = 0.0_dp
+         DO ie = 1, ne
+            IF (curv(ie) > EPSILON(curv(ie))) THEN
+               z_e(ie) = grad_e(ie)/MAX(curv(ie), curvature_floor)
+               z_shift = z_shift + curv(ie)*z_e(ie)
+               z_weight = z_weight + curv(ie)
+            END IF
+         END DO
+         CALL para_env_inter_kp%sum(z_shift)
+         CALL para_env_inter_kp%sum(z_weight)
+         IF (z_weight > EPSILON(z_weight)) z_e(:) = z_e(:) - z_shift/z_weight
+
+         schur(:, :) = 0.0_dp
+         DO r = 1, nrot
+            rtd(r) = curv(var_ei(r))*coeff_i(r) + curv(var_ej(r))*coeff_j(r)
+            rhs(r) = grad_rot(r) + coeff_i(r)*grad_e(var_ei(r)) + coeff_j(r)*grad_e(var_ej(r))
+            schur(r, r) = bare(r)
+         END DO
+
+         DO s = 1, nrot
+            DO r = 1, nrot
+               dense_term = 0.0_dp
+               IF (var_ei(r) == var_ei(s)) dense_term = dense_term + curv(var_ei(r))*coeff_i(r)*coeff_i(s)
+               IF (var_ei(r) == var_ej(s)) dense_term = dense_term + curv(var_ei(r))*coeff_i(r)*coeff_j(s)
+               IF (var_ej(r) == var_ei(s)) dense_term = dense_term + curv(var_ej(r))*coeff_j(r)*coeff_i(s)
+               IF (var_ej(r) == var_ej(s)) dense_term = dense_term + curv(var_ej(r))*coeff_j(r)*coeff_j(s)
+               projected_term = dense_term - rtd(r)*rtd(s)/gsum(target_group)
+               schur(r, s) = schur(r, s) - projected_term
+            END DO
+         END DO
+         DO r = 1, nrot
+            IF (schur(r, r) < curvature_floor) THEN
+               diag_shift = curvature_floor - schur(r, r)
+               schur(r, r) = schur(r, r) + diag_shift
+            END IF
+         END DO
+
+         sol(:) = rhs(:)
+         CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
+         IF (info /= 0) failed = .TRUE.
+         IF (.NOT. failed) &
+            sol(:) = rotation_schur_fraction*sol(:) + (1.0_dp - rotation_schur_fraction)*0.5_dp*grad_rot(:)
+
+         IF (.NOT. failed) THEN
+            rx_e(:) = 0.0_dp
+            DO r = 1, nrot
+               rx_e(var_ei(r)) = rx_e(var_ei(r)) + coeff_i(r)*sol(r)
+               rx_e(var_ej(r)) = rx_e(var_ej(r)) + coeff_j(r)*sol(r)
+            END DO
+            rx_shift = 0.0_dp
+            rx_weight = 0.0_dp
+            DO ie = 1, ne
+               rx_shift = rx_shift + curv(ie)*rx_e(ie)
+               rx_weight = rx_weight + curv(ie)
+            END DO
+            CALL para_env_inter_kp%sum(rx_shift)
+            CALL para_env_inter_kp%sum(rx_weight)
+            IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
+            z_e(:) = z_e(:) + rx_e(:)
+
+            gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
+            gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
+            normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(sol, sol)
+            IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) failed = .TRUE.
+            IF (.NOT. failed .AND. normp > max_norm_ratio*MAX(gnorm, EPSILON(1.0_dp))) failed = .TRUE.
+         END IF
+
+         IF (.NOT. failed) THEN
+            DO local_kpoint = 1, SIZE(kpoints%kp_env)
+               kp => kpoints%kp_env(local_kpoint)%kpoint_env
+               ikpoint = kp%nkpoint
+               DO ispin = 1, nspin_ot
+                  group = MERGE(ispin, 1, ngroups == nspin_ot)
+                  IF (group /= target_group) CYCLE
+                  local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+                  nmo = channel_nmo(local_channel)
+                  DO imo = 1, nmo
+                     ie = e_offset(local_channel) + imo - 1
+                     local_ot_env(local_channel)%ener_gx(imo) = z_e(ie)
+                  END DO
+               END DO
+            END DO
+
+            DO local_channel = 1, nchannels
+               nmo = channel_nmo(local_channel)
+               IF (nmo <= 0) CYCLE
+               ALLOCATE (grad_re(nmo, nmo), grad_im(nmo, nmo))
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx, grad_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx_im, grad_im)
+               CALL local_ot_env(local_channel)%para_env%sum(grad_re)
+               CALL local_ot_env(local_channel)%para_env%sum(grad_im)
+               DO r = 1, nrot
+                  IF (var_channel(r) /= local_channel) CYCLE
+                  imo = var_i(r)
+                  jmo = var_j(r)
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     grad_re(imo, jmo) = sol(r)
+                     grad_re(jmo, imo) = -sol(r)
+                  CASE (2)
+                     grad_im(imo, jmo) = sol(r)
+                     grad_im(jmo, imo) = sol(r)
+                  END SELECT
+               END DO
+               CALL dense_to_dbcsr_square(local_ot_env(local_channel)%rot_mat_gx, grad_re)
+               CALL dense_to_dbcsr_square(local_ot_env(local_channel)%rot_mat_gx_im, grad_im)
+               DEALLOCATE (grad_re, grad_im)
+            END DO
+            group_done = .TRUE.
+         END IF
+
+         DEALLOCATE (curv, grad_e, z_e, rx_e)
+         DEALLOCATE (bare, coeff_i, coeff_j, grad_rot, rhs, rtd, sol)
+         DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
+         DEALLOCATE (schur, ipiv, channel_nmo, e_offset)
+      END SUBROUTINE precondition_kpoint_ot_schur_group
+
+      SUBROUTINE dbcsr_square_to_dense(matrix, dense)
+      TYPE(dbcsr_type), POINTER                          :: matrix
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: dense
+
+      INTEGER                                            :: bcol, brow, i, ig, j, jg
+      INTEGER, DIMENSION(:), POINTER                     :: col_blk_size, row_blk_size
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block
+      TYPE(dbcsr_iterator_type)                          :: iter
+
+         dense(:, :) = 0.0_dp
+         NULLIFY (row_blk_size, col_blk_size)
+         CALL dbcsr_get_info(matrix, row_blk_size=row_blk_size, col_blk_size=col_blk_size)
+         CALL dbcsr_iterator_start(iter, matrix)
+         DO WHILE (dbcsr_iterator_blocks_left(iter))
+            CALL dbcsr_iterator_next_block(iter, brow, bcol, block)
+            DO j = 1, SIZE(block, 2)
+               jg = dbcsr_block_offset(col_blk_size, bcol) + j - 1
+               IF (jg < 1 .OR. jg > SIZE(dense, 2)) CYCLE
+               DO i = 1, SIZE(block, 1)
+                  ig = dbcsr_block_offset(row_blk_size, brow) + i - 1
+                  IF (ig >= 1 .AND. ig <= SIZE(dense, 1)) dense(ig, jg) = block(i, j)
+               END DO
+            END DO
+         END DO
+         CALL dbcsr_iterator_stop(iter)
+      END SUBROUTINE dbcsr_square_to_dense
+
+      SUBROUTINE dense_to_dbcsr_square(matrix, dense)
+      TYPE(dbcsr_type), POINTER                          :: matrix
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: dense
+
+      INTEGER                                            :: bcol, brow, i, ig, j, jg
+      INTEGER, DIMENSION(:), POINTER                     :: col_blk_size, row_blk_size
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block
+      TYPE(dbcsr_iterator_type)                          :: iter
+
+         NULLIFY (row_blk_size, col_blk_size)
+         CALL dbcsr_get_info(matrix, row_blk_size=row_blk_size, col_blk_size=col_blk_size)
+         CALL dbcsr_iterator_start(iter, matrix)
+         DO WHILE (dbcsr_iterator_blocks_left(iter))
+            CALL dbcsr_iterator_next_block(iter, brow, bcol, block)
+            DO j = 1, SIZE(block, 2)
+               jg = dbcsr_block_offset(col_blk_size, bcol) + j - 1
+               DO i = 1, SIZE(block, 1)
+                  ig = dbcsr_block_offset(row_blk_size, brow) + i - 1
+                  IF (ig >= 1 .AND. ig <= SIZE(dense, 1) .AND. jg >= 1 .AND. jg <= SIZE(dense, 2)) &
+                     block(i, j) = dense(ig, jg)
+               END DO
+            END DO
+         END DO
+         CALL dbcsr_iterator_stop(iter)
+      END SUBROUTINE dense_to_dbcsr_square
+
+      FUNCTION dbcsr_block_offset(block_size, block_index) RESULT(offset)
+      INTEGER, DIMENSION(:), POINTER                     :: block_size
+      INTEGER, INTENT(IN)                                :: block_index
+      INTEGER                                            :: offset
+
+         offset = 1
+         IF (block_index > 1) offset = offset + SUM(block_size(1:block_index - 1))
+      END FUNCTION dbcsr_block_offset
 
       FUNCTION kpoint_ot_smearing_g(occupation, eigenvalue, mu, sigma, maxocc, method) RESULT(gvalue)
       REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, maxocc
