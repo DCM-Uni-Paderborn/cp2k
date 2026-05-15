@@ -11,9 +11,11 @@ MODULE qs_scf_loop_utils
    USE cp_control_types,                ONLY: dft_control_type,&
                                               hairy_probes_type
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_p_type, &
-        dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
-   USE cp_dbcsr_contrib,                ONLY: dbcsr_scale_by_vector
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
+        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_set, dbcsr_transposed, dbcsr_type, &
+        dbcsr_type_antisymmetric, dbcsr_type_symmetric
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_get_diag,&
+                                              dbcsr_scale_by_vector
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
@@ -23,6 +25,10 @@ MODULE qs_scf_loop_utils
                                               cp_fm_release,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_to_string
+   USE input_constants,                 ONLY: smear_fermi_dirac,&
+                                              smear_gaussian,&
+                                              smear_mp,&
+                                              smear_mv
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp
@@ -33,6 +39,9 @@ MODULE qs_scf_loop_utils
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_env_type,&
                                               kpoint_type
+   USE mathconstants,                   ONLY: rootpi,&
+                                              sqrt2,&
+                                              sqrthalf
    USE message_passing,                 ONLY: mp_para_env_type
    USE qs_density_matrices,             ONLY: calculate_density_matrix
    USE qs_density_mixing_types,         ONLY: broyden_mixing_nr,&
@@ -505,6 +514,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(qs_energy_type), POINTER                      :: energy
@@ -514,13 +524,14 @@ CONTAINS
 
       NULLIFY (cell_to_index, dft_control, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
                matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, mo_coeff, &
-               mo_coeff_im, occupation_numbers, sab_nl, wkp, xkp)
+               mo_coeff_im, occupation_numbers, para_env_inter_kp, sab_nl, wkp, xkp)
       added_mos_auto_grow = .FALSE.
 
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints)
       CALL get_kpoint_info(kpoints, nkp=nkpoint, xkp=xkp, wkp=wkp, use_real_wfn=use_real_wfn, &
-                           kp_range=kp_range, cell_to_index=cell_to_index, sab_nl=sab_nl)
+                           kp_range=kp_range, para_env_inter_kp=para_env_inter_kp, &
+                           cell_to_index=cell_to_index, sab_nl=sab_nl)
       CPASSERT(ASSOCIATED(sab_nl))
       CPASSERT(ASSOCIATED(matrix_ks))
       CPASSERT(ASSOCIATED(matrix_s))
@@ -604,8 +615,17 @@ CONTAINS
             CALL copy_fm_to_dbcsr(hc_re, matrix_hc(local_channel)%matrix)
             CALL copy_fm_to_dbcsr(hc_im, matrix_hc_im(local_channel)%matrix)
 
+            CALL qs_scf_loop_prepare_ot_kp_channel_gradient(local_ot_env(local_channel), &
+                                                            matrix_hc(local_channel)%matrix, &
+                                                            matrix_hc_im(local_channel)%matrix, &
+                                                            occupation_numbers, wkp(ikpoint))
+
             ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
-            orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*occupation_numbers(:)
+            IF (local_ot_env(local_channel)%settings%occupation_preconditioner) THEN
+               orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)
+            ELSE
+               orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*occupation_numbers(:)
+            END IF
             CALL dbcsr_scale_by_vector(matrix_hc(local_channel)%matrix, &
                                        alpha=orbital_scaling_factor, side='right')
             CALL dbcsr_scale_by_vector(matrix_hc_im(local_channel)%matrix, &
@@ -616,6 +636,9 @@ CONTAINS
             CALL cp_fm_release(hc_im)
          END DO
       END DO
+
+      CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear)
 
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
       scf_env%iter_delta = local_ot_env(1)%delta
@@ -675,6 +698,234 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_loop_do_ot_kp
+
+! **************************************************************************************************
+!> \brief prepare complex rotation and band-energy gradients for one local k-point OT channel
+!> \param qs_ot_env ...
+!> \param matrix_hc ...
+!> \param matrix_hc_im ...
+!> \param occupation_numbers ...
+!> \param kpoint_weight ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_prepare_ot_kp_channel_gradient(qs_ot_env, matrix_hc, matrix_hc_im, &
+                                                         occupation_numbers, kpoint_weight)
+
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type), POINTER                          :: matrix_hc, matrix_hc_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
+
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
+      TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, &
+                                                            tmp, tmp2
+
+      IF (.NOT. qs_ot_env%settings%do_rotation) RETURN
+
+      CPASSERT(qs_ot_env%has_complex_kpoint_state)
+      CPASSERT(ASSOCIATED(matrix_hc))
+      CPASSERT(ASSOCIATED(matrix_hc_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
+
+      c_re => qs_ot_env%matrix_x
+      c_im => qs_ot_env%matrix_x_im
+      chc_re => qs_ot_env%rot_mat_chc
+      chc_im => qs_ot_env%rot_mat_chc_im
+      tmp => qs_ot_env%buf3_k_k_nosym
+      tmp2 => qs_ot_env%buf4_k_k_nosym
+
+      ! CHC = C(k)^H * H(k)C(k), kept unoccupied for the band-energy gradient.
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
+      CALL dbcsr_add(chc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc_im, 0.0_dp, chc_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc, 0.0_dp, tmp)
+      CALL dbcsr_add(chc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      IF (qs_ot_env%settings%do_ener) THEN
+         CALL dbcsr_get_diag(chc_re, qs_ot_env%ener_gx)
+      END IF
+
+      b_re => qs_ot_env%matrix_buf1
+      b_im => qs_ot_env%buf2_k_k_nosym
+      CALL dbcsr_copy(b_re, chc_re)
+      CALL dbcsr_copy(b_im, chc_im)
+
+      ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
+      orbital_scaling_factor(:) = 2.0_dp*kpoint_weight*occupation_numbers(:)
+      CALL dbcsr_scale_by_vector(b_re, alpha=orbital_scaling_factor, side='right')
+      CALL dbcsr_scale_by_vector(b_im, alpha=orbital_scaling_factor, side='right')
+      DEALLOCATE (orbital_scaling_factor)
+
+      ! dF/dU for the complex occupied-space rotation U(k).  This mirrors the Gamma path, but keeps
+      ! the real and imaginary channels separate so a later full anti-Hermitian Frechet derivative can
+      ! use the complete payload.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, b_re, 0.0_dp, qs_ot_env%rot_mat_dedu)
+      IF (ASSOCIATED(qs_ot_env%rot_mat_u_im)) THEN
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, b_im, 0.0_dp, tmp)
+         CALL dbcsr_add(qs_ot_env%rot_mat_dedu, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, b_im, 0.0_dp, qs_ot_env%rot_mat_dedu_im)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, b_re, 0.0_dp, tmp2)
+         CALL dbcsr_add(qs_ot_env%rot_mat_dedu_im, tmp2, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+      END IF
+
+      CALL dbcsr_transposed(tmp, qs_ot_env%rot_mat_dedu, shallow_data_copy=.FALSE., &
+                            transpose_distribution=.FALSE.)
+      CALL dbcsr_copy(qs_ot_env%rot_mat_gx, tmp)
+      CALL dbcsr_add(qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_dedu, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im) .AND. ASSOCIATED(qs_ot_env%rot_mat_dedu_im)) THEN
+         CALL dbcsr_transposed(tmp2, qs_ot_env%rot_mat_dedu_im, shallow_data_copy=.FALSE., &
+                               transpose_distribution=.FALSE.)
+         CALL dbcsr_copy(qs_ot_env%rot_mat_gx_im, tmp2)
+         CALL dbcsr_add(qs_ot_env%rot_mat_gx_im, qs_ot_env%rot_mat_dedu_im, &
+                        alpha_scalar=-1.0_dp, beta_scalar=-1.0_dp)
+      END IF
+
+   END SUBROUTINE qs_scf_loop_prepare_ot_kp_channel_gradient
+
+! **************************************************************************************************
+!> \brief convert k-point band-energy derivatives to fixed-N Mermin free-energy gradients
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param kp_range ...
+!> \param wkp ...
+!> \param para_env_inter_kp ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                        kp_range, wkp, para_env_inter_kp, smear)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+
+      INTEGER                                            :: group, ikpoint, imo, ispin, local_channel, &
+                                                            local_kpoint, ngroups, nmo
+      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, sigma, v
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
+
+      ngroups = 1
+      IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
+      ALLOCATE (gsum(ngroups), gdotv(ngroups))
+      gsum(:) = 0.0_dp
+      gdotv(:) = 0.0_dp
+
+      IF (smear%do_smear) THEN
+         SELECT CASE (smear%method)
+         CASE (smear_fermi_dirac)
+            sigma = smear%electronic_temperature
+         CASE (smear_gaussian, smear_mp, smear_mv)
+            sigma = smear%smearing_width
+         CASE DEFAULT
+            sigma = 0.0_dp
+         END SELECT
+      ELSE
+         sigma = 0.0_dp
+      END IF
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                            occupation_numbers=occupation_numbers, mu=mu)
+            DO imo = 1, nmo
+               gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                                             sigma, maxocc, smear%method)
+               v = local_ot_env(local_channel)%ener_gx(imo) - eigenvalues(imo) + mu
+               gsum(group) = gsum(group) + wkp(ikpoint)*gvalue
+               gdotv(group) = gdotv(group) + wkp(ikpoint)*gvalue*v
+            END DO
+         END DO
+      END DO
+
+      CALL para_env_inter_kp%sum(gsum)
+      CALL para_env_inter_kp%sum(gdotv)
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                            occupation_numbers=occupation_numbers, mu=mu)
+            DO imo = 1, nmo
+               gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                                             sigma, maxocc, smear%method)
+               IF (ABS(gsum(group)) > EPSILON(gsum(group))) THEN
+                  v = local_ot_env(local_channel)%ener_gx(imo) - eigenvalues(imo) + mu
+                  local_ot_env(local_channel)%ener_gx(imo) = &
+                     wkp(ikpoint)*gvalue*(gdotv(group)/gsum(group) - v)
+               ELSE
+                  local_ot_env(local_channel)%ener_gx(imo) = 0.0_dp
+               END IF
+
+               IF (local_ot_env(local_channel)%settings%occupation_preconditioner .AND. &
+                   smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
+                  curvature = wkp(ikpoint)*gvalue
+                  IF (curvature > 1.0_dp) &
+                     local_ot_env(local_channel)%ener_gx(imo) = &
+                     local_ot_env(local_channel)%ener_gx(imo)/curvature
+               END IF
+            END DO
+         END DO
+      END DO
+
+      DEALLOCATE (gsum, gdotv)
+
+      CPASSERT(kp_range(2) - kp_range(1) + 1 == SIZE(kpoints%kp_env))
+
+   CONTAINS
+
+      FUNCTION kpoint_ot_smearing_g(occupation, eigenvalue, mu, sigma, maxocc, method) RESULT(gvalue)
+      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, maxocc
+      INTEGER, INTENT(IN)                                :: method
+      REAL(KIND=dp)                                      :: gvalue
+
+      REAL(KIND=dp)                                      :: expu2, expx2, fi_norm, u, x
+
+         IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) THEN
+            gvalue = 0.0_dp
+            RETURN
+         END IF
+
+         x = (eigenvalue - mu)/sigma
+         SELECT CASE (method)
+         CASE (smear_fermi_dirac)
+            fi_norm = occupation/maxocc
+            gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
+         CASE (smear_gaussian)
+            expx2 = EXP(-x*x)
+            gvalue = maxocc/(sigma*rootpi)*expx2
+         CASE (smear_mp)
+            expx2 = EXP(-x*x)
+            gvalue = maxocc*(3.0_dp - 2.0_dp*x*x)/(2.0_dp*sigma*rootpi)*expx2
+         CASE (smear_mv)
+            u = x + sqrthalf
+            expu2 = EXP(-u*u)
+            gvalue = maxocc*(2.0_dp + sqrt2*x)/(sigma*rootpi)*expu2
+         CASE DEFAULT
+            gvalue = 0.0_dp
+         END SELECT
+      END FUNCTION kpoint_ot_smearing_g
+
+   END SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_gradient
 
 ! **************************************************************************************************
 !> \brief the inner loop of scf, specific to using to the orbital transformation method

@@ -24,6 +24,7 @@ MODULE qs_ot_types
                                               dbcsr_set,&
                                               dbcsr_type,&
                                               dbcsr_type_no_symmetry
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_add_on_diag
    USE cp_dbcsr_operations,             ONLY: cp_dbcsr_m_by_n_from_row_template,&
                                               cp_dbcsr_m_by_n_from_template,&
                                               dbcsr_allocate_matrix_set,&
@@ -459,7 +460,14 @@ CONTAINS
          CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
 
       IF (qs_ot_env%settings%do_rotation) THEN
+         CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
+         CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
+         CALL dbcsr_set(qs_ot_env%rot_mat_x, 0.0_dp)
          CALL dbcsr_set(qs_ot_env%rot_mat_gx, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_u_im)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_x_im)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) &
             CALL dbcsr_set(qs_ot_env%rot_mat_gx_im, 0.0_dp)
          IF (qs_ot_env%use_dx) &
