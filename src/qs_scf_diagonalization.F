@@ -764,8 +764,14 @@ CONTAINS
             ! density matrices
             CALL kpoint_density_matrices(kpoints)
             ! density matrices in real space
-            CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
-                                          matrix_s(1, 1)%matrix, sab_nl, fmwork)
+            IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
+               CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
+                                             matrix_s(1, 1)%matrix, sab_nl, fmwork, &
+                                             qs_ot_env=scf_env%qs_ot_env)
+            ELSE
+               CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
+                                             matrix_s(1, 1)%matrix, sab_nl, fmwork)
+            END IF
          END IF
       END IF
 

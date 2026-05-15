@@ -88,6 +88,8 @@ MODULE kpoint_methods
                                               neighbor_list_iterator_p_type,&
                                               neighbor_list_iterator_release,&
                                               neighbor_list_set_p_type
+   USE qs_ot_types,                     ONLY: qs_ot_check_channel_context,&
+                                              qs_ot_type
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: Smearkp,&
                                               Smearkp2
@@ -1696,8 +1698,10 @@ CONTAINS
 !> \param fmwork  FM work matrices (kpoint group)
 !> \param for_aux_fit ...
 !> \param pmat_ext ...
+!> \param qs_ot_env ...
 ! **************************************************************************************************
-   SUBROUTINE kpoint_density_transform(kpoint, denmat, wtype, tempmat, sab_nl, fmwork, for_aux_fit, pmat_ext)
+   SUBROUTINE kpoint_density_transform(kpoint, denmat, wtype, tempmat, sab_nl, fmwork, for_aux_fit, pmat_ext, &
+                                       qs_ot_env)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(dbcsr_p_type), DIMENSION(:, :)                :: denmat
@@ -1709,6 +1713,8 @@ CONTAINS
       LOGICAL, OPTIONAL                                  :: for_aux_fit
       TYPE(cp_fm_type), DIMENSION(:, :, :), INTENT(IN), &
          OPTIONAL                                        :: pmat_ext
+      TYPE(qs_ot_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: qs_ot_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_density_transform'
 
@@ -1716,7 +1722,7 @@ CONTAINS
                                                             ispin, jr, nc, nimg, nkp, nspin
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: aux_fit, do_ext, do_symmetric, my_kpgrp, &
-                                                            real_only, reverse_phase
+                                                            ot_restricted, real_only, reverse_phase
       REAL(KIND=dp)                                      :: wkpx
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
@@ -1779,6 +1785,15 @@ CONTAINS
       nc = SIZE(kp%mos, 1)
       nimg = SIZE(denmat, 2)
       real_only = (nc == 1)
+      IF (PRESENT(qs_ot_env)) THEN
+         ot_restricted = ANY(qs_ot_env(:)%restricted)
+         CALL qs_ot_check_channel_context(qs_ot_env, nspin, &
+                                          nkpoint=nkp, &
+                                          restricted=ot_restricted, &
+                                          require_kpoint=.TRUE., &
+                                          kp_range=kpoint%kp_range, &
+                                          wkp=wkp)
+      END IF
       ! Gamma-centered even grids store atom-cell shifts in the opposite Bloch-phase convention.
       reverse_phase = kpoint%gamma_centered .AND. ANY(MOD(kpoint%nkp_grid(1:3), 2) == 0)
 

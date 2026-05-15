@@ -154,6 +154,7 @@ MODULE qs_scf
                                               ot_scf_init,&
                                               ot_scf_read_input
    USE qs_ot_types,                     ONLY: qs_ot_channel_index,&
+                                              qs_ot_check_channel_context,&
                                               qs_ot_number_of_channels,&
                                               qs_ot_set_context
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
@@ -1537,6 +1538,13 @@ CONTAINS
             END IF
          END DO
       END DO
+
+      CALL qs_ot_check_channel_context(scf_env%qs_ot_env, dft_control%nspins, &
+                                       nkpoint=nkpoint, &
+                                       restricted=dft_control%restricted, &
+                                       require_kpoint=do_kpoints, &
+                                       kp_range=kp_range, &
+                                       wkp=wkp)
 
    END SUBROUTINE allocate_qs_ot_envs
 

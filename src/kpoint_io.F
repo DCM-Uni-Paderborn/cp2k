@@ -33,7 +33,8 @@ MODULE kpoint_io
                                               cp_print_key_unit_nr
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: default_path_length,&
-                                              default_string_length
+                                              default_string_length,&
+                                              dp
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_type
    USE message_passing,                 ONLY: mp_para_env_type
@@ -44,6 +45,7 @@ MODULE kpoint_io
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE qs_mo_io,                        ONLY: wfn_restart_file_name
+   USE qs_ot_types,                     ONLY: qs_ot_check_channel_context
    USE qs_scf_types,                    ONLY: qs_scf_env_type
 #include "./base/base_uses.f90"
 
@@ -87,19 +89,36 @@ CONTAINS
          keys = ["SCF%PRINT%RESTART_HISTORY", "SCF%PRINT%RESTART        "]
 
       INTEGER                                            :: handle, ic, ikey, ires, ispin, nimages, &
-                                                            nspin
+                                                            nkp, nspin
+      INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(3)                              :: cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: ot_restricted
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: fmat
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
       logger => cp_get_default_logger()
+      NULLIFY (wkp)
 
       IF (BTEST(cp_print_key_should_output(logger%iter_info, &
                                            dft_section, keys(1)), cp_p_file) .OR. &
           BTEST(cp_print_key_should_output(logger%iter_info, &
                                            dft_section, keys(2)), cp_p_file)) THEN
+
+         nspin = SIZE(denmat, 1)
+         nimages = SIZE(denmat, 2)
+         IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
+            CALL get_kpoint_info(kpoint=kpoints, nkp=nkp, kp_range=kp_range, wkp=wkp)
+            ot_restricted = ANY(scf_env%qs_ot_env(:)%restricted)
+            CALL qs_ot_check_channel_context(scf_env%qs_ot_env, nspin, &
+                                             nkpoint=nkp, &
+                                             restricted=ot_restricted, &
+                                             require_kpoint=.TRUE., &
+                                             kp_range=kp_range, &
+                                             wkp=wkp)
+         END IF
 
          DO ikey = 1, SIZE(keys)
 
@@ -112,8 +131,6 @@ CONTAINS
 
                CALL write_kpoints_file_header(qs_kind_set, particle_set, ires)
 
-               nspin = SIZE(denmat, 1)
-               nimages = SIZE(denmat, 2)
                NULLIFY (cell_to_index)
                IF (nimages > 1) THEN
                   CALL get_kpoint_info(kpoint=kpoints, cell_to_index=cell_to_index)

@@ -54,6 +54,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_destroy
    PUBLIC  :: qs_ot_allocate
    PUBLIC  :: qs_ot_channel_index
+   PUBLIC  :: qs_ot_check_channel_context
    PUBLIC  :: qs_ot_init
    PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_settings_init
@@ -319,6 +320,76 @@ CONTAINS
       qs_ot_channel_index = (ikpoint - 1)*nspin + ispin
 
    END FUNCTION qs_ot_channel_index
+
+! **************************************************************************************************
+!> \brief validate the flat OT channel identity for spin and optional irreducible k-points
+!> \param qs_ot_env ...
+!> \param nspin ...
+!> \param nkpoint ...
+!> \param restricted ...
+!> \param require_kpoint ...
+!> \param kp_range ...
+!> \param wkp ...
+! **************************************************************************************************
+   SUBROUTINE qs_ot_check_channel_context(qs_ot_env, nspin, nkpoint, restricted, require_kpoint, &
+                                          kp_range, wkp)
+      TYPE(qs_ot_type), DIMENSION(:), INTENT(IN)         :: qs_ot_env
+      INTEGER, INTENT(IN)                                :: nspin
+      INTEGER, INTENT(IN), OPTIONAL                      :: nkpoint
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restricted, require_kpoint
+      INTEGER, DIMENSION(2), INTENT(IN), OPTIONAL        :: kp_range
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: wkp
+
+      INTEGER                                            :: expected_local_kpoint, ikpoint, ispin, &
+                                                            nkpoint_eff, nspin_eff, ot_channel
+      LOGICAL                                            :: check_kpoint_context, check_weights, &
+                                                            context_ok, restricted_eff
+      REAL(KIND=dp)                                      :: weight_tol
+
+      nkpoint_eff = 1
+      IF (PRESENT(nkpoint)) nkpoint_eff = nkpoint
+      nspin_eff = nspin
+      restricted_eff = .FALSE.
+      IF (PRESENT(restricted)) THEN
+         restricted_eff = restricted
+         IF (restricted_eff) nspin_eff = 1
+      END IF
+
+      check_kpoint_context = (nkpoint_eff > 1)
+      IF (PRESENT(require_kpoint)) check_kpoint_context = require_kpoint
+      check_weights = .FALSE.
+      IF (PRESENT(wkp)) check_weights = ASSOCIATED(wkp)
+
+      context_ok = (SIZE(qs_ot_env) == qs_ot_number_of_channels(nspin, &
+                                                                nkpoint=nkpoint_eff, &
+                                                                restricted=restricted_eff))
+      CPASSERT(context_ok)
+      DO ikpoint = 1, nkpoint_eff
+         expected_local_kpoint = 0
+         IF (PRESENT(kp_range)) THEN
+            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) &
+               expected_local_kpoint = ikpoint - kp_range(1) + 1
+         END IF
+         DO ispin = 1, nspin_eff
+            ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_eff)
+            CPASSERT(qs_ot_env(ot_channel)%spin_index == ispin)
+            IF (check_kpoint_context) THEN
+               CPASSERT(qs_ot_env(ot_channel)%has_kpoint_context)
+               CPASSERT(qs_ot_env(ot_channel)%kpoint_index == ikpoint)
+               IF (PRESENT(kp_range)) THEN
+                  context_ok = (qs_ot_env(ot_channel)%local_kpoint_index == expected_local_kpoint)
+                  CPASSERT(context_ok)
+               END IF
+               IF (check_weights) THEN
+                  weight_tol = 1000.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(wkp(ikpoint)))
+                  context_ok = (ABS(qs_ot_env(ot_channel)%kpoint_weight - wkp(ikpoint)) <= weight_tol)
+                  CPASSERT(context_ok)
+               END IF
+            END IF
+         END DO
+      END DO
+
+   END SUBROUTINE qs_ot_check_channel_context
 
 ! **************************************************************************************************
 !> \brief init matrices, needs c0 and sc0 so that c0*sc0=1
