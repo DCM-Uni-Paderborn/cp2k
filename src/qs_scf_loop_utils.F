@@ -25,7 +25,11 @@ MODULE qs_scf_loop_utils
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_release,&
                                               cp_fm_type
-   USE cp_log_handling,                 ONLY: cp_to_string
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_get_default_unit_nr,&
+                                              cp_logger_type,&
+                                              cp_to_string
+   USE cp_output_handling,              ONLY: high_print_level
    USE input_constants,                 ONLY: smear_fermi_dirac,&
                                               smear_gaussian,&
                                               smear_mp,&
@@ -697,6 +701,7 @@ CONTAINS
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
                                     added_mos_auto_grow=added_mos_auto_grow)
+      CALL qs_scf_loop_print_ot_kp_smearing(kpoints, wkp, para_env_inter_kp)
       IF (.NOT. added_mos_auto_grow) THEN
          fmwork => scf_env%scf_work1
          IF (ASSOCIATED(scf_env%p_mix_new)) THEN
@@ -730,6 +735,74 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_loop_do_ot_kp
+
+! **************************************************************************************************
+!> \brief high-print diagnostic for k-point OT smearing quality
+!> \param kpoints ...
+!> \param wkp ...
+!> \param para_env_inter_kp ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_print_ot_kp_smearing(kpoints, wkp, para_env_inter_kp)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+
+      INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo, &
+                                                            nspin
+      REAL(KIND=dp)                                      :: fractional_weight, kTS, max_partial, &
+                                                            maxocc, min_fermi_dist, mu, occ_tail, &
+                                                            weighted_electrons
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level < high_print_level) RETURN
+
+      fractional_weight = 0.0_dp
+      weighted_electrons = 0.0_dp
+      max_partial = 0.0_dp
+      min_fermi_dist = HUGE(1.0_dp)
+      kTS = 0.0_dp
+      mu = 0.0_dp
+
+      kp => kpoints%kp_env(1)%kpoint_env
+      nspin = SIZE(kp%mos, 2)
+      DO ispin = 1, nspin
+         kTS = kTS + kp%mos(1, ispin)%kTS
+         mu = mu + kp%mos(1, ispin)%mu
+      END DO
+      mu = mu/REAL(nspin, KIND=dp)
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                            occupation_numbers=occupation_numbers)
+            DO imo = 1, nmo
+               occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
+               max_partial = MAX(max_partial, occ_tail)
+               fractional_weight = fractional_weight + wkp(ikpoint)*occ_tail
+               weighted_electrons = weighted_electrons + wkp(ikpoint)*occupation_numbers(imo)
+               min_fermi_dist = MIN(min_fermi_dist, ABS(eigenvalues(imo) - kp%mos(1, ispin)%mu))
+            END DO
+         END DO
+      END DO
+
+      CALL para_env_inter_kp%sum(fractional_weight)
+      CALL para_env_inter_kp%sum(weighted_electrons)
+      CALL para_env_inter_kp%max(max_partial)
+      CALL para_env_inter_kp%min(min_fermi_dist)
+
+      IF (logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+            " OT k-point smearing kTS mu weighted_N frac_weight max_partial min_abs_eps_mu:", &
+            kTS, mu, weighted_electrons, fractional_weight, max_partial, min_fermi_dist
+      END IF
+
+   END SUBROUTINE qs_scf_loop_print_ot_kp_smearing
 
 ! **************************************************************************************************
 !> \brief prepare complex rotation and band-energy gradients for one local k-point OT channel

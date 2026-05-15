@@ -43,6 +43,7 @@ PROGRAM qs_ot_frechet_unittest
                    5.0E-8_dp, nfail)
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
+   CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
 
    IF (nfail == 0) PRINT *, "qs_ot_frechet_unittest: OK"
 
@@ -345,6 +346,192 @@ CONTAINS
       END DO
 
    END SUBROUTINE apply_sparse_block_frechet
+
+! **************************************************************************************************
+!> \brief Check the weighted fixed-N Mermin gradient used for k-point OT energy variables.
+! **************************************************************************************************
+   SUBROUTINE check_weighted_kpoint_mermin_gradient(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nkp = 2, nmo = 4
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp, maxocc = 2.0_dp, &
+                                                            nel = 5.0_dp, sigma = 0.025_dp
+
+      INTEGER                                            :: ik, imo
+      REAL(KIND=dp)                                      :: err, fd, ref
+      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, eps_m, eps_p, grad, h
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+
+      wk = [0.25_dp, 0.75_dp]
+      eps(:, 1) = [-0.20_dp, -0.060_dp, -0.005_dp, 0.080_dp]
+      eps(:, 2) = [-0.16_dp, -0.040_dp, 0.015_dp, 0.110_dp]
+      h(:, 1) = [-0.19_dp, -0.045_dp, 0.020_dp, 0.100_dp]
+      h(:, 2) = [-0.15_dp, -0.055_dp, 0.035_dp, 0.090_dp]
+
+      CALL dense_kpoint_mermin_gradient(eps, h, wk, nel, sigma, maxocc, grad)
+
+      err = 0.0_dp
+      DO ik = 1, nkp
+         DO imo = 1, nmo
+            eps_p(:, :) = eps(:, :)
+            eps_m(:, :) = eps(:, :)
+            eps_p(imo, ik) = eps_p(imo, ik) + fd_step
+            eps_m(imo, ik) = eps_m(imo, ik) - fd_step
+            fd = (dense_kpoint_mermin_value(eps_p, h, wk, nel, sigma, maxocc) - &
+                  dense_kpoint_mermin_value(eps_m, h, wk, nel, sigma, maxocc))/(2.0_dp*fd_step)
+            ref = grad(imo, ik)
+            err = MAX(err, ABS(fd - ref))
+         END DO
+      END DO
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_weighted_kpoint_mermin_gradient
+
+! **************************************************************************************************
+!> \brief Dense weighted k-point Mermin free-energy model.
+! **************************************************************************************************
+   FUNCTION dense_kpoint_mermin_value(eps, h, wk, nel, sigma, maxocc) RESULT(value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps, h
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
+      REAL(KIND=dp), INTENT(IN)                          :: nel, sigma, maxocc
+      REAL(KIND=dp)                                      :: value
+
+      INTEGER                                            :: ik
+      REAL(KIND=dp)                                      :: kTS, mu
+      REAL(KIND=dp), DIMENSION(SIZE(eps, 1), SIZE(eps, 2)) :: occ
+
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
+      value = kTS
+      DO ik = 1, SIZE(eps, 2)
+         value = value + wk(ik)*SUM(occ(:, ik)*h(:, ik))
+      END DO
+
+   END FUNCTION dense_kpoint_mermin_value
+
+! **************************************************************************************************
+!> \brief Dense weighted fixed-N Mermin gradient.
+! **************************************************************************************************
+   SUBROUTINE dense_kpoint_mermin_gradient(eps, h, wk, nel, sigma, maxocc, grad)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps, h
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
+      REAL(KIND=dp), INTENT(IN)                          :: nel, sigma, maxocc
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad
+
+      INTEGER                                            :: ik, imo
+      REAL(KIND=dp)                                      :: gdotv, gsum, gvalue, mu, kTS, v
+      REAL(KIND=dp), DIMENSION(SIZE(eps, 1), SIZE(eps, 2)) :: occ
+
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
+
+      gsum = 0.0_dp
+      gdotv = 0.0_dp
+      DO ik = 1, SIZE(eps, 2)
+         DO imo = 1, SIZE(eps, 1)
+            gvalue = maxocc*(occ(imo, ik)/maxocc)*(1.0_dp - occ(imo, ik)/maxocc)/sigma
+            v = h(imo, ik) - eps(imo, ik) + mu
+            gsum = gsum + wk(ik)*gvalue
+            gdotv = gdotv + wk(ik)*gvalue*v
+         END DO
+      END DO
+
+      grad(:, :) = 0.0_dp
+      IF (ABS(gsum) > EPSILON(gsum)) THEN
+         DO ik = 1, SIZE(eps, 2)
+            DO imo = 1, SIZE(eps, 1)
+               gvalue = maxocc*(occ(imo, ik)/maxocc)*(1.0_dp - occ(imo, ik)/maxocc)/sigma
+               v = h(imo, ik) - eps(imo, ik) + mu
+               grad(imo, ik) = wk(ik)*gvalue*(gdotv/gsum - v)
+            END DO
+         END DO
+      END IF
+
+   END SUBROUTINE dense_kpoint_mermin_gradient
+
+! **************************************************************************************************
+!> \brief Small local Fermi-Dirac k-point smearing helper for this standalone unit test.
+! **************************************************************************************************
+   SUBROUTINE dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: occ
+      REAL(KIND=dp), INTENT(OUT)                         :: mu, kTS
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
+      REAL(KIND=dp), INTENT(IN)                          :: nel, sigma, maxocc
+
+      REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0E-12_dp
+
+      INTEGER                                            :: iter
+      REAL(KIND=dp)                                      :: de, mu_max, mu_min, n_now
+
+      de = MAX(sigma*LOG((1.0_dp - epsocc)/epsocc), 0.5_dp)
+      mu_min = MINVAL(eps) - de
+      mu_max = MAXVAL(eps) + de
+      DO iter = 1, 400
+         mu = 0.5_dp*(mu_min + mu_max)
+         CALL dense_fermi_kpoint_eval(occ, n_now, kTS, eps, mu, wk, sigma, maxocc)
+         IF (ABS(n_now - nel) < nel*epsocc) EXIT
+         IF (n_now <= nel) THEN
+            mu_min = mu
+         ELSE
+            mu_max = mu
+         END IF
+      END DO
+      mu = 0.5_dp*(mu_min + mu_max)
+      CALL dense_fermi_kpoint_eval(occ, n_now, kTS, eps, mu, wk, sigma, maxocc)
+
+   END SUBROUTINE dense_fermi_kpoint
+
+! **************************************************************************************************
+!> \brief Evaluate Fermi-Dirac occupations and -TS correction for a fixed chemical potential.
+! **************************************************************************************************
+   SUBROUTINE dense_fermi_kpoint_eval(occ, nel, kTS, eps, mu, wk, sigma, maxocc)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: occ
+      REAL(KIND=dp), INTENT(OUT)                         :: nel, kTS
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
+      REAL(KIND=dp), INTENT(IN)                          :: mu, sigma, maxocc
+
+      INTEGER                                            :: ik, imo
+      REAL(KIND=dp)                                      :: arg, term1, term2, tmp, tmp2, tmp3, &
+                                                            tmp4, tmplog
+
+      nel = 0.0_dp
+      kTS = 0.0_dp
+      DO ik = 1, SIZE(eps, 2)
+         DO imo = 1, SIZE(eps, 1)
+            IF (eps(imo, ik) > mu) THEN
+               arg = -(eps(imo, ik) - mu)/sigma
+               tmp = EXP(arg)
+               tmp4 = tmp + 1.0_dp
+               tmp2 = tmp/tmp4
+               tmp3 = 1.0_dp/tmp4
+               tmplog = -LOG(tmp4)
+               term1 = tmp2*(arg + tmplog)
+               term2 = tmp3*tmplog
+            ELSE
+               arg = (eps(imo, ik) - mu)/sigma
+               tmp = EXP(arg)
+               tmp4 = tmp + 1.0_dp
+               tmp2 = 1.0_dp/tmp4
+               tmp3 = tmp/tmp4
+               tmplog = -LOG(tmp4)
+               term1 = tmp2*tmplog
+               term2 = tmp3*(arg + tmplog)
+            END IF
+            occ(imo, ik) = maxocc*tmp2
+            nel = nel + wk(ik)*occ(imo, ik)
+            kTS = kTS + sigma*maxocc*(term1 + term2)*wk(ik)
+         END DO
+      END DO
+
+   END SUBROUTINE dense_fermi_kpoint_eval
 
 ! **************************************************************************************************
 !> \brief Small dense 2x2 matrix exponential via Taylor series.
