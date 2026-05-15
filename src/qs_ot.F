@@ -817,12 +817,6 @@ CONTAINS
       CALL dbcsr_multiply('N', 'N', 1.0_dp, c_im, p_re, 0.0_dp, tmp)
       CALL dbcsr_add(matrix_c_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
 
-      update = qs_ot_ref_update(qs_ot_env)
-      IF (update) THEN
-         CALL dbcsr_copy(c_re, matrix_c)
-         CALL dbcsr_copy(c_im, matrix_c_im)
-      END IF
-
       IF (qs_ot_env%settings%do_rotation) THEN
          CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
@@ -837,6 +831,21 @@ CONTAINS
 
          CALL dbcsr_copy(matrix_c, sc_re)
          CALL dbcsr_copy(matrix_c_im, sc_im)
+      END IF
+
+      update = qs_ot_ref_update(qs_ot_env)
+      IF (update) THEN
+         ! Absorb an accepted finite k-point rotation into the REF basis.  Otherwise the next
+         ! REF step optimizes around the pre-rotation basis while carrying a stale generator.
+         CALL dbcsr_copy(c_re, matrix_c)
+         CALL dbcsr_copy(c_im, matrix_c_im)
+         IF (qs_ot_env%settings%do_rotation) THEN
+            CALL dbcsr_set(qs_ot_env%rot_mat_x, 0.0_dp)
+            CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
+            CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
+            CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
+            CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
+         END IF
       END IF
 
       ! SC = (S_re + i*S_im) * (C_out_re + i*C_out_im)
