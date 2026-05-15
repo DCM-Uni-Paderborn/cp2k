@@ -45,6 +45,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
+   CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
+                                                     2.0E-7_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -495,6 +497,229 @@ CONTAINS
    END SUBROUTINE dense_kpoint_mermin_gradient
 
 ! **************************************************************************************************
+!> \brief Check the coupled complex rotation and auxiliary-energy Mermin gradient.
+! **************************************************************************************************
+   SUBROUTINE check_complex_kpoint_mermin_coupled_gradient(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nkp = 2
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp, maxocc = 2.0_dp, &
+                                                            nel = 3.20_dp, sigma = 0.035_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, ik, j
+      REAL(KIND=dp)                                      :: err, fd, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps, eps_m, eps_p, grad_eps
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, &
+                                                            x_m_re, x_p_im, x_p_re, x_re
+
+      wk = [0.40_dp, 0.60_dp]
+      eps(:, 1) = [-0.23_dp, -0.035_dp, 0.090_dp]
+      eps(:, 2) = [-0.19_dp, -0.010_dp, 0.125_dp]
+
+      base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1, 1) = CMPLX(-0.26_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 1) = CMPLX(-0.015_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 1) = CMPLX(0.14_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 1) = CMPLX(0.045_dp, -0.025_dp, KIND=dp)
+      base(1, 3, 1) = CMPLX(-0.030_dp, 0.035_dp, KIND=dp)
+      base(2, 3, 1) = CMPLX(0.020_dp, 0.030_dp, KIND=dp)
+      base(2, 1, 1) = CONJG(base(1, 2, 1))
+      base(3, 1, 1) = CONJG(base(1, 3, 1))
+      base(3, 2, 1) = CONJG(base(2, 3, 1))
+
+      base(1, 1, 2) = CMPLX(-0.22_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 2) = CMPLX(0.005_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 2) = CMPLX(0.18_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 2) = CMPLX(-0.035_dp, 0.015_dp, KIND=dp)
+      base(1, 3, 2) = CMPLX(0.025_dp, 0.020_dp, KIND=dp)
+      base(2, 3, 2) = CMPLX(0.030_dp, -0.025_dp, KIND=dp)
+      base(2, 1, 2) = CONJG(base(1, 2, 2))
+      base(3, 1, 2) = CONJG(base(1, 3, 2))
+      base(3, 2, 2) = CONJG(base(2, 3, 2))
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.055_dp
+      x_re(1, 3, 1) = -0.025_dp
+      x_re(2, 3, 1) = 0.035_dp
+      x_re(1, 2, 2) = -0.040_dp
+      x_re(1, 3, 2) = 0.030_dp
+      x_re(2, 3, 2) = 0.020_dp
+      DO ik = 1, nkp
+         DO j = 2, n
+            DO i = 1, j - 1
+               x_re(j, i, ik) = -x_re(i, j, ik)
+            END DO
+         END DO
+      END DO
+
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 1, 1) = 0.020_dp
+      x_im(2, 2, 1) = -0.035_dp
+      x_im(3, 3, 1) = 0.015_dp
+      x_im(1, 2, 1) = -0.018_dp
+      x_im(1, 3, 1) = 0.012_dp
+      x_im(2, 3, 1) = 0.026_dp
+      x_im(1, 1, 2) = -0.015_dp
+      x_im(2, 2, 2) = 0.030_dp
+      x_im(3, 3, 2) = -0.010_dp
+      x_im(1, 2, 2) = 0.014_dp
+      x_im(1, 3, 2) = -0.022_dp
+      x_im(2, 3, 2) = 0.018_dp
+      DO ik = 1, nkp
+         DO j = 2, n
+            DO i = 1, j - 1
+               x_im(j, i, ik) = x_im(i, j, ik)
+            END DO
+         END DO
+      END DO
+
+      CALL dense_complex_kpoint_mermin_gradient(x_re, x_im, base, eps, wk, nel, sigma, maxocc, &
+                                                grad_re, grad_im, grad_eps, value_p)
+
+      err = 0.0_dp
+      DO ik = 1, nkp
+         DO i = 1, n
+            eps_p(:, :) = eps(:, :)
+            eps_m(:, :) = eps(:, :)
+            eps_p(i, ik) = eps_p(i, ik) + fd_step
+            eps_m(i, ik) = eps_m(i, ik) - fd_step
+            fd = (dense_complex_kpoint_mermin_value(x_re, x_im, base, eps_p, wk, nel, sigma, maxocc) - &
+                  dense_complex_kpoint_mermin_value(x_re, x_im, base, eps_m, wk, nel, sigma, maxocc))/ &
+                 (2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_eps(i, ik)))
+         END DO
+      END DO
+
+      DO ik = 1, nkp
+         DO j = 2, n
+            DO i = 1, j - 1
+               x_p_re(:, :, :) = x_re(:, :, :)
+               x_m_re(:, :, :) = x_re(:, :, :)
+               x_p_im(:, :, :) = x_im(:, :, :)
+               x_m_im(:, :, :) = x_im(:, :, :)
+               x_p_re(i, j, ik) = x_p_re(i, j, ik) + fd_step
+               x_p_re(j, i, ik) = x_p_re(j, i, ik) - fd_step
+               x_m_re(i, j, ik) = x_m_re(i, j, ik) - fd_step
+               x_m_re(j, i, ik) = x_m_re(j, i, ik) + fd_step
+               value_p = dense_complex_kpoint_mermin_value(x_p_re, x_p_im, base, eps, wk, nel, &
+                                                           sigma, maxocc)
+               value_m = dense_complex_kpoint_mermin_value(x_m_re, x_m_im, base, eps, wk, nel, &
+                                                           sigma, maxocc)
+               fd = (value_p - value_m)/(2.0_dp*fd_step)
+               err = MAX(err, ABS(fd - grad_re(i, j, ik)))
+
+               x_p_re(:, :, :) = x_re(:, :, :)
+               x_m_re(:, :, :) = x_re(:, :, :)
+               x_p_im(:, :, :) = x_im(:, :, :)
+               x_m_im(:, :, :) = x_im(:, :, :)
+               x_p_im(i, j, ik) = x_p_im(i, j, ik) + fd_step
+               x_p_im(j, i, ik) = x_p_im(j, i, ik) + fd_step
+               x_m_im(i, j, ik) = x_m_im(i, j, ik) - fd_step
+               x_m_im(j, i, ik) = x_m_im(j, i, ik) - fd_step
+               value_p = dense_complex_kpoint_mermin_value(x_p_re, x_p_im, base, eps, wk, nel, &
+                                                           sigma, maxocc)
+               value_m = dense_complex_kpoint_mermin_value(x_m_re, x_m_im, base, eps, wk, nel, &
+                                                           sigma, maxocc)
+               fd = (value_p - value_m)/(2.0_dp*fd_step)
+               err = MAX(err, ABS(fd - grad_im(i, j, ik)))
+            END DO
+         END DO
+
+         DO i = 1, n
+            x_p_re(:, :, :) = x_re(:, :, :)
+            x_m_re(:, :, :) = x_re(:, :, :)
+            x_p_im(:, :, :) = x_im(:, :, :)
+            x_m_im(:, :, :) = x_im(:, :, :)
+            x_p_im(i, i, ik) = x_p_im(i, i, ik) + fd_step
+            x_m_im(i, i, ik) = x_m_im(i, i, ik) - fd_step
+            value_p = dense_complex_kpoint_mermin_value(x_p_re, x_p_im, base, eps, wk, nel, &
+                                                        sigma, maxocc)
+            value_m = dense_complex_kpoint_mermin_value(x_m_re, x_m_im, base, eps, wk, nel, &
+                                                        sigma, maxocc)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - 0.5_dp*grad_im(i, i, ik)))
+         END DO
+      END DO
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_kpoint_mermin_coupled_gradient
+
+! **************************************************************************************************
+!> \brief Dense complex k-point Mermin value with occupations from auxiliary energies.
+! **************************************************************************************************
+   FUNCTION dense_complex_kpoint_mermin_value(x_re, x_im, base, eps, wk, nel, sigma, maxocc) &
+      RESULT(value)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(IN)   :: base
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
+      REAL(KIND=dp), INTENT(IN)                          :: nel, sigma, maxocc
+      REAL(KIND=dp)                                      :: value
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, u
+      INTEGER                                            :: i, ik, n, nkp
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: h
+
+      n = SIZE(eps, 1)
+      nkp = SIZE(eps, 2)
+      ALLOCATE (chc(n, n), u(n, n), h(n, nkp))
+      DO ik = 1, nkp
+         CALL dense_rotation_u(x_re(:, :, ik), x_im(:, :, ik), u)
+         chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base(:, :, ik), u))
+         DO i = 1, n
+            h(i, ik) = REAL(chc(i, i), KIND=dp)
+         END DO
+      END DO
+      value = dense_kpoint_mermin_value(eps, h, wk, nel, sigma, maxocc)
+      DEALLOCATE (chc, u, h)
+
+   END FUNCTION dense_complex_kpoint_mermin_value
+
+! **************************************************************************************************
+!> \brief Dense coupled Mermin gradients for complex k-point rotations and auxiliary energies.
+! **************************************************************************************************
+   SUBROUTINE dense_complex_kpoint_mermin_gradient(x_re, x_im, base, eps, wk, nel, sigma, maxocc, &
+                                                   grad_re, grad_im, grad_eps, value)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(IN)   :: base
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
+      REAL(KIND=dp), INTENT(IN)                          :: nel, sigma, maxocc
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(OUT)     :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_eps
+      REAL(KIND=dp), INTENT(OUT)                         :: value
+
+      INTEGER                                            :: ik, n, nkp
+      REAL(KIND=dp)                                      :: kTS, mu
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: occ_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: h, occ
+
+      n = SIZE(eps, 1)
+      nkp = SIZE(eps, 2)
+      ALLOCATE (h(n, nkp), occ(n, nkp), occ_scale(n))
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
+      DO ik = 1, nkp
+         occ_scale(:) = 2.0_dp*wk(ik)*occ(:, ik)
+         CALL dense_ref_rotation_gradient(x_re(:, :, ik), x_im(:, :, ik), base(:, :, ik), occ_scale, &
+                                          grad_re(:, :, ik), grad_im(:, :, ik), h(:, ik))
+      END DO
+      CALL dense_kpoint_mermin_gradient(eps, h, wk, nel, sigma, maxocc, grad_eps)
+      value = dense_kpoint_mermin_value(eps, h, wk, nel, sigma, maxocc)
+      DEALLOCATE (h, occ, occ_scale)
+
+   END SUBROUTINE dense_complex_kpoint_mermin_gradient
+
+! **************************************************************************************************
 !> \brief Check the complex k-point NONDIAG_ENERGY tether gradient.
 ! **************************************************************************************************
    SUBROUTINE check_complex_nondiag_tether_gradient(label, tol, nfail)
@@ -895,6 +1120,57 @@ CONTAINS
       DEALLOCATE (dmat, dedu, evec, frechet, generator, inner, outer, u, evals)
 
    END SUBROUTINE dense_nondiag_tether_gradient
+
+! **************************************************************************************************
+!> \brief Dense gradient of sum_i occ_scale_i [U^H H U]_ii.
+! **************************************************************************************************
+   SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
+
+      COMPLEX(KIND=dp)                                   :: kernel
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, &
+                                                            inner, outer, u, work
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (generator(n, n), evec(n, n), u(n, n), work(n, n), dedu(n, n))
+      ALLOCATE (inner(n, n), outer(n, n), frechet(n, n), evals(n))
+
+      generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+      CALL diag_complex(generator, evec, evals)
+      CALL dense_rotation_u_from_eigensystem(evec, evals, u)
+
+      work(:, :) = MATMUL(base, u)
+      dedu(:, :) = work(:, :)
+      DO j = 1, n
+         dedu(:, j) = occ_scale(j)*dedu(:, j)
+      END DO
+
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      DO i = 1, n
+         eps_diag(i) = REAL(work(i, i), KIND=dp)
+      END DO
+
+      inner(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dedu, evec))
+      DO j = 1, n
+         DO i = 1, n
+            kernel = CONJG(qs_ot_complex_exp_frechet_kernel(evals(i), evals(j)))
+            outer(i, j) = inner(i, j)*kernel
+         END DO
+      END DO
+      frechet(:, :) = MATMUL(evec, MATMUL(outer, CONJG(TRANSPOSE(evec))))
+
+      grad_re(:, :) = REAL(frechet, KIND=dp) - TRANSPOSE(REAL(frechet, KIND=dp))
+      grad_im(:, :) = AIMAG(frechet) + TRANSPOSE(AIMAG(frechet))
+
+      DEALLOCATE (generator, evec, u, work, dedu, inner, outer, frechet, evals)
+
+   END SUBROUTINE dense_ref_rotation_gradient
 
 ! **************************************************************************************************
 !> \brief Build U=exp(-i X) for the dense anti-Hermitian k-point generator convention.

@@ -103,6 +103,8 @@ MODULE qs_scf_loop_utils
    USE scf_control_types,               ONLY: scf_control_type,&
                                               smear_type
    USE smeagol_interface,               ONLY: run_smeagol_emtrans
+   USE smearing_utils,                  ONLY: Smearkp,&
+                                              Smearkp2
    USE tblite_interface,                ONLY: tb_native_scc_mixer_active
 #include "./base/base_uses.f90"
 
@@ -515,7 +517,9 @@ CONTAINS
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
       REAL(KIND=dp)                                      :: ener_nondiag, maxocc, mu
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: trial_mu
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: trial_eigenvalues, trial_occupation
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
@@ -623,6 +627,10 @@ CONTAINS
          END DO
       END DO
 
+      CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                    kp_range, wkp, para_env_inter_kp, scf_control%smear, &
+                                                    trial_eigenvalues, trial_occupation, trial_mu)
+
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -634,8 +642,7 @@ CONTAINS
                                 ispin=ispin, xkp=xkp(1:3, ikpoint), &
                                 cell_to_index=cell_to_index, sab_nl=sab_nl)
 
-            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, mo_coeff=mo_coeff, nmo=nmo, &
-                            eigenvalues=eigenvalues, occupation_numbers=occupation_numbers, mu=mu)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, mo_coeff=mo_coeff, nmo=nmo)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
             CALL cp_fm_create(hc_re, mo_coeff%matrix_struct)
             CALL cp_fm_create(hc_im, mo_coeff%matrix_struct)
@@ -653,14 +660,16 @@ CONTAINS
             CALL qs_scf_loop_prepare_ot_kp_channel_gradient(local_ot_env(local_channel), &
                                                             matrix_hc(local_channel)%matrix, &
                                                             matrix_hc_im(local_channel)%matrix, &
-                                                            occupation_numbers, eigenvalues, maxocc, mu, &
+                                                            trial_occupation(1:nmo, ikpoint, ispin), &
+                                                            trial_eigenvalues(1:nmo, ikpoint, ispin), &
+                                                            maxocc, trial_mu(ispin), &
                                                             wkp(ikpoint), scf_control%smear, &
                                                             ener_nondiag)
 
-            ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
+            ALLOCATE (orbital_scaling_factor(nmo))
             ! Keep orbital gradients on the fixed-N Mermin surface. The occupation
             ! preconditioner below acts on energy variables, not by unweighting empty bands.
-            orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*occupation_numbers(:)
+            orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*trial_occupation(1:nmo, ikpoint, ispin)
             CALL dbcsr_scale_by_vector(matrix_hc(local_channel)%matrix, &
                                        alpha=orbital_scaling_factor, side='right')
             CALL dbcsr_scale_by_vector(matrix_hc_im(local_channel)%matrix, &
@@ -673,9 +682,11 @@ CONTAINS
       END DO
 
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear)
+                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
+                                                     trial_eigenvalues, trial_occupation, trial_mu)
       CALL qs_scf_loop_prepare_ot_kp_energy_trust(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                  wkp, scf_control%smear)
+                                                  wkp, scf_control%smear, &
+                                                  trial_eigenvalues, trial_occupation, trial_mu)
 
       local_ot_env(1)%etotal = energy%total + ener_nondiag
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
@@ -727,6 +738,10 @@ CONTAINS
          qs_env%broyden_adaptive_sigma = scf_env%qs_ot_env(first_channel)%broyden_adaptive_sigma
       END IF
 
+      IF (ALLOCATED(trial_eigenvalues)) DEALLOCATE (trial_eigenvalues)
+      IF (ALLOCATED(trial_occupation)) DEALLOCATE (trial_occupation)
+      IF (ALLOCATED(trial_mu)) DEALLOCATE (trial_mu)
+
       DO local_channel = 1, nlocal_channels
          CALL dbcsr_release(matrix_hc(local_channel)%matrix)
          CALL dbcsr_release(matrix_hc_im(local_channel)%matrix)
@@ -743,6 +758,113 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_loop_do_ot_kp
+
+! **************************************************************************************************
+!> \brief collect the fixed-N trial occupations used by k-point OT
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param kp_range ...
+!> \param wkp ...
+!> \param para_env_inter_kp ...
+!> \param smear ...
+!> \param trial_eigenvalues ...
+!> \param trial_occupation ...
+!> \param trial_mu ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                       kp_range, wkp, para_env_inter_kp, smear, &
+                                                       trial_eigenvalues, trial_occupation, trial_mu)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), INTENT(OUT) :: trial_eigenvalues, &
+                                                            trial_occupation
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), INTENT(OUT) :: trial_mu
+
+      INTEGER                                            :: ikpoint, ispin, local_channel, &
+                                                            local_kpoint, method, ne_a, ne_b, &
+                                                            nelectron, nkpoint, nmo
+      REAL(KIND=dp)                                      :: kTS, mu, nel, sigma
+      REAL(KIND=dp), DIMENSION(2)                        :: mus
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      NULLIFY (eigenvalues)
+
+      CALL get_kpoint_info(kpoints, nkp=nkpoint)
+      kp => kpoints%kp_env(1)%kpoint_env
+      CALL get_mo_set(kp%mos(1, 1), nmo=nmo, nelectron=nelectron)
+      ne_a = nelectron
+      ne_b = 0
+      IF (nspin_ot == 2) CALL get_mo_set(kp%mos(1, 2), nelectron=ne_b)
+
+      ALLOCATE (trial_eigenvalues(nmo, nkpoint, nspin_ot))
+      ALLOCATE (trial_occupation(nmo, nkpoint, nspin_ot))
+      ALLOCATE (trial_mu(nspin_ot))
+      trial_eigenvalues(:, :, :) = 0.0_dp
+      trial_occupation(:, :, :) = 0.0_dp
+      trial_mu(:) = 0.0_dp
+      mus(:) = 0.0_dp
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), eigenvalues=eigenvalues)
+            IF (local_ot_env(local_channel)%settings%do_ener) THEN
+               trial_eigenvalues(1:nmo, ikpoint, ispin) = local_ot_env(local_channel)%ener_x(1:nmo)
+            ELSE
+               trial_eigenvalues(1:nmo, ikpoint, ispin) = eigenvalues(1:nmo)
+            END IF
+         END DO
+      END DO
+      CALL para_env_inter_kp%sum(trial_eigenvalues)
+
+      IF (smear%do_smear) THEN
+         SELECT CASE (smear%method)
+         CASE (smear_fermi_dirac)
+            sigma = smear%electronic_temperature
+            method = smear_fermi_dirac
+         CASE (smear_gaussian, smear_mp, smear_mv)
+            sigma = smear%smearing_width
+            method = smear%method
+         CASE DEFAULT
+            CPABORT("kpoints: Selected smearing not (yet) supported")
+         END SELECT
+      ELSE
+         sigma = 0.0_dp
+         method = smear_gaussian
+      END IF
+
+      IF (nspin_ot == 1) THEN
+         nel = REAL(nelectron, KIND=dp)
+         CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, trial_eigenvalues(:, :, 1), nel, wkp, &
+                      sigma, 2.0_dp, method)
+      ELSE IF (smear%fixed_mag_mom > 0.0_dp .OR. .NOT. smear%do_smear) THEN
+         nel = REAL(ne_a, KIND=dp)
+         CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, trial_eigenvalues(:, :, 1), nel, wkp, &
+                      sigma, 1.0_dp, method)
+         nel = REAL(ne_b, KIND=dp)
+         CALL Smearkp(trial_occupation(:, :, 2), mus(2), kTS, trial_eigenvalues(:, :, 2), nel, wkp, &
+                      sigma, 1.0_dp, method)
+      ELSE
+         nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
+         CALL Smearkp2(trial_occupation(:, :, :), mu, kTS, trial_eigenvalues(:, :, :), nel, wkp, &
+                       sigma, method)
+         mus(1:2) = mu
+      END IF
+      trial_mu(:) = mus(1:nspin_ot)
+
+   END SUBROUTINE qs_scf_loop_collect_ot_kp_trial_smearing
 
 ! **************************************************************************************************
 !> \brief high-print diagnostic for k-point OT smearing quality
@@ -820,15 +942,21 @@ CONTAINS
 !> \param nspin_ot ...
 !> \param wkp ...
 !> \param smear ...
+!> \param trial_eigenvalues ...
+!> \param trial_occupation ...
+!> \param trial_mu ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_trust(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                     wkp, smear)
+                                                     wkp, smear, trial_eigenvalues, trial_occupation, &
+                                                     trial_mu)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
       INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(smear_type), INTENT(IN)                       :: smear
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_eigenvalues, trial_occupation
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
 
       REAL(KIND=dp), PARAMETER                           :: edge_window_factor = 8.0_dp, &
                                                             partial_tol = 1.0E-8_dp, &
@@ -842,7 +970,6 @@ CONTAINS
                                                             rayleigh_edge_gap, rayleigh_gap, sigma, &
                                                             trust_radius
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rayleigh_diag
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       DO local_channel = 1, SIZE(local_ot_env)
@@ -876,8 +1003,8 @@ CONTAINS
          ikpoint = kp%nkpoint
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                            occupation_numbers=occupation_numbers, mu=mu)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+            mu = trial_mu(ispin)
             has_trust_weight = .FALSE.
             IF (ASSOCIATED(local_ot_env(local_channel)%ener_x_trust_weight)) &
                has_trust_weight = SIZE(local_ot_env(local_channel)%ener_x_trust_weight) >= nmo
@@ -894,16 +1021,17 @@ CONTAINS
             CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, rayleigh_diag)
 
             DO imo = 1, nmo
-               occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
+               occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
+                                          maxocc - trial_occupation(imo, ikpoint, ispin)))
                frac_weight = frac_weight + wkp(ikpoint)*occ_tail
-               min_abs_eps_mu = MIN(min_abs_eps_mu, ABS(eigenvalues(imo) - mu))
+               min_abs_eps_mu = MIN(min_abs_eps_mu, ABS(trial_eigenvalues(imo, ikpoint, ispin) - mu))
                rayleigh_gap = MAX(rayleigh_gap, ABS(rayleigh_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
                active = occ_tail > partial_tol*MAX(maxocc, 1.0_dp) .OR. &
-                        ABS(eigenvalues(imo) - mu) < edge_window
+                        ABS(trial_eigenvalues(imo, ikpoint, ispin) - mu) < edge_window
                IF (active) rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                                    ABS(rayleigh_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
                IF (active .AND. has_trust_weight) THEN
-                  fi_norm = occupation_numbers(imo)/MAX(maxocc, EPSILON(maxocc))
+                  fi_norm = trial_occupation(imo, ikpoint, ispin)/MAX(maxocc, EPSILON(maxocc))
                   gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
                   local_ot_env(local_channel)%ener_x_trust_weight(imo) = wkp(ikpoint)*MAX(gvalue, 0.0_dp)
                END IF
@@ -1231,7 +1359,8 @@ CONTAINS
 !> \param smear ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                        kp_range, wkp, para_env_inter_kp, smear)
+                                                        kp_range, wkp, para_env_inter_kp, smear, &
+                                                        trial_eigenvalues, trial_occupation, trial_mu)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
@@ -1240,6 +1369,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       TYPE(smear_type), INTENT(IN)                       :: smear
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_eigenvalues, trial_occupation
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
 
       INTEGER                                            :: group, ikpoint, imo, ispin, local_channel, &
                                                             local_kpoint, ngroups, nmo
@@ -1252,7 +1383,6 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_diag, gdotv, gsum, &
                                                             nondiag_diag, precond_count, &
                                                             precond_shift, precond_sum
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       LOGICAL                                            :: active_preconditioner
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: schur_group_done
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -1294,12 +1424,13 @@ CONTAINS
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                            occupation_numbers=occupation_numbers, mu=mu)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+            mu = trial_mu(ispin)
             DO imo = 1, nmo
-               gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+               gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
+                                             trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                              sigma, maxocc, smear%method)
-               v = local_ot_env(local_channel)%ener_gx(imo) - eigenvalues(imo) + mu
+               v = local_ot_env(local_channel)%ener_gx(imo) - trial_eigenvalues(imo, ikpoint, ispin) + mu
                gsum(group) = gsum(group) + wkp(ikpoint)*gvalue
                gdotv(group) = gdotv(group) + wkp(ikpoint)*gvalue*v
             END DO
@@ -1315,13 +1446,14 @@ CONTAINS
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                            occupation_numbers=occupation_numbers, mu=mu)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+            mu = trial_mu(ispin)
             DO imo = 1, nmo
-               gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+               gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
+                                             trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                              sigma, maxocc, smear%method)
                IF (ABS(gsum(group)) > EPSILON(gsum(group))) THEN
-                  v = local_ot_env(local_channel)%ener_gx(imo) - eigenvalues(imo) + mu
+                  v = local_ot_env(local_channel)%ener_gx(imo) - trial_eigenvalues(imo, ikpoint, ispin) + mu
                   local_ot_env(local_channel)%ener_gx(imo) = &
                      wkp(ikpoint)*gvalue*(gdotv(group)/gsum(group) - v)
                ELSE
@@ -1354,16 +1486,16 @@ CONTAINS
             ikpoint = kp%nkpoint
             DO ispin = 1, nspin_ot
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                               occupation_numbers=occupation_numbers, mu=mu)
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+               mu = trial_mu(ispin)
                ALLOCATE (canonical_diag(nmo))
                CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, canonical_diag)
                tether_shift = 0.0_dp
                rayleigh_edge_gap = 0.0_dp
                tether_weight_sum = 0.0_dp
                DO imo = 1, nmo
-                  tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
-                                                                        eigenvalues(imo), mu, &
+                  tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
+                                                                        trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                                         sigma, maxocc)
                   IF (tether_response > 0.0_dp) &
                      rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
@@ -1372,7 +1504,8 @@ CONTAINS
                tether_strength = kpoint_ot_canonical_tether_strength(local_ot_env(local_channel), &
                                                                      rayleigh_edge_gap, sigma)
                DO imo = 1, nmo
-                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
+                  tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
+                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
                                                                      mu, sigma, maxocc, wkp(ikpoint), &
                                                                      tether_strength)
                   IF (tether_weight <= 0.0_dp) CYCLE
@@ -1383,7 +1516,8 @@ CONTAINS
                IF (tether_weight_sum > EPSILON(tether_weight_sum)) THEN
                   tether_shift = tether_shift/tether_weight_sum
                   DO imo = 1, nmo
-                     tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
+                     tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
+                                                                        trial_eigenvalues(imo, ikpoint, ispin), &
                                                                         mu, sigma, maxocc, wkp(ikpoint), &
                                                                         tether_strength)
                      IF (tether_weight <= 0.0_dp) CYCLE
@@ -1417,7 +1551,6 @@ CONTAINS
                                                             rayleigh_edge_gap, tether_response, &
                                                             tether_strength, tether_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(kpoint_env_type), POINTER                     :: kp
 
          precond_count(:) = 0.0_dp
@@ -1431,16 +1564,16 @@ CONTAINS
                group = MERGE(ispin, 1, ngroups == nspin_ot)
                IF (skip_group(group)) CYCLE
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                               occupation_numbers=occupation_numbers, mu=mu)
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+               mu = trial_mu(ispin)
                tether_strength = 0.0_dp
                IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
                   ALLOCATE (channel_diag(nmo))
                   CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, channel_diag)
                   rayleigh_edge_gap = 0.0_dp
                   DO imo = 1, nmo
-                     tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
-                                                                           eigenvalues(imo), mu, &
+                     tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
+                                                                           trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                                            sigma, maxocc)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
@@ -1451,10 +1584,12 @@ CONTAINS
                   DEALLOCATE (channel_diag)
                END IF
                DO imo = 1, nmo
-                  gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
+                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                 sigma, maxocc, smear%method)
-                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), &
-                                                                     eigenvalues(imo), mu, sigma, &
+                  tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
+                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
+                                                                     mu, sigma, &
                                                                      maxocc, wkp(ikpoint), tether_strength)
                   curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature > EPSILON(curvature)) THEN
@@ -1483,16 +1618,16 @@ CONTAINS
                group = MERGE(ispin, 1, ngroups == nspin_ot)
                IF (skip_group(group)) CYCLE
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                               occupation_numbers=occupation_numbers, mu=mu)
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+               mu = trial_mu(ispin)
                tether_strength = 0.0_dp
                IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
                   ALLOCATE (channel_diag(nmo))
                   CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, channel_diag)
                   rayleigh_edge_gap = 0.0_dp
                   DO imo = 1, nmo
-                     tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
-                                                                           eigenvalues(imo), mu, &
+                     tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
+                                                                           trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                                            sigma, maxocc)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
@@ -1503,10 +1638,12 @@ CONTAINS
                   DEALLOCATE (channel_diag)
                END IF
                DO imo = 1, nmo
-                  gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
+                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                 sigma, maxocc, smear%method)
-                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), &
-                                                                     eigenvalues(imo), mu, sigma, &
+                  tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
+                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
+                                                                     mu, sigma, &
                                                                      maxocc, wkp(ikpoint), tether_strength)
                   curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature > EPSILON(curvature)) &
@@ -1551,7 +1688,6 @@ CONTAINS
                                                             sol, z_e
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             rot_hessian, schur
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(kpoint_env_type), POINTER                     :: kp
 
          group_done = .FALSE.
@@ -1609,8 +1745,8 @@ CONTAINS
                group = MERGE(ispin, 1, ngroups == nspin_ot)
                IF (group /= target_group) CYCLE
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
-                               occupation_numbers=occupation_numbers, mu=mu)
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+               mu = trial_mu(ispin)
                ALLOCATE (h_re(nmo, nmo), h_im(nmo, nmo), grad_re(nmo, nmo), grad_im(nmo, nmo))
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc, h_re)
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc_im, h_im)
@@ -1625,8 +1761,8 @@ CONTAINS
                IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
                   rayleigh_edge_gap = 0.0_dp
                   DO imo = 1, nmo
-                     tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
-                                                                           eigenvalues(imo), mu, &
+                     tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
+                                                                           trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                                            sigma, maxocc)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
@@ -1638,10 +1774,12 @@ CONTAINS
 
                DO imo = 1, nmo
                   ie = e_offset(local_channel) + imo - 1
-                  gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
+                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                 sigma, maxocc, smear%method)
-                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), &
-                                                                     eigenvalues(imo), mu, sigma, &
+                  tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
+                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
+                                                                     mu, sigma, &
                                                                      maxocc, wkp(ikpoint), tether_strength)
                   curv(ie) = wkp(ikpoint)*gvalue + tether_weight
                   grad_e(ie) = local_ot_env(local_channel)%ener_gx(imo)
@@ -1671,7 +1809,7 @@ CONTAINS
                END DO
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
                                                     e_offset(local_channel), h_re, h_im, &
-                                                    occupation_numbers, wkp(ikpoint), &
+                                                    trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     var_i, var_j, var_kind, rot_hessian, response, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
