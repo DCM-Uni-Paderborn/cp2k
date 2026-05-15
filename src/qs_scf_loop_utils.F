@@ -12,7 +12,7 @@ MODULE qs_scf_loop_utils
                                               hairy_probes_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
-        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_set, dbcsr_transposed, dbcsr_type, &
+        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_set, dbcsr_type, &
         dbcsr_type_antisymmetric, dbcsr_type_symmetric
    USE cp_dbcsr_contrib,                ONLY: dbcsr_get_diag,&
                                               dbcsr_scale_by_vector
@@ -64,7 +64,9 @@ MODULE qs_scf_loop_utils
                                               mo_set_type
    USE qs_mom_methods,                  ONLY: do_mom_diag
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
-   USE qs_ot,                           ONLY: qs_ot_get_orbitals_ref_complex
+   USE qs_ot,                           ONLY: qs_ot_generate_rotation_complex,&
+                                              qs_ot_get_orbitals_ref_complex,&
+                                              qs_ot_rot_mat_derivative_complex
    USE qs_ot_minimizer,                 ONLY: ot_mini
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_mini
@@ -734,6 +736,8 @@ CONTAINS
       tmp => qs_ot_env%buf3_k_k_nosym
       tmp2 => qs_ot_env%buf4_k_k_nosym
 
+      CALL qs_ot_generate_rotation_complex(qs_ot_env)
+
       ! CHC = C(k)^H * H(k)C(k), kept unoccupied for the band-energy gradient.
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
@@ -758,9 +762,8 @@ CONTAINS
       CALL dbcsr_scale_by_vector(b_im, alpha=orbital_scaling_factor, side='right')
       DEALLOCATE (orbital_scaling_factor)
 
-      ! dF/dU for the complex occupied-space rotation U(k).  This mirrors the Gamma path, but keeps
-      ! the real and imaginary channels separate so a later full anti-Hermitian Frechet derivative can
-      ! use the complete payload.
+      ! dF/dU for the complex occupied-space rotation U(k).  The finite anti-Hermitian
+      ! Frechet derivative below consumes the complete real/imaginary payload.
       CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, b_re, 0.0_dp, qs_ot_env%rot_mat_dedu)
       IF (ASSOCIATED(qs_ot_env%rot_mat_u_im)) THEN
          CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, b_im, 0.0_dp, tmp)
@@ -771,18 +774,7 @@ CONTAINS
          CALL dbcsr_add(qs_ot_env%rot_mat_dedu_im, tmp2, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
       END IF
 
-      CALL dbcsr_transposed(tmp, qs_ot_env%rot_mat_dedu, shallow_data_copy=.FALSE., &
-                            transpose_distribution=.FALSE.)
-      CALL dbcsr_copy(qs_ot_env%rot_mat_gx, tmp)
-      CALL dbcsr_add(qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_dedu, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
-
-      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im) .AND. ASSOCIATED(qs_ot_env%rot_mat_dedu_im)) THEN
-         CALL dbcsr_transposed(tmp2, qs_ot_env%rot_mat_dedu_im, shallow_data_copy=.FALSE., &
-                               transpose_distribution=.FALSE.)
-         CALL dbcsr_copy(qs_ot_env%rot_mat_gx_im, tmp2)
-         CALL dbcsr_add(qs_ot_env%rot_mat_gx_im, qs_ot_env%rot_mat_dedu_im, &
-                        alpha_scalar=-1.0_dp, beta_scalar=-1.0_dp)
-      END IF
+      CALL qs_ot_rot_mat_derivative_complex(qs_ot_env)
 
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_channel_gradient
 
