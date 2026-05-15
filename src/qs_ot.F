@@ -1087,6 +1087,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_generate_rotation_complex'
 
       INTEGER                                            :: handle, k
+      REAL(KIND=dp)                                      :: rot_norm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: exp_evals_im, exp_evals_re
       TYPE(dbcsr_type)                                   :: h_re, tmp, w_im, w_re
 
@@ -1099,6 +1100,15 @@ CONTAINS
       CALL dbcsr_get_info(qs_ot_env%rot_mat_x, nfullrows_total=k)
 
       IF (k /= 0) THEN
+         rot_norm = dbcsr_frobenius_norm(qs_ot_env%rot_mat_x) + &
+                    dbcsr_frobenius_norm(qs_ot_env%rot_mat_x_im)
+         IF (rot_norm <= EPSILON(1.0_dp)) THEN
+            CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
+            CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
+            CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
+            CALL timestop(handle)
+            RETURN
+         END IF
          ! A = X+iY is anti-Hermitian for X^T=-X and Y^T=Y.  Diagonalize H=iA=iX-Y,
          ! then U=exp(A)=V*exp(-i*evals)*V^H.
          CALL dbcsr_copy(h_re, qs_ot_env%rot_mat_x_im, name="h_re")
@@ -1265,7 +1275,7 @@ CONTAINS
       LOGICAL                                            :: found
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
                                                             block_out_re
-      REAL(KIND=dp)                                      :: e1, e2
+      REAL(KIND=dp)                                      :: e1, e2, rot_norm
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_type)                                   :: frechet_im, frechet_re, inner_deriv_im, &
@@ -1280,6 +1290,29 @@ CONTAINS
 
       CALL dbcsr_get_info(qs_ot_env%rot_mat_u, nfullrows_total=k)
       IF (k /= 0) THEN
+         rot_norm = dbcsr_frobenius_norm(qs_ot_env%rot_mat_x) + &
+                    dbcsr_frobenius_norm(qs_ot_env%rot_mat_x_im)
+         IF (rot_norm <= EPSILON(1.0_dp)) THEN
+            CALL dbcsr_get_info(qs_ot_env%rot_mat_gx, distribution=dist)
+
+            CALL dbcsr_transposed(tmp, qs_ot_env%rot_mat_dedu, shallow_data_copy=.FALSE., &
+                                  use_distribution=dist, transpose_distribution=.FALSE.)
+            CALL dbcsr_copy(qs_ot_env%rot_mat_gx, tmp)
+            CALL dbcsr_add(qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_dedu, &
+                           alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+            CALL dbcsr_release(tmp)
+
+            CALL dbcsr_transposed(tmp, qs_ot_env%rot_mat_dedu_im, shallow_data_copy=.FALSE., &
+                                  use_distribution=dist, transpose_distribution=.FALSE.)
+            CALL dbcsr_copy(qs_ot_env%rot_mat_gx_im, tmp)
+            CALL dbcsr_add(qs_ot_env%rot_mat_gx_im, qs_ot_env%rot_mat_dedu_im, &
+                           alpha_scalar=-1.0_dp, beta_scalar=-1.0_dp)
+            CALL dbcsr_release(tmp)
+
+            CALL timestop(handle)
+            RETURN
+         END IF
+
          CALL dbcsr_copy(work_re, qs_ot_env%rot_mat_dedu, name="work_re")
          CALL dbcsr_copy(work_im, qs_ot_env%rot_mat_dedu, name="work_im")
          CALL dbcsr_copy(tmp, qs_ot_env%rot_mat_dedu, name="tmp")

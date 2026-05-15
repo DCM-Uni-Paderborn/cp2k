@@ -64,7 +64,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 2
+   INTEGER, PARAMETER                   :: ot_restart_version = 3
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -523,10 +523,10 @@ CONTAINS
       INTEGER, DIMENSION(13)                             :: int_payload
       LOGICAL :: has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, has_ener_x, &
          has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
-         has_matrix_history, has_matrix_history_im, has_rot_history, has_rot_history_im, &
-         has_rot_mat_dx, has_rot_mat_dx_im, has_rot_mat_gx_old, has_rot_mat_gx_old_im, &
-         has_rot_mat_x, has_rot_mat_x_im
-      LOGICAL, DIMENSION(25)                             :: log_payload
+         has_matrix_history, has_matrix_history_im, has_matrix_x, has_matrix_x_im, &
+         has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
+         has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
+      LOGICAL, DIMENSION(27)                             :: log_payload
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
 
       nchannel = SIZE(qs_ot_env)
@@ -547,6 +547,9 @@ CONTAINS
                          ASSOCIATED(qs_ot_env(ichannel)%rot_mat_x)
          has_rot_mat_x_im = qs_ot_env(ichannel)%state_allocated .AND. &
                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_x_im)
+         has_matrix_x = qs_ot_env(ichannel)%state_allocated .AND. ASSOCIATED(qs_ot_env(ichannel)%matrix_x)
+         has_matrix_x_im = qs_ot_env(ichannel)%state_allocated .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%matrix_x_im)
          has_ener_x = qs_ot_env(ichannel)%state_allocated .AND. ASSOCIATED(qs_ot_env(ichannel)%ener_x)
          has_matrix_dx = qs_ot_env(ichannel)%state_allocated .AND. ASSOCIATED(qs_ot_env(ichannel)%matrix_dx)
          has_matrix_dx_im = qs_ot_env(ichannel)%state_allocated .AND. &
@@ -605,7 +608,8 @@ CONTAINS
                         has_rot_mat_dx, has_rot_mat_dx_im, has_rot_mat_gx_old, &
                         has_rot_mat_gx_old_im, has_ener_dx, has_ener_gx_old, &
                         has_diis_scalars, has_matrix_history, has_matrix_history_im, &
-                        has_rot_history, has_rot_history_im, has_ener_history]
+                        has_rot_history, has_rot_history_im, has_ener_history, &
+                        has_matrix_x, has_matrix_x_im]
          real_payload = [qs_ot_env(ichannel)%kpoint_weight, &
                          qs_ot_env(ichannel)%delta, qs_ot_env(ichannel)%gnorm, &
                          qs_ot_env(ichannel)%gnorm_old, qs_ot_env(ichannel)%etotal, &
@@ -624,6 +628,10 @@ CONTAINS
                                                             qs_ot_env(ichannel), ires)
          IF (has_rot_mat_x_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_x_im, &
                                                                qs_ot_env(ichannel), ires)
+         IF (has_matrix_x) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_x, &
+                                                           qs_ot_env(ichannel), ires)
+         IF (has_matrix_x_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_x_im, &
+                                                              qs_ot_env(ichannel), ires)
          IF (has_ener_x .AND. ires > 0) WRITE (ires) qs_ot_env(ichannel)%ener_x
          IF (has_matrix_dx) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_dx, &
                                                             qs_ot_env(ichannel), ires)
@@ -738,7 +746,7 @@ CONTAINS
                                                             nener, version_read
       INTEGER, DIMENSION(13)                             :: int_payload
       LOGICAL                                            :: payload_found
-      LOGICAL, DIMENSION(25)                             :: log_payload
+      LOGICAL, DIMENSION(27)                             :: log_payload
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
 
       payload_found = .FALSE.
@@ -819,6 +827,8 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%has_rot_history = log_payload(23)
          scf_env%qs_ot_restart%channel(ichannel)%has_rot_history_im = log_payload(24)
          scf_env%qs_ot_restart%channel(ichannel)%has_ener_history = log_payload(25)
+         scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x = log_payload(26)
+         scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x_im = log_payload(27)
          scf_env%qs_ot_restart%channel(ichannel)%kpoint_weight = real_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%delta = real_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%gnorm = real_payload(3)
@@ -835,6 +845,14 @@ CONTAINS
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_x_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)
             CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im, rst_unit)
+         END IF
+         IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x) THEN
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_x, rst_unit)
+         END IF
+         IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x_im) THEN
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im, rst_unit)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_ener_x) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_x(nener))

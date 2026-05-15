@@ -159,7 +159,8 @@ MODULE qs_scf
    USE qs_ot,                           ONLY: qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_get_p,&
                                               qs_ot_new_preconditioner
-   USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
+   USE qs_ot_scf,                       ONLY: init_ot_smearing_energies,&
+                                              ot_scf_destroy,&
                                               ot_scf_init,&
                                               ot_scf_read_input
    USE qs_ot_types,                     ONLY: qs_ot_allocate,&
@@ -177,6 +178,7 @@ MODULE qs_scf
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_scf_diagonalization,          ONLY: do_general_diag_kp
    USE qs_scf_initialization,           ONLY: qs_scf_env_initialize
    USE qs_scf_loop_utils,               ONLY: qs_scf_check_inner_exit,&
                                               qs_scf_check_outer_exit,&
@@ -1212,11 +1214,12 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, nkpoint, nmo, nspin_ot
       INTEGER, DIMENSION(2)                              :: kp_range
-      LOGICAL                                            :: do_kpoints, do_rotation, has_unit_metric
+      LOGICAL                                            :: do_kpoints, do_rotation, &
+                                                            has_unit_metric, init_diag_step
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_kp
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_kp, matrix_s_kp
       TYPE(dbcsr_type), POINTER                          :: orthogonality_metric
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -1225,7 +1228,8 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (scf_control, matrix_s, matrix_s_kp, matrix_ks, dft_control, mos, mo_coeff, kpoints, wkp)
+      NULLIFY (scf_control, matrix_s, matrix_ks_kp, matrix_s_kp, matrix_ks, dft_control, mos, mo_coeff, &
+               kpoints, wkp)
 
       CPASSERT(ASSOCIATED(scf_env))
       CPASSERT(ASSOCIATED(qs_env))
@@ -1336,8 +1340,12 @@ CONTAINS
       CASE (ot_method_nr)
          IF (do_kpoints) THEN
             IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) THEN
-               CALL get_qs_env(qs_env, matrix_s_kp=matrix_s_kp)
+               CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks_kp, matrix_s_kp=matrix_s_kp)
+               CPASSERT(ASSOCIATED(matrix_ks_kp))
                CPASSERT(ASSOCIATED(matrix_s_kp))
+               init_diag_step = .FALSE.
+               CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, &
+                                       .FALSE., init_diag_step)
                CALL allocate_qs_ot_envs(scf_env=scf_env, &
                                         scf_control=scf_control, &
                                         dft_control=dft_control, &
@@ -1721,6 +1729,7 @@ CONTAINS
             END IF
 
             IF (scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
+               CALL init_ot_smearing_energies(kp%mos(1, ispin), scf_control%smear)
                IF (ASSOCIATED(eigenvalues)) THEN
                   CPASSERT(SIZE(scf_env%qs_ot_env(ot_channel)%ener_x) == SIZE(eigenvalues))
                   scf_env%qs_ot_env(ot_channel)%ener_x = eigenvalues
@@ -1728,9 +1737,6 @@ CONTAINS
                   scf_env%qs_ot_env(ot_channel)%ener_x = 0.0_dp
                END IF
             END IF
-            CALL apply_qs_ot_kpoint_restart(scf_env%qs_ot_env(ot_channel), &
-                                            scf_env, ot_channel, nmo)
-
             SELECT CASE (scf_env%qs_ot_env(ot_channel)%settings%ot_algorithm)
             CASE ("TOD")
                CALL qs_ot_get_p(scf_env%qs_ot_env(ot_channel)%matrix_x, &
@@ -1754,6 +1760,8 @@ CONTAINS
             CASE DEFAULT
                CPABORT("Algorithm not yet implemented")
             END SELECT
+            CALL apply_qs_ot_kpoint_restart(scf_env%qs_ot_env(ot_channel), &
+                                            scf_env, ot_channel, nmo)
 
             CPASSERT(scf_env%qs_ot_env(ot_channel)%state_allocated)
             IF (.NOT. use_real_wfn) THEN
@@ -1804,6 +1812,19 @@ CONTAINS
 
       ndiis = scf_env%qs_ot_restart%channel(ot_channel)%diis_m
       restored = .FALSE.
+      IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_x .AND. &
+          ASSOCIATED(qs_ot_env%matrix_x)) THEN
+         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_x, &
+                               qs_ot_env%matrix_x)
+         restored = .TRUE.
+      END IF
+      IF (qs_ot_env%has_complex_kpoint_state .AND. &
+          scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_x_im .AND. &
+          ASSOCIATED(qs_ot_env%matrix_x_im)) THEN
+         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_x_im, &
+                               qs_ot_env%matrix_x_im)
+         restored = .TRUE.
+      END IF
       IF (qs_ot_env%settings%do_rotation .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_x .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_x)) THEN

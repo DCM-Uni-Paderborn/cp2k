@@ -101,6 +101,7 @@ MODULE qs_scf_types
       INTEGER :: nmo = 0, nmo_ortho = 0
       INTEGER :: diis_m = 0
       LOGICAL :: has_complex_kpoint_state = .FALSE., do_rotation = .FALSE., do_ener = .FALSE.
+      LOGICAL :: has_matrix_x = .FALSE., has_matrix_x_im = .FALSE.
       LOGICAL :: has_rot_mat_x = .FALSE., has_rot_mat_x_im = .FALSE., has_ener_x = .FALSE.
       LOGICAL :: has_matrix_dx = .FALSE., has_matrix_dx_im = .FALSE.
       LOGICAL :: has_matrix_gx_old = .FALSE., has_matrix_gx_old_im = .FALSE.
@@ -118,6 +119,7 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: delta = 0.0_dp, gnorm = 0.0_dp, gnorm_old = 0.0_dp
       REAL(KIND=dp) :: etotal = 0.0_dp, gradient = 0.0_dp, ds_min = 0.0_dp
       REAL(KIND=dp) :: broyden_adaptive_sigma = 0.0_dp
+      TYPE(cp_fm_type), POINTER :: matrix_x => NULL(), matrix_x_im => NULL()
       TYPE(cp_fm_type), POINTER :: rot_mat_x => NULL(), rot_mat_x_im => NULL()
       TYPE(cp_fm_type), POINTER :: matrix_dx => NULL(), matrix_dx_im => NULL()
       TYPE(cp_fm_type), POINTER :: matrix_gx_old => NULL(), matrix_gx_old_im => NULL()
@@ -432,6 +434,14 @@ CONTAINS
             IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)) THEN
                CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)
                DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_x)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_x)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)
             END IF
             IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)) THEN
                CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)

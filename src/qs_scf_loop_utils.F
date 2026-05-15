@@ -595,6 +595,27 @@ CONTAINS
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
+         CALL dbcsr_set(matrix_s_re, 0.0_dp)
+         CALL dbcsr_set(matrix_s_im, 0.0_dp)
+         CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s, &
+                             ispin=1, xkp=xkp(1:3, ikpoint), &
+                             cell_to_index=cell_to_index, sab_nl=sab_nl)
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff)
+            CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
+            CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                matrix_hc_im(local_channel)%matrix, &
+                                                matrix_s_re, matrix_s_im, &
+                                                local_ot_env(local_channel))
+            CALL copy_dbcsr_to_fm(matrix_hc(local_channel)%matrix, mo_coeff)
+            CALL copy_dbcsr_to_fm(matrix_hc_im(local_channel)%matrix, mo_coeff_im)
+         END DO
+      END DO
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
             CALL dbcsr_set(matrix_k_re, 0.0_dp)

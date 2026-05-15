@@ -61,6 +61,7 @@ MODULE qs_ot_scf
    PUBLIC :: ot_scf_mini
    PUBLIC :: ot_scf_destroy
    PUBLIC :: ot_scf_read_input
+   PUBLIC :: init_ot_smearing_energies
 
 CONTAINS
 
