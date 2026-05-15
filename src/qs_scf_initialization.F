@@ -895,8 +895,7 @@ CONTAINS
             CPABORT("OT with ADDED_MOS requires OT%ENERGIES.")
          IF (dft_control%restricted .AND. dft_control%nspins /= 2) &
             CPABORT("nspin must be 2 for restricted (ROKS)")
-         IF (do_kpoints) &
-            CPABORT("OT not possible with kpoint calculations")
+         ! K-point OT is allowed to reach the spin/k-point channel allocation stub.
       ELSEIF (scf_env%method /= smeagol_method_nr) THEN
          CPABORT("OT or DIAGONALIZATION have to be set")
       END IF

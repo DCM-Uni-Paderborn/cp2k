@@ -93,7 +93,8 @@ MODULE qs_scf
    USE kpoint_io,                       ONLY: write_kpoints_restart
    USE kpoint_methods,                  ONLY: kpoint_initialize_mo_set,&
                                               kpoint_initialize_mos
-   USE kpoint_types,                    ONLY: kpoint_env_type,&
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_env_type,&
                                               kpoint_type
    USE machine,                         ONLY: m_flush,&
                                               m_walltime
@@ -152,7 +153,9 @@ MODULE qs_scf
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_init,&
                                               ot_scf_read_input
-   USE qs_ot_types,                     ONLY: qs_ot_number_of_channels
+   USE qs_ot_types,                     ONLY: qs_ot_channel_index,&
+                                              qs_ot_number_of_channels,&
+                                              qs_ot_set_context
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
                                               outer_loop_optimize,&
                                               outer_loop_purge_history,&
@@ -1185,9 +1188,10 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'init_scf_loop'
 
-      INTEGER                                            :: handle, ispin, nmo, number_of_OT_envs
-      LOGICAL                                            :: do_kpoints, do_rotation, &
-                                                            has_unit_metric, is_full_all
+      INTEGER                                            :: handle, ispin, nkpoint, nmo, nspin_ot
+      INTEGER, DIMENSION(2)                              :: kp_range
+      LOGICAL                                            :: do_kpoints, do_rotation, has_unit_metric
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
       TYPE(dbcsr_type), POINTER                          :: orthogonality_metric
@@ -1198,7 +1202,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (scf_control, matrix_s, matrix_ks, dft_control, mos, mo_coeff, kpoints)
+      NULLIFY (scf_control, matrix_s, matrix_ks, dft_control, mos, mo_coeff, kpoints, wkp)
 
       CPASSERT(ASSOCIATED(scf_env))
       CPASSERT(ASSOCIATED(qs_env))
@@ -1209,6 +1213,12 @@ CONTAINS
                       do_kpoints=do_kpoints, &
                       kpoints=kpoints, &
                       mos=mos)
+
+      nkpoint = 1
+      kp_range = 0
+      nspin_ot = dft_control%nspins
+      IF (dft_control%restricted) nspin_ot = 1
+      IF (do_kpoints) CALL get_kpoint_info(kpoints, nkp=nkpoint, kp_range=kp_range, wkp=wkp)
 
       ! if using mo_coeff_b then copy to fm
       DO ispin = 1, SIZE(mos) !fm->dbcsr
@@ -1301,6 +1311,25 @@ CONTAINS
       CASE (block_davidson_diag_method_nr)
          ! Preconditioner initialized within the loop, when required
       CASE (ot_method_nr)
+         IF (do_kpoints) THEN
+            IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) THEN
+               CALL allocate_qs_ot_envs(scf_env=scf_env, &
+                                        scf_control=scf_control, &
+                                        dft_control=dft_control, &
+                                        scf_section=scf_section, &
+                                        do_kpoints=do_kpoints, &
+                                        nkpoint=nkpoint, &
+                                        nspin_ot=nspin_ot, &
+                                        kp_range=kp_range, &
+                                        wkp=wkp)
+            END IF
+
+            CALL cp_abort(__LOCATION__, &
+                          "OT with k-points reached the spin/k-point channel allocation stub. "// &
+                          "K-point OT minimization remains disabled until k-resolved rotations, "// &
+                          "energy variables, density build, and restart payload are implemented.")
+         END IF
+
          CALL get_qs_env(qs_env, &
                          has_unit_metric=has_unit_metric, &
                          matrix_s=matrix_s, &
@@ -1329,47 +1358,15 @@ CONTAINS
 
          IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) THEN
 
-            ! restricted calculations require just one set of OT orbitals
-            number_of_OT_envs = qs_ot_number_of_channels(dft_control%nspins, &
-                                                         restricted=dft_control%restricted)
-
-            ALLOCATE (scf_env%qs_ot_env(number_of_OT_envs))
-
-            ! XXX Joost XXX should disentangle reading input from this part
-            IF (scf_env%outer_scf%iter_count > 0) THEN
-               IF (scf_env%iter_delta < scf_control%eps_diis) THEN
-                  scf_env%qs_ot_env(1)%settings%ot_state = 1
-               END IF
-            END IF
-            !
-            CALL ot_scf_read_input(scf_env%qs_ot_env, scf_section)
-            !
-            IF (scf_env%outer_scf%iter_count > 0) THEN
-               IF (scf_env%qs_ot_env(1)%settings%ot_state == 1) THEN
-                  scf_control%max_scf = MAX(scf_env%qs_ot_env(1)%settings%max_scf_diis, &
-                                            scf_control%max_scf)
-               END IF
-            END IF
-
-            ! keep a note that we are restricted
-            IF (dft_control%restricted) THEN
-               scf_env%qs_ot_env(1)%restricted = .TRUE.
-               ! requires rotation
-               IF (.NOT. scf_env%qs_ot_env(1)%settings%do_rotation) &
-                  CALL cp_abort(__LOCATION__, &
-                                "Restricted calculation with OT requires orbital rotation. Please "// &
-                                "activate the OT%ROTATION keyword!")
-            ELSE
-               scf_env%qs_ot_env(:)%restricted = .FALSE.
-            END IF
-
-            ! this will rotate the MOs to be eigen states, which is not compatible with rotation
-            ! e.g. mo_derivs here do not yet include potentially different occupations numbers
-            do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
-            ! only full all needs rotation
-            is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
-            IF (do_rotation .AND. is_full_all) &
-               CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
+            CALL allocate_qs_ot_envs(scf_env=scf_env, &
+                                     scf_control=scf_control, &
+                                     dft_control=dft_control, &
+                                     scf_section=scf_section, &
+                                     do_kpoints=do_kpoints, &
+                                     nkpoint=nkpoint, &
+                                     nspin_ot=nspin_ot, &
+                                     kp_range=kp_range, &
+                                     wkp=wkp)
 
             ! might need the KS matrix to init properly
             CALL qs_ks_update_qs_env(qs_env, just_energy=.FALSE., &
@@ -1445,6 +1442,103 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE init_scf_loop
+
+! **************************************************************************************************
+!> \brief allocate OT environments and label their spin/k-point channel identity
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param dft_control ...
+!> \param scf_section ...
+!> \param do_kpoints ...
+!> \param nkpoint ...
+!> \param nspin_ot ...
+!> \param kp_range ...
+!> \param wkp ...
+! **************************************************************************************************
+   SUBROUTINE allocate_qs_ot_envs(scf_env, scf_control, dft_control, scf_section, &
+                                  do_kpoints, nkpoint, nspin_ot, kp_range, wkp)
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(section_vals_type), POINTER                   :: scf_section
+      LOGICAL, INTENT(IN)                                :: do_kpoints
+      INTEGER, INTENT(IN)                                :: nkpoint, nspin_ot
+      INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+
+      INTEGER                                            :: ikpoint, ispin, local_kpoint, &
+                                                            number_of_OT_envs, ot_channel
+      LOGICAL                                            :: do_rotation, is_full_all
+      REAL(KIND=dp)                                      :: kpoint_weight
+
+      CPASSERT(.NOT. ASSOCIATED(scf_env%qs_ot_env))
+
+      ! Restricted calculations require just one set of OT orbitals per k-point.
+      number_of_OT_envs = qs_ot_number_of_channels(dft_control%nspins, &
+                                                   nkpoint=nkpoint, &
+                                                   restricted=dft_control%restricted)
+
+      ALLOCATE (scf_env%qs_ot_env(number_of_OT_envs))
+
+      ! XXX Joost XXX should disentangle reading input from this part
+      IF (scf_env%outer_scf%iter_count > 0) THEN
+         IF (scf_env%iter_delta < scf_control%eps_diis) THEN
+            scf_env%qs_ot_env(1)%settings%ot_state = 1
+         END IF
+      END IF
+
+      CALL ot_scf_read_input(scf_env%qs_ot_env, scf_section)
+
+      IF (scf_env%outer_scf%iter_count > 0) THEN
+         IF (scf_env%qs_ot_env(1)%settings%ot_state == 1) THEN
+            scf_control%max_scf = MAX(scf_env%qs_ot_env(1)%settings%max_scf_diis, &
+                                      scf_control%max_scf)
+         END IF
+      END IF
+
+      ! Keep a note that we are restricted.
+      IF (dft_control%restricted) THEN
+         scf_env%qs_ot_env(:)%restricted = .TRUE.
+         ! requires rotation
+         IF (.NOT. scf_env%qs_ot_env(1)%settings%do_rotation) &
+            CALL cp_abort(__LOCATION__, &
+                          "Restricted calculation with OT requires orbital rotation. Please "// &
+                          "activate the OT%ROTATION keyword!")
+      ELSE
+         scf_env%qs_ot_env(:)%restricted = .FALSE.
+      END IF
+
+      ! This will rotate the MOs to be eigen states, which is not compatible with rotation.
+      ! e.g. mo_derivs here do not yet include potentially different occupation numbers.
+      do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
+      ! Only full all needs rotation.
+      is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
+      IF (do_rotation .AND. is_full_all) &
+         CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
+
+      DO ikpoint = 1, nkpoint
+         local_kpoint = 0
+         IF (do_kpoints) THEN
+            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) &
+               local_kpoint = ikpoint - kp_range(1) + 1
+         END IF
+         DO ispin = 1, nspin_ot
+            ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+            IF (do_kpoints) THEN
+               kpoint_weight = 1.0_dp
+               IF (ASSOCIATED(wkp)) kpoint_weight = wkp(ikpoint)
+               CALL qs_ot_set_context(scf_env%qs_ot_env(ot_channel), &
+                                      spin_index=ispin, &
+                                      kpoint_index=ikpoint, &
+                                      local_kpoint_index=local_kpoint, &
+                                      kpoint_weight=kpoint_weight)
+            ELSE
+               CALL qs_ot_set_context(scf_env%qs_ot_env(ot_channel), spin_index=ispin)
+            END IF
+         END DO
+      END DO
+
+   END SUBROUTINE allocate_qs_ot_envs
 
 ! **************************************************************************************************
 !> \brief perform cleanup operations (like releasing temporary storage)
