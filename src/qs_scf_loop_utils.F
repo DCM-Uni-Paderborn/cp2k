@@ -844,6 +844,8 @@ CONTAINS
 
       INTEGER                                            :: group, ikpoint, imo, ispin, local_channel, &
                                                             local_kpoint, ngroups, nmo
+      REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
+
       REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, sigma, v
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
@@ -870,6 +872,9 @@ CONTAINS
          sigma = 0.0_dp
       END IF
 
+      ! For FD smearing, g_i = -df_i/deps_i. Fixed electron number removes the
+      ! chemical-potential mode, giving the projected response
+      ! w_i*g_i*(<v>_g - v_i) with <v>_g = sum(w_i*g_i*v_i)/sum(w_i*g_i).
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -912,8 +917,11 @@ CONTAINS
 
                IF (local_ot_env(local_channel)%settings%occupation_preconditioner .AND. &
                    smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
+                  ! Diagonal part of the same fixed-N Mermin Hessian. The exact
+                  ! projector has a dense rank-one correction, while this option
+                  ! only damps locally stiff occupation modes.
                   curvature = wkp(ikpoint)*gvalue
-                  IF (curvature > 1.0_dp) &
+                  IF (curvature > curvature_floor) &
                      local_ot_env(local_channel)%ener_gx(imo) = &
                      local_ot_env(local_channel)%ener_gx(imo)/curvature
                END IF

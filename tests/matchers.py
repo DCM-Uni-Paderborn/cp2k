@@ -92,6 +92,24 @@ class TextPresenceMatcher(Matcher):
 
 
 # ======================================================================================
+class TextAbsenceMatcher(Matcher):
+    def __init__(self, text: Optional[str] = None):
+        self.text = text
+
+    def run(self, output: str, **kwargs: Any) -> MatchResult:
+        text = kwargs.get("text", self.text)
+        assert isinstance(text, str) and text
+        count = output.count(text)
+        if count > 0:
+            return MatchResult(
+                "WRONG RESULT",
+                f"Forbidden text found {count} time(s): '{text}'.\n",
+                value=None,
+            )
+        return MatchResult("OK", error=None, value=None)
+
+
+# ======================================================================================
 class MatcherRegistry(Dict[str, Matcher]):
     def __setitem__(self, key: str, value: Matcher) -> None:
         assert key not in self  # check for name collisions
@@ -213,6 +231,7 @@ registry["DEBUG_force_sum"] = GenericMatcher(
 registry["XTB_reference_cli_failed"] = TextPresenceMatcher(
     "tblite reference CLI check failed to run."
 )
+registry["NO_TEXT"] = TextAbsenceMatcher()
 registry["M083"] = GenericMatcher(r"1[   1] - 2[   1]", col=7)
 registry["M084"] = GenericMatcher(r"Ionization potential of the excited atom:", col=7)
 registry["M085"] = GenericMatcher(r"Total FORCE_EVAL ( SIRIUS ) energy", col=9)

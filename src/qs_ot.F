@@ -1272,10 +1272,11 @@ CONTAINS
       COMPLEX(KIND=dp)                                   :: cval_in, cval_out
       INTEGER                                            :: col, handle, i, j, k, row
       INTEGER, DIMENSION(:), POINTER                     :: col_blk_offset, row_blk_offset
-      LOGICAL                                            :: found
+      LOGICAL                                            :: found_im, found_out_im, found_out_re, &
+                                                            found_re
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
                                                             block_out_re
-      REAL(KIND=dp)                                      :: e1, e2, rot_norm
+      REAL(KIND=dp)                                      :: e1, e2, im_part, re_part, rot_norm
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_type)                                   :: frechet_im, frechet_re, inner_deriv_im, &
@@ -1342,25 +1343,34 @@ CONTAINS
          CALL dbcsr_multiply('T', 'N', -1.0_dp, qs_ot_env%rot_mat_evec_im, &
                              work_re, 1.0_dp, inner_deriv_im)
 
-         ! outer_deriv_ij = kernel(eval_i, eval_j) * inner_deriv_ij
-         CALL dbcsr_copy(outer_deriv_re, qs_ot_env%rot_mat_dedu, name="outer_deriv_re")
-         CALL dbcsr_copy(outer_deriv_im, qs_ot_env%rot_mat_dedu, name="outer_deriv_im")
+         ! outer_deriv_ij = kernel(eval_i, eval_j) * inner_deriv_ij.  Re/Im
+         ! parts can have different sparse block patterns, so iterate over
+         ! their union and treat missing partner blocks as zero.
+         CALL dbcsr_copy(outer_deriv_re, inner_deriv_re, name="outer_deriv_re")
+         CALL dbcsr_add(outer_deriv_re, inner_deriv_im, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+         CALL dbcsr_set(outer_deriv_re, 0.0_dp)
+         CALL dbcsr_copy(outer_deriv_im, outer_deriv_re, name="outer_deriv_im")
 
-         CALL dbcsr_get_info(qs_ot_env%rot_mat_dedu, row_blk_offset=row_blk_offset, &
+         CALL dbcsr_get_info(outer_deriv_re, row_blk_offset=row_blk_offset, &
                              col_blk_offset=col_blk_offset)
-         CALL dbcsr_iterator_start(iter, qs_ot_env%rot_mat_dedu)
+         CALL dbcsr_iterator_start(iter, outer_deriv_re)
          DO WHILE (dbcsr_iterator_blocks_left(iter))
             CALL dbcsr_iterator_next_block(iter, row, col)
-            CALL dbcsr_get_block_p(inner_deriv_re, row, col, block_in_re, found)
-            CALL dbcsr_get_block_p(inner_deriv_im, row, col, block_in_im, found)
-            CALL dbcsr_get_block_p(outer_deriv_re, row, col, block_out_re, found)
-            CALL dbcsr_get_block_p(outer_deriv_im, row, col, block_out_im, found)
+            CALL dbcsr_get_block_p(inner_deriv_re, row, col, block_in_re, found_re)
+            CALL dbcsr_get_block_p(inner_deriv_im, row, col, block_in_im, found_im)
+            CALL dbcsr_get_block_p(outer_deriv_re, row, col, block_out_re, found_out_re)
+            CALL dbcsr_get_block_p(outer_deriv_im, row, col, block_out_im, found_out_im)
+            CPASSERT(found_out_re .AND. found_out_im)
 
-            DO i = 1, SIZE(block_in_re, 1)
-            DO j = 1, SIZE(block_in_re, 2)
+            DO i = 1, SIZE(block_out_re, 1)
+            DO j = 1, SIZE(block_out_re, 2)
                e1 = qs_ot_env%rot_mat_evals(row_blk_offset(row) + i - 1)
                e2 = qs_ot_env%rot_mat_evals(col_blk_offset(col) + j - 1)
-               cval_in = CMPLX(block_in_re(i, j), block_in_im(i, j), dp)
+               re_part = 0.0_dp
+               im_part = 0.0_dp
+               IF (found_re) re_part = block_in_re(i, j)
+               IF (found_im) im_part = block_in_im(i, j)
+               cval_in = CMPLX(re_part, im_part, dp)
                cval_out = cval_in*qs_ot_complex_exp_frechet_kernel(e1, e2)
                block_out_re(i, j) = REAL(cval_out, KIND=dp)
                block_out_im(i, j) = AIMAG(cval_out)

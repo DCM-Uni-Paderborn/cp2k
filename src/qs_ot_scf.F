@@ -360,6 +360,7 @@ CONTAINS
       TYPE(smear_type), POINTER                          :: smear
 
       CHARACTER(len=*), PARAMETER :: routineN = 'precondition_ot_energy_gradient'
+      REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
       INTEGER                                            :: handle, imo, ispin
       REAL(KIND=dp)                                      :: curvature, occ_denom, thermal_scale
@@ -387,15 +388,18 @@ CONTAINS
          RETURN
       END IF
 
-      ! Fermi-Dirac fixed-N response has curvature scale
-      ! f_i(maxocc-f_i)/(maxocc*kT); damp only modes stiffer than 1 Ha^-1.
+      ! Fermi-Dirac fixed-N Mermin response has diagonal curvature
+      ! f_i(maxocc-f_i)/(maxocc*kT). The exact projector also couples all
+      ! energy variables through the chemical potential; this diagonal
+      ! preconditioner only damps modes stiffer than curvature_floor.
       DO ispin = 1, SIZE(qs_ot_env)
          thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
+         IF (thermal_scale <= EPSILON(thermal_scale)) CYCLE
          DO imo = 1, SIZE(qs_ot_env(ispin)%ener_gx)
             occ_denom = occupation_numbers(ispin)%array(imo)* &
                         (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
             curvature = occ_denom/thermal_scale
-            IF (curvature > 1.0_dp) THEN
+            IF (curvature > curvature_floor) THEN
                qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)/curvature
             END IF
          END DO
