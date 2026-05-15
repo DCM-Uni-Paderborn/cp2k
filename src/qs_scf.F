@@ -1347,10 +1347,8 @@ CONTAINS
                                                 nspin_ot=nspin_ot)
             END IF
 
-            CALL cp_abort(__LOCATION__, &
-                          "OT with k-points allocated spin/k-point minimizer state. "// &
-                          "K-point OT minimization remains disabled until the k-resolved driver wires "// &
-                          "complex H(k)*C(k), density build, and restart payload to that state.")
+            CALL timestop(handle)
+            RETURN
          END IF
 
          CALL get_qs_env(qs_env, &

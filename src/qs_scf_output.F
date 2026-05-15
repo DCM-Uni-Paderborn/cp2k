@@ -308,10 +308,9 @@ CONTAINS
                solver_method = "OT"
 
                IF (do_kpoints) THEN
-                  CPABORT("The OT method is not implemented for k points")
-               END IF
-
-               IF (final_mos) THEN
+                  mo_set => mos(ispin)
+                  NULLIFY (umo_set)
+               ELSE IF (final_mos) THEN
 
                   matrix_ks => ks(ispin)%matrix
                   matrix_s => s(1)%matrix
@@ -423,7 +422,7 @@ CONTAINS
                   do_printout = .FALSE.
                   EXIT kp_loop
 
-               END IF ! final MOs
+               END IF ! final MOs / k-point OT
 
             ELSE
 

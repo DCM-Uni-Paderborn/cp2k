@@ -10,16 +10,29 @@
 MODULE qs_scf_loop_utils
    USE cp_control_types,                ONLY: dft_control_type,&
                                               hairy_probes_type
-   USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
-                                              dbcsr_get_info,&
-                                              dbcsr_p_type,&
-                                              dbcsr_type
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_p_type, &
+        dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_scale_by_vector
+   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              copy_fm_to_dbcsr,&
+                                              cp_dbcsr_sm_fm_multiply
    USE cp_external_control,             ONLY: external_control
+   USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_release,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_to_string
    USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: default_string_length,&
                                               dp
-   USE kpoint_types,                    ONLY: kpoint_type
+   USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
+                                              kpoint_density_transform,&
+                                              kpoint_set_mo_occupation,&
+                                              rskp_transform
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_env_type,&
+                                              kpoint_type
    USE message_passing,                 ONLY: mp_para_env_type
    USE qs_density_matrices,             ONLY: calculate_density_matrix
    USE qs_density_mixing_types,         ONLY: broyden_mixing_nr,&
@@ -38,10 +51,17 @@ MODULE qs_scf_loop_utils
                                               qs_ks_env_type
    USE qs_mixing_utils,                 ONLY: self_consistency_check
    USE qs_mo_occupation,                ONLY: set_mo_occupation
-   USE qs_mo_types,                     ONLY: mo_set_type
+   USE qs_mo_types,                     ONLY: get_mo_set,&
+                                              mo_set_type
    USE qs_mom_methods,                  ONLY: do_mom_diag
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_ot,                           ONLY: qs_ot_get_orbitals_ref_complex
+   USE qs_ot_minimizer,                 ONLY: ot_mini
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_mini
+   USE qs_ot_types,                     ONLY: qs_ot_channel_index,&
+                                              qs_ot_check_channel_context,&
+                                              qs_ot_type
    USE qs_outer_scf,                    ONLY: outer_loop_gradient
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
@@ -403,11 +423,20 @@ CONTAINS
                        cp_to_string(scf_env%method))
       CASE (ot_diag_method_nr, &
             block_krylov_diag_method_nr, &
-            block_davidson_diag_method_nr, &
-            ot_method_nr)
+            block_davidson_diag_method_nr)
          CALL cp_abort(__LOCATION__, &
                        "KP code: Scf method not available: "// &
                        cp_to_string(scf_env%method))
+      CASE (ot_method_nr)
+         CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, matrix_s_kp=matrix_s)
+         CALL qs_scf_loop_do_ot_kp(qs_env, scf_env, scf_control, matrix_ks, matrix_s, &
+                                   added_mos_auto_grow=my_added_mos_auto_grow)
+         IF (my_added_mos_auto_grow) THEN
+            IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .TRUE.
+            IF (disable_diis) scf_control%eps_diis = saved_eps_diis
+            CALL timestop(handle)
+            RETURN
+         END IF
       CASE (smeagol_method_nr)
          ! SMEAGOL interface
          diis_step = .FALSE.
@@ -437,6 +466,215 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_new_mos_kp
+
+! **************************************************************************************************
+!> \brief K-point OT driver for local complex spin/k-point channels
+!> \param qs_env ...
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param matrix_ks ...
+!> \param matrix_s ...
+!> \param added_mos_auto_grow ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_do_ot_kp(qs_env, scf_env, scf_control, matrix_ks, matrix_s, &
+                                   added_mos_auto_grow)
+
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
+      LOGICAL, INTENT(OUT)                               :: added_mos_auto_grow
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_loop_do_ot_kp'
+
+      INTEGER                                            :: first_channel, handle, ikpoint, ispin, &
+                                                            local_channel, local_kpoint, nkpoint, &
+                                                            nlocal_channels, nmo, nspin_ot
+      INTEGER, DIMENSION(2)                              :: kp_range
+      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: use_real_wfn
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
+      TYPE(cp_fm_type)                                   :: hc_im, hc_re
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
+      TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc, matrix_hc_im
+      TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
+                                                            matrix_s_re
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         POINTER                                         :: sab_nl
+      TYPE(qs_energy_type), POINTER                      :: energy
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (cell_to_index, dft_control, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
+               matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, mo_coeff, &
+               mo_coeff_im, occupation_numbers, sab_nl, wkp, xkp)
+      added_mos_auto_grow = .FALSE.
+
+      CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
+      CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints)
+      CALL get_kpoint_info(kpoints, nkp=nkpoint, xkp=xkp, wkp=wkp, use_real_wfn=use_real_wfn, &
+                           kp_range=kp_range, cell_to_index=cell_to_index, sab_nl=sab_nl)
+      CPASSERT(ASSOCIATED(sab_nl))
+      CPASSERT(ASSOCIATED(matrix_ks))
+      CPASSERT(ASSOCIATED(matrix_s))
+
+      IF (use_real_wfn) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "K-point OT driver currently supports complex k-point wavefunctions only.")
+      END IF
+      IF (scf_env%qs_ot_env(1)%settings%ot_algorithm /= "REF") THEN
+         CALL cp_abort(__LOCATION__, &
+                       "K-point OT driver currently supports OT%ALGORITHM REF only.")
+      END IF
+      kp => kpoints%kp_env(1)%kpoint_env
+      nspin_ot = SIZE(kp%mos, 2)
+      CALL qs_ot_check_channel_context(scf_env%qs_ot_env, nspin_ot, &
+                                       nkpoint=nkpoint, &
+                                       restricted=ANY(scf_env%qs_ot_env(:)%restricted), &
+                                       require_kpoint=.TRUE., &
+                                       kp_range=kp_range, &
+                                       wkp=wkp, &
+                                       require_local_state=.TRUE., &
+                                       require_complex_state=.TRUE.)
+
+      first_channel = qs_ot_channel_index(1, kp_range(1), nspin_ot)
+      nlocal_channels = SIZE(kpoints%kp_env)*nspin_ot
+      local_ot_env => scf_env%qs_ot_env(first_channel:first_channel + nlocal_channels - 1)
+      local_ot_env(1)%etotal = energy%total
+
+      ALLOCATE (matrix_hc(nlocal_channels))
+      ALLOCATE (matrix_hc_im(nlocal_channels))
+      DO local_channel = 1, nlocal_channels
+         NULLIFY (matrix_hc(local_channel)%matrix)
+         NULLIFY (matrix_hc_im(local_channel)%matrix)
+         ALLOCATE (matrix_hc(local_channel)%matrix)
+         ALLOCATE (matrix_hc_im(local_channel)%matrix)
+         CALL dbcsr_copy(matrix_hc(local_channel)%matrix, local_ot_env(local_channel)%matrix_x, name="matrix_hc")
+         CALL dbcsr_copy(matrix_hc_im(local_channel)%matrix, local_ot_env(local_channel)%matrix_x_im, &
+                         name="matrix_hc_im")
+         CALL dbcsr_set(matrix_hc(local_channel)%matrix, 0.0_dp)
+         CALL dbcsr_set(matrix_hc_im(local_channel)%matrix, 0.0_dp)
+      END DO
+
+      ALLOCATE (matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im)
+      CALL dbcsr_create(matrix_k_re, template=matrix_ks(1, 1)%matrix, &
+                        matrix_type=dbcsr_type_symmetric)
+      CALL dbcsr_create(matrix_k_im, template=matrix_ks(1, 1)%matrix, &
+                        matrix_type=dbcsr_type_antisymmetric)
+      CALL dbcsr_create(matrix_s_re, template=matrix_s(1, 1)%matrix, &
+                        matrix_type=dbcsr_type_symmetric)
+      CALL dbcsr_create(matrix_s_im, template=matrix_s(1, 1)%matrix, &
+                        matrix_type=dbcsr_type_antisymmetric)
+      CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_re, sab_nl)
+      CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_im, sab_nl)
+      CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_re, sab_nl)
+      CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_im, sab_nl)
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL dbcsr_set(matrix_k_re, 0.0_dp)
+            CALL dbcsr_set(matrix_k_im, 0.0_dp)
+            CALL rskp_transform(rmatrix=matrix_k_re, cmatrix=matrix_k_im, rsmat=matrix_ks, &
+                                ispin=ispin, xkp=xkp(1:3, ikpoint), &
+                                cell_to_index=cell_to_index, sab_nl=sab_nl)
+
+            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, nmo=nmo, &
+                            occupation_numbers=occupation_numbers)
+            CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
+            CALL cp_fm_create(hc_re, mo_coeff%matrix_struct)
+            CALL cp_fm_create(hc_im, mo_coeff%matrix_struct)
+
+            CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff, hc_re, nmo)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff_im, hc_re, nmo, &
+                                         alpha=-1.0_dp, beta=1.0_dp)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff_im, hc_im, nmo)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff, hc_im, nmo, &
+                                         alpha=1.0_dp, beta=1.0_dp)
+
+            CALL copy_fm_to_dbcsr(hc_re, matrix_hc(local_channel)%matrix)
+            CALL copy_fm_to_dbcsr(hc_im, matrix_hc_im(local_channel)%matrix)
+
+            ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
+            orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*occupation_numbers(:)
+            CALL dbcsr_scale_by_vector(matrix_hc(local_channel)%matrix, &
+                                       alpha=orbital_scaling_factor, side='right')
+            CALL dbcsr_scale_by_vector(matrix_hc_im(local_channel)%matrix, &
+                                       alpha=orbital_scaling_factor, side='right')
+            DEALLOCATE (orbital_scaling_factor)
+
+            CALL cp_fm_release(hc_re)
+            CALL cp_fm_release(hc_im)
+         END DO
+      END DO
+
+      CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
+      scf_env%iter_delta = local_ot_env(1)%delta
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         CALL dbcsr_set(matrix_s_re, 0.0_dp)
+         CALL dbcsr_set(matrix_s_im, 0.0_dp)
+         CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s, &
+                             ispin=1, xkp=xkp(1:3, ikpoint), &
+                             cell_to_index=cell_to_index, sab_nl=sab_nl)
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
+            CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
+            CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                matrix_hc_im(local_channel)%matrix, &
+                                                matrix_s_re, matrix_s_im, &
+                                                local_ot_env(local_channel))
+            CALL copy_dbcsr_to_fm(matrix_hc(local_channel)%matrix, mo_coeff)
+            CALL copy_dbcsr_to_fm(matrix_hc_im(local_channel)%matrix, mo_coeff_im)
+            IF (local_ot_env(local_channel)%settings%do_ener) THEN
+               eigenvalues(:) = local_ot_env(local_channel)%ener_x(:)
+               kp%mos(2, ispin)%eigenvalues(:) = local_ot_env(local_channel)%ener_x(:)
+            END IF
+         END DO
+      END DO
+
+      CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
+                                    added_mos_auto=scf_control%added_mos_auto, &
+                                    added_mos_auto_grow=added_mos_auto_grow)
+      IF (.NOT. added_mos_auto_grow) THEN
+         fmwork => scf_env%scf_work1
+         CALL kpoint_density_matrices(kpoints)
+         CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
+                                       matrix_s(1, 1)%matrix, sab_nl, fmwork, &
+                                       qs_ot_env=scf_env%qs_ot_env)
+         scf_env%iter_method = scf_env%qs_ot_env(first_channel)%OT_METHOD_FULL
+         scf_env%iter_param = scf_env%qs_ot_env(first_channel)%ds_min
+         qs_env%broyden_adaptive_sigma = scf_env%qs_ot_env(first_channel)%broyden_adaptive_sigma
+      END IF
+
+      DO local_channel = 1, nlocal_channels
+         CALL dbcsr_release(matrix_hc(local_channel)%matrix)
+         CALL dbcsr_release(matrix_hc_im(local_channel)%matrix)
+         DEALLOCATE (matrix_hc(local_channel)%matrix)
+         DEALLOCATE (matrix_hc_im(local_channel)%matrix)
+      END DO
+      DEALLOCATE (matrix_hc, matrix_hc_im)
+
+      CALL dbcsr_deallocate_matrix(matrix_k_re)
+      CALL dbcsr_deallocate_matrix(matrix_k_im)
+      CALL dbcsr_deallocate_matrix(matrix_s_re)
+      CALL dbcsr_deallocate_matrix(matrix_s_im)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE qs_scf_loop_do_ot_kp
 
 ! **************************************************************************************************
 !> \brief the inner loop of scf, specific to using to the orbital transformation method
