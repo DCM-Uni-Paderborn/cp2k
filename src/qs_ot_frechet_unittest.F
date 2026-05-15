@@ -47,6 +47,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
+   CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
+                                                5.0E-9_dp, nfail)
 
    IF (nfail == 0) PRINT *, "qs_ot_frechet_unittest: OK"
 
@@ -607,6 +609,214 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_nondiag_tether_gradient
+
+! **************************************************************************************************
+!> \brief Check the gauge-projected complex canonical tether gradient.
+! **************************************************************************************************
+   SUBROUTINE check_complex_canonical_tether_gradient(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: err, fd, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n)                        :: eps, grad_eps, weights
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.31_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.17_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.05_dp, -0.02_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(1, 3) = CMPLX(-0.03_dp, 0.04_dp, KIND=dp)
+      base(3, 1) = CONJG(base(1, 3))
+      base(2, 3) = CMPLX(0.02_dp, 0.03_dp, KIND=dp)
+      base(3, 2) = CONJG(base(2, 3))
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.07_dp
+      x_re(2, 1) = -x_re(1, 2)
+      x_re(1, 3) = -0.03_dp
+      x_re(3, 1) = -x_re(1, 3)
+      x_re(2, 3) = 0.04_dp
+      x_re(3, 2) = -x_re(2, 3)
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.04_dp
+      x_im(3, 3) = 0.03_dp
+      x_im(1, 2) = -0.01_dp
+      x_im(2, 1) = x_im(1, 2)
+      x_im(1, 3) = 0.03_dp
+      x_im(3, 1) = x_im(1, 3)
+      x_im(2, 3) = 0.02_dp
+      x_im(3, 2) = x_im(2, 3)
+
+      eps = [-0.27_dp, -0.03_dp, 0.13_dp]
+      weights = [0.42_dp, 0.73_dp, 0.28_dp]
+      CALL dense_canonical_tether_gradient(x_re, x_im, base, eps, weights, &
+                                           grad_re, grad_im, grad_eps, value_p)
+
+      err = 0.0_dp
+      DO i = 1, n
+         eps(i) = eps(i) + fd_step
+         value_p = dense_canonical_tether_value(x_re, x_im, base, eps, weights)
+         eps(i) = eps(i) - 2.0_dp*fd_step
+         value_m = dense_canonical_tether_value(x_re, x_im, base, eps, weights)
+         eps(i) = eps(i) + fd_step
+         fd = (value_p - value_m)/(2.0_dp*fd_step)
+         err = MAX(err, ABS(fd - grad_eps(i)))
+      END DO
+
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_p_re(:, :) = x_re(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            x_p_re(i, j) = x_p_re(i, j) + fd_step
+            x_p_re(j, i) = x_p_re(j, i) - fd_step
+            x_m_re(i, j) = x_m_re(i, j) - fd_step
+            x_m_re(j, i) = x_m_re(j, i) + fd_step
+            value_p = dense_canonical_tether_value(x_p_re, x_p_im, base, eps, weights)
+            value_m = dense_canonical_tether_value(x_m_re, x_m_im, base, eps, weights)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_re(i, j)))
+
+            x_p_re(:, :) = x_re(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            x_p_im(i, j) = x_p_im(i, j) + fd_step
+            x_p_im(j, i) = x_p_im(j, i) + fd_step
+            x_m_im(i, j) = x_m_im(i, j) - fd_step
+            x_m_im(j, i) = x_m_im(j, i) - fd_step
+            value_p = dense_canonical_tether_value(x_p_re, x_p_im, base, eps, weights)
+            value_m = dense_canonical_tether_value(x_m_re, x_m_im, base, eps, weights)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_im(i, j)))
+         END DO
+      END DO
+
+      DO i = 1, n
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         x_p_im(i, i) = x_p_im(i, i) + fd_step
+         x_m_im(i, i) = x_m_im(i, i) - fd_step
+         value_p = dense_canonical_tether_value(x_p_re, x_p_im, base, eps, weights)
+         value_m = dense_canonical_tether_value(x_m_re, x_m_im, base, eps, weights)
+         fd = (value_p - value_m)/(2.0_dp*fd_step)
+         err = MAX(err, ABS(fd - 0.5_dp*grad_im(i, i)))
+      END DO
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_canonical_tether_gradient
+
+! **************************************************************************************************
+!> \brief Dense gauge-projected complex canonical tether value.
+! **************************************************************************************************
+   FUNCTION dense_canonical_tether_value(x_re, x_im, base, eps, weights) RESULT(value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: eps, weights
+      REAL(KIND=dp)                                      :: value
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, u
+      INTEGER                                            :: i, n
+      REAL(KIND=dp)                                      :: shift, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: delta
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), u(n, n), delta(n))
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      weight_sum = SUM(weights)
+      shift = 0.0_dp
+      DO i = 1, n
+         delta(i) = REAL(chc(i, i), KIND=dp) - eps(i)
+         shift = shift + weights(i)*delta(i)
+      END DO
+      IF (weight_sum > EPSILON(weight_sum)) shift = shift/weight_sum
+      delta(:) = delta(:) - shift
+      value = 0.5_dp*SUM(weights(:)*delta(:)**2)
+      DEALLOCATE (chc, u, delta)
+
+   END FUNCTION dense_canonical_tether_value
+
+! **************************************************************************************************
+!> \brief Dense gauge-projected complex canonical tether gradients.
+! **************************************************************************************************
+   SUBROUTINE dense_canonical_tether_gradient(x_re, x_im, base, eps, weights, &
+                                              grad_re, grad_im, grad_eps, value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: eps, weights
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: grad_eps
+      REAL(KIND=dp), INTENT(OUT)                         :: value
+
+      COMPLEX(KIND=dp)                                   :: kernel
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, dedu, dmat, evec, frechet, &
+                                                            generator, inner, outer, u
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp)                                      :: shift, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: delta, evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), dedu(n, n), dmat(n, n), evec(n, n), frechet(n, n), generator(n, n))
+      ALLOCATE (inner(n, n), outer(n, n), u(n, n), delta(n), evals(n))
+
+      generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+      CALL diag_complex(generator, evec, evals)
+      CALL dense_rotation_u_from_eigensystem(evec, evals, u)
+
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      weight_sum = SUM(weights)
+      shift = 0.0_dp
+      DO i = 1, n
+         delta(i) = REAL(chc(i, i), KIND=dp) - eps(i)
+         shift = shift + weights(i)*delta(i)
+      END DO
+      IF (weight_sum > EPSILON(weight_sum)) shift = shift/weight_sum
+      delta(:) = delta(:) - shift
+      value = 0.5_dp*SUM(weights(:)*delta(:)**2)
+      grad_eps(:) = -weights(:)*delta(:)
+
+      dmat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         dmat(i, i) = CMPLX(weights(i)*delta(i), 0.0_dp, KIND=dp)
+      END DO
+      dedu(:, :) = 2.0_dp*MATMUL(base, MATMUL(u, dmat))
+
+      inner(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dedu, evec))
+      DO j = 1, n
+         DO i = 1, n
+            kernel = CONJG(qs_ot_complex_exp_frechet_kernel(evals(i), evals(j)))
+            outer(i, j) = inner(i, j)*kernel
+         END DO
+      END DO
+      frechet(:, :) = MATMUL(evec, MATMUL(outer, CONJG(TRANSPOSE(evec))))
+
+      grad_re(:, :) = REAL(frechet, KIND=dp) - TRANSPOSE(REAL(frechet, KIND=dp))
+      grad_im(:, :) = AIMAG(frechet) + TRANSPOSE(AIMAG(frechet))
+
+      DEALLOCATE (chc, dedu, dmat, evec, frechet, generator, inner, outer, u, delta, evals)
+
+   END SUBROUTINE dense_canonical_tether_gradient
 
 ! **************************************************************************************************
 !> \brief Dense complex NONDIAG_ENERGY tether value.

@@ -94,7 +94,10 @@ MODULE qs_ot_types
       LOGICAL           :: on_the_fly_loc = .FALSE.
       CHARACTER(LEN=4)  :: ortho_irac = ""
       LOGICAL           :: occupation_preconditioner = .FALSE., add_nondiag_energy = .FALSE.
+      LOGICAL           :: canonical_tether = .TRUE., canonical_tether_adaptive = .TRUE.
       REAL(KIND=dp)     :: nondiag_energy_strength = -1.0_dp
+      REAL(KIND=dp)     :: canonical_tether_strength = 1.0E-3_dp
+      REAL(KIND=dp)     :: canonical_tether_max_strength = 1.5E-3_dp
       REAL(KIND=dp)     :: broyden_beta = -1.0_dp, broyden_gamma = -1.0_dp, broyden_sigma = -1.0_dp
       REAL(KIND=dp)     :: broyden_eta = -1.0_dp, broyden_omega = -1.0_dp, broyden_sigma_decrease = -1.0_dp
       REAL(KIND=dp)     :: broyden_sigma_min = -1.0_dp
@@ -225,6 +228,9 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: ener_x_trust_rayleigh_gap = 0.0_dp, ener_x_trust_rayleigh_edge_gap = 0.0_dp
       REAL(KIND=dp) :: ener_x_step_max = 0.0_dp, ener_x_trusted_step_max = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_scale = 1.0_dp
+      REAL(KIND=dp) :: canonical_tether_energy = 0.0_dp, canonical_tether_strength = 0.0_dp
+      REAL(KIND=dp) :: canonical_tether_weight_sum = 0.0_dp, canonical_tether_shift = 0.0_dp
+      REAL(KIND=dp) :: canonical_tether_grad_max = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
@@ -277,6 +283,10 @@ CONTAINS
       settings%occupation_preconditioner = .FALSE.
       settings%add_nondiag_energy = .FALSE.
       settings%nondiag_energy_strength = 0.0_dp
+      settings%canonical_tether = .TRUE.
+      settings%canonical_tether_adaptive = .TRUE.
+      settings%canonical_tether_strength = 1.0E-3_dp
+      settings%canonical_tether_max_strength = 1.5E-3_dp
 
    END SUBROUTINE qs_ot_settings_init
 
@@ -501,6 +511,11 @@ CONTAINS
          qs_ot_env%ener_x_step_max = 0.0_dp
          qs_ot_env%ener_x_trusted_step_max = 0.0_dp
          qs_ot_env%ener_x_trust_scale = 1.0_dp
+         qs_ot_env%canonical_tether_energy = 0.0_dp
+         qs_ot_env%canonical_tether_strength = 0.0_dp
+         qs_ot_env%canonical_tether_weight_sum = 0.0_dp
+         qs_ot_env%canonical_tether_shift = 0.0_dp
+         qs_ot_env%canonical_tether_grad_max = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
          IF (qs_ot_env%use_dx) &
             qs_ot_env%ener_dx(:) = 0.0_dp
@@ -1160,6 +1175,13 @@ CONTAINS
       CALL section_vals_val_get(ot_section, "NONDIAG_ENERGY", l_val=settings%add_nondiag_energy)
       CALL section_vals_val_get(ot_section, "NONDIAG_ENERGY_STRENGTH", &
                                 r_val=settings%nondiag_energy_strength)
+      CALL section_vals_val_get(ot_section, "CANONICAL_TETHER", l_val=settings%canonical_tether)
+      CALL section_vals_val_get(ot_section, "CANONICAL_TETHER_ADAPTIVE", &
+                                l_val=settings%canonical_tether_adaptive)
+      CALL section_vals_val_get(ot_section, "CANONICAL_TETHER_STRENGTH", &
+                                r_val=settings%canonical_tether_strength)
+      CALL section_vals_val_get(ot_section, "CANONICAL_TETHER_MAX_STRENGTH", &
+                                r_val=settings%canonical_tether_max_strength)
       IF (settings%do_ener .AND. .NOT. settings%do_rotation) THEN
          CPABORT("OT%ENERGIES requires OT%ROTATION.")
       END IF
@@ -1168,6 +1190,16 @@ CONTAINS
       END IF
       IF (settings%add_nondiag_energy .AND. .NOT. settings%do_ener) THEN
          CPABORT("OT%NONDIAG_ENERGY requires OT%ENERGIES.")
+      END IF
+      IF (settings%canonical_tether .AND. .NOT. settings%occupation_preconditioner) THEN
+         settings%canonical_tether = .FALSE.
+      END IF
+      IF (settings%canonical_tether_strength < 0.0_dp .OR. &
+          settings%canonical_tether_max_strength < 0.0_dp) THEN
+         CPABORT("OT%CANONICAL_TETHER strengths must be non-negative.")
+      END IF
+      IF (settings%canonical_tether_max_strength < settings%canonical_tether_strength) THEN
+         settings%canonical_tether_max_strength = settings%canonical_tether_strength
       END IF
 
       ! write OT output
@@ -1186,6 +1218,12 @@ CONTAINS
          IF (settings%add_nondiag_energy) THEN
             WRITE (output_unit, '(A,E14.5)') &
                "  Non-diagonal energy strength:", settings%nondiag_energy_strength
+         END IF
+         IF (settings%canonical_tether) THEN
+            WRITE (output_unit, '(A,E14.5,A,L1,A,E14.5)') &
+               "  Canonical energy tether strength:", settings%canonical_tether_strength, &
+               " adaptive:", settings%canonical_tether_adaptive, &
+               " max:", settings%canonical_tether_max_strength
          END IF
          SELECT CASE (settings%OT_METHOD)
          CASE ("SD")

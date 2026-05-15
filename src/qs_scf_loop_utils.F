@@ -919,30 +919,27 @@ CONTAINS
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_trust
 
 ! **************************************************************************************************
-!> \brief response-weighted Fermi-window tether weight for k-point OT auxiliary energies
+!> \brief active Fermi-window response for the k-point OT canonical tether
 !> \param occupation ...
 !> \param eigenvalue ...
 !> \param mu ...
 !> \param sigma ...
 !> \param maxocc ...
-!> \param kpoint_weight ...
 ! **************************************************************************************************
-   FUNCTION kpoint_ot_canonical_tether_weight(occupation, eigenvalue, mu, sigma, maxocc, &
-                                              kpoint_weight) RESULT(weight)
+   FUNCTION kpoint_ot_canonical_tether_response(occupation, eigenvalue, mu, sigma, maxocc) RESULT(response)
       REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, &
-                                                            maxocc, kpoint_weight
-      REAL(KIND=dp)                                      :: weight
+                                                            maxocc
+      REAL(KIND=dp)                                      :: response
 
       REAL(KIND=dp), PARAMETER                           :: edge_window_factor = 8.0_dp, &
                                                             partial_tol = 1.0E-8_dp, &
-                                                            response_floor_fraction = 1.0E-2_dp, &
-                                                            tether_factor = 1.0E-3_dp
+                                                            response_floor_fraction = 1.0E-2_dp
 
       LOGICAL                                            :: active
       REAL(KIND=dp)                                      :: edge_window, fi_norm, gvalue, occ_tail, &
                                                             response_floor
 
-      weight = 0.0_dp
+      response = 0.0_dp
       IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) RETURN
 
       edge_window = edge_window_factor*sigma
@@ -953,7 +950,65 @@ CONTAINS
       fi_norm = occupation/MAX(maxocc, EPSILON(maxocc))
       gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
       response_floor = response_floor_fraction*maxocc/sigma
-      weight = tether_factor*kpoint_weight*MAX(gvalue, response_floor)
+      response = MAX(gvalue, response_floor)
+
+   END FUNCTION kpoint_ot_canonical_tether_response
+
+! **************************************************************************************************
+!> \brief adaptive prefactor for the k-point OT canonical tether
+!> \param qs_ot_env ...
+!> \param edge_gap ...
+!> \param sigma ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_canonical_tether_strength(qs_ot_env, edge_gap, sigma) RESULT(strength)
+      TYPE(qs_ot_type), INTENT(IN)                       :: qs_ot_env
+      REAL(KIND=dp), INTENT(IN)                          :: edge_gap, sigma
+      REAL(KIND=dp)                                      :: strength
+
+      REAL(KIND=dp)                                      :: base_strength, gap_scale, max_strength
+
+      strength = 0.0_dp
+      IF (.NOT. qs_ot_env%settings%canonical_tether) RETURN
+
+      base_strength = qs_ot_env%settings%canonical_tether_strength
+      max_strength = qs_ot_env%settings%canonical_tether_max_strength
+      IF (base_strength <= 0.0_dp .OR. max_strength <= 0.0_dp) RETURN
+
+      strength = MIN(base_strength, max_strength)
+      IF (.NOT. qs_ot_env%settings%canonical_tether_adaptive) RETURN
+
+      ! Keep line-search trial points on the same model; adapt only when a fresh
+      ! accepted-gradient point is building the next search direction.
+      IF (qs_ot_env%line_search_count > 0) THEN
+         IF (qs_ot_env%canonical_tether_strength > 0.0_dp) &
+            strength = MIN(max_strength, qs_ot_env%canonical_tether_strength)
+         RETURN
+      END IF
+      IF (sigma <= 1.0E-14_dp .OR. edge_gap <= 0.0_dp) RETURN
+
+      gap_scale = SQRT(MAX(1.0_dp, edge_gap/MAX(16.0_dp*sigma, EPSILON(sigma))))
+      strength = MIN(max_strength, base_strength*gap_scale)
+
+   END FUNCTION kpoint_ot_canonical_tether_strength
+
+! **************************************************************************************************
+!> \brief response-weighted Fermi-window tether weight for k-point OT auxiliary energies
+!> \param occupation ...
+!> \param eigenvalue ...
+!> \param mu ...
+!> \param sigma ...
+!> \param maxocc ...
+!> \param kpoint_weight ...
+!> \param tether_strength ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_canonical_tether_weight(occupation, eigenvalue, mu, sigma, maxocc, &
+                                              kpoint_weight, tether_strength) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, &
+                                                            maxocc, kpoint_weight, tether_strength
+      REAL(KIND=dp)                                      :: weight
+
+      weight = tether_strength*kpoint_weight* &
+               kpoint_ot_canonical_tether_response(occupation, eigenvalue, mu, sigma, maxocc)
 
    END FUNCTION kpoint_ot_canonical_tether_weight
 
@@ -982,8 +1037,10 @@ CONTAINS
                                                             tether_diag
       REAL(KIND=dp)                                      :: canonical_tether_energy, delta, &
                                                             nondiag_trace_im, nondiag_trace_re, &
-                                                            nondiag_weight, sigma, tether_shift, &
-                                                            tether_weight, tether_weight_sum
+                                                            nondiag_weight, rayleigh_edge_gap, sigma, &
+                                                            tether_response, tether_shift, &
+                                                            tether_strength, tether_weight, &
+                                                            tether_weight_sum
       TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, &
                                                             tmp, tmp2
 
@@ -1053,7 +1110,13 @@ CONTAINS
          CALL dbcsr_add(qs_ot_env%rot_mat_dedu_im, tmp2, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
       END IF
 
+      qs_ot_env%canonical_tether_energy = 0.0_dp
+      qs_ot_env%canonical_tether_weight_sum = 0.0_dp
+      qs_ot_env%canonical_tether_shift = 0.0_dp
+      qs_ot_env%canonical_tether_grad_max = 0.0_dp
+
       IF (qs_ot_env%settings%do_ener .AND. qs_ot_env%settings%occupation_preconditioner .AND. &
+          qs_ot_env%settings%canonical_tether .AND. &
           smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
          sigma = smear%electronic_temperature
          nmo = SIZE(qs_ot_env%ener_x)
@@ -1062,10 +1125,19 @@ CONTAINS
             CALL dbcsr_get_diag(chc_re, diagonal)
             tether_diag(:) = 0.0_dp
             tether_shift = 0.0_dp
+            rayleigh_edge_gap = 0.0_dp
             tether_weight_sum = 0.0_dp
             DO imo = 1, nmo
+               tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), eigenvalues(imo), &
+                                                                      mu, sigma, maxocc)
+               IF (tether_response > 0.0_dp) &
+                  rayleigh_edge_gap = MAX(rayleigh_edge_gap, ABS(diagonal(imo) - qs_ot_env%ener_x(imo)))
+            END DO
+            tether_strength = kpoint_ot_canonical_tether_strength(qs_ot_env, rayleigh_edge_gap, sigma)
+            DO imo = 1, nmo
                tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
-                                                                  mu, sigma, maxocc, kpoint_weight)
+                                                                  mu, sigma, maxocc, kpoint_weight, &
+                                                                  tether_strength)
                IF (tether_weight <= 0.0_dp) CYCLE
                delta = diagonal(imo) - qs_ot_env%ener_x(imo)
                tether_shift = tether_shift + tether_weight*delta
@@ -1076,13 +1148,19 @@ CONTAINS
                canonical_tether_energy = 0.0_dp
                DO imo = 1, nmo
                   tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
-                                                                     mu, sigma, maxocc, kpoint_weight)
+                                                                     mu, sigma, maxocc, kpoint_weight, &
+                                                                     tether_strength)
                   IF (tether_weight <= 0.0_dp) CYCLE
                   delta = diagonal(imo) - qs_ot_env%ener_x(imo) - tether_shift
                   tether_diag(imo) = tether_weight*delta
                   canonical_tether_energy = canonical_tether_energy + 0.5_dp*tether_weight*delta**2
                END DO
                nondiag_energy = nondiag_energy + canonical_tether_energy
+               qs_ot_env%canonical_tether_energy = canonical_tether_energy
+               qs_ot_env%canonical_tether_strength = tether_strength
+               qs_ot_env%canonical_tether_weight_sum = tether_weight_sum
+               qs_ot_env%canonical_tether_shift = tether_shift
+               qs_ot_env%canonical_tether_grad_max = MAXVAL(ABS(tether_diag))
 
                CALL dbcsr_copy(b_re, chc_re)
                CALL dbcsr_set(b_re, 0.0_dp)
@@ -1168,8 +1246,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
       REAL(KIND=dp)                                      :: delta, gvalue, maxocc, mu, sigma, &
-                                                            tether_shift, tether_weight, &
-                                                            tether_weight_sum, v
+                                                            rayleigh_edge_gap, tether_response, &
+                                                            tether_shift, tether_strength, &
+                                                            tether_weight, tether_weight_sum, v
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_diag, gdotv, gsum, &
                                                             nondiag_diag, precond_count, &
                                                             precond_shift, precond_sum
@@ -1269,7 +1348,7 @@ CONTAINS
          END DO
       END IF
 
-      IF (active_preconditioner) THEN
+      IF (active_preconditioner .AND. local_ot_env(1)%settings%canonical_tether) THEN
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
             ikpoint = kp%nkpoint
@@ -1280,10 +1359,22 @@ CONTAINS
                ALLOCATE (canonical_diag(nmo))
                CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, canonical_diag)
                tether_shift = 0.0_dp
+               rayleigh_edge_gap = 0.0_dp
                tether_weight_sum = 0.0_dp
                DO imo = 1, nmo
+                  tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
+                                                                        eigenvalues(imo), mu, &
+                                                                        sigma, maxocc)
+                  IF (tether_response > 0.0_dp) &
+                     rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
+                                             ABS(canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
+               END DO
+               tether_strength = kpoint_ot_canonical_tether_strength(local_ot_env(local_channel), &
+                                                                     rayleigh_edge_gap, sigma)
+               DO imo = 1, nmo
                   tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
-                                                                     mu, sigma, maxocc, wkp(ikpoint))
+                                                                     mu, sigma, maxocc, wkp(ikpoint), &
+                                                                     tether_strength)
                   IF (tether_weight <= 0.0_dp) CYCLE
                   delta = canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo)
                   tether_shift = tether_shift + tether_weight*delta
@@ -1293,7 +1384,8 @@ CONTAINS
                   tether_shift = tether_shift/tether_weight_sum
                   DO imo = 1, nmo
                      tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
-                                                                        mu, sigma, maxocc, wkp(ikpoint))
+                                                                        mu, sigma, maxocc, wkp(ikpoint), &
+                                                                        tether_strength)
                      IF (tether_weight <= 0.0_dp) CYCLE
                      delta = canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo) - tether_shift
                      local_ot_env(local_channel)%ener_gx(imo) = &
@@ -1321,7 +1413,10 @@ CONTAINS
 
       INTEGER                                            :: group, ikpoint, imo, ispin, &
                                                             local_channel, local_kpoint, nmo
-      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu
+      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, &
+                                                            rayleigh_edge_gap, tether_response, &
+                                                            tether_strength, tether_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -1338,10 +1433,30 @@ CONTAINS
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
                                occupation_numbers=occupation_numbers, mu=mu)
+               tether_strength = 0.0_dp
+               IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
+                  ALLOCATE (channel_diag(nmo))
+                  CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, channel_diag)
+                  rayleigh_edge_gap = 0.0_dp
+                  DO imo = 1, nmo
+                     tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
+                                                                           eigenvalues(imo), mu, &
+                                                                           sigma, maxocc)
+                     IF (tether_response > 0.0_dp) &
+                        rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
+                                                ABS(channel_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
+                  END DO
+                  tether_strength = kpoint_ot_canonical_tether_strength(local_ot_env(local_channel), &
+                                                                        rayleigh_edge_gap, sigma)
+                  DEALLOCATE (channel_diag)
+               END IF
                DO imo = 1, nmo
                   gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
                                                 sigma, maxocc, smear%method)
-                  curvature = wkp(ikpoint)*gvalue
+                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), &
+                                                                     eigenvalues(imo), mu, sigma, &
+                                                                     maxocc, wkp(ikpoint), tether_strength)
+                  curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature > EPSILON(curvature)) THEN
                      local_ot_env(local_channel)%ener_gx(imo) = &
                         local_ot_env(local_channel)%ener_gx(imo)/MAX(curvature, curvature_floor)
@@ -1370,10 +1485,30 @@ CONTAINS
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
                                occupation_numbers=occupation_numbers, mu=mu)
+               tether_strength = 0.0_dp
+               IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
+                  ALLOCATE (channel_diag(nmo))
+                  CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, channel_diag)
+                  rayleigh_edge_gap = 0.0_dp
+                  DO imo = 1, nmo
+                     tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
+                                                                           eigenvalues(imo), mu, &
+                                                                           sigma, maxocc)
+                     IF (tether_response > 0.0_dp) &
+                        rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
+                                                ABS(channel_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
+                  END DO
+                  tether_strength = kpoint_ot_canonical_tether_strength(local_ot_env(local_channel), &
+                                                                        rayleigh_edge_gap, sigma)
+                  DEALLOCATE (channel_diag)
+               END IF
                DO imo = 1, nmo
                   gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
                                                 sigma, maxocc, smear%method)
-                  curvature = wkp(ikpoint)*gvalue
+                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), &
+                                                                     eigenvalues(imo), mu, sigma, &
+                                                                     maxocc, wkp(ikpoint), tether_strength)
+                  curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature > EPSILON(curvature)) &
                      local_ot_env(local_channel)%ener_gx(imo) = &
                      local_ot_env(local_channel)%ener_gx(imo) - precond_shift(group)
@@ -1409,8 +1544,9 @@ CONTAINS
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: failed
-      REAL(KIND=dp) :: dense_term, diag_shift, direction_scale, gdotp, gnorm, gvalue, maxocc, mu, &
-         normp, projected_term, row_abs, rx_shift, rx_weight, z_shift, z_weight
+      REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, direction_scale, gdotp, gnorm, &
+         gvalue, maxocc, mu, normp, projected_term, rayleigh_edge_gap, row_abs, rx_shift, rx_weight, &
+         tether_response, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rtd, rx_e, &
                                                             sol, z_e
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
@@ -1485,11 +1621,29 @@ CONTAINS
                CALL local_ot_env(local_channel)%para_env%sum(grad_re)
                CALL local_ot_env(local_channel)%para_env%sum(grad_im)
 
+               tether_strength = 0.0_dp
+               IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
+                  rayleigh_edge_gap = 0.0_dp
+                  DO imo = 1, nmo
+                     tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), &
+                                                                           eigenvalues(imo), mu, &
+                                                                           sigma, maxocc)
+                     IF (tether_response > 0.0_dp) &
+                        rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
+                                                ABS(h_re(imo, imo) - local_ot_env(local_channel)%ener_x(imo)))
+                  END DO
+                  tether_strength = kpoint_ot_canonical_tether_strength(local_ot_env(local_channel), &
+                                                                        rayleigh_edge_gap, sigma)
+               END IF
+
                DO imo = 1, nmo
                   ie = e_offset(local_channel) + imo - 1
                   gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
                                                 sigma, maxocc, smear%method)
-                  curv(ie) = wkp(ikpoint)*gvalue
+                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), &
+                                                                     eigenvalues(imo), mu, sigma, &
+                                                                     maxocc, wkp(ikpoint), tether_strength)
+                  curv(ie) = wkp(ikpoint)*gvalue + tether_weight
                   grad_e(ie) = local_ot_env(local_channel)%ener_gx(imo)
                END DO
 
@@ -1547,6 +1701,8 @@ CONTAINS
 
          rot_hessian(:, :) = 0.5_dp*(rot_hessian(:, :) + TRANSPOSE(rot_hessian(:, :)))
          schur(:, :) = rot_hessian(:, :)
+         curv_projection_sum = SUM(curv)
+         CALL para_env_inter_kp%sum(curv_projection_sum)
          DO r = 1, nrot
             rtd(r) = DOT_PRODUCT(curv, response(:, r))
             rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
@@ -1555,7 +1711,9 @@ CONTAINS
          DO s = 1, nrot
             DO r = 1, nrot
                dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
-               projected_term = dense_term - rtd(r)*rtd(s)/gsum(target_group)
+               projected_term = dense_term
+               IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                  projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
                schur(r, s) = schur(r, s) - projected_term
             END DO
          END DO

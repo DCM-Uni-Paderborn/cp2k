@@ -933,6 +933,36 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER", &
+                          description="Add a gauge-projected Fermi-window tether between OT auxiliary "// &
+                          "energies and the current Rayleigh diagonal (FD smearing).", &
+                          usage="CANONICAL_TETHER", lone_keyword_l_val=.TRUE., &
+                          default_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER_ADAPTIVE", &
+                          description="Adapt the canonical tether strength from the active Fermi-window "// &
+                          "Rayleigh/auxiliary-energy gap outside line-search trial points.", &
+                          usage="CANONICAL_TETHER_ADAPTIVE", lone_keyword_l_val=.TRUE., &
+                          default_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER_STRENGTH", &
+                          description="Base prefactor for the canonical OT auxiliary-energy tether "// &
+                          "(FD smearing).", &
+                          usage="CANONICAL_TETHER_STRENGTH", default_r_val=1.0E-3_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER_MAX_STRENGTH", &
+                          description="Maximum adaptive prefactor for the canonical OT auxiliary-energy "// &
+                          "tether (FD smearing).", &
+                          usage="CANONICAL_TETHER_MAX_STRENGTH", default_r_val=1.5E-3_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
    END SUBROUTINE create_ot_section
 
 ! **************************************************************************************************
