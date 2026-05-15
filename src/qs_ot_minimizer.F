@@ -24,6 +24,7 @@ MODULE qs_ot_minimizer
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
+   USE cp_output_handling,              ONLY: high_print_level
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE mathlib,                         ONLY: diamat_all
@@ -874,7 +875,9 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin
       LOGICAL                                            :: do_ener, do_ks
-      REAL(KIND=dp)                                      :: beta_pr, gnorm_cross, test_down, tmp
+      REAL(KIND=dp)                                      :: beta_pr, gnorm_cross, gnorm_ener, &
+                                                            gnorm_matrix_im, gnorm_matrix_re, &
+                                                            gnorm_rot_im, gnorm_rot_re, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -884,6 +887,12 @@ CONTAINS
 
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
+
+      gnorm_matrix_re = 0.0_dp
+      gnorm_matrix_im = 0.0_dp
+      gnorm_rot_re = 0.0_dp
+      gnorm_rot_im = 0.0_dp
+      gnorm_ener = 0.0_dp
 
       gnorm_cross = 0.0_dp
       IF (do_ks) THEN
@@ -928,9 +937,11 @@ CONTAINS
             DO ispin = 1, nspin
                CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old, tmp)
                qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+               gnorm_matrix_re = gnorm_matrix_re + tmp
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_old_im, tmp)
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+                  gnorm_matrix_im = gnorm_matrix_im + tmp
                END IF
             END DO
             IF (qs_ot_env(1)%gnorm < 0.0_dp) THEN
@@ -948,10 +959,12 @@ CONTAINS
                   CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx_old, tmp)
                   ! added 0.5, because we have (antisymmetry) only half the number of variables
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                  gnorm_rot_re = gnorm_rot_re + 0.5_dp*tmp
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                      CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old_im, qs_ot_env(ispin)%rot_mat_gx_im)
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_gx_old_im, tmp)
                      qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                     gnorm_rot_im = gnorm_rot_im + 0.5_dp*tmp
                   END IF
                END DO
                DO ispin = 1, nspin
@@ -966,6 +979,7 @@ CONTAINS
                qs_ot_env(ispin)%ener_gx_old = qs_ot_env(ispin)%ener_gx
                tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_gx_old)
                qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+               gnorm_ener = gnorm_ener + tmp
                qs_ot_env(ispin)%ener_gx = qs_ot_env(ispin)%ener_gx_old
             END DO
          END IF
@@ -975,10 +989,12 @@ CONTAINS
             DO ispin = 1, nspin
                CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx, tmp)
                qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+               gnorm_matrix_re = gnorm_matrix_re + tmp
                CALL dbcsr_copy(qs_ot_env(ispin)%matrix_gx_old, qs_ot_env(ispin)%matrix_gx)
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_im, tmp)
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+                  gnorm_matrix_im = gnorm_matrix_im + tmp
                   CALL dbcsr_copy(qs_ot_env(ispin)%matrix_gx_old_im, qs_ot_env(ispin)%matrix_gx_im)
                END IF
             END DO
@@ -987,10 +1003,12 @@ CONTAINS
                   CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx, tmp)
                   ! added 0.5, because we have (antisymmetry) only half the number of variables
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                  gnorm_rot_re = gnorm_rot_re + 0.5_dp*tmp
                   CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old, qs_ot_env(ispin)%rot_mat_gx)
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                      CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_gx_im, tmp)
                      qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                     gnorm_rot_im = gnorm_rot_im + 0.5_dp*tmp
                      CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old_im, qs_ot_env(ispin)%rot_mat_gx_im)
                   END IF
                END DO
@@ -1000,6 +1018,7 @@ CONTAINS
             DO ispin = 1, nspin
                tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_gx)
                qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
+               gnorm_ener = gnorm_ener + tmp
                qs_ot_env(ispin)%ener_gx_old = qs_ot_env(ispin)%ener_gx
             END DO
          END IF
@@ -1028,6 +1047,12 @@ CONTAINS
       ELSE
          qs_ot_env(1)%delta = 0.0_dp
          beta_pr = 0.0_dp
+      END IF
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+            " OT CG channel norms C_re C_im R_re R_im eps total:", &
+            gnorm_matrix_re, gnorm_matrix_im, gnorm_rot_re, gnorm_rot_im, &
+            gnorm_ener, qs_ot_env(1)%gnorm
       END IF
       beta_pr = MAX(beta_pr, 0.0_dp) ! reset to SD
 

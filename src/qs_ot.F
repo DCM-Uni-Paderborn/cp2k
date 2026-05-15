@@ -59,6 +59,7 @@ MODULE qs_ot
    PRIVATE :: qs_ot_ref_lwdn
    PRIVATE :: qs_ot_ref_decide
    PRIVATE :: qs_ot_ref_update
+   PRIVATE :: qs_ot_reset_ref_rotation_history
    PRIVATE :: qs_ot_refine
    PRIVATE :: qs_ot_on_the_fly_localize
 
@@ -592,6 +593,52 @@ CONTAINS
    END FUNCTION qs_ot_ref_update
 
 ! **************************************************************************************************
+!> \brief Reset minimizer data tied to the pre-absorption REF rotation coordinates.
+!> \param qs_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_ot_reset_ref_rotation_history(qs_ot_env)
+      !
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+
+      ! CG carries a useful step-length/conjugacy memory across REF absorptions.  Resetting it
+      ! here turns the Al k-point metallic case back into slow steepest-descent-like progress.
+      IF (qs_ot_env%settings%ot_method == "CG") RETURN
+
+      qs_ot_env%OT_energy(:) = 0.0_dp
+      qs_ot_env%OT_pos(:) = 0.0_dp
+      qs_ot_env%OT_grad(:) = 0.0_dp
+      qs_ot_env%line_search_count = 0
+      qs_ot_env%line_search_left = -1
+      qs_ot_env%line_search_mid = -1
+      qs_ot_env%line_search_right = -1
+      qs_ot_env%line_search_might_be_done = .FALSE.
+      qs_ot_env%energy_only = .FALSE.
+      qs_ot_env%gnorm_old = 1.0_dp
+      qs_ot_env%diis_iter = 0
+      qs_ot_env%broyden_adaptive_sigma = -1.0_dp
+
+      IF (qs_ot_env%settings%do_rotation) THEN
+         IF (qs_ot_env%use_dx) THEN
+            CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
+               CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
+         END IF
+         IF (qs_ot_env%use_gx_old) THEN
+            CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
+               CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+         END IF
+      END IF
+
+      IF (ASSOCIATED(qs_ot_env%ls_diis)) qs_ot_env%ls_diis(:, :) = 0.0_dp
+      IF (ASSOCIATED(qs_ot_env%lss_diis)) qs_ot_env%lss_diis(:, :) = 0.0_dp
+      IF (ASSOCIATED(qs_ot_env%c_diis)) qs_ot_env%c_diis(:) = 0.0_dp
+      IF (ASSOCIATED(qs_ot_env%c_broy)) qs_ot_env%c_broy(:) = 0.0_dp
+      IF (ASSOCIATED(qs_ot_env%energy_h)) qs_ot_env%energy_h(:) = 0.0_dp
+
+   END SUBROUTINE qs_ot_reset_ref_rotation_history
+
+! **************************************************************************************************
 !> \brief ...
 !> \param qs_ot_env1 ...
 !> \param norm_in ...
@@ -846,6 +893,7 @@ CONTAINS
             CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
             CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
          END IF
+         CALL qs_ot_reset_ref_rotation_history(qs_ot_env)
       END IF
 
       ! SC = (S_re + i*S_im) * (C_out_re + i*C_out_im)
