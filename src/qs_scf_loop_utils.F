@@ -514,7 +514,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
-      REAL(KIND=dp)                                      :: ener_nondiag
+      REAL(KIND=dp)                                      :: ener_nondiag, maxocc, mu
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
@@ -536,7 +536,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, density_target, dft_control, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
+      NULLIFY (cell_to_index, density_target, dft_control, eigenvalues, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
                matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, mo_coeff, &
                mo_coeff_im, occupation_numbers, para_env_inter_kp, rho, rho_ao_kp, sab_nl, wkp, xkp)
       added_mos_auto_grow = .FALSE.
@@ -634,8 +634,8 @@ CONTAINS
                                 ispin=ispin, xkp=xkp(1:3, ikpoint), &
                                 cell_to_index=cell_to_index, sab_nl=sab_nl)
 
-            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, nmo=nmo, &
-                            occupation_numbers=occupation_numbers)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, mo_coeff=mo_coeff, nmo=nmo, &
+                            eigenvalues=eigenvalues, occupation_numbers=occupation_numbers, mu=mu)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
             CALL cp_fm_create(hc_re, mo_coeff%matrix_struct)
             CALL cp_fm_create(hc_im, mo_coeff%matrix_struct)
@@ -653,7 +653,8 @@ CONTAINS
             CALL qs_scf_loop_prepare_ot_kp_channel_gradient(local_ot_env(local_channel), &
                                                             matrix_hc(local_channel)%matrix, &
                                                             matrix_hc_im(local_channel)%matrix, &
-                                                            occupation_numbers, wkp(ikpoint), &
+                                                            occupation_numbers, eigenvalues, maxocc, mu, &
+                                                            wkp(ikpoint), scf_control%smear, &
                                                             ener_nondiag)
 
             ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
@@ -918,6 +919,45 @@ CONTAINS
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_trust
 
 ! **************************************************************************************************
+!> \brief response-weighted Fermi-window tether weight for k-point OT auxiliary energies
+!> \param occupation ...
+!> \param eigenvalue ...
+!> \param mu ...
+!> \param sigma ...
+!> \param maxocc ...
+!> \param kpoint_weight ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_canonical_tether_weight(occupation, eigenvalue, mu, sigma, maxocc, &
+                                              kpoint_weight) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, &
+                                                            maxocc, kpoint_weight
+      REAL(KIND=dp)                                      :: weight
+
+      REAL(KIND=dp), PARAMETER                           :: edge_window_factor = 8.0_dp, &
+                                                            partial_tol = 1.0E-8_dp, &
+                                                            response_floor_fraction = 1.0E-2_dp, &
+                                                            tether_factor = 1.0E-3_dp
+
+      LOGICAL                                            :: active
+      REAL(KIND=dp)                                      :: edge_window, fi_norm, gvalue, occ_tail, &
+                                                            response_floor
+
+      weight = 0.0_dp
+      IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) RETURN
+
+      edge_window = edge_window_factor*sigma
+      occ_tail = MAX(0.0_dp, MIN(occupation, maxocc - occupation))
+      active = occ_tail > partial_tol*MAX(maxocc, 1.0_dp) .OR. ABS(eigenvalue - mu) < edge_window
+      IF (.NOT. active) RETURN
+
+      fi_norm = occupation/MAX(maxocc, EPSILON(maxocc))
+      gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
+      response_floor = response_floor_fraction*maxocc/sigma
+      weight = tether_factor*kpoint_weight*MAX(gvalue, response_floor)
+
+   END FUNCTION kpoint_ot_canonical_tether_weight
+
+! **************************************************************************************************
 !> \brief prepare complex rotation and band-energy gradients for one local k-point OT channel
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
@@ -926,17 +966,24 @@ CONTAINS
 !> \param kpoint_weight ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_prepare_ot_kp_channel_gradient(qs_ot_env, matrix_hc, matrix_hc_im, &
-                                                         occupation_numbers, kpoint_weight, nondiag_energy)
+                                                         occupation_numbers, eigenvalues, maxocc, mu, &
+                                                         kpoint_weight, smear, nondiag_energy)
 
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type), POINTER                          :: matrix_hc, matrix_hc_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
-      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: eigenvalues
+      REAL(KIND=dp), INTENT(IN)                          :: maxocc, mu, kpoint_weight
+      TYPE(smear_type), INTENT(IN)                       :: smear
       REAL(KIND=dp), INTENT(INOUT)                       :: nondiag_energy
 
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal, orbital_scaling_factor
-      REAL(KIND=dp)                                      :: nondiag_trace_im, nondiag_trace_re, &
-                                                            nondiag_weight
+      INTEGER                                            :: imo, nmo
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal, orbital_scaling_factor, &
+                                                            tether_diag
+      REAL(KIND=dp)                                      :: canonical_tether_energy, delta, &
+                                                            nondiag_trace_im, nondiag_trace_re, &
+                                                            nondiag_weight, sigma, tether_shift, &
+                                                            tether_weight, tether_weight_sum
       TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, &
                                                             tmp, tmp2
 
@@ -1004,6 +1051,51 @@ CONTAINS
          CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, b_im, 0.0_dp, qs_ot_env%rot_mat_dedu_im)
          CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, b_re, 0.0_dp, tmp2)
          CALL dbcsr_add(qs_ot_env%rot_mat_dedu_im, tmp2, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+      END IF
+
+      IF (qs_ot_env%settings%do_ener .AND. qs_ot_env%settings%occupation_preconditioner .AND. &
+          smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
+         sigma = smear%electronic_temperature
+         nmo = SIZE(qs_ot_env%ener_x)
+         IF (sigma > 1.0E-14_dp .AND. SIZE(eigenvalues) >= nmo .AND. SIZE(occupation_numbers) >= nmo) THEN
+            ALLOCATE (diagonal(nmo), tether_diag(nmo))
+            CALL dbcsr_get_diag(chc_re, diagonal)
+            tether_diag(:) = 0.0_dp
+            tether_shift = 0.0_dp
+            tether_weight_sum = 0.0_dp
+            DO imo = 1, nmo
+               tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
+                                                                  mu, sigma, maxocc, kpoint_weight)
+               IF (tether_weight <= 0.0_dp) CYCLE
+               delta = diagonal(imo) - qs_ot_env%ener_x(imo)
+               tether_shift = tether_shift + tether_weight*delta
+               tether_weight_sum = tether_weight_sum + tether_weight
+            END DO
+            IF (tether_weight_sum > EPSILON(tether_weight_sum)) THEN
+               tether_shift = tether_shift/tether_weight_sum
+               canonical_tether_energy = 0.0_dp
+               DO imo = 1, nmo
+                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
+                                                                     mu, sigma, maxocc, kpoint_weight)
+                  IF (tether_weight <= 0.0_dp) CYCLE
+                  delta = diagonal(imo) - qs_ot_env%ener_x(imo) - tether_shift
+                  tether_diag(imo) = tether_weight*delta
+                  canonical_tether_energy = canonical_tether_energy + 0.5_dp*tether_weight*delta**2
+               END DO
+               nondiag_energy = nondiag_energy + canonical_tether_energy
+
+               CALL dbcsr_copy(b_re, chc_re)
+               CALL dbcsr_set(b_re, 0.0_dp)
+               CALL dbcsr_set_diag(b_re, tether_diag)
+               CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_re, 0.0_dp, tmp)
+               CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%rot_mat_u_im, chc_im, 1.0_dp, tmp)
+               CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_im, 0.0_dp, tmp2)
+               CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, chc_re, 1.0_dp, tmp2)
+               CALL dbcsr_multiply('N', 'N', 2.0_dp, tmp, b_re, 1.0_dp, qs_ot_env%rot_mat_dedu)
+               CALL dbcsr_multiply('N', 'N', 2.0_dp, tmp2, b_re, 1.0_dp, qs_ot_env%rot_mat_dedu_im)
+            END IF
+            DEALLOCATE (diagonal, tether_diag)
+         END IF
       END IF
 
       IF (qs_ot_env%settings%add_nondiag_energy) THEN
@@ -1075,9 +1167,12 @@ CONTAINS
                                                             local_kpoint, ngroups, nmo
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
-      REAL(KIND=dp)                                      :: gvalue, maxocc, mu, sigma, v
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum, nondiag_diag, &
-                                                            precond_count, precond_shift, precond_sum
+      REAL(KIND=dp)                                      :: delta, gvalue, maxocc, mu, sigma, &
+                                                            tether_shift, tether_weight, &
+                                                            tether_weight_sum, v
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_diag, gdotv, gsum, &
+                                                            nondiag_diag, precond_count, &
+                                                            precond_shift, precond_sum
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       LOGICAL                                            :: active_preconditioner
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: schur_group_done
@@ -1170,6 +1265,42 @@ CONTAINS
                local_ot_env(local_channel)%ener_gx(:) = local_ot_env(local_channel)%ener_gx(:) - &
                   local_ot_env(local_channel)%settings%nondiag_energy_strength*wkp(ikpoint)*nondiag_diag(:)
                DEALLOCATE (nondiag_diag)
+            END DO
+         END DO
+      END IF
+
+      IF (active_preconditioner) THEN
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                               occupation_numbers=occupation_numbers, mu=mu)
+               ALLOCATE (canonical_diag(nmo))
+               CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, canonical_diag)
+               tether_shift = 0.0_dp
+               tether_weight_sum = 0.0_dp
+               DO imo = 1, nmo
+                  tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
+                                                                     mu, sigma, maxocc, wkp(ikpoint))
+                  IF (tether_weight <= 0.0_dp) CYCLE
+                  delta = canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo)
+                  tether_shift = tether_shift + tether_weight*delta
+                  tether_weight_sum = tether_weight_sum + tether_weight
+               END DO
+               IF (tether_weight_sum > EPSILON(tether_weight_sum)) THEN
+                  tether_shift = tether_shift/tether_weight_sum
+                  DO imo = 1, nmo
+                     tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
+                                                                        mu, sigma, maxocc, wkp(ikpoint))
+                     IF (tether_weight <= 0.0_dp) CYCLE
+                     delta = canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo) - tether_shift
+                     local_ot_env(local_channel)%ener_gx(imo) = &
+                        local_ot_env(local_channel)%ener_gx(imo) - tether_weight*delta
+                  END DO
+               END IF
+               DEALLOCATE (canonical_diag)
             END DO
          END DO
       END IF
