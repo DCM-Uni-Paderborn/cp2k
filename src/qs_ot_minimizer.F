@@ -29,7 +29,8 @@ MODULE qs_ot_minimizer
    USE mathlib,                         ONLY: diamat_all
    USE preconditioner,                  ONLY: apply_preconditioner
    USE qs_ot,                           ONLY: qs_ot_get_derivative,&
-                                              qs_ot_get_derivative_ref
+                                              qs_ot_get_derivative_ref,&
+                                              qs_ot_get_derivative_ref_complex
    USE qs_ot_types,                     ONLY: qs_ot_type
 #include "./base/base_uses.f90"
 
@@ -59,9 +60,11 @@ CONTAINS
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
 ! **************************************************************************************************
-   SUBROUTINE ot_mini(qs_ot_env, matrix_hc)
+   SUBROUTINE ot_mini(qs_ot_env, matrix_hc, matrix_hc_im)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc
+      TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL, &
+         POINTER                                         :: matrix_hc_im
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_mini'
 
@@ -83,18 +86,31 @@ CONTAINS
          qs_ot_env(1)%gradient = 0.0_dp
          DO ispin = 1, nspin
             IF (do_ks) THEN
-               SELECT CASE (qs_ot_env(1)%settings%ot_algorithm)
-               CASE ("TOD")
-                  CALL qs_ot_get_derivative(matrix_hc(ispin)%matrix, qs_ot_env(ispin)%matrix_x, &
-                                            qs_ot_env(ispin)%matrix_sx, &
-                                            qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin))
-               CASE ("REF")
-                  CALL qs_ot_get_derivative_ref(matrix_hc(ispin)%matrix, &
-                                                qs_ot_env(ispin)%matrix_x, qs_ot_env(ispin)%matrix_sx, &
-                                                qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin))
-               CASE DEFAULT
-                  CPABORT("ALGORITHM NYI")
-               END SELECT
+               IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                  IF (.NOT. PRESENT(matrix_hc_im)) &
+                     CPABORT("Complex k-point OT derivative requires imaginary H(k)*C(k).")
+                  SELECT CASE (qs_ot_env(1)%settings%ot_algorithm)
+                  CASE ("REF")
+                     CALL qs_ot_get_derivative_ref_complex(matrix_hc(ispin)%matrix, &
+                                                           matrix_hc_im(ispin)%matrix, &
+                                                           qs_ot_env(ispin))
+                  CASE DEFAULT
+                     CPABORT("Complex k-point OT derivative is implemented for REF only")
+                  END SELECT
+               ELSE
+                  SELECT CASE (qs_ot_env(1)%settings%ot_algorithm)
+                  CASE ("TOD")
+                     CALL qs_ot_get_derivative(matrix_hc(ispin)%matrix, qs_ot_env(ispin)%matrix_x, &
+                                               qs_ot_env(ispin)%matrix_sx, &
+                                               qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin))
+                  CASE ("REF")
+                     CALL qs_ot_get_derivative_ref(matrix_hc(ispin)%matrix, &
+                                                   qs_ot_env(ispin)%matrix_x, qs_ot_env(ispin)%matrix_sx, &
+                                                   qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin))
+                  CASE DEFAULT
+                     CPABORT("ALGORITHM NYI")
+                  END SELECT
+               END IF
             END IF
             ! and also the gradient along the direction
             IF (qs_ot_env(1)%use_dx) THEN

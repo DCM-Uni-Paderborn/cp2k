@@ -44,7 +44,9 @@ MODULE qs_ot
    PUBLIC  :: qs_ot_get_orbitals
    PUBLIC  :: qs_ot_get_derivative
    PUBLIC  :: qs_ot_get_orbitals_ref
+   PUBLIC  :: qs_ot_get_orbitals_ref_complex
    PUBLIC  :: qs_ot_get_derivative_ref
+   PUBLIC  :: qs_ot_get_derivative_ref_complex
    PUBLIC  :: qs_ot_new_preconditioner
    PRIVATE :: qs_ot_p2m_diag
    PRIVATE :: qs_ot_sinc
@@ -601,6 +603,54 @@ CONTAINS
    END SUBROUTINE qs_ot_get_orbitals_ref
 
 ! **************************************************************************************************
+!> \brief update complex REF k-point orbitals and their S(k)C(k) images
+!> \param matrix_c ...
+!> \param matrix_c_im ...
+!> \param matrix_s ...
+!> \param matrix_s_im ...
+!> \param qs_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_ot_get_orbitals_ref_complex(matrix_c, matrix_c_im, matrix_s, matrix_s_im, qs_ot_env)
+
+      TYPE(dbcsr_type), POINTER                          :: matrix_c, matrix_c_im, matrix_s, &
+                                                            matrix_s_im
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_get_orbitals_ref_complex'
+
+      INTEGER                                            :: handle, k, n
+      TYPE(dbcsr_type), POINTER                          :: c_im, c_re, sc_im, sc_re, tmp
+
+      CALL timeset(routineN, handle)
+
+      CPASSERT(qs_ot_env%has_complex_kpoint_state)
+      CPASSERT(ASSOCIATED(matrix_s))
+      CPASSERT(ASSOCIATED(matrix_s_im))
+
+      c_re => qs_ot_env%matrix_x
+      c_im => qs_ot_env%matrix_x_im
+      sc_re => qs_ot_env%matrix_sx
+      sc_im => qs_ot_env%matrix_sx_im
+      tmp => qs_ot_env%buf1_n_k
+
+      CALL dbcsr_get_info(c_re, nfullrows_total=n, nfullcols_total=k)
+
+      ! SC = (S_re + i*S_im) * (C_re + i*C_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s, c_re, 0.0_dp, sc_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s_im, c_im, 0.0_dp, tmp)
+      CALL dbcsr_add(sc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s, c_im, 0.0_dp, sc_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s_im, c_re, 0.0_dp, tmp)
+      CALL dbcsr_add(sc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_copy(matrix_c, c_re)
+      CALL dbcsr_copy(matrix_c_im, c_im)
+
+      CALL timestop(handle)
+   END SUBROUTINE qs_ot_get_orbitals_ref_complex
+
+! **************************************************************************************************
 !> \brief  refinement polynomial of degree 2,3 and 4 (PRB 70, 193102 (2004))
 !> \param P ...
 !> \param FY ...
@@ -737,6 +787,89 @@ CONTAINS
       !
       CALL timestop(handle)
    END SUBROUTINE qs_ot_get_derivative_ref
+
+! **************************************************************************************************
+!> \brief complex k-point REF derivative dE/dX from H(k)C(k), S(k)C(k), and C(k)
+!> \param matrix_hc ...
+!> \param matrix_hc_im ...
+!> \param qs_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_ot_get_derivative_ref_complex(matrix_hc, matrix_hc_im, qs_ot_env)
+      TYPE(dbcsr_type), POINTER                          :: matrix_hc, matrix_hc_im
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_get_derivative_ref_complex'
+
+      INTEGER                                            :: handle, k, n
+      REAL(dp)                                           :: occ_in, occ_out
+      TYPE(dbcsr_type), POINTER                          :: c_im, c_re, chc_im, chc_re, g_im, g_re, &
+                                                            hc_im, hc_re, sc_im, sc_re, tmp_kk, &
+                                                            tmp_nk
+
+      CALL timeset(routineN, handle)
+
+      CPASSERT(qs_ot_env%has_complex_kpoint_state)
+      CPASSERT(ASSOCIATED(matrix_hc))
+      CPASSERT(ASSOCIATED(matrix_hc_im))
+
+      c_re => qs_ot_env%matrix_x
+      c_im => qs_ot_env%matrix_x_im
+      sc_re => qs_ot_env%matrix_sx
+      sc_im => qs_ot_env%matrix_sx_im
+      hc_re => matrix_hc
+      hc_im => matrix_hc_im
+      g_re => qs_ot_env%matrix_gx
+      g_im => qs_ot_env%matrix_gx_im
+      chc_re => qs_ot_env%buf1_k_k_sym
+      chc_im => qs_ot_env%buf2_k_k_sym
+      tmp_kk => qs_ot_env%buf3_k_k_sym
+      tmp_nk => qs_ot_env%buf1_n_k
+
+      CALL dbcsr_get_info(c_re, nfullrows_total=n, nfullcols_total=k)
+
+      ! CHC = C^H * HC.
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, hc_re, 0.0_dp, chc_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, hc_im, 0.0_dp, tmp_kk)
+      CALL dbcsr_add(chc_re, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, hc_im, 0.0_dp, chc_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, hc_re, 0.0_dp, tmp_kk)
+      CALL dbcsr_add(chc_im, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      IF (qs_ot_env%settings%eps_irac_filter_matrix > 0.0_dp) THEN
+         occ_in = dbcsr_get_occupation(chc_re)
+         CALL dbcsr_filter(chc_re, qs_ot_env%settings%eps_irac_filter_matrix)
+         occ_out = dbcsr_get_occupation(chc_re)
+         occ_in = dbcsr_get_occupation(chc_im)
+         CALL dbcsr_filter(chc_im, qs_ot_env%settings%eps_irac_filter_matrix)
+         occ_out = dbcsr_get_occupation(chc_im)
+      END IF
+
+      ! G = SC * CHC.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, sc_re, chc_re, 0.0_dp, g_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, sc_im, chc_im, 0.0_dp, tmp_nk)
+      CALL dbcsr_add(g_re, tmp_nk, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, sc_re, chc_im, 0.0_dp, g_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, sc_im, chc_re, 0.0_dp, tmp_nk)
+      CALL dbcsr_add(g_im, tmp_nk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      IF (qs_ot_env%settings%eps_irac_filter_matrix > 0.0_dp) THEN
+         occ_in = dbcsr_get_occupation(g_re)
+         CALL dbcsr_filter(g_re, qs_ot_env%settings%eps_irac_filter_matrix)
+         occ_out = dbcsr_get_occupation(g_re)
+         occ_in = dbcsr_get_occupation(g_im)
+         CALL dbcsr_filter(g_im, qs_ot_env%settings%eps_irac_filter_matrix)
+         occ_out = dbcsr_get_occupation(g_im)
+      END IF
+
+      ! G = HC - SC*(C^H*HC).
+      CALL dbcsr_add(g_re, hc_re, alpha_scalar=-1.0_dp, beta_scalar=1.0_dp)
+      CALL dbcsr_add(g_im, hc_im, alpha_scalar=-1.0_dp, beta_scalar=1.0_dp)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE qs_ot_get_derivative_ref_complex
 
 ! **************************************************************************************************
 !> \brief computes p=x*S*x and the matrix functionals related matrices

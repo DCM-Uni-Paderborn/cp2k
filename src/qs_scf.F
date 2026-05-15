@@ -156,7 +156,8 @@ MODULE qs_scf
                                               mo_set_type,&
                                               reassign_allocated_mos
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
-   USE qs_ot,                           ONLY: qs_ot_get_p,&
+   USE qs_ot,                           ONLY: qs_ot_get_orbitals_ref_complex,&
+                                              qs_ot_get_p,&
                                               qs_ot_new_preconditioner
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_init,&
@@ -1348,8 +1349,8 @@ CONTAINS
 
             CALL cp_abort(__LOCATION__, &
                           "OT with k-points allocated spin/k-point minimizer state. "// &
-                          "K-point OT minimization remains disabled until k-resolved rotations, "// &
-                          "energy variables, density build, and restart payload are implemented.")
+                          "K-point OT minimization remains disabled until the k-resolved driver wires "// &
+                          "complex H(k)*C(k), density build, and restart payload to that state.")
          END IF
 
          CALL get_qs_env(qs_env, &
@@ -1736,6 +1737,10 @@ CONTAINS
                                   scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
                   CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
                                   scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
+                  CALL qs_ot_get_orbitals_ref_complex(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                                                      scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                                                      matrix_sk_re, matrix_sk_im, &
+                                                      scf_env%qs_ot_env(ot_channel))
                END IF
             CASE DEFAULT
                CPABORT("Algorithm not yet implemented")
