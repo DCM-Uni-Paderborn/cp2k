@@ -109,6 +109,7 @@ MODULE qs_ot_types
       INTEGER                   :: spin_index = 0, kpoint_index = 0, local_kpoint_index = 0
       REAL(KIND=dp)             :: kpoint_weight = 1.0_dp
       LOGICAL                   :: has_kpoint_context = .FALSE.
+      LOGICAL                   :: state_allocated = .FALSE.
 
       ! first part of the variables, for occupied subspace invariant optimisation
 
@@ -455,6 +456,7 @@ CONTAINS
 
       CALL cite_reference(VandeVondele2003)
 
+      CPASSERT(.NOT. qs_ot_env%state_allocated)
       NULLIFY (qs_ot_env%preconditioner)
       NULLIFY (qs_ot_env%matrix_psc0)
       NULLIFY (qs_ot_env%para_env)
@@ -772,6 +774,8 @@ CONTAINS
          END IF
       END IF
 
+      qs_ot_env%state_allocated = .TRUE.
+
    END SUBROUTINE qs_ot_allocate
 
 ! **************************************************************************************************
@@ -781,11 +785,13 @@ CONTAINS
    SUBROUTINE qs_ot_destroy(qs_ot_env)
       TYPE(qs_ot_type)                                   :: qs_ot_env
 
+      IF (.NOT. qs_ot_env%state_allocated) RETURN
+
       CALL mp_para_env_release(qs_ot_env%para_env)
       CALL cp_blacs_env_release(qs_ot_env%blacs_env)
 
-      DEALLOCATE (qs_ot_env%evals)
-      DEALLOCATE (qs_ot_env%dum)
+      IF (ASSOCIATED(qs_ot_env%evals)) DEALLOCATE (qs_ot_env%evals)
+      IF (ASSOCIATED(qs_ot_env%dum)) DEALLOCATE (qs_ot_env%dum)
 
       IF (ASSOCIATED(qs_ot_env%matrix_os)) CALL dbcsr_release_p(qs_ot_env%matrix_os)
       IF (ASSOCIATED(qs_ot_env%matrix_p)) CALL dbcsr_release_p(qs_ot_env%matrix_p)
@@ -844,7 +850,7 @@ CONTAINS
             CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_e)
          END IF
 
-         DEALLOCATE (qs_ot_env%rot_mat_evals)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_evals)) DEALLOCATE (qs_ot_env%rot_mat_evals)
          IF (ASSOCIATED(qs_ot_env%rot_mat_evec_re)) CALL dbcsr_release_p(qs_ot_env%rot_mat_evec_re)
          IF (ASSOCIATED(qs_ot_env%rot_mat_evec_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_evec_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx)
@@ -853,19 +859,21 @@ CONTAINS
       END IF
 
       IF (qs_ot_env%settings%do_ener) THEN
-         DEALLOCATE (qs_ot_env%ener_x)
-         DEALLOCATE (qs_ot_env%ener_gx)
+         IF (ASSOCIATED(qs_ot_env%ener_x)) DEALLOCATE (qs_ot_env%ener_x)
+         IF (ASSOCIATED(qs_ot_env%ener_gx)) DEALLOCATE (qs_ot_env%ener_gx)
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
-            DEALLOCATE (qs_ot_env%ener_h_x)
-            DEALLOCATE (qs_ot_env%ener_h_e)
+            IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)
+            IF (ASSOCIATED(qs_ot_env%ener_h_e)) DEALLOCATE (qs_ot_env%ener_h_e)
          END IF
          IF (qs_ot_env%use_dx) THEN
-            DEALLOCATE (qs_ot_env%ener_dx)
+            IF (ASSOCIATED(qs_ot_env%ener_dx)) DEALLOCATE (qs_ot_env%ener_dx)
          END IF
          IF (qs_ot_env%use_gx_old) THEN
-            DEALLOCATE (qs_ot_env%ener_gx_old)
+            IF (ASSOCIATED(qs_ot_env%ener_gx_old)) DEALLOCATE (qs_ot_env%ener_gx_old)
          END IF
       END IF
+
+      qs_ot_env%state_allocated = .FALSE.
 
    END SUBROUTINE qs_ot_destroy
 

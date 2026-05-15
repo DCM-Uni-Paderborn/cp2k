@@ -149,12 +149,15 @@ MODULE qs_scf
                                               mo_set_restrict,&
                                               mo_set_type,&
                                               reassign_allocated_mos
-   USE qs_ot,                           ONLY: qs_ot_new_preconditioner
+   USE qs_ot,                           ONLY: qs_ot_get_p,&
+                                              qs_ot_new_preconditioner
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_init,&
                                               ot_scf_read_input
-   USE qs_ot_types,                     ONLY: qs_ot_channel_index,&
+   USE qs_ot_types,                     ONLY: qs_ot_allocate,&
+                                              qs_ot_channel_index,&
                                               qs_ot_check_channel_context,&
+                                              qs_ot_init,&
                                               qs_ot_number_of_channels,&
                                               qs_ot_set_context
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
@@ -1195,6 +1198,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_kp
       TYPE(dbcsr_type), POINTER                          :: orthogonality_metric
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -1203,7 +1207,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (scf_control, matrix_s, matrix_ks, dft_control, mos, mo_coeff, kpoints, wkp)
+      NULLIFY (scf_control, matrix_s, matrix_s_kp, matrix_ks, dft_control, mos, mo_coeff, kpoints, wkp)
 
       CPASSERT(ASSOCIATED(scf_env))
       CPASSERT(ASSOCIATED(qs_env))
@@ -1314,6 +1318,8 @@ CONTAINS
       CASE (ot_method_nr)
          IF (do_kpoints) THEN
             IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) THEN
+               CALL get_qs_env(qs_env, matrix_s_kp=matrix_s_kp)
+               CPASSERT(ASSOCIATED(matrix_s_kp))
                CALL allocate_qs_ot_envs(scf_env=scf_env, &
                                         scf_control=scf_control, &
                                         dft_control=dft_control, &
@@ -1323,10 +1329,17 @@ CONTAINS
                                         nspin_ot=nspin_ot, &
                                         kp_range=kp_range, &
                                         wkp=wkp)
+               CALL allocate_qs_ot_kpoint_state(qs_env=qs_env, &
+                                                scf_env=scf_env, &
+                                                scf_control=scf_control, &
+                                                dft_control=dft_control, &
+                                                kpoints=kpoints, &
+                                                matrix_s_kp=matrix_s_kp, &
+                                                nspin_ot=nspin_ot)
             END IF
 
             CALL cp_abort(__LOCATION__, &
-                          "OT with k-points reached the spin/k-point channel allocation stub. "// &
+                          "OT with k-points allocated spin/k-point minimizer state. "// &
                           "K-point OT minimization remains disabled until k-resolved rotations, "// &
                           "energy variables, density build, and restart payload are implemented.")
          END IF
@@ -1547,6 +1560,115 @@ CONTAINS
                                        wkp=wkp)
 
    END SUBROUTINE allocate_qs_ot_envs
+
+! **************************************************************************************************
+!> \brief allocate local k-point OT minimizer state for labelled spin/k-point channels
+!> \param qs_env ...
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param dft_control ...
+!> \param kpoints ...
+!> \param matrix_s_kp ...
+!> \param nspin_ot ...
+! **************************************************************************************************
+   SUBROUTINE allocate_qs_ot_kpoint_state(qs_env, scf_env, scf_control, dft_control, &
+                                          kpoints, matrix_s_kp, nspin_ot)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s_kp
+      INTEGER, INTENT(IN)                                :: nspin_ot
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_qs_ot_kpoint_state'
+
+      INTEGER                                            :: handle, ikpoint, ikpoint_local, ispin, &
+                                                            ot_channel
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(cp_fm_type), POINTER                          :: mo_coeff
+      TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(mo_set_type), POINTER                         :: mo_set
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (eigenvalues, kp, mo_coeff, mo_set)
+
+      CPASSERT(ASSOCIATED(qs_env))
+      CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
+      CPASSERT(ASSOCIATED(kpoints))
+      CPASSERT(ASSOCIATED(kpoints%kp_env))
+      CPASSERT(ASSOCIATED(matrix_s_kp))
+      CPASSERT(ASSOCIATED(matrix_s_kp(1, 1)%matrix))
+      CPASSERT(.NOT. dft_control%restricted .OR. nspin_ot == 1)
+
+      DO ikpoint_local = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(ikpoint_local)%kpoint_env
+         CPASSERT(ASSOCIATED(kp))
+         CPASSERT(ASSOCIATED(kp%mos))
+         CPASSERT(nspin_ot <= SIZE(kp%mos, 2))
+         ikpoint = kp%nkpoint
+         CPASSERT(ikpoint >= 1)
+         DO ispin = 1, nspin_ot
+            ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+            CPASSERT(.NOT. scf_env%qs_ot_env(ot_channel)%state_allocated)
+
+            NULLIFY (eigenvalues, mo_coeff)
+            mo_set => kp%mos(1, ispin)
+            CALL get_mo_set(mo_set=mo_set, mo_coeff=mo_coeff, eigenvalues=eigenvalues)
+            CPASSERT(ASSOCIATED(mo_coeff))
+
+            CALL qs_ot_allocate(scf_env%qs_ot_env(ot_channel), &
+                                matrix_s_kp(1, 1)%matrix, &
+                                mo_coeff%matrix_struct)
+
+            ! This is still a stop-before-minimization path: C0 is channel-local, while
+            ! SC0 must become S(k)*C(k) when the real k-point OT minimizer is enabled.
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp)
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sc0, 0.0_dp)
+            CALL copy_fm_to_dbcsr(mo_coeff, scf_env%qs_ot_env(ot_channel)%matrix_c0)
+            CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sc0, &
+                            scf_env%qs_ot_env(ot_channel)%matrix_c0)
+
+            CALL qs_ot_init(scf_env%qs_ot_env(ot_channel))
+            scf_env%qs_ot_env(ot_channel)%broyden_adaptive_sigma = qs_env%broyden_adaptive_sigma
+
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_x, 0.0_dp)
+            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sx, 0.0_dp)
+
+            IF (scf_env%qs_ot_env(ot_channel)%settings%do_rotation) &
+               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%rot_mat_x, 0.0_dp)
+
+            IF (scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
+               IF (ASSOCIATED(eigenvalues)) THEN
+                  CPASSERT(SIZE(scf_env%qs_ot_env(ot_channel)%ener_x) == SIZE(eigenvalues))
+                  scf_env%qs_ot_env(ot_channel)%ener_x = eigenvalues
+               ELSE
+                  scf_env%qs_ot_env(ot_channel)%ener_x = 0.0_dp
+               END IF
+            END IF
+
+            SELECT CASE (scf_env%qs_ot_env(ot_channel)%settings%ot_algorithm)
+            CASE ("TOD")
+               CALL qs_ot_get_p(scf_env%qs_ot_env(ot_channel)%matrix_x, &
+                                scf_env%qs_ot_env(ot_channel)%matrix_sx, &
+                                scf_env%qs_ot_env(ot_channel))
+            CASE ("REF")
+               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x, &
+                               scf_env%qs_ot_env(ot_channel)%matrix_c0)
+               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx, &
+                               scf_env%qs_ot_env(ot_channel)%matrix_sc0)
+            CASE DEFAULT
+               CPABORT("Algorithm not yet implemented")
+            END SELECT
+
+            CPASSERT(scf_env%qs_ot_env(ot_channel)%state_allocated)
+         END DO
+      END DO
+
+      CALL timestop(handle)
+
+   END SUBROUTINE allocate_qs_ot_kpoint_state
 
 ! **************************************************************************************************
 !> \brief perform cleanup operations (like releasing temporary storage)
