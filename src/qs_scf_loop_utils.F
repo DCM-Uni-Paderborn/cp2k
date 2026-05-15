@@ -15,8 +15,10 @@ MODULE qs_scf_loop_utils
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
         dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_p_type, dbcsr_release, &
         dbcsr_scale, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
-   USE cp_dbcsr_contrib,                ONLY: dbcsr_get_diag,&
-                                              dbcsr_scale_by_vector
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_dot,&
+                                              dbcsr_get_diag,&
+                                              dbcsr_scale_by_vector,&
+                                              dbcsr_set_diag
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
@@ -512,6 +514,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
+      REAL(KIND=dp)                                      :: ener_nondiag
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
@@ -569,7 +572,7 @@ CONTAINS
       first_channel = qs_ot_channel_index(1, kp_range(1), nspin_ot)
       nlocal_channels = SIZE(kpoints%kp_env)*nspin_ot
       local_ot_env => scf_env%qs_ot_env(first_channel:first_channel + nlocal_channels - 1)
-      local_ot_env(1)%etotal = energy%total
+      ener_nondiag = 0.0_dp
 
       ALLOCATE (matrix_hc(nlocal_channels))
       ALLOCATE (matrix_hc_im(nlocal_channels))
@@ -650,7 +653,8 @@ CONTAINS
             CALL qs_scf_loop_prepare_ot_kp_channel_gradient(local_ot_env(local_channel), &
                                                             matrix_hc(local_channel)%matrix, &
                                                             matrix_hc_im(local_channel)%matrix, &
-                                                            occupation_numbers, wkp(ikpoint))
+                                                            occupation_numbers, wkp(ikpoint), &
+                                                            ener_nondiag)
 
             ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
             ! Keep orbital gradients on the fixed-N Mermin surface. The occupation
@@ -670,6 +674,7 @@ CONTAINS
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                      kp_range, wkp, para_env_inter_kp, scf_control%smear)
 
+      local_ot_env(1)%etotal = energy%total + ener_nondiag
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
       scf_env%iter_delta = local_ot_env(1)%delta
 
@@ -813,14 +818,17 @@ CONTAINS
 !> \param kpoint_weight ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_prepare_ot_kp_channel_gradient(qs_ot_env, matrix_hc, matrix_hc_im, &
-                                                         occupation_numbers, kpoint_weight)
+                                                         occupation_numbers, kpoint_weight, nondiag_energy)
 
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type), POINTER                          :: matrix_hc, matrix_hc_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
+      REAL(KIND=dp), INTENT(INOUT)                       :: nondiag_energy
 
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal, orbital_scaling_factor
+      REAL(KIND=dp)                                      :: nondiag_trace_im, nondiag_trace_re, &
+                                                            nondiag_weight
       TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, &
                                                             tmp, tmp2
 
@@ -890,6 +898,41 @@ CONTAINS
          CALL dbcsr_add(qs_ot_env%rot_mat_dedu_im, tmp2, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
       END IF
 
+      IF (qs_ot_env%settings%add_nondiag_energy) THEN
+         CPASSERT(qs_ot_env%settings%do_ener)
+         nondiag_weight = qs_ot_env%settings%nondiag_energy_strength*kpoint_weight
+
+         CALL dbcsr_copy(b_re, chc_re)
+         CALL dbcsr_copy(b_im, chc_im)
+         ALLOCATE (diagonal(SIZE(qs_ot_env%ener_x)))
+         CALL dbcsr_get_diag(b_re, diagonal)
+         diagonal(:) = diagonal(:) - qs_ot_env%ener_x(:)
+         CALL dbcsr_set_diag(b_re, diagonal)
+         DEALLOCATE (diagonal)
+
+         CALL dbcsr_dot(b_re, b_re, nondiag_trace_re)
+         CALL dbcsr_dot(b_im, b_im, nondiag_trace_im)
+         nondiag_energy = nondiag_energy + &
+                          0.5_dp*nondiag_weight*(nondiag_trace_re + nondiag_trace_im)
+
+         ! Complex version of the Gamma-point NONDIAG_ENERGY tether:
+         ! d/dU 0.5*k*||U^H A U - eps||^2 = 2*k*A*U*(U^H A U - eps).
+         ! Since CHC=U^H A U, A*U is recovered as U*CHC for unitary U.
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_re, 0.0_dp, tmp)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%rot_mat_u_im, chc_im, 1.0_dp, tmp)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_im, 0.0_dp, tmp2)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, chc_re, 1.0_dp, tmp2)
+
+         CALL dbcsr_multiply('N', 'N', 2.0_dp*nondiag_weight, tmp, b_re, 1.0_dp, &
+                             qs_ot_env%rot_mat_dedu)
+         CALL dbcsr_multiply('N', 'N', -2.0_dp*nondiag_weight, tmp2, b_im, 1.0_dp, &
+                             qs_ot_env%rot_mat_dedu)
+         CALL dbcsr_multiply('N', 'N', 2.0_dp*nondiag_weight, tmp, b_im, 1.0_dp, &
+                             qs_ot_env%rot_mat_dedu_im)
+         CALL dbcsr_multiply('N', 'N', 2.0_dp*nondiag_weight, tmp2, b_re, 1.0_dp, &
+                             qs_ot_env%rot_mat_dedu_im)
+      END IF
+
       CALL qs_ot_rot_mat_derivative_complex(qs_ot_env)
       ! The k-point gradient is assembled for the C_base*U channel convention.
       ! Convert the complex rotation adjoint to the minimizer variable convention.
@@ -925,8 +968,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
       REAL(KIND=dp)                                      :: gvalue, maxocc, mu, sigma, v
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum, precond_count, &
-                                                            precond_shift, precond_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum, nondiag_diag, &
+                                                            precond_count, precond_shift, precond_sum
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       LOGICAL                                            :: active_preconditioner
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: schur_group_done
@@ -1005,6 +1048,23 @@ CONTAINS
             END DO
          END DO
       END DO
+
+      IF (local_ot_env(1)%settings%add_nondiag_energy) THEN
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), nmo=nmo)
+               ALLOCATE (nondiag_diag(nmo))
+               CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, nondiag_diag)
+               nondiag_diag(:) = nondiag_diag(:) - local_ot_env(local_channel)%ener_x(:)
+               local_ot_env(local_channel)%ener_gx(:) = local_ot_env(local_channel)%ener_gx(:) - &
+                  local_ot_env(local_channel)%settings%nondiag_energy_strength*wkp(ikpoint)*nondiag_diag(:)
+               DEALLOCATE (nondiag_diag)
+            END DO
+         END DO
+      END IF
 
       IF (active_preconditioner) THEN
          CALL precondition_kpoint_ot_schur(schur_group_done)
@@ -1480,7 +1540,7 @@ CONTAINS
          inner(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dedu, evec))
          DO j = 1, n
             DO i = 1, n
-               kernel = qs_ot_complex_exp_frechet_kernel(evals(i), evals(j))
+               kernel = CONJG(qs_ot_complex_exp_frechet_kernel(evals(i), evals(j)))
                outer(i, j) = inner(i, j)*kernel
             END DO
          END DO

@@ -15,6 +15,7 @@ PROGRAM qs_ot_frechet_unittest
         dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: default_output_unit
+   USE mathlib,                         ONLY: diag_complex
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_world_finalize,&
                                               mp_world_init
@@ -44,6 +45,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
+   CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
+                                              5.0E-9_dp, nfail)
 
    IF (nfail == 0) PRINT *, "qs_ot_frechet_unittest: OK"
 
@@ -258,6 +261,32 @@ CONTAINS
       IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
 
       err = MAXVAL(ABS(dbcsr_out - dense_ref))
+      CALL dbcsr_release(outer_re)
+      CALL dbcsr_release(outer_im)
+
+      CALL qs_ot_apply_complex_frechet_dbcsr(evals, inner_re, inner_im, outer_re, outer_im, &
+                                             adjoint=.TRUE.)
+      CALL apply_dense_frechet(evals, z, dense_ref, adjoint=.TRUE.)
+
+      dbcsr_out(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 1, 1, block_p, found)
+      IF (found) dbcsr_out(1:2, 1:2) = dbcsr_out(1:2, 1:2) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 1, 1, block_p, found)
+      IF (found) dbcsr_out(1:2, 1:2) = dbcsr_out(1:2, 1:2) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 1, 2, block_p, found)
+      IF (found) dbcsr_out(1:2, 3:4) = dbcsr_out(1:2, 3:4) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 1, 2, block_p, found)
+      IF (found) dbcsr_out(1:2, 3:4) = dbcsr_out(1:2, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 2, 1, block_p, found)
+      IF (found) dbcsr_out(3:4, 1:2) = dbcsr_out(3:4, 1:2) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 2, 1, block_p, found)
+      IF (found) dbcsr_out(3:4, 1:2) = dbcsr_out(3:4, 1:2) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 2, 2, block_p, found)
+      IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 2, 2, block_p, found)
+      IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
+
+      err = MAX(err, MAXVAL(ABS(dbcsr_out - dense_ref)))
       IF (err > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
@@ -299,16 +328,24 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Dense reference application of the complex exponential Frechet kernel.
 ! **************************************************************************************************
-   SUBROUTINE apply_dense_frechet(evals, z, out)
+   SUBROUTINE apply_dense_frechet(evals, z, out, adjoint)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: z
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: out
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint
 
+      COMPLEX(KIND=dp)                                   :: kernel
       INTEGER                                            :: i, j
+      LOGICAL                                            :: use_adjoint
+
+      use_adjoint = .FALSE.
+      IF (PRESENT(adjoint)) use_adjoint = adjoint
 
       DO i = 1, SIZE(z, 1)
       DO j = 1, SIZE(z, 2)
-         out(i, j) = z(i, j)*qs_ot_complex_exp_frechet_kernel(evals(i), evals(j))
+         kernel = qs_ot_complex_exp_frechet_kernel(evals(i), evals(j))
+         IF (use_adjoint) kernel = CONJG(kernel)
+         out(i, j) = z(i, j)*kernel
       END DO
       END DO
 
@@ -454,6 +491,238 @@ CONTAINS
       END IF
 
    END SUBROUTINE dense_kpoint_mermin_gradient
+
+! **************************************************************************************************
+!> \brief Check the complex k-point NONDIAG_ENERGY tether gradient.
+! **************************************************************************************************
+   SUBROUTINE check_complex_nondiag_tether_gradient(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp, kweight = 0.75_dp, &
+                                                            strength = 0.6_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: err, fd, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n)                        :: eps, grad_eps
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.30_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(-0.02_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.12_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.04_dp, -0.03_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(1, 3) = CMPLX(-0.02_dp, 0.05_dp, KIND=dp)
+      base(3, 1) = CONJG(base(1, 3))
+      base(2, 3) = CMPLX(0.03_dp, 0.01_dp, KIND=dp)
+      base(3, 2) = CONJG(base(2, 3))
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.08_dp
+      x_re(2, 1) = -x_re(1, 2)
+      x_re(1, 3) = -0.04_dp
+      x_re(3, 1) = -x_re(1, 3)
+      x_re(2, 3) = 0.02_dp
+      x_re(3, 2) = -x_re(2, 3)
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.03_dp
+      x_im(2, 2) = -0.05_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(1, 2) = -0.02_dp
+      x_im(2, 1) = x_im(1, 2)
+      x_im(1, 3) = 0.01_dp
+      x_im(3, 1) = x_im(1, 3)
+      x_im(2, 3) = 0.04_dp
+      x_im(3, 2) = x_im(2, 3)
+
+      eps = [-0.24_dp, -0.01_dp, 0.09_dp]
+      CALL dense_nondiag_tether_gradient(x_re, x_im, base, eps, strength, kweight, &
+                                         grad_re, grad_im, grad_eps, value_p)
+
+      err = 0.0_dp
+      DO i = 1, n
+         eps(i) = eps(i) + fd_step
+         value_p = dense_nondiag_tether_value(x_re, x_im, base, eps, strength, kweight)
+         eps(i) = eps(i) - 2.0_dp*fd_step
+         value_m = dense_nondiag_tether_value(x_re, x_im, base, eps, strength, kweight)
+         eps(i) = eps(i) + fd_step
+         fd = (value_p - value_m)/(2.0_dp*fd_step)
+         err = MAX(err, ABS(fd - grad_eps(i)))
+      END DO
+
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_p_re(:, :) = x_re(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            x_p_re(i, j) = x_p_re(i, j) + fd_step
+            x_p_re(j, i) = x_p_re(j, i) - fd_step
+            x_m_re(i, j) = x_m_re(i, j) - fd_step
+            x_m_re(j, i) = x_m_re(j, i) + fd_step
+            value_p = dense_nondiag_tether_value(x_p_re, x_p_im, base, eps, strength, kweight)
+            value_m = dense_nondiag_tether_value(x_m_re, x_m_im, base, eps, strength, kweight)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_re(i, j)))
+
+            x_p_re(:, :) = x_re(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            x_p_im(i, j) = x_p_im(i, j) + fd_step
+            x_p_im(j, i) = x_p_im(j, i) + fd_step
+            x_m_im(i, j) = x_m_im(i, j) - fd_step
+            x_m_im(j, i) = x_m_im(j, i) - fd_step
+            value_p = dense_nondiag_tether_value(x_p_re, x_p_im, base, eps, strength, kweight)
+            value_m = dense_nondiag_tether_value(x_m_re, x_m_im, base, eps, strength, kweight)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_im(i, j)))
+         END DO
+      END DO
+
+      DO i = 1, n
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         x_p_im(i, i) = x_p_im(i, i) + fd_step
+         x_m_im(i, i) = x_m_im(i, i) - fd_step
+         value_p = dense_nondiag_tether_value(x_p_re, x_p_im, base, eps, strength, kweight)
+         value_m = dense_nondiag_tether_value(x_m_re, x_m_im, base, eps, strength, kweight)
+         fd = (value_p - value_m)/(2.0_dp*fd_step)
+         err = MAX(err, ABS(fd - 0.5_dp*grad_im(i, i)))
+      END DO
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_nondiag_tether_gradient
+
+! **************************************************************************************************
+!> \brief Dense complex NONDIAG_ENERGY tether value.
+! **************************************************************************************************
+   FUNCTION dense_nondiag_tether_value(x_re, x_im, base, eps, strength, kweight) RESULT(value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: eps
+      REAL(KIND=dp), INTENT(IN)                          :: strength, kweight
+      REAL(KIND=dp)                                      :: value
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dmat, u
+      INTEGER                                            :: i, n
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (dmat(n, n), u(n, n))
+      CALL dense_rotation_u(x_re, x_im, u)
+      dmat(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      DO i = 1, n
+         dmat(i, i) = dmat(i, i) - eps(i)
+      END DO
+      value = 0.5_dp*strength*kweight*SUM(ABS(dmat(:, :))**2)
+      DEALLOCATE (dmat, u)
+
+   END FUNCTION dense_nondiag_tether_value
+
+! **************************************************************************************************
+!> \brief Dense complex NONDIAG_ENERGY tether gradients.
+! **************************************************************************************************
+   SUBROUTINE dense_nondiag_tether_gradient(x_re, x_im, base, eps, strength, kweight, &
+                                            grad_re, grad_im, grad_eps, value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: eps
+      REAL(KIND=dp), INTENT(IN)                          :: strength, kweight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: grad_eps
+      REAL(KIND=dp), INTENT(OUT)                         :: value
+
+      COMPLEX(KIND=dp)                                   :: kernel
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dmat, dedu, evec, frechet, generator, &
+                                                            inner, outer, u
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (dmat(n, n), dedu(n, n), evec(n, n), frechet(n, n), generator(n, n))
+      ALLOCATE (inner(n, n), outer(n, n), u(n, n), evals(n))
+
+      generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+      CALL diag_complex(generator, evec, evals)
+      CALL dense_rotation_u_from_eigensystem(evec, evals, u)
+
+      dmat(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      DO i = 1, n
+         dmat(i, i) = dmat(i, i) - eps(i)
+      END DO
+      value = 0.5_dp*strength*kweight*SUM(ABS(dmat(:, :))**2)
+      DO i = 1, n
+         grad_eps(i) = -strength*kweight*REAL(dmat(i, i), KIND=dp)
+      END DO
+
+      dedu(:, :) = 2.0_dp*strength*kweight*MATMUL(base, MATMUL(u, dmat))
+      inner(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dedu, evec))
+      DO j = 1, n
+         DO i = 1, n
+            kernel = CONJG(qs_ot_complex_exp_frechet_kernel(evals(i), evals(j)))
+            outer(i, j) = inner(i, j)*kernel
+         END DO
+      END DO
+      frechet(:, :) = MATMUL(evec, MATMUL(outer, CONJG(TRANSPOSE(evec))))
+
+      grad_re(:, :) = REAL(frechet, KIND=dp) - TRANSPOSE(REAL(frechet, KIND=dp))
+      grad_im(:, :) = AIMAG(frechet) + TRANSPOSE(AIMAG(frechet))
+
+      DEALLOCATE (dmat, dedu, evec, frechet, generator, inner, outer, u, evals)
+
+   END SUBROUTINE dense_nondiag_tether_gradient
+
+! **************************************************************************************************
+!> \brief Build U=exp(-i X) for the dense anti-Hermitian k-point generator convention.
+! **************************************************************************************************
+   SUBROUTINE dense_rotation_u(x_re, x_im, u)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: u
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, generator
+      INTEGER                                            :: n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (evec(n, n), generator(n, n), evals(n))
+      generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+      CALL diag_complex(generator, evec, evals)
+      CALL dense_rotation_u_from_eigensystem(evec, evals, u)
+      DEALLOCATE (evec, generator, evals)
+
+   END SUBROUTINE dense_rotation_u
+
+! **************************************************************************************************
+!> \brief Build U=V exp(-i evals) V^H.
+! **************************************************************************************************
+   SUBROUTINE dense_rotation_u_from_eigensystem(evec, evals, u)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: evec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: u
+
+      INTEGER                                            :: j
+
+      u(:, :) = evec(:, :)
+      DO j = 1, SIZE(evals)
+         u(:, j) = EXP(CMPLX(0.0_dp, -evals(j), KIND=dp))*u(:, j)
+      END DO
+      u(:, :) = MATMUL(u, CONJG(TRANSPOSE(evec)))
+
+   END SUBROUTINE dense_rotation_u_from_eigensystem
 
 ! **************************************************************************************************
 !> \brief Small local Fermi-Dirac k-point smearing helper for this standalone unit test.

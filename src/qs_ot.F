@@ -103,22 +103,27 @@ CONTAINS
 !> \param inner_deriv_im imaginary part of V^H dE/dU V
 !> \param outer_deriv_re real part of kernel(e_i,e_j)*inner_deriv_ij
 !> \param outer_deriv_im imaginary part of kernel(e_i,e_j)*inner_deriv_ij
+!> \param adjoint use the adjoint Frechet kernel for gradients
 ! **************************************************************************************************
    SUBROUTINE qs_ot_apply_complex_frechet_dbcsr(evals, inner_deriv_re, inner_deriv_im, &
-                                                outer_deriv_re, outer_deriv_im)
+                                                outer_deriv_re, outer_deriv_im, adjoint)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       TYPE(dbcsr_type)                                   :: inner_deriv_re, inner_deriv_im, &
                                                             outer_deriv_re, outer_deriv_im
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint
 
-      COMPLEX(KIND=dp)                                   :: cval_in, cval_out
+      COMPLEX(KIND=dp)                                   :: cval_in, cval_out, kernel
       INTEGER                                            :: col, i, j, row
       INTEGER, DIMENSION(:), POINTER                     :: col_blk_offset, row_blk_offset
       LOGICAL                                            :: found_im, found_out_im, found_out_re, &
-                                                            found_re
+                                                            found_re, use_adjoint
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
                                                             block_out_re
       REAL(KIND=dp)                                      :: e1, e2, im_part, re_part
       TYPE(dbcsr_iterator_type)                          :: iter
+
+      use_adjoint = .FALSE.
+      IF (PRESENT(adjoint)) use_adjoint = adjoint
 
       ! Re/Im parts can have different sparse block patterns. Build an explicit
       ! union pattern and treat missing partner blocks as zero.
@@ -147,7 +152,9 @@ CONTAINS
             IF (found_re) re_part = block_in_re(i, j)
             IF (found_im) im_part = block_in_im(i, j)
             cval_in = CMPLX(re_part, im_part, dp)
-            cval_out = cval_in*qs_ot_complex_exp_frechet_kernel(e1, e2)
+            kernel = qs_ot_complex_exp_frechet_kernel(e1, e2)
+            IF (use_adjoint) kernel = CONJG(kernel)
+            cval_out = cval_in*kernel
             block_out_re(i, j) = REAL(cval_out, KIND=dp)
             block_out_im(i, j) = AIMAG(cval_out)
          END DO
@@ -1550,7 +1557,7 @@ CONTAINS
                              work_re, 1.0_dp, inner_deriv_im)
 
          CALL qs_ot_apply_complex_frechet_dbcsr(qs_ot_env%rot_mat_evals, inner_deriv_re, inner_deriv_im, &
-                                                outer_deriv_re, outer_deriv_im)
+                                                outer_deriv_re, outer_deriv_im, adjoint=.TRUE.)
 
          ! Frechet adjoint in the original basis: V * outer_deriv * V^H.
          CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_re, &
