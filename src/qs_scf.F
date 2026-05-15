@@ -56,7 +56,9 @@ MODULE qs_scf
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
                                               cp_dbcsr_m_by_n_from_row_template,&
+                                              cp_dbcsr_m_by_n_from_template,&
                                               cp_dbcsr_sm_fm_multiply,&
+                                              dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
    USE cp_files,                        ONLY: close_file
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type
@@ -1702,8 +1704,13 @@ CONTAINS
                CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, 0.0_dp)
             END IF
 
-            IF (scf_env%qs_ot_env(ot_channel)%settings%do_rotation) &
+            IF (scf_env%qs_ot_env(ot_channel)%settings%do_rotation) THEN
                CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%rot_mat_x, 0.0_dp)
+               IF (scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state) THEN
+                  CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%rot_mat_u_im, 0.0_dp)
+                  CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%rot_mat_x_im, 0.0_dp)
+               END IF
+            END IF
 
             IF (scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
                IF (ASSOCIATED(eigenvalues)) THEN
@@ -1767,11 +1774,13 @@ CONTAINS
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type), POINTER                          :: matrix_s
 
-      INTEGER                                            :: nmo, nmo_ortho
+      INTEGER                                            :: i, m_diis, nmo, nmo_ortho
 
       CPASSERT(qs_ot_env%state_allocated)
       CPASSERT(.NOT. qs_ot_env%has_complex_kpoint_state)
       CPASSERT(ASSOCIATED(matrix_s))
+
+      m_diis = qs_ot_env%settings%diis_m
 
       CALL dbcsr_get_info(qs_ot_env%matrix_c0, nfullcols_total=nmo)
       CALL dbcsr_get_info(qs_ot_env%matrix_sc0, nfullcols_total=nmo_ortho)
@@ -1788,6 +1797,73 @@ CONTAINS
       CALL dbcsr_init_p(qs_ot_env%matrix_sx_im)
       CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_sx_im, template=matrix_s, n=nmo, &
                                              sym=dbcsr_type_no_symmetry)
+      CALL dbcsr_init_p(qs_ot_env%matrix_gx_im)
+      CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_gx_im, template=matrix_s, n=nmo, &
+                                             sym=dbcsr_type_no_symmetry)
+      IF (qs_ot_env%use_dx) THEN
+         CALL dbcsr_init_p(qs_ot_env%matrix_dx_im)
+         CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_dx_im, template=matrix_s, n=nmo, &
+                                                sym=dbcsr_type_no_symmetry)
+      END IF
+      IF (qs_ot_env%use_gx_old) THEN
+         CALL dbcsr_init_p(qs_ot_env%matrix_gx_old_im)
+         CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_gx_old_im, template=matrix_s, n=nmo, &
+                                                sym=dbcsr_type_no_symmetry)
+      END IF
+
+      IF (qs_ot_env%settings%ot_method == "DIIS" .OR. &
+          qs_ot_env%settings%ot_method == "BROY") THEN
+         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_e_im, m_diis)
+         CALL dbcsr_allocate_matrix_set(qs_ot_env%matrix_h_x_im, m_diis)
+         DO i = 1, m_diis
+            CALL dbcsr_init_p(qs_ot_env%matrix_h_x_im(i)%matrix)
+            CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_h_x_im(i)%matrix, template=matrix_s, &
+                                                   n=nmo, sym=dbcsr_type_no_symmetry)
+            CALL dbcsr_init_p(qs_ot_env%matrix_h_e_im(i)%matrix)
+            CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_h_e_im(i)%matrix, template=matrix_s, &
+                                                   n=nmo, sym=dbcsr_type_no_symmetry)
+         END DO
+      END IF
+
+      IF (qs_ot_env%settings%do_rotation) THEN
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_u_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_u_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_x_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_x_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_dedu_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_dedu_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_chc_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_chc_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_gx_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_gx_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         IF (qs_ot_env%use_dx) THEN
+            CALL dbcsr_init_p(qs_ot_env%rot_mat_dx_im)
+            CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_dx_im, template=matrix_s, m=nmo, n=nmo, &
+                                               sym=dbcsr_type_no_symmetry)
+         END IF
+         IF (qs_ot_env%use_gx_old) THEN
+            CALL dbcsr_init_p(qs_ot_env%rot_mat_gx_old_im)
+            CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_gx_old_im, template=matrix_s, m=nmo, n=nmo, &
+                                               sym=dbcsr_type_no_symmetry)
+         END IF
+         IF (qs_ot_env%settings%ot_method == "DIIS") THEN
+            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_e_im, m_diis)
+            CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_x_im, m_diis)
+            DO i = 1, m_diis
+               CALL dbcsr_init_p(qs_ot_env%rot_mat_h_x_im(i)%matrix)
+               CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_h_x_im(i)%matrix, template=matrix_s, &
+                                                  m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+               CALL dbcsr_init_p(qs_ot_env%rot_mat_h_e_im(i)%matrix)
+               CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_h_e_im(i)%matrix, template=matrix_s, &
+                                                  m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+            END DO
+         END IF
+      END IF
 
       qs_ot_env%has_complex_kpoint_state = .TRUE.
 

@@ -159,12 +159,14 @@ MODULE qs_ot_types
       ! only here for the ease of programming. These will have to be supplied
       ! explicitly at all times
       TYPE(dbcsr_type), POINTER :: matrix_x => NULL(), matrix_sx => NULL(), matrix_gx => NULL()
-      TYPE(dbcsr_type), POINTER :: matrix_x_im => NULL(), matrix_sx_im => NULL()
+      TYPE(dbcsr_type), POINTER :: matrix_x_im => NULL(), matrix_sx_im => NULL(), matrix_gx_im => NULL()
       TYPE(dbcsr_type), POINTER :: matrix_dx => NULL(), matrix_gx_old => NULL()
+      TYPE(dbcsr_type), POINTER :: matrix_dx_im => NULL(), matrix_gx_old_im => NULL()
 
       LOGICAL :: use_gx_old = .FALSE., use_dx = .FALSE.
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: matrix_h_e => NULL(), matrix_h_x => NULL()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: matrix_h_e_im => NULL(), matrix_h_x_im => NULL()
 
       REAL(KIND=dp), DIMENSION(:, :), POINTER  :: ls_diis => NULL()
       REAL(KIND=dp), DIMENSION(:, :), POINTER  :: lss_diis => NULL()
@@ -191,15 +193,24 @@ MODULE qs_ot_types
 
       ! second part of the variables, if an explicit rotation is required as well
       TYPE(dbcsr_type), POINTER :: rot_mat_u => NULL() ! rotation matrix
+      TYPE(dbcsr_type), POINTER :: rot_mat_u_im => NULL() ! imaginary part of complex k-point rotation matrix
       TYPE(dbcsr_type), POINTER :: rot_mat_x => NULL() ! antisymmetric matrix that parametrises rot_matrix_u
+      TYPE(dbcsr_type), POINTER :: rot_mat_x_im => NULL() ! symmetric imaginary part of anti-Hermitian k-point step
       TYPE(dbcsr_type), POINTER :: rot_mat_dedu => NULL() ! derivative of the total energy wrt to u
+      TYPE(dbcsr_type), POINTER :: rot_mat_dedu_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_chc => NULL() ! for convencience, the matrix c^T H c
+      TYPE(dbcsr_type), POINTER :: rot_mat_chc_im => NULL()
 
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: rot_mat_h_e => NULL()
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: rot_mat_h_x => NULL()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: rot_mat_h_e_im => NULL()
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: rot_mat_h_x_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_gx => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_gx_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_gx_old => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_gx_old_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_dx => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_dx_im => NULL()
 
       REAL(KIND=dp), DIMENSION(:), POINTER :: rot_mat_evals => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_re => NULL()
@@ -434,19 +445,31 @@ CONTAINS
       qs_ot_env%os_valid = .FALSE.
 
       CALL dbcsr_set(qs_ot_env%matrix_gx, 0.0_dp)
+      IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &
+         CALL dbcsr_set(qs_ot_env%matrix_gx_im, 0.0_dp)
 
       IF (qs_ot_env%use_dx) &
          CALL dbcsr_set(qs_ot_env%matrix_dx, 0.0_dp)
+      IF (qs_ot_env%use_dx .AND. ASSOCIATED(qs_ot_env%matrix_dx_im)) &
+         CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
 
       IF (qs_ot_env%use_gx_old) &
          CALL dbcsr_set(qs_ot_env%matrix_gx_old, 0.0_dp)
+      IF (qs_ot_env%use_gx_old .AND. ASSOCIATED(qs_ot_env%matrix_gx_old_im)) &
+         CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
 
       IF (qs_ot_env%settings%do_rotation) THEN
          CALL dbcsr_set(qs_ot_env%rot_mat_gx, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_gx_im, 0.0_dp)
          IF (qs_ot_env%use_dx) &
             CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
+         IF (qs_ot_env%use_dx .AND. ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
          IF (qs_ot_env%use_gx_old) &
             CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
+         IF (qs_ot_env%use_gx_old .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
       END IF
       IF (qs_ot_env%settings%do_ener) THEN
          qs_ot_env%ener_gx(:) = 0.0_dp
@@ -553,8 +576,11 @@ CONTAINS
       NULLIFY (qs_ot_env%matrix_x_im)
       NULLIFY (qs_ot_env%matrix_sx_im)
       NULLIFY (qs_ot_env%matrix_gx)
+      NULLIFY (qs_ot_env%matrix_gx_im)
       NULLIFY (qs_ot_env%matrix_gx_old)
+      NULLIFY (qs_ot_env%matrix_gx_old_im)
       NULLIFY (qs_ot_env%matrix_dx)
+      NULLIFY (qs_ot_env%matrix_dx_im)
       NULLIFY (qs_ot_env%buf1_k_k_nosym)
       NULLIFY (qs_ot_env%buf2_k_k_nosym)
       NULLIFY (qs_ot_env%buf3_k_k_nosym)
@@ -719,9 +745,12 @@ CONTAINS
          END DO
       END IF
 
-      NULLIFY (qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_x, qs_ot_env%rot_mat_h_e, qs_ot_env%rot_mat_h_x, &
-               qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_gx_old, qs_ot_env%rot_mat_dx, &
-               qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, qs_ot_env%rot_mat_chc, &
+      NULLIFY (qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, qs_ot_env%rot_mat_x, qs_ot_env%rot_mat_x_im, &
+               qs_ot_env%rot_mat_h_e, qs_ot_env%rot_mat_h_x, qs_ot_env%rot_mat_h_e_im, &
+               qs_ot_env%rot_mat_h_x_im, qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_gx_im, &
+               qs_ot_env%rot_mat_gx_old, qs_ot_env%rot_mat_gx_old_im, qs_ot_env%rot_mat_dx, &
+               qs_ot_env%rot_mat_dx_im, qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
+               qs_ot_env%rot_mat_dedu_im, qs_ot_env%rot_mat_chc, qs_ot_env%rot_mat_chc_im, &
                qs_ot_env%rot_mat_evec_re, qs_ot_env%rot_mat_evec_im)
 
       IF (qs_ot_env%settings%do_rotation) THEN
@@ -844,8 +873,11 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%matrix_x_im)) CALL dbcsr_release_p(qs_ot_env%matrix_x_im)
       IF (ASSOCIATED(qs_ot_env%matrix_sx_im)) CALL dbcsr_release_p(qs_ot_env%matrix_sx_im)
       IF (ASSOCIATED(qs_ot_env%matrix_gx)) CALL dbcsr_release_p(qs_ot_env%matrix_gx)
+      IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) CALL dbcsr_release_p(qs_ot_env%matrix_gx_im)
       IF (ASSOCIATED(qs_ot_env%matrix_dx)) CALL dbcsr_release_p(qs_ot_env%matrix_dx)
+      IF (ASSOCIATED(qs_ot_env%matrix_dx_im)) CALL dbcsr_release_p(qs_ot_env%matrix_dx_im)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_old)) CALL dbcsr_release_p(qs_ot_env%matrix_gx_old)
+      IF (ASSOCIATED(qs_ot_env%matrix_gx_old_im)) CALL dbcsr_release_p(qs_ot_env%matrix_gx_old_im)
       IF (ASSOCIATED(qs_ot_env%buf1_k_k_nosym)) CALL dbcsr_release_p(qs_ot_env%buf1_k_k_nosym)
       IF (ASSOCIATED(qs_ot_env%buf2_k_k_nosym)) CALL dbcsr_release_p(qs_ot_env%buf2_k_k_nosym)
       IF (ASSOCIATED(qs_ot_env%buf3_k_k_nosym)) CALL dbcsr_release_p(qs_ot_env%buf3_k_k_nosym)
@@ -862,6 +894,8 @@ CONTAINS
           qs_ot_env%settings%ot_method == "BROY") THEN
          CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_x)
          CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_e)
+         IF (ASSOCIATED(qs_ot_env%matrix_h_x_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_x_im)
+         IF (ASSOCIATED(qs_ot_env%matrix_h_e_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%matrix_h_e_im)
          DEALLOCATE (qs_ot_env%ls_diis)
          DEALLOCATE (qs_ot_env%lss_diis)
          DEALLOCATE (qs_ot_env%c_diis)
@@ -873,21 +907,30 @@ CONTAINS
       IF (qs_ot_env%settings%do_rotation) THEN
 
          IF (ASSOCIATED(qs_ot_env%rot_mat_u)) CALL dbcsr_release_p(qs_ot_env%rot_mat_u)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_u_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_u_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_x)) CALL dbcsr_release_p(qs_ot_env%rot_mat_x)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_x_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_x_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_dedu)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dedu)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_dedu_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dedu_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_chc)) CALL dbcsr_release_p(qs_ot_env%rot_mat_chc)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_chc_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_chc_im)
 
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_x)
             CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_e)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_h_x_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_x_im)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_h_e_im)) CALL dbcsr_deallocate_matrix_set(qs_ot_env%rot_mat_h_e_im)
          END IF
 
          IF (ASSOCIATED(qs_ot_env%rot_mat_evals)) DEALLOCATE (qs_ot_env%rot_mat_evals)
          IF (ASSOCIATED(qs_ot_env%rot_mat_evec_re)) CALL dbcsr_release_p(qs_ot_env%rot_mat_evec_re)
          IF (ASSOCIATED(qs_ot_env%rot_mat_evec_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_evec_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_old)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_old_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_dx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dx)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dx_im)
       END IF
 
       IF (qs_ot_env%settings%do_ener) THEN
