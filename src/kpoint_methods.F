@@ -1792,7 +1792,9 @@ CONTAINS
                                           restricted=ot_restricted, &
                                           require_kpoint=.TRUE., &
                                           kp_range=kpoint%kp_range, &
-                                          wkp=wkp)
+                                          wkp=wkp, &
+                                          require_local_state=.TRUE., &
+                                          require_complex_state=.NOT. real_only)
       END IF
       ! Gamma-centered even grids store atom-cell shifts in the opposite Bloch-phase convention.
       reverse_phase = kpoint%gamma_centered .AND. ANY(MOD(kpoint%nkp_grid(1:3), 2) == 0)

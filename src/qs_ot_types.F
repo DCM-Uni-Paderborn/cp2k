@@ -110,6 +110,7 @@ MODULE qs_ot_types
       REAL(KIND=dp)             :: kpoint_weight = 1.0_dp
       LOGICAL                   :: has_kpoint_context = .FALSE.
       LOGICAL                   :: state_allocated = .FALSE.
+      LOGICAL                   :: has_complex_kpoint_state = .FALSE.
 
       ! first part of the variables, for occupied subspace invariant optimisation
 
@@ -146,6 +147,7 @@ MODULE qs_ot_types
 
       ! mo-like vectors
       TYPE(dbcsr_type), POINTER :: matrix_c0 => NULL(), matrix_sc0 => NULL(), matrix_psc0 => NULL()
+      TYPE(dbcsr_type), POINTER :: matrix_c0_im => NULL(), matrix_sc0_im => NULL()
 
       ! OT / IR
       TYPE(dbcsr_type), POINTER :: buf1_k_k_nosym => NULL(), buf2_k_k_nosym => NULL(), &
@@ -157,6 +159,7 @@ MODULE qs_ot_types
       ! only here for the ease of programming. These will have to be supplied
       ! explicitly at all times
       TYPE(dbcsr_type), POINTER :: matrix_x => NULL(), matrix_sx => NULL(), matrix_gx => NULL()
+      TYPE(dbcsr_type), POINTER :: matrix_x_im => NULL(), matrix_sx_im => NULL()
       TYPE(dbcsr_type), POINTER :: matrix_dx => NULL(), matrix_gx_old => NULL()
 
       LOGICAL :: use_gx_old = .FALSE., use_dx = .FALSE.
@@ -331,19 +334,25 @@ CONTAINS
 !> \param require_kpoint ...
 !> \param kp_range ...
 !> \param wkp ...
+!> \param require_local_state ...
+!> \param require_complex_state ...
 ! **************************************************************************************************
    SUBROUTINE qs_ot_check_channel_context(qs_ot_env, nspin, nkpoint, restricted, require_kpoint, &
-                                          kp_range, wkp)
+                                          kp_range, wkp, require_local_state, require_complex_state)
       TYPE(qs_ot_type), DIMENSION(:), INTENT(IN)         :: qs_ot_env
       INTEGER, INTENT(IN)                                :: nspin
       INTEGER, INTENT(IN), OPTIONAL                      :: nkpoint
       LOGICAL, INTENT(IN), OPTIONAL                      :: restricted, require_kpoint
       INTEGER, DIMENSION(2), INTENT(IN), OPTIONAL        :: kp_range
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: wkp
+      LOGICAL, INTENT(IN), OPTIONAL                      :: require_local_state, &
+                                                            require_complex_state
 
       INTEGER                                            :: expected_local_kpoint, ikpoint, ispin, &
                                                             nkpoint_eff, nspin_eff, ot_channel
-      LOGICAL                                            :: check_kpoint_context, check_weights, &
+      LOGICAL                                            :: check_complex_state, &
+                                                            check_kpoint_context, &
+                                                            check_local_state, check_weights, &
                                                             context_ok, restricted_eff
       REAL(KIND=dp)                                      :: weight_tol
 
@@ -360,6 +369,10 @@ CONTAINS
       IF (PRESENT(require_kpoint)) check_kpoint_context = require_kpoint
       check_weights = .FALSE.
       IF (PRESENT(wkp)) check_weights = ASSOCIATED(wkp)
+      check_local_state = .FALSE.
+      IF (PRESENT(require_local_state)) check_local_state = require_local_state
+      check_complex_state = .FALSE.
+      IF (PRESENT(require_complex_state)) check_complex_state = require_complex_state
 
       context_ok = (SIZE(qs_ot_env) == qs_ot_number_of_channels(nspin, &
                                                                 nkpoint=nkpoint_eff, &
@@ -385,6 +398,16 @@ CONTAINS
                   weight_tol = 1000.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(wkp(ikpoint)))
                   context_ok = (ABS(qs_ot_env(ot_channel)%kpoint_weight - wkp(ikpoint)) <= weight_tol)
                   CPASSERT(context_ok)
+               END IF
+            END IF
+            IF (check_local_state) THEN
+               IF (expected_local_kpoint > 0 .OR. .NOT. PRESENT(kp_range)) THEN
+                  CPASSERT(qs_ot_env(ot_channel)%state_allocated)
+                  IF (check_complex_state) THEN
+                     CPASSERT(qs_ot_env(ot_channel)%has_complex_kpoint_state)
+                  END IF
+               ELSE
+                  CPASSERT(.NOT. qs_ot_env(ot_channel)%state_allocated)
                END IF
             END IF
          END DO
@@ -457,6 +480,7 @@ CONTAINS
       CALL cite_reference(VandeVondele2003)
 
       CPASSERT(.NOT. qs_ot_env%state_allocated)
+      qs_ot_env%has_complex_kpoint_state = .FALSE.
       NULLIFY (qs_ot_env%preconditioner)
       NULLIFY (qs_ot_env%matrix_psc0)
       NULLIFY (qs_ot_env%para_env)
@@ -522,8 +546,12 @@ CONTAINS
       NULLIFY (qs_ot_env%matrix_buf4)
       NULLIFY (qs_ot_env%matrix_c0)
       NULLIFY (qs_ot_env%matrix_sc0)
+      NULLIFY (qs_ot_env%matrix_c0_im)
+      NULLIFY (qs_ot_env%matrix_sc0_im)
       NULLIFY (qs_ot_env%matrix_x)
       NULLIFY (qs_ot_env%matrix_sx)
+      NULLIFY (qs_ot_env%matrix_x_im)
+      NULLIFY (qs_ot_env%matrix_sx_im)
       NULLIFY (qs_ot_env%matrix_gx)
       NULLIFY (qs_ot_env%matrix_gx_old)
       NULLIFY (qs_ot_env%matrix_dx)
@@ -809,8 +837,12 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%matrix_c0)) CALL dbcsr_release_p(qs_ot_env%matrix_c0)
       IF (ASSOCIATED(qs_ot_env%matrix_sc0)) CALL dbcsr_release_p(qs_ot_env%matrix_sc0)
       IF (ASSOCIATED(qs_ot_env%matrix_psc0)) CALL dbcsr_release_p(qs_ot_env%matrix_psc0)
+      IF (ASSOCIATED(qs_ot_env%matrix_c0_im)) CALL dbcsr_release_p(qs_ot_env%matrix_c0_im)
+      IF (ASSOCIATED(qs_ot_env%matrix_sc0_im)) CALL dbcsr_release_p(qs_ot_env%matrix_sc0_im)
       IF (ASSOCIATED(qs_ot_env%matrix_x)) CALL dbcsr_release_p(qs_ot_env%matrix_x)
       IF (ASSOCIATED(qs_ot_env%matrix_sx)) CALL dbcsr_release_p(qs_ot_env%matrix_sx)
+      IF (ASSOCIATED(qs_ot_env%matrix_x_im)) CALL dbcsr_release_p(qs_ot_env%matrix_x_im)
+      IF (ASSOCIATED(qs_ot_env%matrix_sx_im)) CALL dbcsr_release_p(qs_ot_env%matrix_sx_im)
       IF (ASSOCIATED(qs_ot_env%matrix_gx)) CALL dbcsr_release_p(qs_ot_env%matrix_gx)
       IF (ASSOCIATED(qs_ot_env%matrix_dx)) CALL dbcsr_release_p(qs_ot_env%matrix_dx)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_old)) CALL dbcsr_release_p(qs_ot_env%matrix_gx_old)
@@ -874,6 +906,7 @@ CONTAINS
       END IF
 
       qs_ot_env%state_allocated = .FALSE.
+      qs_ot_env%has_complex_kpoint_state = .FALSE.
 
    END SUBROUTINE qs_ot_destroy
 

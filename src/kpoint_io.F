@@ -93,7 +93,7 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(3)                              :: cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: ot_restricted
+      LOGICAL                                            :: ot_restricted, use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: fmat
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -110,14 +110,17 @@ CONTAINS
          nspin = SIZE(denmat, 1)
          nimages = SIZE(denmat, 2)
          IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
-            CALL get_kpoint_info(kpoint=kpoints, nkp=nkp, kp_range=kp_range, wkp=wkp)
+            CALL get_kpoint_info(kpoint=kpoints, nkp=nkp, kp_range=kp_range, wkp=wkp, &
+                                 use_real_wfn=use_real_wfn)
             ot_restricted = ANY(scf_env%qs_ot_env(:)%restricted)
             CALL qs_ot_check_channel_context(scf_env%qs_ot_env, nspin, &
                                              nkpoint=nkp, &
                                              restricted=ot_restricted, &
                                              require_kpoint=.TRUE., &
                                              kp_range=kp_range, &
-                                             wkp=wkp)
+                                             wkp=wkp, &
+                                             require_local_state=.TRUE., &
+                                             require_complex_state=.NOT. use_real_wfn)
          END IF
 
          DO ikey = 1, SIZE(keys)
