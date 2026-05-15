@@ -222,6 +222,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: ener_x_trust_mu = 0.0_dp, ener_x_trust_sigma = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_frac_weight = 0.0_dp, ener_x_trust_entropy = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
+      REAL(KIND=dp) :: ener_x_trust_rayleigh_gap = 0.0_dp, ener_x_trust_rayleigh_edge_gap = 0.0_dp
       REAL(KIND=dp) :: ener_x_step_max = 0.0_dp, ener_x_trusted_step_max = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_scale = 1.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
@@ -495,6 +496,8 @@ CONTAINS
          qs_ot_env%ener_x_trust_frac_weight = 0.0_dp
          qs_ot_env%ener_x_trust_entropy = 0.0_dp
          qs_ot_env%ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
+         qs_ot_env%ener_x_trust_rayleigh_gap = 0.0_dp
+         qs_ot_env%ener_x_trust_rayleigh_edge_gap = 0.0_dp
          qs_ot_env%ener_x_step_max = 0.0_dp
          qs_ot_env%ener_x_trusted_step_max = 0.0_dp
          qs_ot_env%ener_x_trust_scale = 1.0_dp

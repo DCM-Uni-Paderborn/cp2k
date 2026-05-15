@@ -449,7 +449,8 @@ CONTAINS
 
       INTEGER                                            :: ispin
       REAL(KIND=dp)                                      :: entropy, frac_weight, min_abs_eps_mu, &
-                                                            raw_step_max, scale_min, trusted_step_max
+                                                            raw_step_max, rayleigh_edge_gap, &
+                                                            rayleigh_gap, scale_min, trusted_step_max
       TYPE(cp_logger_type), POINTER                      :: logger
 
       logger => cp_get_default_logger()
@@ -461,6 +462,8 @@ CONTAINS
       entropy = 0.0_dp
       frac_weight = 0.0_dp
       min_abs_eps_mu = HUGE(1.0_dp)
+      rayleigh_gap = 0.0_dp
+      rayleigh_edge_gap = 0.0_dp
       DO ispin = 1, SIZE(qs_ot_env)
          IF (qs_ot_env(ispin)%ener_x_trust_radius <= 0.0_dp) CYCLE
          raw_step_max = MAX(raw_step_max, qs_ot_env(ispin)%ener_x_step_max)
@@ -469,13 +472,16 @@ CONTAINS
          entropy = entropy + qs_ot_env(ispin)%ener_x_trust_entropy
          frac_weight = frac_weight + qs_ot_env(ispin)%ener_x_trust_frac_weight
          min_abs_eps_mu = MIN(min_abs_eps_mu, qs_ot_env(ispin)%ener_x_trust_min_abs_eps_mu)
+         rayleigh_gap = MAX(rayleigh_gap, qs_ot_env(ispin)%ener_x_trust_rayleigh_gap)
+         rayleigh_edge_gap = MAX(rayleigh_edge_gap, qs_ot_env(ispin)%ener_x_trust_rayleigh_edge_gap)
       END DO
 
       IF (raw_step_max > 0.0_dp .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
-            " OT ener_x step raw kept scale ds kTS frac min_abs ls:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8),1X,I5)') &
+            " OT ener_x step raw kept scale ds kTS frac min_abs ray_gap edge_gap ls:", &
             raw_step_max, trusted_step_max, scale_min, qs_ot_env(1)%ds_min, entropy, &
-            frac_weight, min_abs_eps_mu, qs_ot_env(1)%line_search_count
+            frac_weight, min_abs_eps_mu, rayleigh_gap, rayleigh_edge_gap, &
+            qs_ot_env(1)%line_search_count
       END IF
 
    END SUBROUTINE print_energy_step_diagnostic

@@ -837,8 +837,10 @@ CONTAINS
                                                             local_kpoint, nmo
       LOGICAL                                            :: active, has_trust_weight
       REAL(KIND=dp)                                      :: edge_window, fi_norm, frac_weight, gvalue, &
-                                                            maxocc, min_abs_eps_mu, mu, occ_tail, sigma, &
+                                                            maxocc, min_abs_eps_mu, mu, occ_tail, &
+                                                            rayleigh_edge_gap, rayleigh_gap, sigma, &
                                                             trust_radius
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rayleigh_diag
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -850,6 +852,8 @@ CONTAINS
          local_ot_env(local_channel)%ener_x_trust_frac_weight = 0.0_dp
          local_ot_env(local_channel)%ener_x_trust_entropy = 0.0_dp
          local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = HUGE(1.0_dp)
+         local_ot_env(local_channel)%ener_x_trust_rayleigh_gap = 0.0_dp
+         local_ot_env(local_channel)%ener_x_trust_rayleigh_edge_gap = 0.0_dp
          local_ot_env(local_channel)%ener_x_step_max = 0.0_dp
          local_ot_env(local_channel)%ener_x_trusted_step_max = 0.0_dp
          local_ot_env(local_channel)%ener_x_trust_scale = 1.0_dp
@@ -883,21 +887,31 @@ CONTAINS
             local_ot_env(local_channel)%ener_x_trust_entropy = kp%mos(1, ispin)%kTS
             frac_weight = 0.0_dp
             min_abs_eps_mu = HUGE(1.0_dp)
+            rayleigh_gap = 0.0_dp
+            rayleigh_edge_gap = 0.0_dp
+            ALLOCATE (rayleigh_diag(nmo))
+            CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, rayleigh_diag)
 
             DO imo = 1, nmo
                occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
                frac_weight = frac_weight + wkp(ikpoint)*occ_tail
                min_abs_eps_mu = MIN(min_abs_eps_mu, ABS(eigenvalues(imo) - mu))
+               rayleigh_gap = MAX(rayleigh_gap, ABS(rayleigh_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
                active = occ_tail > partial_tol*MAX(maxocc, 1.0_dp) .OR. &
                         ABS(eigenvalues(imo) - mu) < edge_window
+               IF (active) rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
+                                                   ABS(rayleigh_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
                IF (active .AND. has_trust_weight) THEN
                   fi_norm = occupation_numbers(imo)/MAX(maxocc, EPSILON(maxocc))
                   gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
                   local_ot_env(local_channel)%ener_x_trust_weight(imo) = wkp(ikpoint)*MAX(gvalue, 0.0_dp)
                END IF
             END DO
+            DEALLOCATE (rayleigh_diag)
             local_ot_env(local_channel)%ener_x_trust_frac_weight = frac_weight
             local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = min_abs_eps_mu
+            local_ot_env(local_channel)%ener_x_trust_rayleigh_gap = rayleigh_gap
+            local_ot_env(local_channel)%ener_x_trust_rayleigh_edge_gap = rayleigh_edge_gap
          END DO
       END DO
 
