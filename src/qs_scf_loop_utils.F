@@ -514,7 +514,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
-      REAL(KIND=dp)                                      :: ener_nondiag
+      REAL(KIND=dp)                                      :: ener_nondiag, energy_trust_radius
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
@@ -673,6 +673,16 @@ CONTAINS
 
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                      kp_range, wkp, para_env_inter_kp, scf_control%smear)
+
+      energy_trust_radius = -1.0_dp
+      IF (local_ot_env(1)%settings%do_ener .AND. &
+          local_ot_env(1)%settings%occupation_preconditioner .AND. &
+          scf_control%smear%do_smear .AND. scf_control%smear%method == smear_fermi_dirac) THEN
+         energy_trust_radius = 4.0_dp*scf_control%smear%electronic_temperature
+      END IF
+      DO local_channel = 1, nlocal_channels
+         local_ot_env(local_channel)%ener_x_trust_radius = energy_trust_radius
+      END DO
 
       local_ot_env(1)%etotal = energy%total + ener_nondiag
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)

@@ -325,7 +325,7 @@ CONTAINS
          END IF
          IF (do_ener) THEN
             DO ispin = 1, nspin
-               qs_ot_env(ispin)%ener_x = qs_ot_env(ispin)%ener_x + ds*qs_ot_env(ispin)%ener_dx
+               CALL take_energy_step(qs_ot_env(ispin), ds, qs_ot_env(ispin)%ener_dx)
             END DO
          END IF
       ELSE
@@ -349,12 +349,37 @@ CONTAINS
          END IF
          IF (do_ener) THEN
             DO ispin = 1, nspin
-               qs_ot_env(ispin)%ener_x = qs_ot_env(ispin)%ener_x - ds*qs_ot_env(ispin)%ener_gx
+               CALL take_energy_step(qs_ot_env(ispin), -ds, qs_ot_env(ispin)%ener_gx)
             END DO
          END IF
       END IF
       CALL timestop(handle)
    END SUBROUTINE take_step
+
+! **************************************************************************************************
+!> \brief apply an optional trust radius to auxiliary orbital-energy steps
+!> \param qs_ot_env ...
+!> \param alpha ...
+!> \param direction ...
+! **************************************************************************************************
+   SUBROUTINE take_energy_step(qs_ot_env, alpha, direction)
+      TYPE(qs_ot_type), INTENT(INOUT)                    :: qs_ot_env
+      REAL(KIND=dp), INTENT(IN)                          :: alpha
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: direction
+
+      REAL(KIND=dp)                                      :: max_step, step_scale
+
+      IF (SIZE(direction) == 0) RETURN
+
+      step_scale = 1.0_dp
+      IF (qs_ot_env%ener_x_trust_radius > 0.0_dp) THEN
+         max_step = ABS(alpha)*MAXVAL(ABS(direction))
+         IF (max_step > qs_ot_env%ener_x_trust_radius) &
+            step_scale = qs_ot_env%ener_x_trust_radius/max_step
+      END IF
+      qs_ot_env%ener_x = qs_ot_env%ener_x + step_scale*alpha*direction
+
+   END SUBROUTINE take_energy_step
 
 ! implements a golden ratio search as a robust way of minimizing
 ! **************************************************************************************************

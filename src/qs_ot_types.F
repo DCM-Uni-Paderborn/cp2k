@@ -218,6 +218,7 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_im => NULL()
 
       ! third part of the variables, if we need to optimize orbital energies
+      REAL(KIND=dp) :: ener_x_trust_radius = -1.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
