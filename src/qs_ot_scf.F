@@ -136,6 +136,7 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'ot_scf_mini'
+      REAL(KIND=dp), PARAMETER :: rotation_preconditioner_scale = 2.0_dp
 
       INTEGER                                            :: handle, ispin, k, n, nspin
       REAL(KIND=dp)                                      :: ener_nondiag, trace
@@ -269,10 +270,11 @@ CONTAINS
          ALLOCATE (matrix_dedc_scaled(ispin)%matrix)
          CALL dbcsr_copy(matrix_dedc_scaled(ispin)%matrix, matrix_dedc(ispin)%matrix)
 
-         ! as a preconditioner, one might want to scale only with a constant, not with f(i)
-         ! for the convergence criterion, maybe take it back out
+         ! Keep the rotation scale separate from the occupation-curvature
+         ! scale used for the energy variables.  The occupation Hessian is
+         ! preconditioned in precondition_ot_energy_gradient.
          IF (qs_ot_env(1)%settings%occupation_preconditioner) THEN
-            orbital_scaling_factor(ispin)%array = 2.0_dp
+            orbital_scaling_factor(ispin)%array = rotation_preconditioner_scale
          END IF
          CALL dbcsr_scale_by_vector(matrix_dedc_scaled(ispin)%matrix, alpha=orbital_scaling_factor(ispin)%array, &
                                     side='right')
@@ -362,8 +364,9 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'precondition_ot_energy_gradient'
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
-      INTEGER                                            :: handle, imo, ispin
+      INTEGER                                            :: group, handle, imo, ispin, ngroups
       REAL(KIND=dp)                                      :: curvature, occ_denom, thermal_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: precond_count, precond_shift, precond_sum
 
       CALL timeset(routineN, handle)
 
@@ -388,22 +391,53 @@ CONTAINS
          RETURN
       END IF
 
+      ngroups = 1
+      IF (SIZE(qs_ot_env) == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
+      ALLOCATE (precond_count(ngroups), precond_shift(ngroups), precond_sum(ngroups))
+      precond_count(:) = 0.0_dp
+      precond_sum(:) = 0.0_dp
+
       ! Fermi-Dirac fixed-N Mermin response has diagonal curvature
-      ! f_i(maxocc-f_i)/(maxocc*kT). The exact projector also couples all
-      ! energy variables through the chemical potential; this diagonal
-      ! preconditioner only damps modes stiffer than curvature_floor.
+      ! f_i(maxocc-f_i)/(maxocc*kT).  The preconditioner applies this
+      ! occupation-curvature scale, then removes the dense constant-shift
+      ! null mode associated with the chemical potential.
       DO ispin = 1, SIZE(qs_ot_env)
+         group = MERGE(ispin, 1, ngroups == SIZE(qs_ot_env))
          thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
          IF (thermal_scale <= EPSILON(thermal_scale)) CYCLE
          DO imo = 1, SIZE(qs_ot_env(ispin)%ener_gx)
             occ_denom = occupation_numbers(ispin)%array(imo)* &
                         (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
             curvature = occ_denom/thermal_scale
-            IF (curvature > curvature_floor) THEN
-               qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)/curvature
+            IF (curvature > EPSILON(curvature)) THEN
+               qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)/MAX(curvature, curvature_floor)
+               precond_sum(group) = precond_sum(group) + qs_ot_env(ispin)%ener_gx(imo)
+               precond_count(group) = precond_count(group) + 1.0_dp
+            ELSE
+               qs_ot_env(ispin)%ener_gx(imo) = 0.0_dp
             END IF
          END DO
       END DO
+
+      precond_shift(:) = 0.0_dp
+      DO group = 1, ngroups
+         IF (precond_count(group) > 0.0_dp) precond_shift(group) = precond_sum(group)/precond_count(group)
+      END DO
+
+      DO ispin = 1, SIZE(qs_ot_env)
+         group = MERGE(ispin, 1, ngroups == SIZE(qs_ot_env))
+         thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
+         IF (thermal_scale <= EPSILON(thermal_scale)) CYCLE
+         DO imo = 1, SIZE(qs_ot_env(ispin)%ener_gx)
+            occ_denom = occupation_numbers(ispin)%array(imo)* &
+                        (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
+            curvature = occ_denom/thermal_scale
+            IF (curvature > EPSILON(curvature)) &
+               qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo) - precond_shift(group)
+         END DO
+      END DO
+
+      DEALLOCATE (precond_count, precond_shift, precond_sum)
 
       CALL timestop(handle)
 

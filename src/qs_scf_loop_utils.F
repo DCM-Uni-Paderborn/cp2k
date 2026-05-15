@@ -847,17 +847,25 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
       REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, sigma, v
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: gdotv, gsum, precond_count, &
+                                                            precond_shift, precond_sum
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      LOGICAL                                            :: active_preconditioner
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
 
       ngroups = 1
       IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
-      ALLOCATE (gsum(ngroups), gdotv(ngroups))
+      ALLOCATE (gsum(ngroups), gdotv(ngroups), precond_count(ngroups), &
+                precond_shift(ngroups), precond_sum(ngroups))
       gsum(:) = 0.0_dp
       gdotv(:) = 0.0_dp
+      precond_count(:) = 0.0_dp
+      precond_shift(:) = 0.0_dp
+      precond_sum(:) = 0.0_dp
+      active_preconditioner = local_ot_env(1)%settings%occupation_preconditioner .AND. &
+                              smear%do_smear .AND. smear%method == smear_fermi_dirac
 
       IF (smear%do_smear) THEN
          SELECT CASE (smear%method)
@@ -915,21 +923,53 @@ CONTAINS
                   local_ot_env(local_channel)%ener_gx(imo) = 0.0_dp
                END IF
 
-               IF (local_ot_env(local_channel)%settings%occupation_preconditioner .AND. &
-                   smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
+               IF (active_preconditioner) THEN
                   ! Diagonal part of the same fixed-N Mermin Hessian. The exact
-                  ! projector has a dense rank-one correction, while this option
-                  ! only damps locally stiff occupation modes.
+                  ! projector also has a dense constant-shift null mode, removed
+                  ! below after summing over all irreducible k-points.
                   curvature = wkp(ikpoint)*gvalue
-                  IF (curvature > curvature_floor) &
+                  IF (curvature > EPSILON(curvature)) THEN
                      local_ot_env(local_channel)%ener_gx(imo) = &
-                     local_ot_env(local_channel)%ener_gx(imo)/curvature
+                        local_ot_env(local_channel)%ener_gx(imo)/MAX(curvature, curvature_floor)
+                     precond_sum(group) = precond_sum(group) + local_ot_env(local_channel)%ener_gx(imo)
+                     precond_count(group) = precond_count(group) + 1.0_dp
+                  ELSE
+                     local_ot_env(local_channel)%ener_gx(imo) = 0.0_dp
+                  END IF
                END IF
             END DO
          END DO
       END DO
 
-      DEALLOCATE (gsum, gdotv)
+      IF (active_preconditioner) THEN
+         CALL para_env_inter_kp%sum(precond_sum)
+         CALL para_env_inter_kp%sum(precond_count)
+         precond_shift(:) = 0.0_dp
+         DO group = 1, ngroups
+            IF (precond_count(group) > 0.0_dp) precond_shift(group) = precond_sum(group)/precond_count(group)
+         END DO
+
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                               occupation_numbers=occupation_numbers, mu=mu)
+               DO imo = 1, nmo
+                  gvalue = kpoint_ot_smearing_g(occupation_numbers(imo), eigenvalues(imo), mu, &
+                                                sigma, maxocc, smear%method)
+                  curvature = wkp(ikpoint)*gvalue
+                  IF (curvature > EPSILON(curvature)) &
+                     local_ot_env(local_channel)%ener_gx(imo) = &
+                     local_ot_env(local_channel)%ener_gx(imo) - precond_shift(group)
+               END DO
+            END DO
+         END DO
+      END IF
+
+      DEALLOCATE (gsum, gdotv, precond_count, precond_shift, precond_sum)
 
       CPASSERT(kp_range(2) - kp_range(1) + 1 == SIZE(kpoints%kp_env))
 

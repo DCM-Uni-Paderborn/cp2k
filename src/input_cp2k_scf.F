@@ -913,7 +913,8 @@ CONTAINS
 
       CALL keyword_create(keyword, __LOCATION__, name="OCCUPATION_PRECONDITIONER", &
                           description="Apply a diagonal fixed-electron-number Mermin curvature "// &
-                          "preconditioner to OT energy variables (FD smearing).", &
+                          "preconditioner and remove the constant energy-shift null mode for OT energy "// &
+                          "variables (FD smearing).", &
                           usage="OCCUPATION_PRECONDITIONER", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)

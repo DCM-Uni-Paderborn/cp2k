@@ -9,14 +9,29 @@
 !> \brief finite-difference checks for the complex OT rotation Frechet kernel
 ! **************************************************************************************************
 PROGRAM qs_ot_frechet_unittest
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
+        dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
+        dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
    USE kinds,                           ONLY: dp
-   USE qs_ot,                           ONLY: qs_ot_complex_exp_frechet_kernel
+   USE machine,                         ONLY: default_output_unit
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_world_finalize,&
+                                              mp_world_init
+   USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
+                                              qs_ot_complex_exp_frechet_kernel
 
    IMPLICIT NONE
 
-   INTEGER                                            :: nfail
+   INTEGER                                            :: io_unit, mynode, nfail
+   TYPE(mp_comm_type)                                 :: mp_comm
 
    nfail = 0
+   CALL mp_world_init(mp_comm)
+   mynode = mp_comm%mepos
+   io_unit = -1
+   IF (mynode == 0) io_unit = default_output_unit
+   CALL dbcsr_init_lib(mp_comm%get_handle(), io_unit)
 
    CALL check_offdiag("separated offdiag", 1.3_dp, -0.4_dp, &
                       CMPLX(0.7_dp, -0.2_dp, KIND=dp), 5.0E-12_dp, nfail)
@@ -27,10 +42,14 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_diag("diagonal", 0.8_dp, CMPLX(-0.2_dp, 0.35_dp, KIND=dp), &
                    5.0E-8_dp, nfail)
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
+   CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
+
+   IF (nfail == 0) PRINT *, "qs_ot_frechet_unittest: OK"
+
+   CALL dbcsr_finalize_lib()
+   CALL mp_world_finalize()
 
    IF (nfail > 0) ERROR STOP "qs_ot_frechet_unittest failed"
-
-   PRINT *, "qs_ot_frechet_unittest: OK"
 
 CONTAINS
 
@@ -164,6 +183,117 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_sparse_dbcsr_pattern
+
+! **************************************************************************************************
+!> \brief Check the production DBCSR Frechet path with real/imaginary-only blocks.
+! **************************************************************************************************
+   SUBROUTINE check_dbcsr_sparse_pattern(label, tol, nfail, mp_comm)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+      TYPE(mp_comm_type), INTENT(IN)                     :: mp_comm
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: dbcsr_out, dense_ref, z
+      INTEGER, DIMENSION(:), POINTER                     :: col_blk_size, col_dist, row_blk_size, &
+                                                            row_dist
+      INTEGER, DIMENSION(:, :), POINTER                  :: pgrid
+      LOGICAL                                            :: found
+      REAL(KIND=dp)                                      :: err
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: block
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block_p
+      REAL(KIND=dp), DIMENSION(n)                        :: evals
+      TYPE(dbcsr_distribution_type)                      :: dist
+      TYPE(dbcsr_type)                                   :: inner_im, inner_re, outer_im, outer_re
+
+      evals = [0.7_dp, -0.2_dp, 1.4_dp, -1.1_dp]
+      CALL setup_sparse_pattern_data(z)
+      CALL apply_dense_frechet(evals, z, dense_ref)
+
+      ALLOCATE (pgrid(1, 1), row_dist(2), col_dist(2), row_blk_size(2), col_blk_size(2))
+      pgrid(:, :) = 0
+      row_dist(:) = 0
+      col_dist(:) = 0
+      row_blk_size(:) = 2
+      col_blk_size(:) = 2
+      CALL dbcsr_distribution_new(dist, group=mp_comm%get_handle(), pgrid=pgrid, &
+                                  row_dist=row_dist, col_dist=col_dist)
+
+      CALL dbcsr_create(inner_re, "inner_re", dist, dbcsr_type_no_symmetry, row_blk_size, col_blk_size)
+      CALL dbcsr_create(inner_im, "inner_im", dist, dbcsr_type_no_symmetry, row_blk_size, col_blk_size)
+      CALL dbcsr_reserve_blocks(inner_re, rows=[1, 2], cols=[1, 1])
+      CALL dbcsr_reserve_blocks(inner_im, rows=[1, 1], cols=[1, 2])
+      CALL dbcsr_finalize(inner_re)
+      CALL dbcsr_finalize(inner_im)
+
+      block = REAL(z(1:2, 1:2), KIND=dp)
+      CALL dbcsr_put_block(inner_re, 1, 1, block)
+      block = AIMAG(z(1:2, 1:2))
+      CALL dbcsr_put_block(inner_im, 1, 1, block)
+      block = REAL(z(3:4, 1:2), KIND=dp)
+      CALL dbcsr_put_block(inner_re, 2, 1, block)
+      block = AIMAG(z(1:2, 3:4))
+      CALL dbcsr_put_block(inner_im, 1, 2, block)
+
+      CALL qs_ot_apply_complex_frechet_dbcsr(evals, inner_re, inner_im, outer_re, outer_im)
+
+      dbcsr_out(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 1, 1, block_p, found)
+      IF (found) dbcsr_out(1:2, 1:2) = dbcsr_out(1:2, 1:2) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 1, 1, block_p, found)
+      IF (found) dbcsr_out(1:2, 1:2) = dbcsr_out(1:2, 1:2) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 1, 2, block_p, found)
+      IF (found) dbcsr_out(1:2, 3:4) = dbcsr_out(1:2, 3:4) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 1, 2, block_p, found)
+      IF (found) dbcsr_out(1:2, 3:4) = dbcsr_out(1:2, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 2, 1, block_p, found)
+      IF (found) dbcsr_out(3:4, 1:2) = dbcsr_out(3:4, 1:2) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 2, 1, block_p, found)
+      IF (found) dbcsr_out(3:4, 1:2) = dbcsr_out(3:4, 1:2) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(outer_re, 2, 2, block_p, found)
+      IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(outer_im, 2, 2, block_p, found)
+      IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
+
+      err = MAXVAL(ABS(dbcsr_out - dense_ref))
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+      CALL dbcsr_release(inner_re)
+      CALL dbcsr_release(inner_im)
+      CALL dbcsr_release(outer_re)
+      CALL dbcsr_release(outer_im)
+      CALL dbcsr_distribution_release(dist)
+      DEALLOCATE (pgrid, row_dist, col_dist, row_blk_size, col_blk_size)
+
+   END SUBROUTINE check_dbcsr_sparse_pattern
+
+! **************************************************************************************************
+!> \brief Fill the dense companion to the sparse Frechet pattern tests.
+! **************************************************************************************************
+   SUBROUTINE setup_sparse_pattern_data(z)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: z
+
+      z(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      z(1, 1) = CMPLX(0.3_dp, -0.4_dp, KIND=dp)
+      z(1, 2) = CMPLX(-0.2_dp, 0.1_dp, KIND=dp)
+      z(2, 1) = CMPLX(0.5_dp, 0.8_dp, KIND=dp)
+      z(2, 2) = CMPLX(-0.7_dp, 0.2_dp, KIND=dp)
+      z(1, 3) = CMPLX(0.0_dp, 0.6_dp, KIND=dp)
+      z(1, 4) = CMPLX(0.0_dp, -0.3_dp, KIND=dp)
+      z(2, 3) = CMPLX(0.0_dp, 0.4_dp, KIND=dp)
+      z(2, 4) = CMPLX(0.0_dp, 0.2_dp, KIND=dp)
+      z(3, 1) = CMPLX(-0.9_dp, 0.0_dp, KIND=dp)
+      z(3, 2) = CMPLX(0.4_dp, 0.0_dp, KIND=dp)
+      z(4, 1) = CMPLX(0.2_dp, 0.0_dp, KIND=dp)
+      z(4, 2) = CMPLX(-0.1_dp, 0.0_dp, KIND=dp)
+
+   END SUBROUTINE setup_sparse_pattern_data
 
 ! **************************************************************************************************
 !> \brief Dense reference application of the complex exponential Frechet kernel.
