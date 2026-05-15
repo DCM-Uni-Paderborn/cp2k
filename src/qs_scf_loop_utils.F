@@ -511,6 +511,7 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc, matrix_hc_im
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: density_target, rho_ao_kp
       TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
                                                             matrix_s_re
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -521,16 +522,17 @@ CONTAINS
          POINTER                                         :: sab_nl
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      TYPE(qs_rho_type), POINTER                         :: rho
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, dft_control, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
+      NULLIFY (cell_to_index, density_target, dft_control, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
                matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, mo_coeff, &
-               mo_coeff_im, occupation_numbers, para_env_inter_kp, sab_nl, wkp, xkp)
+               mo_coeff_im, occupation_numbers, para_env_inter_kp, rho, rho_ao_kp, sab_nl, wkp, xkp)
       added_mos_auto_grow = .FALSE.
 
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
-      CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints)
+      CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints, rho=rho)
       CALL get_kpoint_info(kpoints, nkp=nkpoint, xkp=xkp, wkp=wkp, use_real_wfn=use_real_wfn, &
                            kp_range=kp_range, para_env_inter_kp=para_env_inter_kp, &
                            cell_to_index=cell_to_index, sab_nl=sab_nl)
@@ -675,8 +677,14 @@ CONTAINS
                                     added_mos_auto_grow=added_mos_auto_grow)
       IF (.NOT. added_mos_auto_grow) THEN
          fmwork => scf_env%scf_work1
+         IF (ASSOCIATED(scf_env%p_mix_new)) THEN
+            density_target => scf_env%p_mix_new
+         ELSE
+            CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
+            density_target => rho_ao_kp
+         END IF
          CALL kpoint_density_matrices(kpoints)
-         CALL kpoint_density_transform(kpoints, scf_env%p_mix_new, .FALSE., &
+         CALL kpoint_density_transform(kpoints, density_target, .FALSE., &
                                        matrix_s(1, 1)%matrix, sab_nl, fmwork, &
                                        qs_ot_env=scf_env%qs_ot_env)
          scf_env%iter_method = scf_env%qs_ot_env(first_channel)%OT_METHOD_FULL
@@ -1319,15 +1327,19 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'cleanup_scf_loop'
 
       INTEGER                                            :: handle, ispin
+      LOGICAL                                            :: keep_kpoint_ot_for_restart
 
       CALL timeset(routineN, handle)
 
       SELECT CASE (scf_env%method)
       CASE (ot_method_nr)
-         DO ispin = 1, SIZE(scf_env%qs_ot_env)
-            CALL ot_scf_destroy(scf_env%qs_ot_env(ispin))
-         END DO
-         DEALLOCATE (scf_env%qs_ot_env)
+         keep_kpoint_ot_for_restart = ANY(scf_env%qs_ot_env(:)%kpoint_index > 0)
+         IF (.NOT. keep_kpoint_ot_for_restart) THEN
+            DO ispin = 1, SIZE(scf_env%qs_ot_env)
+               CALL ot_scf_destroy(scf_env%qs_ot_env(ispin))
+            END DO
+            DEALLOCATE (scf_env%qs_ot_env)
+         END IF
       CASE (ot_diag_method_nr)
          !
       CASE (general_diag_method_nr)
