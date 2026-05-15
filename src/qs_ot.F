@@ -47,6 +47,7 @@ MODULE qs_ot
    PUBLIC  :: qs_ot_get_orbitals_ref_complex
    PUBLIC  :: qs_ot_get_derivative_ref
    PUBLIC  :: qs_ot_get_derivative_ref_complex
+   PUBLIC  :: qs_ot_complex_exp_frechet_kernel
    PUBLIC  :: qs_ot_generate_rotation_complex
    PUBLIC  :: qs_ot_rot_mat_derivative_complex
    PUBLIC  :: qs_ot_new_preconditioner
@@ -63,6 +64,35 @@ MODULE qs_ot
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot'
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Frechet divided-difference kernel for exp(-i*evals)
+!> \param e1 ...
+!> \param e2 ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION qs_ot_complex_exp_frechet_kernel(e1, e2) RESULT(kernel)
+      REAL(KIND=dp), INTENT(IN)                          :: e1, e2
+      COMPLEX(KIND=dp)                                   :: kernel
+
+      COMPLEX(KIND=dp)                                   :: l1, l2, x
+      INTEGER                                            :: i
+
+      l1 = (0.0_dp, -1.0_dp)*e1
+      l2 = (0.0_dp, -1.0_dp)*e2
+      IF (ABS(l1 - l2) > 0.5_dp) THEN
+         kernel = (EXP(l1) - EXP(l2))/(l1 - l2)
+      ELSE
+         x = 1.0_dp
+         kernel = 0.0_dp
+         DO i = 1, 16
+            kernel = kernel + x
+            x = x*(l1 - l2)/REAL(i + 1, KIND=dp)
+         END DO
+         kernel = kernel*EXP(l2)
+      END IF
+
+   END FUNCTION qs_ot_complex_exp_frechet_kernel
 
 ! **************************************************************************************************
 !> \brief gets ready to use the preconditioner/ or renew the preconditioner
@@ -816,10 +846,13 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_get_derivative_ref_complex'
 
       INTEGER                                            :: handle, k, n
+      LOGICAL                                            :: do_rotation
       REAL(dp)                                           :: occ_in, occ_out
+      TYPE(dbcsr_type)                                   :: g_cur_im, g_cur_re, rot_chc_im, &
+                                                            rot_chc_re
       TYPE(dbcsr_type), POINTER                          :: c_im, c_re, chc_im, chc_re, g_im, g_re, &
                                                             hc_im, hc_re, sc_im, sc_re, tmp_kk, &
-                                                            tmp_nk
+                                                            tmp_nk, u_im, u_re
 
       CALL timeset(routineN, handle)
 
@@ -839,10 +872,18 @@ CONTAINS
       chc_im => qs_ot_env%buf2_k_k_sym
       tmp_kk => qs_ot_env%buf3_k_k_sym
       tmp_nk => qs_ot_env%buf1_n_k
+      u_re => qs_ot_env%rot_mat_u
+      u_im => qs_ot_env%rot_mat_u_im
+      do_rotation = qs_ot_env%settings%do_rotation
 
       CALL dbcsr_get_info(c_re, nfullrows_total=n, nfullcols_total=k)
+      IF (do_rotation) THEN
+         CPASSERT(ASSOCIATED(u_re))
+         CPASSERT(ASSOCIATED(u_im))
+         CALL qs_ot_generate_rotation_complex(qs_ot_env)
+      END IF
 
-      ! CHC = C^H * HC.
+      ! K = C_base^H * H*C_current.
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, hc_re, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, hc_im, 0.0_dp, tmp_kk)
       CALL dbcsr_add(chc_re, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
@@ -850,6 +891,25 @@ CONTAINS
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, hc_im, 0.0_dp, chc_im)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, hc_re, 0.0_dp, tmp_kk)
       CALL dbcsr_add(chc_im, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      IF (do_rotation) THEN
+         ! CHC = C_current^H * H*C_current = U^H * K.
+         CALL dbcsr_copy(rot_chc_re, chc_re, name="rot_chc_re")
+         CALL dbcsr_copy(rot_chc_im, chc_im, name="rot_chc_im")
+
+         CALL dbcsr_multiply('T', 'N', 1.0_dp, u_re, chc_re, 0.0_dp, rot_chc_re)
+         CALL dbcsr_multiply('T', 'N', 1.0_dp, u_im, chc_im, 0.0_dp, tmp_kk)
+         CALL dbcsr_add(rot_chc_re, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+         CALL dbcsr_multiply('T', 'N', 1.0_dp, u_re, chc_im, 0.0_dp, rot_chc_im)
+         CALL dbcsr_multiply('T', 'N', 1.0_dp, u_im, chc_re, 0.0_dp, tmp_kk)
+         CALL dbcsr_add(rot_chc_im, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+         CALL dbcsr_copy(chc_re, rot_chc_re)
+         CALL dbcsr_copy(chc_im, rot_chc_im)
+         CALL dbcsr_release(rot_chc_re)
+         CALL dbcsr_release(rot_chc_im)
+      END IF
 
       IF (qs_ot_env%settings%eps_irac_filter_matrix > 0.0_dp) THEN
          occ_in = dbcsr_get_occupation(chc_re)
@@ -878,9 +938,25 @@ CONTAINS
          occ_out = dbcsr_get_occupation(g_im)
       END IF
 
-      ! G = HC - SC*(C^H*HC).
+      ! G_current = HC - SC*(C_current^H*HC).
       CALL dbcsr_add(g_re, hc_re, alpha_scalar=-1.0_dp, beta_scalar=1.0_dp)
       CALL dbcsr_add(g_im, hc_im, alpha_scalar=-1.0_dp, beta_scalar=1.0_dp)
+
+      IF (do_rotation) THEN
+         ! Convert dE/dC_current back to the base variables: dE/dC_base = dE/dC_current * U^H.
+         CALL dbcsr_copy(g_cur_re, g_re, name="g_cur_re")
+         CALL dbcsr_copy(g_cur_im, g_im, name="g_cur_im")
+
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, g_cur_re, u_re, 0.0_dp, g_re)
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, g_cur_im, u_im, 0.0_dp, tmp_nk)
+         CALL dbcsr_add(g_re, tmp_nk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, g_cur_im, u_re, 0.0_dp, g_im)
+         CALL dbcsr_multiply('N', 'T', -1.0_dp, g_cur_re, u_im, 1.0_dp, g_im)
+
+         CALL dbcsr_release(g_cur_re)
+         CALL dbcsr_release(g_cur_im)
+      END IF
 
       CALL timestop(handle)
 
@@ -1083,21 +1159,21 @@ CONTAINS
 !>      12.2024 Rewrite to use only real matrices [Ole Schuett]
 ! **************************************************************************************************
    SUBROUTINE qs_ot_rot_mat_derivative(qs_ot_env)
-      TYPE(qs_ot_type)                         :: qs_ot_env
+      TYPE(qs_ot_type)                                   :: qs_ot_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_rot_mat_derivative'
 
-      INTEGER                                  :: handle, i, j, k
-      REAL(KIND=dp)                            :: e1, e2
-      TYPE(dbcsr_type)                         :: outer_deriv_re, outer_deriv_im, mat_buf, &
-                                                  inner_deriv_re, inner_deriv_im
-      TYPE(dbcsr_iterator_type)                :: iter
-      INTEGER, DIMENSION(:), POINTER           :: row_blk_offset, col_blk_offset
-      REAL(dp), DIMENSION(:, :), POINTER       :: block_in_re, block_in_im, block_out_re, block_out_im
-      INTEGER                                  :: row, col
-      LOGICAL                                  :: found
-      COMPLEX(dp)                              :: cval_in, cval_out
-      TYPE(dbcsr_distribution_type)            :: dist
+      COMPLEX(dp)                                        :: cval_in, cval_out
+      INTEGER                                            :: col, handle, i, j, k, row
+      INTEGER, DIMENSION(:), POINTER                     :: col_blk_offset, row_blk_offset
+      LOGICAL                                            :: found
+      REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
+                                                            block_out_re
+      REAL(KIND=dp)                                      :: e1, e2
+      TYPE(dbcsr_distribution_type)                      :: dist
+      TYPE(dbcsr_iterator_type)                          :: iter
+      TYPE(dbcsr_type)                                   :: inner_deriv_im, inner_deriv_re, mat_buf, &
+                                                            outer_deriv_im, outer_deriv_re
 
       CALL timeset(routineN, handle)
 
@@ -1119,7 +1195,7 @@ CONTAINS
          CALL dbcsr_multiply('T', 'N', +1.0_dp, qs_ot_env%rot_mat_evec_re, mat_buf, 1.0_dp, inner_deriv_re)
          CALL dbcsr_multiply('T', 'N', -1.0_dp, qs_ot_env%rot_mat_evec_im, mat_buf, 1.0_dp, inner_deriv_im)
 
-         ! outer_deriv_ij = cint(eval_i, eval_j) * inner_deriv_ij
+         ! outer_deriv_ij = kernel(eval_i, eval_j) * inner_deriv_ij
          CALL dbcsr_copy(outer_deriv_re, qs_ot_env%rot_mat_dedu, "outer_deriv_re") ! TODO just create
          CALL dbcsr_copy(outer_deriv_im, qs_ot_env%rot_mat_dedu, "outer_deriv_im") ! TODO just create
 
@@ -1137,7 +1213,7 @@ CONTAINS
                e1 = qs_ot_env%rot_mat_evals(row_blk_offset(row) + i - 1)
                e2 = qs_ot_env%rot_mat_evals(col_blk_offset(col) + j - 1)
                cval_in = CMPLX(block_in_re(i, j), block_in_im(i, j), dp)
-               cval_out = cval_in*cint(e1, e2)
+               cval_out = cval_in*qs_ot_complex_exp_frechet_kernel(e1, e2)
                block_out_re(i, j) = REAL(cval_out)
                block_out_im(i, j) = AIMAG(cval_out)
             END DO
@@ -1171,35 +1247,6 @@ CONTAINS
          CALL dbcsr_release(outer_deriv_im)
       END IF
       CALL timestop(handle)
-   CONTAINS
-
-! **************************************************************************************************
-!> \brief ...
-!> \param e1 ...
-!> \param e2 ...
-!> \return ...
-! **************************************************************************************************
-      FUNCTION cint(e1, e2)
-      REAL(KIND=dp)                                      :: e1, e2
-      COMPLEX(KIND=dp)                                   :: cint
-
-      COMPLEX(KIND=dp)                                   :: l1, l2, x
-      INTEGER                                            :: I
-
-         l1 = (0.0_dp, -1.0_dp)*e1
-         l2 = (0.0_dp, -1.0_dp)*e2
-         IF (ABS(l1 - l2) > 0.5_dp) THEN
-            cint = (EXP(l1) - EXP(l2))/(l1 - l2)
-         ELSE
-            x = 1.0_dp
-            cint = 0.0_dp
-            DO I = 1, 16
-               cint = cint + x
-               x = x*(l1 - l2)/REAL(I + 1, KIND=dp)
-            END DO
-            cint = cint*EXP(l2)
-         END IF
-      END FUNCTION cint
    END SUBROUTINE qs_ot_rot_mat_derivative
 
 ! **************************************************************************************************
@@ -1212,7 +1259,8 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_rot_mat_derivative_complex'
 
-      INTEGER                                            :: handle, i, j, k, row, col
+      COMPLEX(KIND=dp)                                   :: cval_in, cval_out
+      INTEGER                                            :: col, handle, i, j, k, row
       INTEGER, DIMENSION(:), POINTER                     :: col_blk_offset, row_blk_offset
       LOGICAL                                            :: found
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
@@ -1223,7 +1271,6 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: frechet_im, frechet_re, inner_deriv_im, &
                                                             inner_deriv_re, outer_deriv_im, &
                                                             outer_deriv_re, tmp, work_im, work_re
-      COMPLEX(KIND=dp)                                   :: cval_in, cval_out
 
       CALL timeset(routineN, handle)
 
@@ -1262,7 +1309,7 @@ CONTAINS
          CALL dbcsr_multiply('T', 'N', -1.0_dp, qs_ot_env%rot_mat_evec_im, &
                              work_re, 1.0_dp, inner_deriv_im)
 
-         ! outer_deriv_ij = cint(eval_i, eval_j) * inner_deriv_ij
+         ! outer_deriv_ij = kernel(eval_i, eval_j) * inner_deriv_ij
          CALL dbcsr_copy(outer_deriv_re, qs_ot_env%rot_mat_dedu, name="outer_deriv_re")
          CALL dbcsr_copy(outer_deriv_im, qs_ot_env%rot_mat_dedu, name="outer_deriv_im")
 
@@ -1281,7 +1328,7 @@ CONTAINS
                e1 = qs_ot_env%rot_mat_evals(row_blk_offset(row) + i - 1)
                e2 = qs_ot_env%rot_mat_evals(col_blk_offset(col) + j - 1)
                cval_in = CMPLX(block_in_re(i, j), block_in_im(i, j), dp)
-               cval_out = cval_in*cint(e1, e2)
+               cval_out = cval_in*qs_ot_complex_exp_frechet_kernel(e1, e2)
                block_out_re(i, j) = REAL(cval_out, KIND=dp)
                block_out_im(i, j) = AIMAG(cval_out)
             END DO
@@ -1338,36 +1385,6 @@ CONTAINS
       END IF
 
       CALL timestop(handle)
-
-   CONTAINS
-
-! **************************************************************************************************
-!> \brief Frechet kernel for exp(-i*evals)
-!> \param e1 ...
-!> \param e2 ...
-!> \return ...
-! **************************************************************************************************
-      FUNCTION cint(e1, e2)
-      REAL(KIND=dp)                                      :: e1, e2
-      COMPLEX(KIND=dp)                                   :: cint
-
-      COMPLEX(KIND=dp)                                   :: l1, l2, x
-      INTEGER                                            :: I
-
-         l1 = (0.0_dp, -1.0_dp)*e1
-         l2 = (0.0_dp, -1.0_dp)*e2
-         IF (ABS(l1 - l2) > 0.5_dp) THEN
-            cint = (EXP(l1) - EXP(l2))/(l1 - l2)
-         ELSE
-            x = 1.0_dp
-            cint = 0.0_dp
-            DO I = 1, 16
-               cint = cint + x
-               x = x*(l1 - l2)/REAL(I + 1, KIND=dp)
-            END DO
-            cint = cint*EXP(l2)
-         END IF
-      END FUNCTION cint
 
    END SUBROUTINE qs_ot_rot_mat_derivative_complex
 

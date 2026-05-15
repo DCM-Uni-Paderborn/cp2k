@@ -728,17 +728,20 @@ CONTAINS
       CPASSERT(ASSOCIATED(matrix_hc_im))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
 
       c_re => qs_ot_env%matrix_x
       c_im => qs_ot_env%matrix_x_im
       chc_re => qs_ot_env%rot_mat_chc
       chc_im => qs_ot_env%rot_mat_chc_im
+      b_re => qs_ot_env%matrix_buf1
+      b_im => qs_ot_env%buf2_k_k_nosym
       tmp => qs_ot_env%buf3_k_k_nosym
       tmp2 => qs_ot_env%buf4_k_k_nosym
 
       CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
-      ! CHC = C(k)^H * H(k)C(k), kept unoccupied for the band-energy gradient.
+      ! K = C_base(k)^H * H(k)C_current(k).
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
       CALL dbcsr_add(chc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
@@ -747,12 +750,22 @@ CONTAINS
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc, 0.0_dp, tmp)
       CALL dbcsr_add(chc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
 
+      ! CHC = C_current(k)^H * H(k)C_current(k) = U(k)^H * K.
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_re, 0.0_dp, b_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, chc_im, 0.0_dp, tmp)
+      CALL dbcsr_add(b_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_im, 0.0_dp, b_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, chc_re, 0.0_dp, tmp)
+      CALL dbcsr_add(b_im, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_copy(chc_re, b_re)
+      CALL dbcsr_copy(chc_im, b_im)
+
       IF (qs_ot_env%settings%do_ener) THEN
          CALL dbcsr_get_diag(chc_re, qs_ot_env%ener_gx)
       END IF
 
-      b_re => qs_ot_env%matrix_buf1
-      b_im => qs_ot_env%buf2_k_k_nosym
       CALL dbcsr_copy(b_re, chc_re)
       CALL dbcsr_copy(b_im, chc_im)
 
