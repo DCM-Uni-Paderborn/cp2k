@@ -12,7 +12,7 @@ MODULE qs_scf_loop_utils
                                               hairy_probes_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
-        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_set, dbcsr_type, &
+        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type, &
         dbcsr_type_antisymmetric, dbcsr_type_symmetric
    USE cp_dbcsr_contrib,                ONLY: dbcsr_get_diag,&
                                               dbcsr_scale_by_vector
@@ -646,11 +646,9 @@ CONTAINS
                                                             occupation_numbers, wkp(ikpoint))
 
             ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
-            IF (local_ot_env(local_channel)%settings%occupation_preconditioner) THEN
-               orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)
-            ELSE
-               orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*occupation_numbers(:)
-            END IF
+            ! Keep orbital gradients on the fixed-N Mermin surface. The occupation
+            ! preconditioner below acts on energy variables, not by unweighting empty bands.
+            orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*occupation_numbers(:)
             CALL dbcsr_scale_by_vector(matrix_hc(local_channel)%matrix, &
                                        alpha=orbital_scaling_factor, side='right')
             CALL dbcsr_scale_by_vector(matrix_hc_im(local_channel)%matrix, &
@@ -817,6 +815,10 @@ CONTAINS
       END IF
 
       CALL qs_ot_rot_mat_derivative_complex(qs_ot_env)
+      ! The k-point gradient is assembled for the C_base*U channel convention.
+      ! Convert the complex rotation adjoint to the minimizer variable convention.
+      CALL dbcsr_scale(qs_ot_env%rot_mat_gx, -1.0_dp)
+      CALL dbcsr_scale(qs_ot_env%rot_mat_gx_im, -1.0_dp)
 
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_channel_gradient
 

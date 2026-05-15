@@ -246,12 +246,30 @@ CONTAINS
       TYPE(preconditioner_p_type), DIMENSION(:), POINTER :: preconditioner
       INTEGER, INTENT(IN)                                :: prec_type, nspins
 
-      INTEGER                                            :: ispin
+      INTEGER                                            :: ispin, npreconditioners
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
       NULLIFY (para_env, blacs_env)
       CALL get_qs_env(qs_env, para_env=para_env, blacs_env=blacs_env)
+
+      SELECT CASE (prec_type)
+      CASE (ot_precond_full_all, ot_precond_full_single_inverse)
+         npreconditioners = nspins
+      CASE DEFAULT
+         npreconditioners = 1
+      END SELECT
+
+      IF (ASSOCIATED(preconditioner)) THEN
+         IF (SIZE(preconditioner) /= npreconditioners) THEN
+            DO ispin = 1, SIZE(preconditioner)
+               CALL destroy_preconditioner(preconditioner(ispin)%preconditioner)
+               DEALLOCATE (preconditioner(ispin)%preconditioner)
+            END DO
+            DEALLOCATE (preconditioner)
+            NULLIFY (preconditioner)
+         END IF
+      END IF
 
       IF (ASSOCIATED(preconditioner)) THEN
          SELECT CASE (prec_type)
@@ -261,6 +279,7 @@ CONTAINS
                DEALLOCATE (preconditioner(ispin)%preconditioner)
             END DO
             DEALLOCATE (preconditioner)
+            NULLIFY (preconditioner)
          CASE (ot_precond_none, ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_full_single_inverse) ! these are 'independent'
             ! do nothing
          CASE DEFAULT
@@ -270,12 +289,7 @@ CONTAINS
 
       ! add an OT preconditioner if none is present
       IF (.NOT. ASSOCIATED(preconditioner)) THEN
-         SELECT CASE (prec_type)
-         CASE (ot_precond_full_all, ot_precond_full_single_inverse)
-            ALLOCATE (preconditioner(nspins))
-         CASE DEFAULT
-            ALLOCATE (preconditioner(1))
-         END SELECT
+         ALLOCATE (preconditioner(npreconditioners))
          DO ispin = 1, SIZE(preconditioner)
             ALLOCATE (preconditioner(ispin)%preconditioner)
             CALL init_preconditioner(preconditioner(ispin)%preconditioner, &
@@ -444,4 +458,3 @@ CONTAINS
    END SUBROUTINE prepare_preconditioner
 
 END MODULE preconditioner
-

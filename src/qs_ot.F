@@ -712,8 +712,12 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_get_orbitals_ref_complex'
 
-      INTEGER                                            :: handle, k, n
-      TYPE(dbcsr_type), POINTER                          :: c_im, c_re, sc_im, sc_re, tmp
+      INTEGER                                            :: handle, i, k, n
+      LOGICAL                                            :: update
+      REAL(dp), ALLOCATABLE, DIMENSION(:)                :: eig, fun
+      TYPE(dbcsr_type)                                   :: evec_im, evec_re, w_im, w_re
+      TYPE(dbcsr_type), POINTER                          :: c_im, c_re, f_re, p_im, p_re, sc_im, &
+                                                            sc_re, tmp
 
       CALL timeset(routineN, handle)
 
@@ -726,23 +730,102 @@ CONTAINS
       sc_re => qs_ot_env%matrix_sx
       sc_im => qs_ot_env%matrix_sx_im
       tmp => qs_ot_env%buf1_n_k
+      p_re => qs_ot_env%p_k_k_sym
+      p_im => qs_ot_env%buf1_k_k_sym
+      f_re => qs_ot_env%buf2_k_k_sym
 
       CALL dbcsr_get_info(c_re, nfullrows_total=n, nfullcols_total=k)
+
+      ! First build a Loewdin-orthonormalized complex REF basis.  The Gamma path does
+      ! this in qs_ot_ref_lwdn/qs_ot_ref_chol/qs_ot_ref_poly; k-point OT needs the
+      ! same C(k)^H S(k) C(k)=I invariant before any unitary rotation is applied.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s, c_re, 0.0_dp, sc_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s_im, c_im, 0.0_dp, tmp)
+      CALL dbcsr_add(sc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s, c_im, 0.0_dp, sc_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s_im, c_re, 0.0_dp, tmp)
+      CALL dbcsr_add(sc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      ! P = C^H * S*C, split into real and imaginary Hermitian parts.
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, sc_re, 0.0_dp, p_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, sc_im, 0.0_dp, f_re)
+      CALL dbcsr_add(p_re, f_re, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, sc_im, 0.0_dp, p_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, sc_re, 0.0_dp, f_re)
+      CALL dbcsr_add(p_im, f_re, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      IF (k /= 0) THEN
+         ALLOCATE (eig(k), fun(k))
+         CALL dbcsr_copy(evec_re, p_re, name="evec_re")
+         CALL dbcsr_copy(evec_im, p_im, name="evec_im")
+         CALL cp_dbcsr_heevd(matrix_re=p_re, &
+                             matrix_im=p_im, &
+                             eigenvectors_re=evec_re, &
+                             eigenvectors_im=evec_im, &
+                             eigenvalues=eig, &
+                             para_env=qs_ot_env%para_env, &
+                             blacs_env=qs_ot_env%blacs_env)
+
+         DO i = 1, k
+            IF (eig(i) <= 0.0_dp) &
+               CPABORT("Complex REF overlap not positive definite")
+            IF (eig(i) < 1.0E-8_dp) THEN
+               fun(i) = 0.0_dp
+            ELSE
+               fun(i) = 1.0_dp/SQRT(eig(i))
+            END IF
+         END DO
+
+         CALL dbcsr_copy(w_re, evec_re, name="w_re")
+         CALL dbcsr_scale_by_vector(w_re, alpha=fun, side='right')
+         CALL dbcsr_copy(w_im, evec_im, name="w_im")
+         CALL dbcsr_scale_by_vector(w_im, alpha=fun, side='right')
+
+         ! F = P^(-1/2) = W*V^H, with W=V*diag(fun).
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, w_re, evec_re, 0.0_dp, p_re)
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, w_im, evec_im, 1.0_dp, p_re)
+
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, w_im, evec_re, 0.0_dp, p_im)
+         CALL dbcsr_multiply('N', 'T', -1.0_dp, w_re, evec_im, 1.0_dp, p_im)
+
+         CALL dbcsr_release(evec_re)
+         CALL dbcsr_release(evec_im)
+         CALL dbcsr_release(w_re)
+         CALL dbcsr_release(w_im)
+         DEALLOCATE (eig, fun)
+      END IF
+
+      ! C_orth = C * F.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, c_re, p_re, 0.0_dp, matrix_c)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, c_im, p_im, 0.0_dp, tmp)
+      CALL dbcsr_add(matrix_c, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, c_re, p_im, 0.0_dp, matrix_c_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, c_im, p_re, 0.0_dp, tmp)
+      CALL dbcsr_add(matrix_c_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      update = qs_ot_ref_update(qs_ot_env)
+      IF (update) THEN
+         CALL dbcsr_copy(c_re, matrix_c)
+         CALL dbcsr_copy(c_im, matrix_c_im)
+      END IF
 
       IF (qs_ot_env%settings%do_rotation) THEN
          CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
-         ! C_out = C * U, with both C and U complex.
-         CALL dbcsr_multiply('N', 'N', 1.0_dp, c_re, qs_ot_env%rot_mat_u, 0.0_dp, matrix_c)
-         CALL dbcsr_multiply('N', 'N', 1.0_dp, c_im, qs_ot_env%rot_mat_u_im, 0.0_dp, tmp)
-         CALL dbcsr_add(matrix_c, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+         ! C_out = C_orth * U, with both C_orth and U complex.
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_c, qs_ot_env%rot_mat_u, 0.0_dp, sc_re)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_c_im, qs_ot_env%rot_mat_u_im, 0.0_dp, tmp)
+         CALL dbcsr_add(sc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
 
-         CALL dbcsr_multiply('N', 'N', 1.0_dp, c_re, qs_ot_env%rot_mat_u_im, 0.0_dp, matrix_c_im)
-         CALL dbcsr_multiply('N', 'N', 1.0_dp, c_im, qs_ot_env%rot_mat_u, 0.0_dp, tmp)
-         CALL dbcsr_add(matrix_c_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
-      ELSE
-         CALL dbcsr_copy(matrix_c, c_re)
-         CALL dbcsr_copy(matrix_c_im, c_im)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_c, qs_ot_env%rot_mat_u_im, 0.0_dp, sc_im)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_c_im, qs_ot_env%rot_mat_u, 0.0_dp, tmp)
+         CALL dbcsr_add(sc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+         CALL dbcsr_copy(matrix_c, sc_re)
+         CALL dbcsr_copy(matrix_c_im, sc_im)
       END IF
 
       ! SC = (S_re + i*S_im) * (C_out_re + i*C_out_im)
