@@ -2299,6 +2299,17 @@ CONTAINS
          CALL precondition_kpoint_ot_energy_diagonal(schur_group_done)
       END IF
 
+      IF (kpoint_ot_project_energy_subproblem(local_ot_env(1), smear)) THEN
+         DO local_channel = 1, SIZE(local_ot_env)
+            IF (ASSOCIATED(local_ot_env(local_channel)%ener_gx)) &
+               local_ot_env(local_channel)%ener_gx(:) = 0.0_dp
+            IF (ASSOCIATED(local_ot_env(local_channel)%ener_dx)) &
+               local_ot_env(local_channel)%ener_dx(:) = 0.0_dp
+            IF (ASSOCIATED(local_ot_env(local_channel)%ener_gx_old)) &
+               local_ot_env(local_channel)%ener_gx_old(:) = 0.0_dp
+         END DO
+      END IF
+
       DEALLOCATE (gsum, gdotv, precond_count, precond_shift, precond_sum, schur_group_done)
 
       CPASSERT(kp_range(2) - kp_range(1) + 1 == SIZE(kpoints%kp_env))
