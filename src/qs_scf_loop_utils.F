@@ -2459,9 +2459,10 @@ CONTAINS
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, failed, solved, trust_rejected
       REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, direction_scale, gdotp, gnorm, &
-         diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, normp, projected_term, rayleigh_edge_gap, &
-         response_step_max, response_trust, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, &
-         schur_diag_min, tether_response, tether_strength, tether_weight, z_shift, z_weight
+         density_projector_fraction, diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, normp, &
+         projected_term, rayleigh_edge_gap, residual_delta, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, row_abs, row_floor, rot_floor_min, rx_shift, &
+         rx_weight, schur_diag_min, tether_response, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rot_floor, rtd, &
                                                             rx_e, sol, z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
@@ -2521,6 +2522,10 @@ CONTAINS
          diag_shift_sum = 0.0_dp
          response_step_max = 0.0_dp
          response_trust = HUGE(1.0_dp)
+         response_trust_base = HUGE(1.0_dp)
+         response_trust_factor = 1.0_dp
+         residual_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
+         density_projector_fraction = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          failed = .FALSE.
@@ -2638,8 +2643,17 @@ CONTAINS
             rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
          END DO
 
-         IF (sigma > EPSILON(sigma)) &
-            response_trust = schur_response_trust_factor*ot_kp_fermi_window_factor*sigma
+         IF (sigma > EPSILON(sigma)) THEN
+            response_trust_base = schur_response_trust_factor*ot_kp_fermi_window_factor*sigma
+            IF (residual_delta > 0.0_dp .AND. ot_kp_canonical_density_max_weight > 0.0_dp) THEN
+               density_projector_fraction = &
+                  kpoint_ot_canonical_projector_weight(residual_delta, ot_kp_canonical_density_max_weight)/ &
+                  ot_kp_canonical_density_max_weight
+               density_projector_fraction = MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))
+               response_trust_factor = MAX(0.0_dp, 1.0_dp - density_projector_fraction)
+            END IF
+            response_trust = response_trust_base*response_trust_factor
+         END IF
          solved = .FALSE.
          trust_rejected = .FALSE.
          schur_used_attempt = 0
@@ -2768,10 +2782,11 @@ CONTAINS
             END DO
             group_done = .TRUE.
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),9(1X,ES16.8),1(1X,L1))') &
-                  " OT Schur group ne nrot attempt scale gdotp normp response trust diag_shift max diag_min floor_min rejected:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),12(1X,ES16.8),1(1X,L1))') &
+                  " OT Schur ne nrot att scale gdotp normp resp trust fac delta proj dshift dmax dmin floor reject:", &
                   target_group, ne, nrot, schur_used_attempt, direction_scale, gdotp, normp, &
-                  response_step_max, response_trust, diag_shift_sum, diag_shift_max, schur_diag_min, &
+                  response_step_max, response_trust, response_trust_factor, residual_delta, &
+                  density_projector_fraction, diag_shift_sum, diag_shift_max, schur_diag_min, &
                   rot_floor_min, trust_rejected
             END IF
          END IF
