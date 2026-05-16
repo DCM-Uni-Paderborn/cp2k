@@ -25,8 +25,10 @@ MODULE qs_scf_loop_utils
                                               copy_fm_to_dbcsr,&
                                               cp_dbcsr_sm_fm_multiply
    USE cp_external_control,             ONLY: external_control
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_release,&
+                                              cp_fm_to_fm,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
@@ -52,6 +54,7 @@ MODULE qs_scf_loop_utils
                                               sqrthalf
    USE mathlib,                         ONLY: diag_complex
    USE message_passing,                 ONLY: mp_para_env_type
+   USE parallel_gemm_api,               ONLY: parallel_gemm
    USE qs_density_matrices,             ONLY: calculate_density_matrix
    USE qs_density_mixing_types,         ONLY: broyden_mixing_nr,&
                                               direct_mixing_nr,&
@@ -114,7 +117,8 @@ MODULE qs_scf_loop_utils
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_loop_utils'
-   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_projector_delta = 5.0E-3_dp, &
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
+                                        ot_kp_canonical_projector_delta = 5.0E-3_dp, &
                                         ot_kp_canonical_projector_max_weight = 0.10_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
@@ -776,6 +780,10 @@ CONTAINS
             density_target => rho_ao_kp
          END IF
          CALL kpoint_density_matrices(kpoints)
+         IF (kpoint_ot_project_energy_subproblem(local_ot_env(1), scf_control%smear)) THEN
+            CALL qs_scf_loop_apply_ot_kp_projected_density(kpoints, local_ot_env, first_channel, &
+                                                           nspin_ot, kp_range, scf_control%smear)
+         END IF
          CALL kpoint_density_transform(kpoints, density_target, .FALSE., &
                                        matrix_s(1, 1)%matrix, sab_nl, fmwork, &
                                        qs_ot_env=scf_env%qs_ot_env)
@@ -927,6 +935,25 @@ CONTAINS
                       smear%do_smear .AND. smear%method == smear_fermi_dirac
 
    END FUNCTION kpoint_ot_project_energy_subproblem
+
+! **************************************************************************************************
+!> \brief residual-gated canonical projector blend weight for k-point OT
+!> \param delta ...
+!> \param max_weight ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_canonical_projector_weight(delta, max_weight) RESULT(projector_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: delta, max_weight
+      REAL(KIND=dp)                                      :: projector_weight
+
+      REAL(KIND=dp)                                      :: delta_scale
+
+      projector_weight = 0.0_dp
+      IF (delta > 0.0_dp .AND. max_weight > 0.0_dp) THEN
+         delta_scale = ot_kp_canonical_projector_delta/MAX(delta, ot_kp_canonical_projector_delta)
+         projector_weight = max_weight*delta_scale**2
+      END IF
+
+   END FUNCTION kpoint_ot_canonical_projector_weight
 
 ! **************************************************************************************************
 !> \brief project k-point OT auxiliary energies onto the exact fixed-N Mermin subproblem
@@ -1086,6 +1113,131 @@ CONTAINS
       DEALLOCATE (canonical_energies)
 
    END SUBROUTINE qs_scf_loop_project_ot_kp_final_energies
+
+! **************************************************************************************************
+!> \brief damp the k-point OT density toward the canonical fixed-N Mermin projector
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param kp_range ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_apply_ot_kp_projected_density(kpoints, local_ot_env, first_channel, &
+                                                        nspin_ot, kp_range, smear)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      TYPE(smear_type), INTENT(IN)                       :: smear
+
+      INTEGER                                            :: ikpoint, ispin, local_channel, &
+                                                            local_kpoint, nao, nblend, nmo
+      REAL(KIND=dp)                                      :: density_weight, max_weight, sum_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
+      TYPE(cp_fm_type)                                   :: can_im, can_re, evec_fm_im, &
+                                                            evec_fm_re, work
+      TYPE(cp_fm_type), POINTER                          :: cpmat, mo_coeff, mo_coeff_im, rpmat
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_type)                                   :: chc_im, chc_re, evec_im, evec_re
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      logger => cp_get_default_logger()
+      NULLIFY (cpmat, mo_coeff, mo_coeff_im, occupation_numbers, rpmat)
+      max_weight = 0.0_dp
+      sum_weight = 0.0_dp
+      nblend = 0
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            density_weight = kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
+                                                                  ot_kp_canonical_density_max_weight)
+            IF (density_weight <= 0.0_dp) CYCLE
+            IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), smear)) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "Inconsistent k-point OT canonical density projector request.")
+            END IF
+
+            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, nmo=nmo, nao=nao, &
+                            occupation_numbers=occupation_numbers)
+            CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
+
+            CALL dbcsr_copy(chc_re, local_ot_env(local_channel)%rot_mat_chc, &
+                            name="ot_kp_density_chc_re")
+            CALL dbcsr_copy(chc_im, local_ot_env(local_channel)%rot_mat_chc_im, &
+                            name="ot_kp_density_chc_im")
+            CALL dbcsr_copy(evec_re, chc_re, name="ot_kp_density_evec_re")
+            CALL dbcsr_copy(evec_im, chc_im, name="ot_kp_density_evec_im")
+            ALLOCATE (canonical_energies(nmo))
+            CALL cp_dbcsr_heevd(matrix_re=chc_re, &
+                                matrix_im=chc_im, &
+                                eigenvectors_re=evec_re, &
+                                eigenvectors_im=evec_im, &
+                                eigenvalues=canonical_energies, &
+                                para_env=local_ot_env(local_channel)%para_env, &
+                                blacs_env=local_ot_env(local_channel)%blacs_env)
+
+            CALL cp_fm_create(evec_fm_re, mo_coeff%matrix_struct, nrow=nmo, ncol=nmo)
+            CALL cp_fm_create(evec_fm_im, mo_coeff%matrix_struct, nrow=nmo, ncol=nmo)
+            CALL cp_fm_create(can_re, mo_coeff%matrix_struct)
+            CALL cp_fm_create(can_im, mo_coeff%matrix_struct)
+            CALL cp_fm_create(work, mo_coeff%matrix_struct)
+            CALL copy_dbcsr_to_fm(evec_re, evec_fm_re)
+            CALL copy_dbcsr_to_fm(evec_im, evec_fm_im)
+
+            ! The canonical projector enters only as a damped density blend.  The
+            ! MO/OT variables stay in the REF gauge used by the minimizer history.
+            CALL parallel_gemm("N", "N", nao, nmo, nmo, 1.0_dp, mo_coeff, evec_fm_re, 0.0_dp, can_re)
+            CALL parallel_gemm("N", "N", nao, nmo, nmo, -1.0_dp, mo_coeff_im, evec_fm_im, 1.0_dp, can_re)
+            CALL parallel_gemm("N", "N", nao, nmo, nmo, 1.0_dp, mo_coeff, evec_fm_im, 0.0_dp, can_im)
+            CALL parallel_gemm("N", "N", nao, nmo, nmo, 1.0_dp, mo_coeff_im, evec_fm_re, 1.0_dp, can_im)
+
+            rpmat => kp%pmat(1, ispin)
+            cpmat => kp%pmat(2, ispin)
+            CALL cp_fm_to_fm(can_re, work)
+            CALL cp_fm_column_scale(work, occupation_numbers)
+            CALL parallel_gemm("N", "T", nao, nao, nmo, density_weight, can_re, work, &
+                               1.0_dp - density_weight, rpmat)
+            CALL parallel_gemm("N", "T", nao, nao, nmo, density_weight, can_im, work, &
+                               1.0_dp - density_weight, cpmat)
+            CALL parallel_gemm("N", "T", nao, nao, nmo, -density_weight, work, can_im, 1.0_dp, cpmat)
+
+            CALL cp_fm_to_fm(can_im, work)
+            CALL cp_fm_column_scale(work, occupation_numbers)
+            CALL parallel_gemm("N", "T", nao, nao, nmo, density_weight, can_im, work, 1.0_dp, rpmat)
+
+            max_weight = MAX(max_weight, density_weight)
+            sum_weight = sum_weight + density_weight
+            nblend = nblend + 1
+
+            CALL cp_fm_release(evec_fm_re)
+            CALL cp_fm_release(evec_fm_im)
+            CALL cp_fm_release(can_re)
+            CALL cp_fm_release(can_im)
+            CALL cp_fm_release(work)
+            CALL dbcsr_release(chc_re)
+            CALL dbcsr_release(chc_im)
+            CALL dbcsr_release(evec_re)
+            CALL dbcsr_release(evec_im)
+            DEALLOCATE (canonical_energies)
+         END DO
+      END DO
+
+      IF (nblend > 0 .AND. logger%iter_info%print_level >= high_print_level .AND. &
+          logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8),1X,I5,1X,I5)') &
+            " OT canonical density projector max avg channels ls:", &
+            max_weight, sum_weight/REAL(nblend, KIND=dp), nblend, &
+            local_ot_env(1)%line_search_count
+      END IF
+
+   END SUBROUTINE qs_scf_loop_apply_ot_kp_projected_density
 
 ! **************************************************************************************************
 !> \brief high-print diagnostic for k-point OT smearing quality
@@ -1387,7 +1539,7 @@ CONTAINS
                                                             orbital_scaling_factor, projector_diag, &
                                                             tether_diag
       REAL(KIND=dp)                                      :: canonical_projector_weight, canonical_tether_energy, &
-                                                            delta, delta_scale, nondiag_trace_im, nondiag_trace_re, &
+                                                            delta, nondiag_trace_im, nondiag_trace_re, &
                                                             nondiag_weight, rayleigh_edge_gap, sigma, tether_response, &
                                                             tether_shift, tether_strength, tether_weight, &
                                                             tether_weight_sum
@@ -1478,12 +1630,8 @@ CONTAINS
          CALL dbcsr_multiply('N', 'T', 1.0_dp, weighted_evec_im, canonical_evec_im, 1.0_dp, occ_re)
          CALL dbcsr_multiply('N', 'T', 1.0_dp, weighted_evec_im, canonical_evec_re, 0.0_dp, occ_im)
          CALL dbcsr_multiply('N', 'T', -1.0_dp, weighted_evec_re, canonical_evec_im, 1.0_dp, occ_im)
-         canonical_projector_weight = 0.0_dp
-         IF (qs_ot_env%delta > 0.0_dp) THEN
-            delta_scale = ot_kp_canonical_projector_delta/MAX(qs_ot_env%delta, &
-                                                              ot_kp_canonical_projector_delta)
-            canonical_projector_weight = ot_kp_canonical_projector_max_weight*delta_scale**2
-         END IF
+         canonical_projector_weight = kpoint_ot_canonical_projector_weight(qs_ot_env%delta, &
+                                                                           ot_kp_canonical_projector_max_weight)
          CALL dbcsr_scale(occ_re, canonical_projector_weight)
          CALL dbcsr_scale(occ_im, canonical_projector_weight)
          ALLOCATE (projector_diag(nmo))
@@ -2339,7 +2487,7 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
       INTEGER                                            :: i, n
-      REAL(KIND=dp)                                      :: delta_scale, projector_weight
+      REAL(KIND=dp)                                      :: projector_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale
 
          n = SIZE(chc, 1)
@@ -2353,11 +2501,7 @@ CONTAINS
          END DO
          occ_mat(:, :) = MATMUL(weighted_evec, CONJG(TRANSPOSE(evec)))
 
-         projector_weight = 0.0_dp
-         IF (delta > 0.0_dp) THEN
-            delta_scale = ot_kp_canonical_projector_delta/MAX(delta, ot_kp_canonical_projector_delta)
-            projector_weight = ot_kp_canonical_projector_max_weight*delta_scale**2
-         END IF
+         projector_weight = kpoint_ot_canonical_projector_weight(delta, ot_kp_canonical_projector_max_weight)
          occ_mat(:, :) = projector_weight*occ_mat(:, :)
          DO i = 1, n
             occ_mat(i, i) = CMPLX(REAL(occ_mat(i, i), KIND=dp) + &
