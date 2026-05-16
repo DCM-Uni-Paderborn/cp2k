@@ -1272,16 +1272,22 @@ CONTAINS
       REAL(KIND=dp), INTENT(INOUT)                       :: nondiag_energy
 
       INTEGER                                            :: imo, nmo
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: diagonal, orbital_scaling_factor, &
+      LOGICAL                                            :: project_energy_subproblem
+      REAL(KIND=dp), PARAMETER                           :: canonical_projector_delta = 5.0E-3_dp, &
+                                                            canonical_projector_max_weight = 0.10_dp
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies, diagonal, &
+                                                            orbital_scaling_factor, projector_diag, &
                                                             tether_diag
-      REAL(KIND=dp)                                      :: canonical_tether_energy, delta, &
-                                                            nondiag_trace_im, nondiag_trace_re, &
-                                                            nondiag_weight, rayleigh_edge_gap, sigma, &
-                                                            tether_response, tether_shift, &
-                                                            tether_strength, tether_weight, &
+      REAL(KIND=dp)                                      :: canonical_projector_weight, canonical_tether_energy, &
+                                                            delta, delta_scale, nondiag_trace_im, nondiag_trace_re, &
+                                                            nondiag_weight, rayleigh_edge_gap, sigma, tether_response, &
+                                                            tether_shift, tether_strength, tether_weight, &
                                                             tether_weight_sum
-      TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, &
-                                                            tmp, tmp2
+      TYPE(dbcsr_type)                                   :: canonical_evec_im, canonical_evec_re, &
+                                                            diag_im, diag_re, occ_im, occ_re, &
+                                                            weighted_evec_im, weighted_evec_re
+      TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, tmp, &
+                                                            tmp2
 
       IF (.NOT. qs_ot_env%settings%do_rotation) RETURN
 
@@ -1300,6 +1306,7 @@ CONTAINS
       b_im => qs_ot_env%buf2_k_k_nosym
       tmp => qs_ot_env%buf3_k_k_nosym
       tmp2 => qs_ot_env%buf4_k_k_nosym
+      project_energy_subproblem = kpoint_ot_project_energy_subproblem(qs_ot_env, smear)
 
       CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
@@ -1326,18 +1333,83 @@ CONTAINS
 
       IF (qs_ot_env%settings%do_ener) THEN
          CALL dbcsr_get_diag(chc_re, qs_ot_env%ener_gx)
-         IF (kpoint_ot_project_energy_subproblem(qs_ot_env, smear)) &
+         IF (project_energy_subproblem) &
             qs_ot_env%ener_gx(:) = eigenvalues(:)
       END IF
 
-      CALL dbcsr_copy(b_re, chc_re)
-      CALL dbcsr_copy(b_im, chc_im)
+      IF (project_energy_subproblem) THEN
+         nmo = SIZE(occupation_numbers)
+         ALLOCATE (canonical_energies(nmo), orbital_scaling_factor(nmo))
+         orbital_scaling_factor(:) = 2.0_dp*kpoint_weight*occupation_numbers(:)
 
-      ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
-      orbital_scaling_factor(:) = 2.0_dp*kpoint_weight*occupation_numbers(:)
-      CALL dbcsr_scale_by_vector(b_re, alpha=orbital_scaling_factor, side='right')
-      CALL dbcsr_scale_by_vector(b_im, alpha=orbital_scaling_factor, side='right')
-      DEALLOCATE (orbital_scaling_factor)
+         CALL dbcsr_copy(diag_re, chc_re, name="ot_kp_chc_diag_re")
+         CALL dbcsr_copy(diag_im, chc_im, name="ot_kp_chc_diag_im")
+         CALL dbcsr_copy(canonical_evec_re, chc_re, name="ot_kp_chc_canon_re")
+         CALL dbcsr_copy(canonical_evec_im, chc_im, name="ot_kp_chc_canon_im")
+         CALL cp_dbcsr_heevd(matrix_re=diag_re, &
+                             matrix_im=diag_im, &
+                             eigenvectors_re=canonical_evec_re, &
+                             eigenvectors_im=canonical_evec_im, &
+                             eigenvalues=canonical_energies, &
+                             para_env=qs_ot_env%para_env, &
+                             blacs_env=qs_ot_env%blacs_env)
+
+         CALL dbcsr_copy(weighted_evec_re, canonical_evec_re, name="ot_kp_occ_evec_re")
+         CALL dbcsr_scale_by_vector(weighted_evec_re, alpha=orbital_scaling_factor, side='right')
+         CALL dbcsr_copy(weighted_evec_im, canonical_evec_im, name="ot_kp_occ_evec_im")
+         CALL dbcsr_scale_by_vector(weighted_evec_im, alpha=orbital_scaling_factor, side='right')
+         CALL dbcsr_copy(occ_re, chc_re, name="ot_kp_occ_re")
+         CALL dbcsr_set(occ_re, 0.0_dp)
+         CALL dbcsr_copy(occ_im, chc_im, name="ot_kp_occ_im")
+         CALL dbcsr_set(occ_im, 0.0_dp)
+
+         ! P_occ = V*diag(2*w_k*f)*V^H.  Blend only a small off-diagonal part into
+         ! the rotation gradient, so the REF coordinates and minimizer history keep
+         ! the stable diagonal occupation gauge.
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, weighted_evec_re, canonical_evec_re, 0.0_dp, occ_re)
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, weighted_evec_im, canonical_evec_im, 1.0_dp, occ_re)
+         CALL dbcsr_multiply('N', 'T', 1.0_dp, weighted_evec_im, canonical_evec_re, 0.0_dp, occ_im)
+         CALL dbcsr_multiply('N', 'T', -1.0_dp, weighted_evec_re, canonical_evec_im, 1.0_dp, occ_im)
+         canonical_projector_weight = 0.0_dp
+         IF (qs_ot_env%delta > 0.0_dp) THEN
+            delta_scale = canonical_projector_delta/MAX(qs_ot_env%delta, canonical_projector_delta)
+            canonical_projector_weight = canonical_projector_max_weight*delta_scale**2
+         END IF
+         CALL dbcsr_scale(occ_re, canonical_projector_weight)
+         CALL dbcsr_scale(occ_im, canonical_projector_weight)
+         ALLOCATE (projector_diag(nmo))
+         CALL dbcsr_get_diag(occ_re, projector_diag)
+         projector_diag(:) = projector_diag(:) + &
+                             (1.0_dp - canonical_projector_weight)*orbital_scaling_factor(:)
+         CALL dbcsr_set_diag(occ_re, projector_diag)
+         projector_diag(:) = 0.0_dp
+         CALL dbcsr_set_diag(occ_im, projector_diag)
+         DEALLOCATE (projector_diag)
+
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, chc_re, occ_re, 0.0_dp, b_re)
+         CALL dbcsr_multiply('N', 'N', -1.0_dp, chc_im, occ_im, 1.0_dp, b_re)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, chc_re, occ_im, 0.0_dp, b_im)
+         CALL dbcsr_multiply('N', 'N', 1.0_dp, chc_im, occ_re, 1.0_dp, b_im)
+
+         CALL dbcsr_release(canonical_evec_re)
+         CALL dbcsr_release(canonical_evec_im)
+         CALL dbcsr_release(diag_re)
+         CALL dbcsr_release(diag_im)
+         CALL dbcsr_release(occ_re)
+         CALL dbcsr_release(occ_im)
+         CALL dbcsr_release(weighted_evec_re)
+         CALL dbcsr_release(weighted_evec_im)
+         DEALLOCATE (canonical_energies, orbital_scaling_factor)
+      ELSE
+         CALL dbcsr_copy(b_re, chc_re)
+         CALL dbcsr_copy(b_im, chc_im)
+
+         ALLOCATE (orbital_scaling_factor(SIZE(occupation_numbers)))
+         orbital_scaling_factor(:) = 2.0_dp*kpoint_weight*occupation_numbers(:)
+         CALL dbcsr_scale_by_vector(b_re, alpha=orbital_scaling_factor, side='right')
+         CALL dbcsr_scale_by_vector(b_im, alpha=orbital_scaling_factor, side='right')
+         DEALLOCATE (orbital_scaling_factor)
+      END IF
 
       ! dF/dU for the complex occupied-space rotation U(k).  The finite anti-Hermitian
       ! Frechet derivative below consumes the complete real/imaginary payload.
@@ -1358,7 +1430,7 @@ CONTAINS
 
       IF (qs_ot_env%settings%do_ener .AND. qs_ot_env%settings%occupation_preconditioner .AND. &
           qs_ot_env%settings%canonical_tether .AND. &
-          .NOT. kpoint_ot_project_energy_subproblem(qs_ot_env, smear) .AND. &
+          .NOT. project_energy_subproblem .AND. &
           smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
          sigma = smear%electronic_temperature
          nmo = SIZE(qs_ot_env%ener_x)
