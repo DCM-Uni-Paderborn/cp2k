@@ -119,7 +119,10 @@ MODULE qs_scf_loop_utils
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_loop_utils'
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
-                                        ot_kp_canonical_projector_max_weight = 0.10_dp
+                                        ot_kp_canonical_projector_max_weight = 0.10_dp, &
+                                        ot_kp_fermi_window_factor = 3.5_dp, &
+                                        ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
+                                        ot_kp_fermi_window_outer_factor = 8.0_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -521,7 +524,7 @@ CONTAINS
                                                             nlocal_channels, nmo, nspin_ot
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: use_real_wfn
+      LOGICAL                                            :: fermi_window_guarded, use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
       REAL(KIND=dp)                                      :: ener_nondiag, maxocc, mu
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: trial_mu
@@ -674,6 +677,16 @@ CONTAINS
       CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
                                                     trial_eigenvalues, trial_occupation, trial_mu)
+      CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
+                                                      nspin_ot, kp_range, wkp, para_env_inter_kp, &
+                                                      scf_control%smear, trial_eigenvalues, &
+                                                      trial_occupation, trial_mu, fermi_window_guarded)
+      IF (fermi_window_guarded) THEN
+         DEALLOCATE (trial_eigenvalues, trial_occupation, trial_mu)
+         CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                       kp_range, wkp, para_env_inter_kp, scf_control%smear, &
+                                                       trial_eigenvalues, trial_occupation, trial_mu)
+      END IF
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -770,6 +783,16 @@ CONTAINS
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
                                     added_mos_auto_grow=added_mos_auto_grow)
+      IF (.NOT. added_mos_auto_grow) THEN
+         CALL qs_scf_loop_guard_ot_kp_fermi_window(kpoints, local_ot_env, first_channel, &
+                                                   nspin_ot, kp_range, wkp, para_env_inter_kp, &
+                                                   scf_control%smear, fermi_window_guarded)
+         IF (fermi_window_guarded) THEN
+            CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
+                                          added_mos_auto=scf_control%added_mos_auto, &
+                                          added_mos_auto_grow=added_mos_auto_grow)
+         END IF
+      END IF
       CALL qs_scf_loop_print_ot_kp_smearing(kpoints, wkp, para_env_inter_kp)
       IF (.NOT. added_mos_auto_grow) THEN
          fmwork => scf_env%scf_work1
@@ -919,6 +942,145 @@ CONTAINS
       trial_mu(:) = mus(1:nspin_ot)
 
    END SUBROUTINE qs_scf_loop_collect_ot_kp_trial_smearing
+
+! **************************************************************************************************
+!> \brief keep trial k-point OT auxiliary energies inside a finite-temperature frontier window
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param kp_range ...
+!> \param wkp ...
+!> \param para_env_inter_kp ...
+!> \param smear ...
+!> \param trial_eigenvalues ...
+!> \param trial_occupation ...
+!> \param trial_mu ...
+!> \param guarded ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
+                                                         nspin_ot, kp_range, wkp, para_env_inter_kp, &
+                                                         smear, trial_eigenvalues, trial_occupation, &
+                                                         trial_mu, guarded)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: trial_eigenvalues
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_occupation
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
+      LOGICAL, INTENT(OUT)                               :: guarded
+
+      INTEGER                                            :: adjusted, group, ikpoint, imo, ispin, &
+                                                            local_channel, local_kpoint, ngroups, &
+                                                            nkpoint, nmo
+      LOGICAL                                            :: guard_group, lower_frontier, upper_frontier
+      REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, maxocc, &
+                                                            occ_tail, outer_window, sigma
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: frac_weight, lower_dist, max_partial, &
+                                                            min_abs_eps_mu, upper_dist
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      guarded = .FALSE.
+      IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
+      IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
+      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+
+      sigma = smear%electronic_temperature
+      IF (sigma <= 1.0E-14_dp) RETURN
+      anchor_window = ot_kp_fermi_window_factor*sigma
+      outer_window = ot_kp_fermi_window_outer_factor*sigma
+
+      nmo = SIZE(trial_eigenvalues, 1)
+      nkpoint = SIZE(trial_eigenvalues, 2)
+      ngroups = 1
+      IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
+      ALLOCATE (frac_weight(ngroups), lower_dist(ngroups), max_partial(ngroups), &
+                min_abs_eps_mu(ngroups), upper_dist(ngroups))
+      frac_weight(:) = 0.0_dp
+      lower_dist(:) = HUGE(1.0_dp)
+      max_partial(:) = 0.0_dp
+      min_abs_eps_mu(:) = HUGE(1.0_dp)
+      upper_dist(:) = HUGE(1.0_dp)
+
+      kp => kpoints%kp_env(1)%kpoint_env
+      DO ikpoint = 1, nkpoint
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc)
+            DO imo = 1, nmo
+               occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
+                                          maxocc - trial_occupation(imo, ikpoint, ispin)))
+               frac_weight(group) = frac_weight(group) + wkp(ikpoint)*occ_tail
+               max_partial(group) = MAX(max_partial(group), occ_tail)
+               min_abs_eps_mu(group) = MIN(min_abs_eps_mu(group), &
+                                           ABS(trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin)))
+               IF (trial_eigenvalues(imo, ikpoint, ispin) <= trial_mu(ispin)) &
+                  lower_dist(group) = MIN(lower_dist(group), &
+                                          trial_mu(ispin) - trial_eigenvalues(imo, ikpoint, ispin))
+               IF (trial_eigenvalues(imo, ikpoint, ispin) >= trial_mu(ispin)) &
+                  upper_dist(group) = MIN(upper_dist(group), &
+                                          trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin))
+            END DO
+         END DO
+      END DO
+
+      adjusted = 0
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
+                          upper_dist(group) < HUGE(1.0_dp) .AND. &
+                          min_abs_eps_mu(group) > anchor_window .AND. &
+                          (min_abs_eps_mu(group) < outer_window .OR. &
+                           frac_weight(group) < ot_kp_fermi_window_min_frac)
+            IF (.NOT. guard_group) CYCLE
+
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            distance_tol = MAX(1.0E-10_dp, 1.0E-8_dp*MAX(lower_dist(group), upper_dist(group)))
+            DO imo = 1, nmo
+               lower_frontier = trial_eigenvalues(imo, ikpoint, ispin) <= trial_mu(ispin) .AND. &
+                                ABS(trial_mu(ispin) - trial_eigenvalues(imo, ikpoint, ispin) - &
+                                    lower_dist(group)) <= distance_tol
+               upper_frontier = trial_eigenvalues(imo, ikpoint, ispin) >= trial_mu(ispin) .AND. &
+                                ABS(trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin) - &
+                                    upper_dist(group)) <= distance_tol
+               IF (lower_frontier .AND. lower_dist(group) > anchor_window) THEN
+                  eps = trial_mu(ispin) - anchor_window
+               ELSEIF (upper_frontier .AND. upper_dist(group) > anchor_window) THEN
+                  eps = trial_mu(ispin) + anchor_window
+               ELSE
+                  CYCLE
+               END IF
+               trial_eigenvalues(imo, ikpoint, ispin) = eps
+               local_ot_env(local_channel)%ener_x(imo) = eps
+               adjusted = adjusted + 1
+            END DO
+         END DO
+      END DO
+
+      CALL para_env_inter_kp%sum(adjusted)
+      guarded = adjusted > 0
+
+      logger => cp_get_default_logger()
+      IF (guarded .AND. logger%iter_info%print_level >= high_print_level .AND. &
+          logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),1X,I5)') &
+            " OT k-point trial Fermi-window guard sigma anchor frac min_abs adjusted:", &
+            sigma, anchor_window, MINVAL(frac_weight), MINVAL(min_abs_eps_mu), adjusted
+      END IF
+
+      DEALLOCATE (frac_weight, lower_dist, max_partial, min_abs_eps_mu, upper_dist)
+
+   END SUBROUTINE qs_scf_loop_guard_ot_kp_trial_fermi_window
 
 ! **************************************************************************************************
 !> \brief whether k-point OT should eliminate auxiliary energies by exact fixed-N Mermin projection
@@ -1238,6 +1400,164 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_scf_loop_apply_ot_kp_projected_density
+
+! **************************************************************************************************
+!> \brief keep k-point OT auxiliary energies inside a finite-temperature frontier window
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param kp_range ...
+!> \param wkp ...
+!> \param para_env_inter_kp ...
+!> \param smear ...
+!> \param guarded ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_guard_ot_kp_fermi_window(kpoints, local_ot_env, first_channel, &
+                                                   nspin_ot, kp_range, wkp, para_env_inter_kp, &
+                                                   smear, guarded)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      LOGICAL, INTENT(OUT)                               :: guarded
+
+      INTEGER                                            :: adjusted, group, ikpoint, imo, ispin, &
+                                                            local_channel, local_kpoint, ngroups, nmo
+      LOGICAL                                            :: guard_group, lower_frontier, upper_frontier
+      REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, maxocc, &
+                                                            occ_tail, outer_window, sigma
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: frac_weight, lower_dist, max_partial, &
+                                                            min_abs_eps_mu, mu_count, mu_group, &
+                                                            mu_sum, upper_dist
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      guarded = .FALSE.
+      IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
+      IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
+      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+
+      sigma = smear%electronic_temperature
+      IF (sigma <= 1.0E-14_dp) RETURN
+      anchor_window = ot_kp_fermi_window_factor*sigma
+      outer_window = ot_kp_fermi_window_outer_factor*sigma
+
+      ngroups = 1
+      IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
+      ALLOCATE (frac_weight(ngroups), lower_dist(ngroups), max_partial(ngroups), &
+                min_abs_eps_mu(ngroups), mu_count(ngroups), mu_group(ngroups), &
+                mu_sum(ngroups), upper_dist(ngroups))
+      frac_weight(:) = 0.0_dp
+      lower_dist(:) = HUGE(1.0_dp)
+      max_partial(:) = 0.0_dp
+      min_abs_eps_mu(:) = HUGE(1.0_dp)
+      mu_count(:) = 0.0_dp
+      mu_group(:) = 0.0_dp
+      mu_sum(:) = 0.0_dp
+      upper_dist(:) = HUGE(1.0_dp)
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            mu_sum(group) = mu_sum(group) + kp%mos(1, ispin)%mu
+            mu_count(group) = mu_count(group) + 1.0_dp
+         END DO
+      END DO
+
+      CALL para_env_inter_kp%sum(mu_sum)
+      CALL para_env_inter_kp%sum(mu_count)
+      DO group = 1, ngroups
+         IF (mu_count(group) > 0.0_dp) mu_group(group) = mu_sum(group)/mu_count(group)
+      END DO
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, eigenvalues=eigenvalues, &
+                            occupation_numbers=occupation_numbers)
+            DO imo = 1, nmo
+               occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
+               frac_weight(group) = frac_weight(group) + wkp(ikpoint)*occ_tail
+               max_partial(group) = MAX(max_partial(group), occ_tail)
+               min_abs_eps_mu(group) = MIN(min_abs_eps_mu(group), ABS(eigenvalues(imo) - mu_group(group)))
+               IF (eigenvalues(imo) <= mu_group(group)) &
+                  lower_dist(group) = MIN(lower_dist(group), mu_group(group) - eigenvalues(imo))
+               IF (eigenvalues(imo) >= mu_group(group)) &
+                  upper_dist(group) = MIN(upper_dist(group), eigenvalues(imo) - mu_group(group))
+            END DO
+         END DO
+      END DO
+
+      DO group = 1, ngroups
+         CALL para_env_inter_kp%sum(frac_weight(group))
+         CALL para_env_inter_kp%max(max_partial(group))
+         CALL para_env_inter_kp%min(min_abs_eps_mu(group))
+         CALL para_env_inter_kp%min(lower_dist(group))
+         CALL para_env_inter_kp%min(upper_dist(group))
+      END DO
+
+      adjusted = 0
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
+                          upper_dist(group) < HUGE(1.0_dp) .AND. &
+                          min_abs_eps_mu(group) > anchor_window .AND. &
+                          (min_abs_eps_mu(group) < outer_window .OR. &
+                           frac_weight(group) < ot_kp_fermi_window_min_frac)
+            IF (.NOT. guard_group) CYCLE
+
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL get_mo_set(kp%mos(1, ispin), nmo=nmo, eigenvalues=eigenvalues)
+            distance_tol = MAX(1.0E-10_dp, 1.0E-8_dp*MAX(lower_dist(group), upper_dist(group)))
+            DO imo = 1, nmo
+               lower_frontier = eigenvalues(imo) <= mu_group(group) .AND. &
+                                ABS(mu_group(group) - eigenvalues(imo) - lower_dist(group)) <= distance_tol
+               upper_frontier = eigenvalues(imo) >= mu_group(group) .AND. &
+                                ABS(eigenvalues(imo) - mu_group(group) - upper_dist(group)) <= distance_tol
+               IF (lower_frontier .AND. lower_dist(group) > anchor_window) THEN
+                  eps = mu_group(group) - anchor_window
+               ELSEIF (upper_frontier .AND. upper_dist(group) > anchor_window) THEN
+                  eps = mu_group(group) + anchor_window
+               ELSE
+                  CYCLE
+               END IF
+               eigenvalues(imo) = eps
+               kp%mos(2, ispin)%eigenvalues(imo) = eps
+               local_ot_env(local_channel)%ener_x(imo) = eps
+               adjusted = adjusted + 1
+            END DO
+         END DO
+      END DO
+
+      CALL para_env_inter_kp%sum(adjusted)
+      guarded = adjusted > 0
+
+      logger => cp_get_default_logger()
+      IF (guarded .AND. logger%iter_info%print_level >= high_print_level .AND. &
+          logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),1X,I5)') &
+            " OT k-point Fermi-window guard sigma anchor frac min_abs adjusted:", &
+            sigma, anchor_window, MINVAL(frac_weight), MINVAL(min_abs_eps_mu), adjusted
+      END IF
+
+      DEALLOCATE (frac_weight, lower_dist, max_partial, min_abs_eps_mu, mu_count, mu_group, &
+                  mu_sum, upper_dist)
+
+   END SUBROUTINE qs_scf_loop_guard_ot_kp_fermi_window
 
 ! **************************************************************************************************
 !> \brief high-print diagnostic for k-point OT smearing quality
