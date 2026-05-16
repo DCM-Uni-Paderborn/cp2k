@@ -48,6 +48,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
                                                      2.0E-7_dp, nfail)
+   CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
+                                                  5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -755,6 +757,190 @@ CONTAINS
       DEALLOCATE (h, occ, occ_scale)
 
    END SUBROUTINE dense_complex_kpoint_mermin_gradient
+
+! **************************************************************************************************
+!> \brief Check a non-diagonal occupation projector in the complex REF rotation gradient.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_rotation_gradient(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, occ_mat
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: err, fd, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n)                        :: eps_diag
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.31_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.16_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.05_dp, -0.02_dp, KIND=dp)
+      base(1, 3) = CMPLX(-0.03_dp, 0.04_dp, KIND=dp)
+      base(2, 3) = CMPLX(0.02_dp, 0.03_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(3, 1) = CONJG(base(1, 3))
+      base(3, 2) = CONJG(base(2, 3))
+
+      occ_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      occ_mat(1, 1) = CMPLX(1.60_dp, 0.0_dp, KIND=dp)
+      occ_mat(2, 2) = CMPLX(0.72_dp, 0.0_dp, KIND=dp)
+      occ_mat(3, 3) = CMPLX(0.18_dp, 0.0_dp, KIND=dp)
+      occ_mat(1, 2) = CMPLX(0.08_dp, -0.03_dp, KIND=dp)
+      occ_mat(1, 3) = CMPLX(-0.04_dp, 0.02_dp, KIND=dp)
+      occ_mat(2, 3) = CMPLX(0.03_dp, 0.05_dp, KIND=dp)
+      occ_mat(2, 1) = CONJG(occ_mat(1, 2))
+      occ_mat(3, 1) = CONJG(occ_mat(1, 3))
+      occ_mat(3, 2) = CONJG(occ_mat(2, 3))
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.06_dp
+      x_re(1, 3) = -0.03_dp
+      x_re(2, 3) = 0.04_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+         END DO
+      END DO
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.04_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(1, 2) = -0.02_dp
+      x_im(1, 3) = 0.01_dp
+      x_im(2, 3) = 0.03_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+
+      CALL dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
+
+      err = 0.0_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_p_re(:, :) = x_re(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            x_p_re(i, j) = x_p_re(i, j) + fd_step
+            x_p_re(j, i) = x_p_re(j, i) - fd_step
+            x_m_re(i, j) = x_m_re(i, j) - fd_step
+            x_m_re(j, i) = x_m_re(j, i) + fd_step
+            value_p = dense_projector_rotation_value(x_p_re, x_p_im, base, occ_mat)
+            value_m = dense_projector_rotation_value(x_m_re, x_m_im, base, occ_mat)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_re(i, j)))
+
+            x_p_re(:, :) = x_re(:, :)
+            x_m_re(:, :) = x_re(:, :)
+            x_p_im(:, :) = x_im(:, :)
+            x_m_im(:, :) = x_im(:, :)
+            x_p_im(i, j) = x_p_im(i, j) + fd_step
+            x_p_im(j, i) = x_p_im(j, i) + fd_step
+            x_m_im(i, j) = x_m_im(i, j) - fd_step
+            x_m_im(j, i) = x_m_im(j, i) - fd_step
+            value_p = dense_projector_rotation_value(x_p_re, x_p_im, base, occ_mat)
+            value_m = dense_projector_rotation_value(x_m_re, x_m_im, base, occ_mat)
+            fd = (value_p - value_m)/(2.0_dp*fd_step)
+            err = MAX(err, ABS(fd - grad_im(i, j)))
+         END DO
+      END DO
+
+      DO i = 1, n
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         x_p_im(i, i) = x_p_im(i, i) + fd_step
+         x_m_im(i, i) = x_m_im(i, i) - fd_step
+         value_p = dense_projector_rotation_value(x_p_re, x_p_im, base, occ_mat)
+         value_m = dense_projector_rotation_value(x_m_re, x_m_im, base, occ_mat)
+         fd = (value_p - value_m)/(2.0_dp*fd_step)
+         err = MAX(err, ABS(fd - 0.5_dp*grad_im(i, i)))
+      END DO
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_projector_rotation_gradient
+
+! **************************************************************************************************
+!> \brief Dense value 1/2 Tr[P U^H H U] for a doubled Hermitian occupation projector.
+! **************************************************************************************************
+   FUNCTION dense_projector_rotation_value(x_re, x_im, base, occ_mat) RESULT(value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base, occ_mat
+      REAL(KIND=dp)                                      :: value
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, u
+      INTEGER                                            :: n
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), u(n, n))
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      value = 0.5_dp*REAL(SUM(CONJG(occ_mat(:, :))*chc(:, :)), KIND=dp)
+      DEALLOCATE (chc, u)
+
+   END FUNCTION dense_projector_rotation_value
+
+! **************************************************************************************************
+!> \brief Dense gradient of 1/2 Tr[P U^H H U] for a doubled Hermitian occupation projector.
+! **************************************************************************************************
+   SUBROUTINE dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base, occ_mat
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
+
+      COMPLEX(KIND=dp)                                   :: kernel
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, &
+                                                            inner, outer, u, work
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (generator(n, n), evec(n, n), u(n, n), work(n, n), dedu(n, n))
+      ALLOCATE (inner(n, n), outer(n, n), frechet(n, n), evals(n))
+
+      generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+      CALL diag_complex(generator, evec, evals)
+      CALL dense_rotation_u_from_eigensystem(evec, evals, u)
+
+      dedu(:, :) = MATMUL(base, MATMUL(u, occ_mat))
+
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      DO i = 1, n
+         eps_diag(i) = REAL(work(i, i), KIND=dp)
+      END DO
+
+      inner(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dedu, evec))
+      DO j = 1, n
+         DO i = 1, n
+            kernel = CONJG(qs_ot_complex_exp_frechet_kernel(evals(i), evals(j)))
+            outer(i, j) = inner(i, j)*kernel
+         END DO
+      END DO
+      frechet(:, :) = MATMUL(evec, MATMUL(outer, CONJG(TRANSPOSE(evec))))
+
+      grad_re(:, :) = REAL(frechet, KIND=dp) - TRANSPOSE(REAL(frechet, KIND=dp))
+      grad_im(:, :) = AIMAG(frechet) + TRANSPOSE(AIMAG(frechet))
+
+      DEALLOCATE (generator, evec, u, work, dedu, inner, outer, frechet, evals)
+
+   END SUBROUTINE dense_projector_rotation_gradient
 
 ! **************************************************************************************************
 !> \brief Check the complex k-point NONDIAG_ENERGY tether gradient.

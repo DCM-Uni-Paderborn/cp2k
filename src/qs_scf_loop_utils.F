@@ -114,6 +114,8 @@ MODULE qs_scf_loop_utils
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_loop_utils'
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_projector_delta = 5.0E-3_dp, &
+                                        ot_kp_canonical_projector_max_weight = 0.10_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -1273,8 +1275,6 @@ CONTAINS
 
       INTEGER                                            :: imo, nmo
       LOGICAL                                            :: project_energy_subproblem
-      REAL(KIND=dp), PARAMETER                           :: canonical_projector_delta = 5.0E-3_dp, &
-                                                            canonical_projector_max_weight = 0.10_dp
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies, diagonal, &
                                                             orbital_scaling_factor, projector_diag, &
                                                             tether_diag
@@ -1372,8 +1372,9 @@ CONTAINS
          CALL dbcsr_multiply('N', 'T', -1.0_dp, weighted_evec_re, canonical_evec_im, 1.0_dp, occ_im)
          canonical_projector_weight = 0.0_dp
          IF (qs_ot_env%delta > 0.0_dp) THEN
-            delta_scale = canonical_projector_delta/MAX(qs_ot_env%delta, canonical_projector_delta)
-            canonical_projector_weight = canonical_projector_max_weight*delta_scale**2
+            delta_scale = ot_kp_canonical_projector_delta/MAX(qs_ot_env%delta, &
+                                                              ot_kp_canonical_projector_delta)
+            canonical_projector_weight = ot_kp_canonical_projector_max_weight*delta_scale**2
          END IF
          CALL dbcsr_scale(occ_re, canonical_projector_weight)
          CALL dbcsr_scale(occ_im, canonical_projector_weight)
@@ -2148,9 +2149,9 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, u
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, occ_mat, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, occ_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
                                                             x_m_re, x_p_im, x_p_re, x_re
@@ -2168,11 +2169,12 @@ CONTAINS
          CALL local_ot_env(local_channel)%para_env%sum(u_re)
          CALL local_ot_env(local_channel)%para_env%sum(u_im)
 
-         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), occ_scale(nmo))
+         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), occ_mat(nmo, nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
-         occ_scale(:) = 2.0_dp*kpoint_weight*occupation_numbers(1:nmo)
+         CALL dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, &
+                                               local_ot_env(local_channel)%delta, occ_mat)
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))
          ALLOCATE (grad_p_re(nmo, nmo), grad_p_im(nmo, nmo), grad_m_re(nmo, nmo), grad_m_im(nmo, nmo))
@@ -2198,8 +2200,8 @@ CONTAINS
                x_m_im(jmo, imo) = x_m_im(jmo, imo) - fd_step
             END SELECT
 
-            CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_scale, grad_p_re, grad_p_im, eps_p)
-            CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_scale, grad_m_re, grad_m_im, eps_m)
+            CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat, grad_p_re, grad_p_im, eps_p)
+            CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat, grad_m_re, grad_m_im, eps_m)
 
             DO r = first_var, last_var
                imo = var_i(r)
@@ -2216,15 +2218,51 @@ CONTAINS
             END DO
          END DO
 
-         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, occ_scale)
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, occ_mat)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m)
       END SUBROUTINE build_finite_ref_rotation_model
 
-      SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
+      SUBROUTINE dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, delta, occ_mat)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
+      INTEGER                                            :: i, n
+      REAL(KIND=dp)                                      :: delta_scale, projector_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale
+
+         n = SIZE(chc, 1)
+         ALLOCATE (evec(n, n), weighted_evec(n, n), evals(n), occ_scale(n))
+
+         occ_scale(:) = 2.0_dp*kpoint_weight*occupation_numbers(1:n)
+         CALL diag_complex(chc, evec, evals)
+         weighted_evec(:, :) = evec(:, :)
+         DO i = 1, n
+            weighted_evec(:, i) = occ_scale(i)*weighted_evec(:, i)
+         END DO
+         occ_mat(:, :) = MATMUL(weighted_evec, CONJG(TRANSPOSE(evec)))
+
+         projector_weight = 0.0_dp
+         IF (delta > 0.0_dp) THEN
+            delta_scale = ot_kp_canonical_projector_delta/MAX(delta, ot_kp_canonical_projector_delta)
+            projector_weight = ot_kp_canonical_projector_max_weight*delta_scale**2
+         END IF
+         occ_mat(:, :) = projector_weight*occ_mat(:, :)
+         DO i = 1, n
+            occ_mat(i, i) = CMPLX(REAL(occ_mat(i, i), KIND=dp) + &
+                                  (1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
+         END DO
+
+         DEALLOCATE (evec, weighted_evec, evals, occ_scale)
+      END SUBROUTINE dense_history_safe_occ_projector
+
+      SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: occ_mat
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
 
@@ -2247,11 +2285,7 @@ CONTAINS
          END DO
          u(:, :) = MATMUL(u, CONJG(TRANSPOSE(evec)))
 
-         work(:, :) = MATMUL(base, u)
-         dedu(:, :) = work(:, :)
-         DO j = 1, n
-            dedu(:, j) = occ_scale(j)*dedu(:, j)
-         END DO
+         dedu(:, :) = MATMUL(base, MATMUL(u, occ_mat))
 
          work(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
          DO i = 1, n
