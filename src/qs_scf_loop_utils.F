@@ -528,6 +528,7 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc, matrix_hc_im
+      TYPE(dbcsr_type)                                   :: density_hc_im, density_hc_re
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: density_target, rho_ao_kp
       TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
                                                             matrix_s_re
@@ -719,7 +720,7 @@ CONTAINS
                              cell_to_index=cell_to_index, sab_nl=sab_nl)
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
+            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues, nmo=nmo)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
             CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
                                                 matrix_hc_im(local_channel)%matrix, &
@@ -727,6 +728,34 @@ CONTAINS
                                                 local_ot_env(local_channel))
             CALL copy_dbcsr_to_fm(matrix_hc(local_channel)%matrix, mo_coeff)
             CALL copy_dbcsr_to_fm(matrix_hc_im(local_channel)%matrix, mo_coeff_im)
+            IF (kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), scf_control%smear)) THEN
+               CALL dbcsr_set(matrix_k_re, 0.0_dp)
+               CALL dbcsr_set(matrix_k_im, 0.0_dp)
+               CALL rskp_transform(rmatrix=matrix_k_re, cmatrix=matrix_k_im, rsmat=matrix_ks, &
+                                   ispin=ispin, xkp=xkp(1:3, ikpoint), &
+                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
+               CALL cp_fm_create(hc_re, mo_coeff%matrix_struct)
+               CALL cp_fm_create(hc_im, mo_coeff%matrix_struct)
+
+               CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff, hc_re, nmo)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff_im, hc_re, nmo, &
+                                            alpha=-1.0_dp, beta=1.0_dp)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff_im, hc_im, nmo)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff, hc_im, nmo, &
+                                            alpha=1.0_dp, beta=1.0_dp)
+
+               CALL dbcsr_copy(density_hc_re, matrix_hc(local_channel)%matrix, name="ot_kp_density_hc_re")
+               CALL dbcsr_copy(density_hc_im, matrix_hc_im(local_channel)%matrix, name="ot_kp_density_hc_im")
+               CALL copy_fm_to_dbcsr(hc_re, density_hc_re)
+               CALL copy_fm_to_dbcsr(hc_im, density_hc_im)
+               CALL qs_scf_loop_project_ot_kp_final_energies(local_ot_env(local_channel), &
+                                                             density_hc_re, density_hc_im, &
+                                                             scf_control%smear)
+               CALL dbcsr_release(density_hc_re)
+               CALL dbcsr_release(density_hc_im)
+               CALL cp_fm_release(hc_re)
+               CALL cp_fm_release(hc_im)
+            END IF
             IF (local_ot_env(local_channel)%settings%do_ener) THEN
                eigenvalues(:) = local_ot_env(local_channel)%ener_x(:)
                kp%mos(2, ispin)%eigenvalues(:) = local_ot_env(local_channel)%ener_x(:)
@@ -978,6 +1007,85 @@ CONTAINS
       DEALLOCATE (canonical_energies)
 
    END SUBROUTINE qs_scf_loop_project_ot_kp_energy_subproblem
+
+! **************************************************************************************************
+!> \brief project final k-point OT energies after the accepted rotation
+!> \param qs_ot_env ...
+!> \param matrix_hc ...
+!> \param matrix_hc_im ...
+!> \param smear ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_project_ot_kp_final_energies(qs_ot_env, matrix_hc, matrix_hc_im, smear)
+
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type)                                   :: matrix_hc, matrix_hc_im
+      TYPE(smear_type), INTENT(IN)                       :: smear
+
+      INTEGER                                            :: nmo
+      REAL(KIND=dp)                                      :: gauge_shift
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
+      TYPE(dbcsr_type), POINTER                          :: b_im, b_re, c_im, c_re, chc_im, chc_re, &
+                                                            tmp
+      TYPE(dbcsr_type)                                   :: evec_im, evec_re
+
+      IF (.NOT. kpoint_ot_project_energy_subproblem(qs_ot_env, smear)) RETURN
+
+      CPASSERT(qs_ot_env%has_complex_kpoint_state)
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
+
+      c_re => qs_ot_env%matrix_x
+      c_im => qs_ot_env%matrix_x_im
+      chc_re => qs_ot_env%rot_mat_chc
+      chc_im => qs_ot_env%rot_mat_chc_im
+      b_re => qs_ot_env%matrix_buf1
+      b_im => qs_ot_env%buf2_k_k_nosym
+      tmp => qs_ot_env%buf3_k_k_nosym
+
+      CALL qs_ot_generate_rotation_complex(qs_ot_env)
+
+      ! K = C_base(k)^H * H(k)C_current(k).
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
+      CALL dbcsr_add(chc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc_im, 0.0_dp, chc_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc, 0.0_dp, tmp)
+      CALL dbcsr_add(chc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      ! CHC = C_current(k)^H * H(k)C_current(k) = U(k)^H * K.
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_re, 0.0_dp, b_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, chc_im, 0.0_dp, tmp)
+      CALL dbcsr_add(b_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u, chc_im, 0.0_dp, b_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, chc_re, 0.0_dp, tmp)
+      CALL dbcsr_add(b_im, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_copy(chc_re, b_re)
+      CALL dbcsr_copy(chc_im, b_im)
+
+      nmo = SIZE(qs_ot_env%ener_x)
+      ALLOCATE (canonical_energies(nmo))
+      CALL dbcsr_copy(evec_re, chc_re, name="ot_kp_density_chc_evec_re")
+      CALL dbcsr_copy(evec_im, chc_im, name="ot_kp_density_chc_evec_im")
+      CALL cp_dbcsr_heevd(matrix_re=chc_re, &
+                          matrix_im=chc_im, &
+                          eigenvectors_re=evec_re, &
+                          eigenvectors_im=evec_im, &
+                          eigenvalues=canonical_energies, &
+                          para_env=qs_ot_env%para_env, &
+                          blacs_env=qs_ot_env%blacs_env)
+
+      gauge_shift = SUM(qs_ot_env%ener_x(:) - canonical_energies(:))/REAL(nmo, KIND=dp)
+      qs_ot_env%ener_x(:) = canonical_energies(:) + gauge_shift
+
+      CALL dbcsr_release(evec_re)
+      CALL dbcsr_release(evec_im)
+      DEALLOCATE (canonical_energies)
+
+   END SUBROUTINE qs_scf_loop_project_ot_kp_final_energies
 
 ! **************************************************************************************************
 !> \brief high-print diagnostic for k-point OT smearing quality
