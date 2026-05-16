@@ -2445,22 +2445,25 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: group_done
 
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
-      REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp
+      REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
+                                                            schur_frontier_curvature_floor = 5.0E-1_dp, &
+                                                            schur_response_trust_factor = 2.5E-1_dp
 
       INTEGER                                            :: channel_var_start, group, ie, ikpoint, &
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
-                                                            nchannels, ne, nmo, nrot, r, s
+                                                            nchannels, ne, nmo, nrot, r, s, schur_attempt, &
+                                                            schur_used_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
-      LOGICAL                                            :: failed
+      LOGICAL                                            :: attempt_failed, failed, solved, trust_rejected
       REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, direction_scale, gdotp, gnorm, &
          diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, normp, projected_term, rayleigh_edge_gap, &
-         row_abs, rx_shift, rx_weight, schur_diag_min, tether_response, tether_strength, tether_weight, &
-         z_shift, z_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rtd, rx_e, &
-                                                            sol, z_e
+         response_step_max, response_trust, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, &
+         schur_diag_min, tether_response, tether_strength, tether_weight, z_shift, z_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rot_floor, rtd, &
+                                                            rx_e, sol, z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             rot_hessian, schur
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -2497,9 +2500,10 @@ CONTAINS
             RETURN
          END IF
 
-         ALLOCATE (curv(ne), grad_e(ne), z_e(ne), rx_e(ne))
+         ALLOCATE (curv(ne), grad_e(ne), z_e(ne), z_trial(ne), rx_e(ne))
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
+         ALLOCATE (rot_floor(nrot))
          ALLOCATE (response(ne, nrot), rot_hessian(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
@@ -2512,8 +2516,12 @@ CONTAINS
          sol(:) = 0.0_dp
          response(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
+         rot_floor(:) = curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
+         response_step_max = 0.0_dp
+         response_trust = HUGE(1.0_dp)
+         rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          failed = .FALSE.
          ivar = 0
@@ -2576,6 +2584,8 @@ CONTAINS
                      var_ei(ivar) = e_offset(local_channel) + imo - 1
                      var_ej(ivar) = e_offset(local_channel) + jmo - 1
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
+                     IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
+                        rot_floor(ivar) = schur_frontier_curvature_floor
 
                      ivar = ivar + 1
                      var_channel(ivar) = local_channel
@@ -2585,6 +2595,8 @@ CONTAINS
                      var_ei(ivar) = e_offset(local_channel) + imo - 1
                      var_ej(ivar) = e_offset(local_channel) + jmo - 1
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
+                     IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
+                        rot_floor(ivar) = schur_frontier_curvature_floor
                   END DO
                END DO
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
@@ -2597,10 +2609,10 @@ CONTAINS
 
          CPASSERT(ivar == nrot)
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, z_e, rx_e)
+            DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
+            DEALLOCATE (rot_floor, response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
             RETURN
          END IF
 
@@ -2617,8 +2629,8 @@ CONTAINS
          CALL para_env_inter_kp%sum(z_weight)
          IF (z_weight > EPSILON(z_weight)) z_e(:) = z_e(:) - z_shift/z_weight
 
+         z_trial(:) = z_e(:)
          rot_hessian(:, :) = 0.5_dp*(rot_hessian(:, :) + TRANSPOSE(rot_hessian(:, :)))
-         schur(:, :) = rot_hessian(:, :)
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          DO r = 1, nrot
@@ -2626,60 +2638,92 @@ CONTAINS
             rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
          END DO
 
-         DO s = 1, nrot
+         IF (sigma > EPSILON(sigma)) &
+            response_trust = schur_response_trust_factor*ot_kp_fermi_window_factor*sigma
+         solved = .FALSE.
+         trust_rejected = .FALSE.
+         schur_used_attempt = 0
+         DO schur_attempt = 1, 2
+            attempt_failed = .FALSE.
+            z_e(:) = z_trial(:)
+            schur(:, :) = rot_hessian(:, :)
+            diag_shift_sum = 0.0_dp
+            diag_shift_max = 0.0_dp
+            response_step_max = 0.0_dp
+            rot_floor_min = curvature_floor
+            schur_diag_min = HUGE(1.0_dp)
+
+            DO s = 1, nrot
+               DO r = 1, nrot
+                  dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
+                  projected_term = dense_term
+                  IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                     projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
+                  schur(r, s) = schur(r, s) - projected_term
+               END DO
+            END DO
             DO r = 1, nrot
-               dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
-               projected_term = dense_term
-               IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                  projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
-               schur(r, s) = schur(r, s) - projected_term
+               row_floor = curvature_floor
+               IF (schur_attempt == 1) row_floor = rot_floor(r)
+               rot_floor_min = MIN(rot_floor_min, row_floor)
+               row_abs = SUM(ABS(schur(r, :))) - ABS(schur(r, r))
+               IF (schur(r, r) < row_abs + row_floor) THEN
+                  diag_shift = row_abs + row_floor - schur(r, r)
+                  schur(r, r) = schur(r, r) + diag_shift
+                  diag_shift_sum = diag_shift_sum + diag_shift
+                  diag_shift_max = MAX(diag_shift_max, diag_shift)
+               END IF
+               schur_diag_min = MIN(schur_diag_min, schur(r, r))
             END DO
-         END DO
-         DO r = 1, nrot
-            row_abs = SUM(ABS(schur(r, :))) - ABS(schur(r, r))
-            IF (schur(r, r) < row_abs + curvature_floor) THEN
-               diag_shift = row_abs + curvature_floor - schur(r, r)
-               schur(r, r) = schur(r, r) + diag_shift
-               diag_shift_sum = diag_shift_sum + diag_shift
-               diag_shift_max = MAX(diag_shift_max, diag_shift)
-            END IF
-            schur_diag_min = MIN(schur_diag_min, schur(r, r))
-         END DO
 
-         sol(:) = rhs(:)
-         CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
-         IF (info /= 0) failed = .TRUE.
+            sol(:) = rhs(:)
+            CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
+            IF (info /= 0) attempt_failed = .TRUE.
 
-         IF (.NOT. failed) THEN
-            rx_e(:) = MATMUL(response, sol)
-            rx_shift = 0.0_dp
-            rx_weight = 0.0_dp
-            DO ie = 1, ne
-               rx_shift = rx_shift + curv(ie)*rx_e(ie)
-               rx_weight = rx_weight + curv(ie)
-            END DO
-            CALL para_env_inter_kp%sum(rx_shift)
-            CALL para_env_inter_kp%sum(rx_weight)
-            IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
-            z_e(:) = z_e(:) + rx_e(:)
+            IF (.NOT. attempt_failed) THEN
+               rx_e(:) = MATMUL(response, sol)
+               rx_shift = 0.0_dp
+               rx_weight = 0.0_dp
+               DO ie = 1, ne
+                  rx_shift = rx_shift + curv(ie)*rx_e(ie)
+                  rx_weight = rx_weight + curv(ie)
+               END DO
+               CALL para_env_inter_kp%sum(rx_shift)
+               CALL para_env_inter_kp%sum(rx_weight)
+               IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
+               z_e(:) = z_e(:) + rx_e(:)
 
-            gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
-            gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
-            normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(sol, sol)
-            IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) failed = .TRUE.
-            IF (.NOT. failed .AND. normp > max_norm_ratio*MAX(gnorm, EPSILON(1.0_dp))) failed = .TRUE.
-            IF (.NOT. failed) THEN
-               ! The generic OT line searches assume that the stored search vector z has
-               ! z.z = g.z.  Rescale the external Schur direction to preserve that slope.
-               direction_scale = gdotp/MAX(normp, EPSILON(normp))
-               IF (direction_scale <= 0.0_dp .OR. direction_scale /= direction_scale) THEN
-                  failed = .TRUE.
-               ELSE
-                  z_e(:) = direction_scale*z_e(:)
-                  sol(:) = direction_scale*sol(:)
+               gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
+               gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
+               normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(sol, sol)
+               IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) attempt_failed = .TRUE.
+               IF (.NOT. attempt_failed .AND. normp > max_norm_ratio*MAX(gnorm, EPSILON(1.0_dp))) &
+                  attempt_failed = .TRUE.
+               IF (.NOT. attempt_failed) THEN
+                  ! The generic OT line searches assume that the stored search vector z has
+                  ! z.z = g.z.  Rescale the external Schur direction to preserve that slope.
+                  direction_scale = gdotp/MAX(normp, EPSILON(normp))
+                  IF (direction_scale <= 0.0_dp .OR. direction_scale /= direction_scale) THEN
+                     attempt_failed = .TRUE.
+                  ELSE
+                     z_e(:) = direction_scale*z_e(:)
+                     sol(:) = direction_scale*sol(:)
+                     response_step_max = direction_scale*MAXVAL(ABS(rx_e))
+                     IF (schur_attempt == 1 .AND. response_step_max > response_trust) THEN
+                        attempt_failed = .TRUE.
+                        trust_rejected = .TRUE.
+                     END IF
+                  END IF
                END IF
             END IF
-         END IF
+
+            IF (.NOT. attempt_failed) THEN
+               solved = .TRUE.
+               schur_used_attempt = schur_attempt
+               EXIT
+            END IF
+         END DO
+         failed = .NOT. solved
 
          IF (.NOT. failed) THEN
             DO local_kpoint = 1, SIZE(kpoints%kp_env)
@@ -2724,17 +2768,18 @@ CONTAINS
             END DO
             group_done = .TRUE.
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),6(1X,ES16.8))') &
-                  " OT Schur group ne nrot scale gdotp normp diag_shift max diag_min:", &
-                  target_group, ne, nrot, direction_scale, gdotp, normp, &
-                  diag_shift_sum, diag_shift_max, schur_diag_min
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),9(1X,ES16.8),1(1X,L1))') &
+                  " OT Schur group ne nrot attempt scale gdotp normp response trust diag_shift max diag_min floor_min rejected:", &
+                  target_group, ne, nrot, schur_used_attempt, direction_scale, gdotp, normp, &
+                  response_step_max, response_trust, diag_shift_sum, diag_shift_max, schur_diag_min, &
+                  rot_floor_min, trust_rejected
             END IF
          END IF
 
-         DEALLOCATE (curv, grad_e, z_e, rx_e)
+         DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
+         DEALLOCATE (rot_floor, response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
