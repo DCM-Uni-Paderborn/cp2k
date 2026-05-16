@@ -2456,15 +2456,18 @@ CONTAINS
                                                             var_j, var_kind
       LOGICAL                                            :: failed
       REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, direction_scale, gdotp, gnorm, &
-         gvalue, maxocc, mu, normp, projected_term, rayleigh_edge_gap, row_abs, rx_shift, rx_weight, &
-         tether_response, tether_strength, tether_weight, z_shift, z_weight
+         diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, normp, projected_term, rayleigh_edge_gap, &
+         row_abs, rx_shift, rx_weight, schur_diag_min, tether_response, tether_strength, tether_weight, &
+         z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rtd, rx_e, &
                                                             sol, z_e
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             rot_hessian, schur
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
          group_done = .FALSE.
+         logger => cp_get_default_logger()
          IF (ABS(gsum(target_group)) <= EPSILON(gsum(target_group))) RETURN
 
          nchannels = SIZE(local_ot_env)
@@ -2509,6 +2512,9 @@ CONTAINS
          sol(:) = 0.0_dp
          response(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
+         diag_shift_max = 0.0_dp
+         diag_shift_sum = 0.0_dp
+         schur_diag_min = HUGE(1.0_dp)
          failed = .FALSE.
          ivar = 0
 
@@ -2634,7 +2640,10 @@ CONTAINS
             IF (schur(r, r) < row_abs + curvature_floor) THEN
                diag_shift = row_abs + curvature_floor - schur(r, r)
                schur(r, r) = schur(r, r) + diag_shift
+               diag_shift_sum = diag_shift_sum + diag_shift
+               diag_shift_max = MAX(diag_shift_max, diag_shift)
             END IF
+            schur_diag_min = MIN(schur_diag_min, schur(r, r))
          END DO
 
          sol(:) = rhs(:)
@@ -2714,6 +2723,12 @@ CONTAINS
                DEALLOCATE (grad_re, grad_im)
             END DO
             group_done = .TRUE.
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),6(1X,ES16.8))') &
+                  " OT Schur group ne nrot scale gdotp normp diag_shift max diag_min:", &
+                  target_group, ne, nrot, direction_scale, gdotp, normp, &
+                  diag_shift_sum, diag_shift_max, schur_diag_min
+            END IF
          END IF
 
          DEALLOCATE (curv, grad_e, z_e, rx_e)
