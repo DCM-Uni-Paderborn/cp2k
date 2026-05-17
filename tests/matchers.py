@@ -121,6 +121,9 @@ registry = MatcherRegistry()
 
 # Total energy in Hartree
 registry["E_total"] = GenericMatcher(r"Total energy:", col=3)
+registry["Mermin_free_energy"] = GenericMatcher(
+    r"Mermin free energy \(E - T\*S\):\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
 
 registry["M002"] = GenericMatcher(r"MD| Potential energy", col=5)
 registry["M003"] = GenericMatcher(r"Total energy [eV]:", col=4)

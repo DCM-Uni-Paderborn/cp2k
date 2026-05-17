@@ -120,7 +120,7 @@ MODULE qs_scf_loop_utils
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
                                         ot_kp_canonical_projector_max_weight = 0.10_dp, &
-                                        ot_kp_fermi_window_factor = 3.4_dp, &
+                                        ot_kp_fermi_window_tail_fraction = 3.22954647E-2_dp, &
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
@@ -994,7 +994,7 @@ CONTAINS
 
       sigma = smear%electronic_temperature
       IF (sigma <= 1.0E-14_dp) RETURN
-      anchor_window = ot_kp_fermi_window_factor*sigma
+      anchor_window = kpoint_ot_fermi_window_anchor(sigma)
       outer_window = ot_kp_fermi_window_outer_factor*sigma
 
       nmo = SIZE(trial_eigenvalues, 1)
@@ -1098,6 +1098,22 @@ CONTAINS
                       smear%do_smear .AND. smear%method == smear_fermi_dirac
 
    END FUNCTION kpoint_ot_project_energy_subproblem
+
+! **************************************************************************************************
+!> \brief Fermi-window guard anchor from a target FD frontier tail occupation
+!> \param sigma ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_fermi_window_anchor(sigma) RESULT(anchor)
+      REAL(KIND=dp), INTENT(IN)                          :: sigma
+      REAL(KIND=dp)                                      :: anchor
+
+      REAL(KIND=dp)                                      :: tail_fraction
+
+      tail_fraction = MIN(0.5_dp - EPSILON(1.0_dp), &
+                          MAX(EPSILON(1.0_dp), ot_kp_fermi_window_tail_fraction))
+      anchor = sigma*LOG((1.0_dp - tail_fraction)/tail_fraction)
+
+   END FUNCTION kpoint_ot_fermi_window_anchor
 
 ! **************************************************************************************************
 !> \brief residual-gated canonical projector blend weight for k-point OT
@@ -1446,7 +1462,7 @@ CONTAINS
 
       sigma = smear%electronic_temperature
       IF (sigma <= 1.0E-14_dp) RETURN
-      anchor_window = ot_kp_fermi_window_factor*sigma
+      anchor_window = kpoint_ot_fermi_window_anchor(sigma)
       outer_window = ot_kp_fermi_window_outer_factor*sigma
 
       ngroups = 1
@@ -2645,7 +2661,7 @@ CONTAINS
          END DO
 
          IF (sigma > EPSILON(sigma)) THEN
-            response_trust_base = schur_response_trust_factor*ot_kp_fermi_window_factor*sigma
+            response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
             IF (residual_delta > 0.0_dp .AND. ot_kp_canonical_density_max_weight > 0.0_dp) THEN
                density_projector_fraction = &
                   kpoint_ot_canonical_projector_weight(residual_delta, ot_kp_canonical_density_max_weight)/ &
