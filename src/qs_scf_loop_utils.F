@@ -122,7 +122,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_canonical_projector_max_weight = 0.10_dp, &
                                         ot_kp_fermi_window_factor = 3.5_dp, &
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
-                                        ot_kp_fermi_window_outer_factor = 8.0_dp
+                                        ot_kp_fermi_window_outer_factor = 8.0_dp, &
+                                        ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -2650,7 +2651,8 @@ CONTAINS
                   kpoint_ot_canonical_projector_weight(residual_delta, ot_kp_canonical_density_max_weight)/ &
                   ot_kp_canonical_density_max_weight
                density_projector_fraction = MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))
-               response_trust_factor = MAX(0.0_dp, 1.0_dp - density_projector_fraction)
+               response_trust_factor = MAX(ot_kp_schur_response_trust_min_factor, &
+                                           1.0_dp - density_projector_fraction)
             END IF
             response_trust = response_trust_base*response_trust_factor
          END IF
