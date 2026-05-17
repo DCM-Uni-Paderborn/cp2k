@@ -120,7 +120,7 @@ MODULE qs_scf_loop_utils
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
                                         ot_kp_canonical_projector_max_weight = 0.10_dp, &
-                                        ot_kp_fermi_window_factor = 3.5_dp, &
+                                        ot_kp_fermi_window_factor = 3.4_dp, &
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
