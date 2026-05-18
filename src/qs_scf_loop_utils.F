@@ -794,7 +794,7 @@ CONTAINS
                                           added_mos_auto_grow=added_mos_auto_grow)
          END IF
       END IF
-      CALL qs_scf_loop_print_ot_kp_smearing(kpoints, wkp, para_env_inter_kp)
+      CALL qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp)
       IF (.NOT. added_mos_auto_grow) THEN
          fmwork => scf_env%scf_work1
          IF (ASSOCIATED(scf_env%p_mix_new)) THEN
@@ -1582,16 +1582,20 @@ CONTAINS
 !> \param wkp ...
 !> \param para_env_inter_kp ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_print_ot_kp_smearing(kpoints, wkp, para_env_inter_kp)
+   SUBROUTINE qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
 
-      INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo, &
-                                                            nspin
-      REAL(KIND=dp)                                      :: fractional_weight, kTS, max_partial, &
-                                                            maxocc, min_fermi_dist, mu, occ_tail, &
+      INTEGER                                            :: ikpoint, imo, ispin, local_channel, &
+                                                            local_kpoint, nmo, nspin
+      REAL(KIND=dp)                                      :: density_projector_fraction, &
+                                                            density_projector_weight, fractional_weight, &
+                                                            kTS, max_partial, maxocc, min_fermi_dist, &
+                                                            min_trust_scale, mu, occ_tail, residual_delta, &
+                                                            tether_energy, tether_grad_max, trusted_step_max, &
                                                             weighted_electrons
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -1606,6 +1610,11 @@ CONTAINS
       min_fermi_dist = HUGE(1.0_dp)
       kTS = 0.0_dp
       mu = 0.0_dp
+      residual_delta = 0.0_dp
+      tether_energy = 0.0_dp
+      tether_grad_max = 0.0_dp
+      trusted_step_max = 0.0_dp
+      min_trust_scale = 1.0_dp
 
       kp => kpoints%kp_env(1)%kpoint_env
       nspin = SIZE(kp%mos, 2)
@@ -1636,10 +1645,34 @@ CONTAINS
       CALL para_env_inter_kp%max(max_partial)
       CALL para_env_inter_kp%min(min_fermi_dist)
 
+      DO local_channel = 1, SIZE(local_ot_env)
+         residual_delta = MAX(residual_delta, local_ot_env(local_channel)%delta)
+         tether_energy = tether_energy + local_ot_env(local_channel)%canonical_tether_energy
+         tether_grad_max = MAX(tether_grad_max, local_ot_env(local_channel)%canonical_tether_grad_max)
+         trusted_step_max = MAX(trusted_step_max, local_ot_env(local_channel)%ener_x_trusted_step_max)
+         IF (local_ot_env(local_channel)%ener_x_trust_radius > 0.0_dp) &
+            min_trust_scale = MIN(min_trust_scale, local_ot_env(local_channel)%ener_x_trust_scale)
+      END DO
+      CALL para_env_inter_kp%max(residual_delta)
+      CALL para_env_inter_kp%sum(tether_energy)
+      CALL para_env_inter_kp%max(tether_grad_max)
+      CALL para_env_inter_kp%max(trusted_step_max)
+      CALL para_env_inter_kp%min(min_trust_scale)
+
+      density_projector_weight = kpoint_ot_canonical_projector_weight(residual_delta, &
+                                                                      ot_kp_canonical_density_max_weight)
+      density_projector_fraction = 0.0_dp
+      IF (ot_kp_canonical_density_max_weight > 0.0_dp) &
+         density_projector_fraction = density_projector_weight/ot_kp_canonical_density_max_weight
+
       IF (logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
             " OT k-point smearing kTS mu weighted_N frac_weight max_partial min_abs_eps_mu:", &
             kTS, mu, weighted_electrons, fractional_weight, max_partial, min_fermi_dist
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
+            " OT k-point residual model delta dproj frac trusted scale tether_E tether_g ls:", &
+            residual_delta, density_projector_weight, density_projector_fraction, trusted_step_max, &
+            min_trust_scale, tether_energy, tether_grad_max, local_ot_env(1)%line_search_count
       END IF
 
    END SUBROUTINE qs_scf_loop_print_ot_kp_smearing
