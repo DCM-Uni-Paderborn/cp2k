@@ -2495,6 +2495,8 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: group_done
 
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
+      INTEGER, PARAMETER                                 :: reject_dgesv = 1, reject_nondescent = 2, &
+                                                            reject_norm = 3, reject_response = 4, reject_scale = 5
       REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
                                                             schur_min_coupled_scale = 5.0E-1_dp, &
@@ -2504,21 +2506,23 @@ CONTAINS
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
                                                             nchannels, ne, nmo, nrot, r, s, schur_attempt, &
-                                                            schur_used_attempt
+                                                            schur_used_attempt, coupled_reject_reason, &
+                                                            reject_reason
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, failed, solved, trust_rejected
-      REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, diag_shift_avg, direction_scale, &
-         gdotp, gnorm, density_projector_fraction, diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, &
-         normp, projected_term, rayleigh_edge_gap, residual_delta, response_step_max, response_trust, &
-         response_trust_base, response_trust_factor, response_trust_ratio, row_abs, row_floor, &
-         rot_floor_min, rx_shift, rx_weight, schur_diag_min, tether_response, tether_strength, &
-         tether_weight, z_shift, z_weight
+      REAL(KIND=dp) :: coupled_diag_shift_avg, coupled_direction_scale, coupled_norm_ratio, &
+         coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
+         diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
+         diag_shift_sum, gvalue, maxocc, mu, norm_ratio, normp, projected_term, rayleigh_edge_gap, &
+         residual_delta, response_step_max, response_trust, response_trust_base, response_trust_factor, &
+         response_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
+         tether_response, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rot_floor, rtd, &
                                                             rx_e, sol, z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            rot_hessian, schur
+                                                            rot_hessian, rot_hessian_coupled, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -2557,7 +2561,8 @@ CONTAINS
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (response(ne, nrot), rot_hessian(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
+         ALLOCATE (response(ne, nrot), rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
+                   schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
@@ -2569,6 +2574,7 @@ CONTAINS
          sol(:) = 0.0_dp
          response(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
+         rot_hessian_coupled(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
@@ -2580,6 +2586,12 @@ CONTAINS
          density_projector_fraction = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
+         coupled_diag_shift_avg = 0.0_dp
+         coupled_direction_scale = 0.0_dp
+         coupled_norm_ratio = 0.0_dp
+         coupled_reject_reason = 0
+         coupled_response_step = 0.0_dp
+         coupled_response_trust_ratio = 0.0_dp
          failed = .FALSE.
          ivar = 0
 
@@ -2659,7 +2671,8 @@ CONTAINS
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
                                                     e_offset(local_channel), h_re, h_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
-                                                    var_i, var_j, var_kind, rot_hessian, response, failed)
+                                                    var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
+                                                    response, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -2669,7 +2682,8 @@ CONTAINS
             DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
+            DEALLOCATE (rot_floor, response, rot_hessian, rot_hessian_coupled, schur, ipiv, channel_nmo, &
+                        e_offset)
             RETURN
          END IF
 
@@ -2688,6 +2702,8 @@ CONTAINS
 
          z_trial(:) = z_e(:)
          rot_hessian(:, :) = 0.5_dp*(rot_hessian(:, :) + TRANSPOSE(rot_hessian(:, :)))
+         rot_hessian_coupled(:, :) = 0.5_dp*(rot_hessian_coupled(:, :) + &
+                                             TRANSPOSE(rot_hessian_coupled(:, :)))
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          DO r = 1, nrot
@@ -2712,8 +2728,18 @@ CONTAINS
          schur_used_attempt = 0
          DO schur_attempt = 1, 2
             attempt_failed = .FALSE.
+            reject_reason = 0
+            direction_scale = 0.0_dp
+            gdotp = 0.0_dp
+            gnorm = 0.0_dp
+            norm_ratio = 0.0_dp
+            normp = 0.0_dp
             z_e(:) = z_trial(:)
-            schur(:, :) = rot_hessian(:, :)
+            IF (schur_attempt == 1) THEN
+               schur(:, :) = rot_hessian_coupled(:, :)
+            ELSE
+               schur(:, :) = rot_hessian(:, :)
+            END IF
             diag_shift_sum = 0.0_dp
             diag_shift_max = 0.0_dp
             response_step_max = 0.0_dp
@@ -2752,7 +2778,10 @@ CONTAINS
 
             sol(:) = rhs(:)
             CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
-            IF (info /= 0) attempt_failed = .TRUE.
+            IF (info /= 0) THEN
+               attempt_failed = .TRUE.
+               reject_reason = reject_dgesv
+            END IF
 
             IF (.NOT. attempt_failed) THEN
                rx_e(:) = MATMUL(response, sol)
@@ -2770,27 +2799,49 @@ CONTAINS
                gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
                gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
                normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(sol, sol)
-               IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) attempt_failed = .TRUE.
-               IF (.NOT. attempt_failed .AND. normp > max_norm_ratio*MAX(gnorm, EPSILON(1.0_dp))) &
+               norm_ratio = normp/MAX(gnorm, EPSILON(1.0_dp))
+               IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) THEN
                   attempt_failed = .TRUE.
+                  reject_reason = reject_nondescent
+               END IF
+               IF (.NOT. attempt_failed .AND. norm_ratio > max_norm_ratio) THEN
+                  attempt_failed = .TRUE.
+                  reject_reason = reject_norm
+               END IF
                IF (.NOT. attempt_failed) THEN
                   ! The generic OT line searches assume that the stored search vector z has
                   ! z.z = g.z.  Rescale the external Schur direction to preserve that slope.
                   direction_scale = gdotp/MAX(normp, EPSILON(normp))
                   IF (direction_scale <= 0.0_dp .OR. direction_scale /= direction_scale) THEN
                      attempt_failed = .TRUE.
+                     reject_reason = reject_nondescent
                   ELSE
                      z_e(:) = direction_scale*z_e(:)
                      sol(:) = direction_scale*sol(:)
                      response_step_max = direction_scale*MAXVAL(ABS(rx_e))
-                     IF (schur_attempt == 1 .AND. direction_scale < schur_min_coupled_scale) &
+                     IF (schur_attempt == 1 .AND. direction_scale < schur_min_coupled_scale) THEN
                         attempt_failed = .TRUE.
-                     IF (schur_attempt == 1 .AND. response_step_max > response_trust) THEN
+                        reject_reason = reject_scale
+                     END IF
+                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                         response_step_max > response_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
+                        reject_reason = reject_response
                      END IF
                   END IF
                END IF
+            END IF
+
+            IF (schur_attempt == 1) THEN
+               coupled_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
+               coupled_direction_scale = direction_scale
+               coupled_norm_ratio = norm_ratio
+               coupled_reject_reason = reject_reason
+               coupled_response_step = response_step_max
+               coupled_response_trust_ratio = 0.0_dp
+               IF (response_trust > EPSILON(response_trust)) &
+                  coupled_response_trust_ratio = response_step_max/response_trust
             END IF
 
             IF (.NOT. attempt_failed) THEN
@@ -2854,30 +2905,37 @@ CONTAINS
                   response_step_max, response_trust, response_trust_ratio, response_trust_factor, &
                   residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
                   schur_diag_min, rot_floor_min, trust_rejected
+               IF (schur_used_attempt /= 1 .OR. coupled_reject_reason /= 0) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
+                  " OT Schur coupled reject group code scale resp rtrust norm_ratio davg:", &
+                  target_group, coupled_reject_reason, coupled_direction_scale, coupled_response_step, &
+                  coupled_response_trust_ratio, coupled_norm_ratio, coupled_diag_shift_avg
             END IF
          END IF
 
          DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, response, rot_hessian, schur, ipiv, channel_nmo, e_offset)
+         DEALLOCATE (rot_floor, response, rot_hessian, rot_hessian_coupled, schur, ipiv, channel_nmo, &
+                     e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
-                                                 var_i, var_j, var_kind, rot_hessian, response, failed)
+                                                 var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
+                                                 response, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, response
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, response
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, occ_mat, u
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, occ_mat, occ_mat_coupled, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -2897,12 +2955,17 @@ CONTAINS
          CALL local_ot_env(local_channel)%para_env%sum(u_re)
          CALL local_ot_env(local_channel)%para_env%sum(u_im)
 
-         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), occ_mat(nmo, nmo))
+         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), occ_mat(nmo, nmo), &
+                   occ_mat_coupled(nmo, nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
          CALL dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, &
                                                local_ot_env(local_channel)%delta, occ_mat)
+         occ_mat_coupled(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         DO imo = 1, nmo
+            occ_mat_coupled(imo, imo) = CMPLX(2.0_dp*kpoint_weight*occupation_numbers(imo), 0.0_dp, KIND=dp)
+         END DO
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))
          ALLOCATE (grad_p_re(nmo, nmo), grad_p_im(nmo, nmo), grad_m_re(nmo, nmo), grad_m_im(nmo, nmo))
@@ -2941,12 +3004,28 @@ CONTAINS
                   rot_hessian(r, s) = 2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
                END SELECT
             END DO
+            CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat_coupled, grad_p_re, &
+                                             grad_p_im, eps_p)
+            CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat_coupled, grad_m_re, &
+                                             grad_m_im, eps_m)
+            DO r = first_var, last_var
+               imo = var_i(r)
+               jmo = var_j(r)
+               SELECT CASE (var_kind(r))
+               CASE (1)
+                  rot_hessian_coupled(r, s) = &
+                     2.0_dp*(grad_p_re(imo, jmo) - grad_m_re(imo, jmo))/(2.0_dp*fd_step)
+               CASE (2)
+                  rot_hessian_coupled(r, s) = &
+                     2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
+               END SELECT
+            END DO
             DO ie = 1, nmo
                response(first_energy + ie - 1, s) = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
             END DO
          END DO
 
-         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, occ_mat)
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, occ_mat, occ_mat_coupled)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m)
       END SUBROUTINE build_finite_ref_rotation_model

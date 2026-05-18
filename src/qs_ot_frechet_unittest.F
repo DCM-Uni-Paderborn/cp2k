@@ -48,6 +48,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
                                                      2.0E-7_dp, nfail)
+   CALL check_complex_fixed_n_schur_hessian("complex fixed-N Schur Hessian", &
+                                            2.0E-5_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -692,6 +694,216 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_kpoint_mermin_coupled_gradient
+
+! **************************************************************************************************
+!> \brief Check the reduced fixed-N Schur Hessian against finite differences.
+!>        The reduced problem uses eps=h(x), so the dense formula must include
+!>        the fixed-occupation rotation Hessian and the fixed-N energy response
+!>        projector, H_red = H_xx - R^T P_N R.
+! **************************************************************************************************
+   SUBROUTINE check_complex_fixed_n_schur_hessian(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nkp = 1, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-5_dp, maxocc = 2.0_dp, &
+                                                            nel = 3.15_dp, sigma = 0.045_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, ivar, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: dense_term, err, kTS, mu, projected_term, &
+                                                            rtd_r, rtd_s, value
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps_base, eps_m, eps_p, grad_eps, h_base, &
+                                                            h_m, h_p, occ
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(n)                        :: curv, response_r, response_s
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfixed, hred, schur
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, &
+                                                            x_m_re, x_p_im, x_p_re, x_re
+
+      wk = [1.0_dp]
+      base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1, 1) = CMPLX(-0.24_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 1) = CMPLX(0.01_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 1) = CMPLX(0.19_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 1) = CMPLX(0.045_dp, -0.025_dp, KIND=dp)
+      base(1, 3, 1) = CMPLX(-0.025_dp, 0.030_dp, KIND=dp)
+      base(2, 3, 1) = CMPLX(0.035_dp, 0.020_dp, KIND=dp)
+      base(2, 1, 1) = CONJG(base(1, 2, 1))
+      base(3, 1, 1) = CONJG(base(1, 3, 1))
+      base(3, 2, 1) = CONJG(base(2, 3, 1))
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.050_dp
+      x_re(1, 3, 1) = -0.030_dp
+      x_re(2, 3, 1) = 0.025_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i, 1) = -x_re(i, j, 1)
+         END DO
+      END DO
+
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 1, 1) = 0.015_dp
+      x_im(2, 2, 1) = -0.025_dp
+      x_im(3, 3, 1) = 0.010_dp
+      x_im(1, 2, 1) = -0.020_dp
+      x_im(1, 3, 1) = 0.015_dp
+      x_im(2, 3, 1) = 0.018_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i, 1) = x_im(i, j, 1)
+         END DO
+      END DO
+
+      ivar = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 2
+         END DO
+      END DO
+
+      CALL dense_complex_kpoint_hdiag(x_re, x_im, base, h_base)
+      eps_base(:, :) = h_base(:, :)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps_base, nel, wk, sigma, maxocc)
+      DO i = 1, n
+         curv(i) = wk(1)*maxocc*(occ(i, 1)/maxocc)*(1.0_dp - occ(i, 1)/maxocc)/sigma
+      END DO
+
+      DO s = 1, nrot
+         x_p_re(:, :, :) = x_re(:, :, :)
+         x_m_re(:, :, :) = x_re(:, :, :)
+         x_p_im(:, :, :) = x_im(:, :, :)
+         x_m_im(:, :, :) = x_im(:, :, :)
+         CALL perturb_complex_rotation_var(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_complex_kpoint_mermin_gradient(x_p_re, x_p_im, base, eps_base, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_complex_kpoint_mermin_gradient(x_m_re, x_m_im, base, eps_base, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hfixed(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, h_p)
+         CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, h_m)
+         eps_p(:, :) = h_p(:, :)
+         eps_m(:, :) = h_m(:, :)
+         response_s(:) = (h_p(:, 1) - h_m(:, 1))/(2.0_dp*fd_step)
+
+         CALL dense_complex_kpoint_mermin_gradient(x_p_re, x_p_im, base, eps_p, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_complex_kpoint_mermin_gradient(x_m_re, x_m_im, base, eps_m, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hred(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         DO r = 1, nrot
+            response_r(:) = 0.0_dp
+            x_p_re(:, :, :) = x_re(:, :, :)
+            x_m_re(:, :, :) = x_re(:, :, :)
+            x_p_im(:, :, :) = x_im(:, :, :)
+            x_m_im(:, :, :) = x_im(:, :, :)
+            CALL perturb_complex_rotation_var(x_p_re, x_p_im, var_i(r), var_j(r), var_kind(r), fd_step)
+            CALL perturb_complex_rotation_var(x_m_re, x_m_im, var_i(r), var_j(r), var_kind(r), -fd_step)
+            CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, h_p)
+            CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, h_m)
+            response_r(:) = (h_p(:, 1) - h_m(:, 1))/(2.0_dp*fd_step)
+            dense_term = DOT_PRODUCT(curv(:)*response_r(:), response_s(:))
+            rtd_r = DOT_PRODUCT(curv(:), response_r(:))
+            rtd_s = DOT_PRODUCT(curv(:), response_s(:))
+            projected_term = dense_term - rtd_r*rtd_s/SUM(curv(:))
+            schur(r, s) = hfixed(r, s) - projected_term
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(schur(:, :) - hred(:, :)))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_fixed_n_schur_hessian
+
+! **************************************************************************************************
+!> \brief Diagonal of U^H H U for each dense complex k-point channel.
+! **************************************************************************************************
+   SUBROUTINE dense_complex_kpoint_hdiag(x_re, x_im, base, hdiag)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(IN)   :: base
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: hdiag
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, u
+      INTEGER                                            :: i, ik, n, nkp
+
+      n = SIZE(x_re, 1)
+      nkp = SIZE(x_re, 3)
+      ALLOCATE (chc(n, n), u(n, n))
+      DO ik = 1, nkp
+         CALL dense_rotation_u(x_re(:, :, ik), x_im(:, :, ik), u)
+         chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base(:, :, ik), u))
+         DO i = 1, n
+            hdiag(i, ik) = REAL(chc(i, i), KIND=dp)
+         END DO
+      END DO
+      DEALLOCATE (chc, u)
+
+   END SUBROUTINE dense_complex_kpoint_hdiag
+
+! **************************************************************************************************
+!> \brief Perturb one off-diagonal real or imaginary anti-Hermitian rotation variable.
+! **************************************************************************************************
+   SUBROUTINE perturb_complex_rotation_var(x_re, x_im, i, j, kind, step)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: x_re, x_im
+      INTEGER, INTENT(IN)                                :: i, j, kind
+      REAL(KIND=dp), INTENT(IN)                          :: step
+
+      SELECT CASE (kind)
+      CASE (1)
+         x_re(i, j, 1) = x_re(i, j, 1) + step
+         x_re(j, i, 1) = x_re(j, i, 1) - step
+      CASE (2)
+         x_im(i, j, 1) = x_im(i, j, 1) + step
+         x_im(j, i, 1) = x_im(j, i, 1) + step
+      END SELECT
+
+   END SUBROUTINE perturb_complex_rotation_var
+
+! **************************************************************************************************
+!> \brief Pack off-diagonal real/imaginary rotation gradients into a vector.
+! **************************************************************************************************
+   SUBROUTINE extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_vec)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: grad_re, grad_im
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: grad_vec
+
+      INTEGER                                            :: r
+
+      DO r = 1, SIZE(var_i)
+         SELECT CASE (var_kind(r))
+         CASE (1)
+            grad_vec(r) = grad_re(var_i(r), var_j(r), 1)
+         CASE (2)
+            grad_vec(r) = grad_im(var_i(r), var_j(r), 1)
+         END SELECT
+      END DO
+
+   END SUBROUTINE extract_rotation_gradient_vector
 
 ! **************************************************************************************************
 !> \brief Dense complex k-point Mermin value with occupations from auxiliary energies.
