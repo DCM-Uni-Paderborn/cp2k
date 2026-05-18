@@ -2508,11 +2508,12 @@ CONTAINS
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, failed, solved, trust_rejected
-      REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, direction_scale, gdotp, gnorm, &
-         density_projector_fraction, diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, normp, &
-         projected_term, rayleigh_edge_gap, residual_delta, response_step_max, response_trust, &
-         response_trust_base, response_trust_factor, row_abs, row_floor, rot_floor_min, rx_shift, &
-         rx_weight, schur_diag_min, tether_response, tether_strength, tether_weight, z_shift, z_weight
+      REAL(KIND=dp) :: curv_projection_sum, dense_term, diag_shift, diag_shift_avg, direction_scale, &
+         gdotp, gnorm, density_projector_fraction, diag_shift_max, diag_shift_sum, gvalue, maxocc, mu, &
+         normp, projected_term, rayleigh_edge_gap, residual_delta, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, response_trust_ratio, row_abs, row_floor, &
+         rot_floor_min, rx_shift, rx_weight, schur_diag_min, tether_response, tether_strength, &
+         tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rot_floor, rtd, &
                                                             rx_e, sol, z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
@@ -2833,12 +2834,16 @@ CONTAINS
             END DO
             group_done = .TRUE.
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),12(1X,ES16.8),1(1X,L1))') &
-                  " OT Schur ne nrot att scale gdotp normp resp trust fac delta proj dshift dmax dmin floor reject:", &
+               diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
+               response_trust_ratio = 0.0_dp
+               IF (response_trust > EPSILON(response_trust)) &
+                  response_trust_ratio = response_step_max/response_trust
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),14(1X,ES16.8),1(1X,L1))') &
+                  " OT Schur ne nrot att scale gdotp normp resp trust rtrust fac delta proj dshift davg dmax dmin floor reject:", &
                   target_group, ne, nrot, schur_used_attempt, direction_scale, gdotp, normp, &
-                  response_step_max, response_trust, response_trust_factor, residual_delta, &
-                  density_projector_fraction, diag_shift_sum, diag_shift_max, schur_diag_min, &
-                  rot_floor_min, trust_rejected
+                  response_step_max, response_trust, response_trust_ratio, response_trust_factor, &
+                  residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
+                  schur_diag_min, rot_floor_min, trust_rejected
             END IF
          END IF
 
