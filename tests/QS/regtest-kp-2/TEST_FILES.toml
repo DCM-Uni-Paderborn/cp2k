@@ -17,10 +17,10 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05970988404722},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14579085091916},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14579085091916},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104031E-4},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=2.5375E-4},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14585211035645},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14585211035645},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104060E-4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=1.9420E-5},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
 "H_sym.inp"                             = []

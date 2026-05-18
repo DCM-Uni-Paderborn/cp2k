@@ -2516,13 +2516,14 @@ CONTAINS
          coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
          diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, mu, norm_ratio, normp, projected_term, rayleigh_edge_gap, &
-         residual_delta, response_step_max, response_trust, response_trust_base, response_trust_factor, &
-         response_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
-         tether_response, tether_strength, tether_weight, z_shift, z_weight
+         residual_delta, response_shift, response_step_max, response_trust, response_trust_base, &
+         response_trust_factor, response_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, &
+         rx_weight, schur_diag_min, tether_response, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rot_floor, rtd, &
                                                             rx_e, sol, z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            rot_hessian, rot_hessian_coupled, schur
+                                                            response_coupled, rot_hessian, &
+                                                            rot_hessian_coupled, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -2561,8 +2562,8 @@ CONTAINS
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (response(ne, nrot), rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
-                   schur(nrot, nrot), ipiv(nrot))
+         ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), rot_hessian(nrot, nrot), &
+                   rot_hessian_coupled(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
@@ -2573,6 +2574,7 @@ CONTAINS
          rtd(:) = 0.0_dp
          sol(:) = 0.0_dp
          response(:, :) = 0.0_dp
+         response_coupled(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
@@ -2682,8 +2684,8 @@ CONTAINS
             DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, response, rot_hessian, rot_hessian_coupled, schur, ipiv, channel_nmo, &
-                        e_offset)
+            DEALLOCATE (rot_floor, response, response_coupled, rot_hessian, rot_hessian_coupled, schur, &
+                        ipiv, channel_nmo, e_offset)
             RETURN
          END IF
 
@@ -2706,9 +2708,17 @@ CONTAINS
                                              TRANSPOSE(rot_hessian_coupled(:, :)))
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
+         ! The coupled candidate sees only the finite fixed-N occupation-response range;
+         ! the fallback keeps the raw Rayleigh response that has proven robust in the tail.
+         response_coupled(:, :) = response(:, :)
          DO r = 1, nrot
-            rtd(r) = DOT_PRODUCT(curv, response(:, r))
-            rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
+            response_shift = DOT_PRODUCT(curv, response_coupled(:, r))
+            CALL para_env_inter_kp%sum(response_shift)
+            IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+               response_coupled(:, r) = response_coupled(:, r) - response_shift/curv_projection_sum
+            DO ie = 1, ne
+               IF (curv(ie) <= EPSILON(curv(ie))) response_coupled(ie, r) = 0.0_dp
+            END DO
          END DO
 
          IF (sigma > EPSILON(sigma)) THEN
@@ -2740,6 +2750,15 @@ CONTAINS
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
+            DO r = 1, nrot
+               IF (schur_attempt == 1) THEN
+                  rtd(r) = DOT_PRODUCT(curv, response_coupled(:, r))
+                  rhs(r) = grad_rot(r) + DOT_PRODUCT(response_coupled(:, r), grad_e)
+               ELSE
+                  rtd(r) = DOT_PRODUCT(curv, response(:, r))
+                  rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
+               END IF
+            END DO
             diag_shift_sum = 0.0_dp
             diag_shift_max = 0.0_dp
             response_step_max = 0.0_dp
@@ -2748,7 +2767,11 @@ CONTAINS
 
             DO s = 1, nrot
                DO r = 1, nrot
-                  dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
+                  IF (schur_attempt == 1) THEN
+                     dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
+                  ELSE
+                     dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
+                  END IF
                   projected_term = dense_term
                   IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                      projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
@@ -2784,7 +2807,11 @@ CONTAINS
             END IF
 
             IF (.NOT. attempt_failed) THEN
-               rx_e(:) = MATMUL(response, sol)
+               IF (schur_attempt == 1) THEN
+                  rx_e(:) = MATMUL(response_coupled, sol)
+               ELSE
+                  rx_e(:) = MATMUL(response, sol)
+               END IF
                rx_shift = 0.0_dp
                rx_weight = 0.0_dp
                DO ie = 1, ne
@@ -2916,8 +2943,8 @@ CONTAINS
          DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, response, rot_hessian, rot_hessian_coupled, schur, ipiv, channel_nmo, &
-                     e_offset)
+         DEALLOCATE (rot_floor, response, response_coupled, rot_hessian, rot_hessian_coupled, schur, ipiv, &
+                     channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &

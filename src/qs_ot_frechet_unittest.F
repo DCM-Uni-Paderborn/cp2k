@@ -50,6 +50,8 @@ PROGRAM qs_ot_frechet_unittest
                                                      2.0E-7_dp, nfail)
    CALL check_complex_fixed_n_schur_hessian("complex fixed-N Schur Hessian", &
                                             2.0E-5_dp, nfail)
+   CALL check_complex_fixed_n_response_channel("complex fixed-N response channel", &
+                                               2.0E-7_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -839,6 +841,129 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_fixed_n_schur_hessian
+
+! **************************************************************************************************
+!> \brief Check the Schur response channel against finite fixed-N Mermin occupation response.
+!>        The cross block is d grad_eps / d theta = -P_N R.  The production
+!>        preconditioner uses the projected pseudo-inverse R = -P_N^+ d grad_eps/d theta,
+!>        so null occupation-curvature modes cannot drive the rotation RHS.
+! **************************************************************************************************
+   SUBROUTINE check_complex_fixed_n_response_channel(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nkp = 1, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp, maxocc = 2.0_dp, &
+                                                            nel = 3.05_dp, sigma = 0.080_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, ivar, j, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: curv_sum, err, kTS, mu, response_shift
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps_base, grad_eps_m, grad_eps_p, &
+                                                            h_base, h_m, h_p, occ
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(n)                        :: cross_fd, curv, dh, projected_response, &
+                                                            ref_cross, response_from_cross
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+
+      wk = [1.0_dp]
+      base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1, 1) = CMPLX(-0.20_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 1) = CMPLX(0.02_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 1) = CMPLX(0.16_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 1) = CMPLX(0.050_dp, -0.030_dp, KIND=dp)
+      base(1, 3, 1) = CMPLX(-0.020_dp, 0.025_dp, KIND=dp)
+      base(2, 3, 1) = CMPLX(0.030_dp, 0.035_dp, KIND=dp)
+      base(2, 1, 1) = CONJG(base(1, 2, 1))
+      base(3, 1, 1) = CONJG(base(1, 3, 1))
+      base(3, 2, 1) = CONJG(base(2, 3, 1))
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.045_dp
+      x_re(1, 3, 1) = -0.020_dp
+      x_re(2, 3, 1) = 0.030_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i, 1) = -x_re(i, j, 1)
+         END DO
+      END DO
+
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 1, 1) = 0.010_dp
+      x_im(2, 2, 1) = -0.020_dp
+      x_im(3, 3, 1) = 0.018_dp
+      x_im(1, 2, 1) = -0.015_dp
+      x_im(1, 3, 1) = 0.020_dp
+      x_im(2, 3, 1) = 0.012_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i, 1) = x_im(i, j, 1)
+         END DO
+      END DO
+
+      ivar = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 2
+         END DO
+      END DO
+
+      CALL dense_complex_kpoint_hdiag(x_re, x_im, base, h_base)
+      eps_base(:, 1) = h_base(:, 1) + [0.018_dp, -0.012_dp, 0.006_dp]
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps_base, nel, wk, sigma, maxocc)
+      DO i = 1, n
+         curv(i) = wk(1)*maxocc*(occ(i, 1)/maxocc)*(1.0_dp - occ(i, 1)/maxocc)/sigma
+      END DO
+      curv_sum = SUM(curv(:))
+
+      err = 0.0_dp
+      DO s = 1, nrot
+         x_p_re(:, :, :) = x_re(:, :, :)
+         x_m_re(:, :, :) = x_re(:, :, :)
+         x_p_im(:, :, :) = x_im(:, :, :)
+         x_m_im(:, :, :) = x_im(:, :, :)
+         CALL perturb_complex_rotation_var(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, h_p)
+         CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, h_m)
+         CALL dense_kpoint_mermin_gradient(eps_base, h_p, wk, nel, sigma, maxocc, grad_eps_p)
+         CALL dense_kpoint_mermin_gradient(eps_base, h_m, wk, nel, sigma, maxocc, grad_eps_m)
+
+         dh(:) = (h_p(:, 1) - h_m(:, 1))/(2.0_dp*fd_step)
+         response_shift = SUM(curv(:)*dh(:))/curv_sum
+         projected_response(:) = dh(:) - response_shift
+         ref_cross(:) = curv(:)*(response_shift - dh(:))
+         cross_fd(:) = (grad_eps_p(:, 1) - grad_eps_m(:, 1))/(2.0_dp*fd_step)
+
+         response_from_cross(:) = 0.0_dp
+         DO i = 1, n
+            IF (curv(i) > EPSILON(curv(i))) response_from_cross(i) = -cross_fd(i)/curv(i)
+         END DO
+         response_shift = SUM(curv(:)*response_from_cross(:))/curv_sum
+         response_from_cross(:) = response_from_cross(:) - response_shift
+
+         err = MAX(err, MAXVAL(ABS(cross_fd(:) - ref_cross(:))))
+         err = MAX(err, MAXVAL(ABS(response_from_cross(:) - projected_response(:))))
+      END DO
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_fixed_n_response_channel
 
 ! **************************************************************************************************
 !> \brief Diagonal of U^H H U for each dense complex k-point channel.
