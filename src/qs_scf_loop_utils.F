@@ -2497,6 +2497,7 @@ CONTAINS
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
       REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
+                                                            schur_min_coupled_scale = 5.0E-1_dp, &
                                                             schur_response_trust_factor = 2.5E-1_dp
 
       INTEGER                                            :: channel_var_start, group, ie, ikpoint, &
@@ -2732,9 +2733,16 @@ CONTAINS
                row_floor = curvature_floor
                IF (schur_attempt == 1) row_floor = rot_floor(r)
                rot_floor_min = MIN(rot_floor_min, row_floor)
-               row_abs = SUM(ABS(schur(r, :))) - ABS(schur(r, r))
-               IF (schur(r, r) < row_abs + row_floor) THEN
-                  diag_shift = row_abs + row_floor - schur(r, r)
+               IF (schur_attempt == 1) THEN
+                  ! First try the coupled finite-rotation Schur block itself.  The
+                  ! line-search safeguards below reject non-descent or overlarge
+                  ! response directions; the Gershgorin model remains the fallback.
+                  diag_shift = MAX(0.0_dp, row_floor - schur(r, r))
+               ELSE
+                  row_abs = SUM(ABS(schur(r, :))) - ABS(schur(r, r))
+                  diag_shift = MAX(0.0_dp, row_abs + row_floor - schur(r, r))
+               END IF
+               IF (diag_shift > 0.0_dp) THEN
                   schur(r, r) = schur(r, r) + diag_shift
                   diag_shift_sum = diag_shift_sum + diag_shift
                   diag_shift_max = MAX(diag_shift_max, diag_shift)
@@ -2775,6 +2783,8 @@ CONTAINS
                      z_e(:) = direction_scale*z_e(:)
                      sol(:) = direction_scale*sol(:)
                      response_step_max = direction_scale*MAXVAL(ABS(rx_e))
+                     IF (schur_attempt == 1 .AND. direction_scale < schur_min_coupled_scale) &
+                        attempt_failed = .TRUE.
                      IF (schur_attempt == 1 .AND. response_step_max > response_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
