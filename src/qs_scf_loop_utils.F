@@ -2496,10 +2496,12 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
       INTEGER, PARAMETER                                 :: reject_dgesv = 1, reject_nondescent = 2, &
-                                                            reject_norm = 3, reject_response = 4, reject_scale = 5
+                                                            reject_norm = 3, reject_response = 4, reject_scale = 5, &
+                                                            reject_model = 6
       REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
                                                             schur_min_coupled_scale = 5.0E-1_dp, &
+                                                            schur_model_gap_factor = 5.0E-1_dp, &
                                                             schur_response_trust_factor = 2.5E-1_dp
 
       INTEGER                                            :: channel_var_start, group, ie, ikpoint, &
@@ -2511,18 +2513,22 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
-      LOGICAL                                            :: attempt_failed, failed, solved, trust_rejected
-      REAL(KIND=dp) :: coupled_diag_shift_avg, coupled_direction_scale, coupled_norm_ratio, &
+      LOGICAL                                            :: attempt_failed, failed, solved, split_candidate_diagnostic, &
+                                                            split_candidate_enabled, trust_rejected
+      REAL(KIND=dp) :: coupled_diag_shift_avg, coupled_direction_scale, coupled_model_drop, coupled_model_gap, &
+         coupled_model_gap_ratio, coupled_norm_ratio, &
          coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
          diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
-         diag_shift_sum, gvalue, maxocc, mu, norm_ratio, normp, projected_term, rayleigh_edge_gap, &
-         residual_delta, response_shift, response_step_max, response_trust, response_trust_base, &
-         response_trust_factor, response_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, &
-         rx_weight, schur_diag_min, tether_response, tether_strength, tether_weight, z_shift, z_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, rhs, rot_floor, rtd, &
-                                                            rx_e, sol, z_e, z_trial
+         diag_shift_sum, gvalue, maxocc, model_drop, model_gap, model_gap_trust, model_gap_ratio, mu, norm_ratio, &
+         normp, occ_curv_projection_sum, projected_term, rayleigh_edge_gap, residual_delta, response_shift, &
+         response_step_max, response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
+         row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, tether_response, &
+         tether_strength, tether_weight, z_shift, z_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
+                                                            rot_floor, rtd, rx_e, rx_model, sol, tether_curv, &
+                                                            z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            response_coupled, rot_hessian, &
+                                                            response_coupled, response_split, rot_hessian, &
                                                             rot_hessian_coupled, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -2558,23 +2564,28 @@ CONTAINS
             RETURN
          END IF
 
-         ALLOCATE (curv(ne), grad_e(ne), z_e(ne), z_trial(ne), rx_e(ne))
+         ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_trial(ne), rx_e(ne), &
+                   rx_model(ne))
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), rot_hessian(nrot, nrot), &
+         ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), response_split(ne, nrot), rot_hessian(nrot, nrot), &
                    rot_hessian_coupled(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
+         occ_curv(:) = 0.0_dp
+         tether_curv(:) = 0.0_dp
          z_e(:) = 0.0_dp
          rx_e(:) = 0.0_dp
+         rx_model(:) = 0.0_dp
          grad_rot(:) = 0.0_dp
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
          sol(:) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
+         response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
@@ -2590,10 +2601,16 @@ CONTAINS
          schur_diag_min = HUGE(1.0_dp)
          coupled_diag_shift_avg = 0.0_dp
          coupled_direction_scale = 0.0_dp
+         coupled_model_drop = 0.0_dp
          coupled_norm_ratio = 0.0_dp
          coupled_reject_reason = 0
+         coupled_model_gap = 0.0_dp
+         coupled_model_gap_ratio = 0.0_dp
          coupled_response_step = 0.0_dp
          coupled_response_trust_ratio = 0.0_dp
+         model_gap = 0.0_dp
+         model_gap_ratio = 0.0_dp
+         model_gap_trust = HUGE(1.0_dp)
          failed = .FALSE.
          ivar = 0
 
@@ -2640,7 +2657,9 @@ CONTAINS
                                                                      trial_eigenvalues(imo, ikpoint, ispin), &
                                                                      mu, sigma, &
                                                                      maxocc, wkp(ikpoint), tether_strength)
-                  curv(ie) = wkp(ikpoint)*gvalue + tether_weight
+                  occ_curv(ie) = wkp(ikpoint)*gvalue
+                  tether_curv(ie) = tether_weight
+                  curv(ie) = occ_curv(ie) + tether_curv(ie)
                   grad_e(ie) = local_ot_env(local_channel)%ener_gx(imo)
                END DO
 
@@ -2681,10 +2700,10 @@ CONTAINS
 
          CPASSERT(ivar == nrot)
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model)
             DEALLOCATE (grad_rot, rhs, rtd, sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, response, response_coupled, rot_hessian, rot_hessian_coupled, schur, &
+            DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, schur, &
                         ipiv, channel_nmo, e_offset)
             RETURN
          END IF
@@ -2708,9 +2727,12 @@ CONTAINS
                                              TRANSPOSE(rot_hessian_coupled(:, :)))
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
+         occ_curv_projection_sum = SUM(occ_curv)
+         CALL para_env_inter_kp%sum(occ_curv_projection_sum)
          ! The coupled candidate sees only the finite fixed-N occupation-response range;
          ! the fallback keeps the raw Rayleigh response that has proven robust in the tail.
          response_coupled(:, :) = response(:, :)
+         response_split(:, :) = response(:, :)
          DO r = 1, nrot
             response_shift = DOT_PRODUCT(curv, response_coupled(:, r))
             CALL para_env_inter_kp%sum(response_shift)
@@ -2719,6 +2741,8 @@ CONTAINS
             DO ie = 1, ne
                IF (curv(ie) <= EPSILON(curv(ie))) response_coupled(ie, r) = 0.0_dp
             END DO
+            CALL project_kpoint_ot_schur_response(response_split(:, r), occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
          END DO
 
          IF (sigma > EPSILON(sigma)) THEN
@@ -2736,7 +2760,11 @@ CONTAINS
          solved = .FALSE.
          trust_rejected = .FALSE.
          schur_used_attempt = 0
-         DO schur_attempt = 1, 2
+         split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level
+         ! Audit the split fixed-N/tether Schur model under HIGH print first; it
+         ! must be tied to accepted Mermin line-search drops before production use.
+         split_candidate_enabled = .FALSE.
+         DO schur_attempt = 1, 3
             attempt_failed = .FALSE.
             reject_reason = 0
             direction_scale = 0.0_dp
@@ -2745,13 +2773,19 @@ CONTAINS
             norm_ratio = 0.0_dp
             normp = 0.0_dp
             z_e(:) = z_trial(:)
-            IF (schur_attempt == 1) THEN
+            IF (schur_attempt == 1 .AND. .NOT. split_candidate_diagnostic) THEN
+               coupled_reject_reason = reject_model
+               CYCLE
+            END IF
+            IF (schur_attempt <= 2) THEN
                schur(:, :) = rot_hessian_coupled(:, :)
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
             DO r = 1, nrot
                IF (schur_attempt == 1) THEN
+                  rhs(r) = grad_rot(r) + DOT_PRODUCT(response_split(:, r), grad_e)
+               ELSE IF (schur_attempt == 2) THEN
                   rtd(r) = DOT_PRODUCT(curv, response_coupled(:, r))
                   rhs(r) = grad_rot(r) + DOT_PRODUCT(response_coupled(:, r), grad_e)
                ELSE
@@ -2762,27 +2796,38 @@ CONTAINS
             diag_shift_sum = 0.0_dp
             diag_shift_max = 0.0_dp
             response_step_max = 0.0_dp
+            model_drop = 0.0_dp
+            model_gap = 0.0_dp
+            model_gap_ratio = 0.0_dp
+            model_gap_trust = HUGE(1.0_dp)
             rot_floor_min = curvature_floor
             schur_diag_min = HUGE(1.0_dp)
 
             DO s = 1, nrot
                DO r = 1, nrot
                   IF (schur_attempt == 1) THEN
+                     CALL kpoint_ot_mixed_projected_term(response_split(:, r), response_split(:, s), &
+                                                         occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                         channel_nmo, e_offset, projected_term)
+                  ELSE IF (schur_attempt == 2) THEN
                      dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
+                     projected_term = dense_term
+                     IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                        projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
                   ELSE
                      dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
+                     projected_term = dense_term
+                     IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                        projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
                   END IF
-                  projected_term = dense_term
-                  IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                     projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
                   schur(r, s) = schur(r, s) - projected_term
                END DO
             END DO
             DO r = 1, nrot
                row_floor = curvature_floor
-               IF (schur_attempt == 1) row_floor = rot_floor(r)
+               IF (schur_attempt <= 2) row_floor = rot_floor(r)
                rot_floor_min = MIN(rot_floor_min, row_floor)
-               IF (schur_attempt == 1) THEN
+               IF (schur_attempt <= 2) THEN
                   ! First try the coupled finite-rotation Schur block itself.  The
                   ! line-search safeguards below reject non-descent or overlarge
                   ! response directions; the Gershgorin model remains the fallback.
@@ -2808,9 +2853,14 @@ CONTAINS
 
             IF (.NOT. attempt_failed) THEN
                IF (schur_attempt == 1) THEN
+                  rx_e(:) = MATMUL(response_split, sol)
+                  rx_model(:) = MATMUL(response_coupled, sol)
+               ELSE IF (schur_attempt == 2) THEN
                   rx_e(:) = MATMUL(response_coupled, sol)
+                  rx_model(:) = rx_e(:)
                ELSE
                   rx_e(:) = MATMUL(response, sol)
+                  rx_model(:) = rx_e(:)
                END IF
                rx_shift = 0.0_dp
                rx_weight = 0.0_dp
@@ -2821,6 +2871,17 @@ CONTAINS
                CALL para_env_inter_kp%sum(rx_shift)
                CALL para_env_inter_kp%sum(rx_weight)
                IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
+               IF (schur_attempt == 1) THEN
+                  rx_shift = 0.0_dp
+                  rx_weight = 0.0_dp
+                  DO ie = 1, ne
+                     rx_shift = rx_shift + curv(ie)*rx_model(ie)
+                     rx_weight = rx_weight + curv(ie)
+                  END DO
+                  CALL para_env_inter_kp%sum(rx_shift)
+                  CALL para_env_inter_kp%sum(rx_weight)
+                  IF (rx_weight > EPSILON(rx_weight)) rx_model(:) = rx_model(:) - rx_shift/rx_weight
+               END IF
                z_e(:) = z_e(:) + rx_e(:)
 
                gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
@@ -2845,16 +2906,33 @@ CONTAINS
                   ELSE
                      z_e(:) = direction_scale*z_e(:)
                      sol(:) = direction_scale*sol(:)
+                     model_drop = 0.5_dp*direction_scale*gdotp
                      response_step_max = direction_scale*MAXVAL(ABS(rx_e))
-                     IF (schur_attempt == 1 .AND. direction_scale < schur_min_coupled_scale) THEN
+                     IF (schur_attempt == 1) THEN
+                        model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
+                        model_gap_trust = schur_model_gap_factor*response_trust
+                        IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
+                     END IF
+                     IF (schur_attempt <= 2 .AND. direction_scale < schur_min_coupled_scale) THEN
                         attempt_failed = .TRUE.
                         reject_reason = reject_scale
                      END IF
-                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                     IF (schur_attempt <= 2 .AND. .NOT. attempt_failed .AND. &
                          response_step_max > response_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
                         reject_reason = reject_response
+                     END IF
+                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                         model_gap > model_gap_trust) THEN
+                        attempt_failed = .TRUE.
+                        trust_rejected = .TRUE.
+                        reject_reason = reject_model
+                     END IF
+                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                         .NOT. split_candidate_enabled) THEN
+                        attempt_failed = .TRUE.
+                        reject_reason = reject_model
                      END IF
                   END IF
                END IF
@@ -2863,6 +2941,9 @@ CONTAINS
             IF (schur_attempt == 1) THEN
                coupled_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_direction_scale = direction_scale
+               coupled_model_drop = model_drop
+               coupled_model_gap = model_gap
+               coupled_model_gap_ratio = model_gap_ratio
                coupled_norm_ratio = norm_ratio
                coupled_reject_reason = reject_reason
                coupled_response_step = response_step_max
@@ -2926,26 +3007,95 @@ CONTAINS
                response_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   response_trust_ratio = response_step_max/response_trust
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),14(1X,ES16.8),1(1X,L1))') &
-                  " OT Schur ne nrot att scale gdotp normp resp trust rtrust fac delta proj dshift davg dmax dmin floor reject:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),15(1X,ES16.8),1(1X,L1))') &
+                  " OT Schur ne nrot att scale gdotp normp drop resp trust rtrust fac "// &
+                  "delta proj dsum davg dmax dmin floor reject:", &
                   target_group, ne, nrot, schur_used_attempt, direction_scale, gdotp, normp, &
-                  response_step_max, response_trust, response_trust_ratio, response_trust_factor, &
+                  model_drop, response_step_max, response_trust, response_trust_ratio, response_trust_factor, &
                   residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
                   schur_diag_min, rot_floor_min, trust_rejected
                IF (schur_used_attempt /= 1 .OR. coupled_reject_reason /= 0) &
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
-                  " OT Schur coupled reject group code scale resp rtrust norm_ratio davg:", &
-                  target_group, coupled_reject_reason, coupled_direction_scale, coupled_response_step, &
-                  coupled_response_trust_ratio, coupled_norm_ratio, coupled_diag_shift_avg
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),8(1X,ES16.8))') &
+                  " OT Schur split reject group code scale drop resp rtrust mgap mgap_trust norm_ratio davg:", &
+                  target_group, coupled_reject_reason, coupled_direction_scale, coupled_model_drop, coupled_response_step, &
+                  coupled_response_trust_ratio, coupled_model_gap, coupled_model_gap_ratio, coupled_norm_ratio, &
+                  coupled_diag_shift_avg
             END IF
          END IF
 
-         DEALLOCATE (curv, grad_e, z_e, z_trial, rx_e)
+         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model)
          DEALLOCATE (grad_rot, rhs, rtd, sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, response, response_coupled, rot_hessian, rot_hessian_coupled, schur, ipiv, &
-                     channel_nmo, e_offset)
+         DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, schur, &
+                     ipiv, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
+
+      SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
+                                                  occ_curv_sum, channel_nmo, e_offset)
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)        :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                         :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                 :: channel_nmo, e_offset
+
+      INTEGER                                           :: first_energy, ie, local_channel, nmo, pass
+      REAL(KIND=dp)                                     :: response_shift, weight_sum
+
+         ! The fixed-N Mermin projector is global over the spin/k group, while
+         ! the canonical tether gauge is local to each OT channel.
+         DO pass = 1, 2
+            IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+               response_shift = DOT_PRODUCT(occ_curv, response_vec)
+               CALL para_env_inter_kp%sum(response_shift)
+               response_vec(:) = response_vec(:) - response_shift/occ_curv_sum
+            END IF
+            DO local_channel = 1, SIZE(channel_nmo)
+               nmo = channel_nmo(local_channel)
+               IF (nmo <= 0) CYCLE
+               first_energy = e_offset(local_channel)
+               weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+               IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+               response_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                            response_vec(first_energy:first_energy + nmo - 1))
+               response_vec(first_energy:first_energy + nmo - 1) = &
+                  response_vec(first_energy:first_energy + nmo - 1) - response_shift/weight_sum
+            END DO
+         END DO
+
+         DO ie = 1, SIZE(response_vec)
+            IF (occ_curv(ie) + tether_curv(ie) <= EPSILON(occ_curv(ie) + tether_curv(ie))) &
+               response_vec(ie) = 0.0_dp
+         END DO
+      END SUBROUTINE project_kpoint_ot_schur_response
+
+      SUBROUTINE kpoint_ot_mixed_projected_term(response_left, response_right, occ_curv, tether_curv, &
+                                                occ_curv_sum, channel_nmo, e_offset, projected_term)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_left, response_right, occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                         :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                 :: channel_nmo, e_offset
+      REAL(KIND=dp), INTENT(OUT)                        :: projected_term
+
+      INTEGER                                           :: first_energy, local_channel, nmo
+      REAL(KIND=dp)                                     :: left_shift, right_shift, weight_sum
+
+         projected_term = DOT_PRODUCT((occ_curv(:) + tether_curv(:))*response_left(:), response_right(:))
+         IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+            left_shift = DOT_PRODUCT(occ_curv, response_left)
+            right_shift = DOT_PRODUCT(occ_curv, response_right)
+            projected_term = projected_term - left_shift*right_shift/occ_curv_sum
+         END IF
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+            IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+            left_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                     response_left(first_energy:first_energy + nmo - 1))
+            right_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                      response_right(first_energy:first_energy + nmo - 1))
+            projected_term = projected_term - left_shift*right_shift/weight_sum
+         END DO
+      END SUBROUTINE kpoint_ot_mixed_projected_term
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &

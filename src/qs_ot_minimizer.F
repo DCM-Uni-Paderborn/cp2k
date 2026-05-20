@@ -619,8 +619,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: acceptance_tol = 1.0E-12_dp
 
       INTEGER                                            :: best_index, count, handle, i
+      LOGICAL                                            :: mermin_search
       REAL(KIND=dp)                                      :: best_energy, denom, ds, fa, fb, fc, nom, pos, &
-                                                            tol, val, xa, xb, xc
+                                                            slope_mismatch, slope_model, tol, val, xa, xb, xc
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -636,6 +637,7 @@ CONTAINS
       SELECT CASE (count)
       CASE (1)
          qs_ot_env(1)%ot_pos(count) = 0.0_dp
+         qs_ot_env(1)%ot_grad(count) = qs_ot_env(1)%gradient
          qs_ot_env(1)%ot_pos(count + 1) = qs_ot_env(1)%ds_min*0.8_dp
       CASE (2)
          IF (qs_ot_env(1)%OT_energy(count) > qs_ot_env(1)%OT_energy(count - 1)) THEN
@@ -660,27 +662,34 @@ CONTAINS
          val = (pos - xa)*(pos - xb)*fc/((xc - xa)*(xc - xb)) + &
                (pos - xb)*(pos - xc)*fa/((xa - xb)*(xa - xc)) + &
                (pos - xc)*(pos - xa)*fb/((xb - xc)*(xb - xa))
+         slope_model = fa*(2.0_dp*xa - xb - xc)/((xa - xb)*(xa - xc)) + &
+                       fb*(xa - xc)/((xb - xa)*(xb - xc)) + &
+                       fc*(xa - xb)/((xc - xa)*(xc - xb))
+         slope_mismatch = slope_model - qs_ot_env(1)%ot_grad(1)
          best_index = 1
          DO i = 2, count
             IF (qs_ot_env(1)%OT_energy(i) < qs_ot_env(1)%OT_energy(best_index)) best_index = i
          END DO
          best_energy = qs_ot_env(1)%OT_energy(best_index)
          tol = acceptance_tol*MAX(1.0_dp, ABS(best_energy))
-         IF (use_three_point_mermin_search(qs_ot_env) .AND. best_index /= 1 .AND. &
-             val >= best_energy - tol) THEN
+         mermin_search = use_three_point_mermin_search(qs_ot_env)
+         IF (mermin_search .AND. best_index /= 1 .AND. val >= best_energy - tol) THEN
             qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
-            logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,4(1X,ES16.8))') &
-                  " OT Mermin LS keep sampled point idx pos model best:", &
-                  best_index, qs_ot_env(1)%OT_pos(best_index), pos, val, best_energy
-            END IF
          ELSE IF (val < fa .AND. val <= fb .AND. val <= fc) THEN ! OK, we go to a minimum
             ! we take a guard against too large steps
             qs_ot_env(1)%OT_pos(count + 1) = MAX(MAXVAL(qs_ot_env(1)%OT_pos(1:3))*0.01_dp, &
                                                  MIN(pos, MAXVAL(qs_ot_env(1)%OT_pos(1:3))*4.0_dp))
          ELSE ! just take an extended step
             qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*2.0_dp
+         END IF
+         IF (mermin_search) THEN
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,7(1X,ES16.8))') &
+                  " OT Mermin LS model idx pos model best slope0 fit mismatch next:", &
+                  best_index, pos, val, best_energy, qs_ot_env(1)%ot_grad(1), slope_model, &
+                  slope_mismatch, qs_ot_env(1)%OT_pos(count + 1)
+            END IF
          END IF
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = .TRUE.
