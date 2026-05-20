@@ -233,10 +233,15 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: canonical_tether_grad_max = 0.0_dp
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
       LOGICAL :: schur_split_candidate_enabled = .FALSE.
-      INTEGER :: schur_model_quality_samples = 0
+      INTEGER :: schur_model_attempt = 0, schur_model_quality_samples = 0
+      INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
+      REAL(KIND=dp) :: schur_split_quality = 0.0_dp, schur_split_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_split_drop_sum = 0.0_dp, schur_split_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
@@ -471,12 +476,23 @@ CONTAINS
       qs_ot_env%schur_model_pending = .FALSE.
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
+      qs_ot_env%schur_model_attempt = 0
       qs_ot_env%schur_model_quality_samples = 0
+      qs_ot_env%schur_split_quality_samples = 0
+      qs_ot_env%schur_coupled_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
       qs_ot_env%schur_model_quality = 0.0_dp
       qs_ot_env%schur_model_quality_ema = 0.0_dp
       qs_ot_env%schur_model_gap_ratio = 0.0_dp
+      qs_ot_env%schur_split_quality = 0.0_dp
+      qs_ot_env%schur_split_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_drop_sum = 0.0_dp
+      qs_ot_env%schur_split_measured_sum = 0.0_dp
+      qs_ot_env%schur_coupled_quality = 0.0_dp
+      qs_ot_env%schur_coupled_quality_ema = 0.0_dp
+      qs_ot_env%schur_coupled_drop_sum = 0.0_dp
+      qs_ot_env%schur_coupled_measured_sum = 0.0_dp
 
       CALL dbcsr_set(qs_ot_env%matrix_gx, 0.0_dp)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &

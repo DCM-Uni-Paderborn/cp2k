@@ -2397,9 +2397,10 @@ CONTAINS
          measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
          local_ot_env(1)%schur_model_measured_drop = measured_drop
          quality_ratio = 0.0_dp
+         IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) &
+            quality_ratio = measured_drop/predicted_drop
 
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop) .AND. measured_drop > 0.0_dp) THEN
-            quality_ratio = measured_drop/predicted_drop
             local_ot_env(1)%schur_model_quality = quality_ratio
             samples = MIN(local_ot_env(1)%schur_model_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_model_quality_samples = samples
@@ -2422,18 +2423,57 @@ CONTAINS
             local_ot_env(1)%schur_model_quality_samples = 0
             local_ot_env(1)%schur_model_quality_ready = .FALSE.
          END IF
+         IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) THEN
+            SELECT CASE (local_ot_env(1)%schur_model_attempt)
+            CASE (1)
+               local_ot_env(1)%schur_split_quality = quality_ratio
+               samples = MIN(local_ot_env(1)%schur_split_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_split_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_split_quality_ema = quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_split_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)*local_ot_env(1)%schur_split_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*quality_ratio
+               END IF
+               local_ot_env(1)%schur_split_drop_sum = local_ot_env(1)%schur_split_drop_sum + predicted_drop
+               local_ot_env(1)%schur_split_measured_sum = local_ot_env(1)%schur_split_measured_sum + measured_drop
+            CASE (2)
+               local_ot_env(1)%schur_coupled_quality = quality_ratio
+               samples = MIN(local_ot_env(1)%schur_coupled_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_coupled_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_coupled_quality_ema = quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_coupled_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)*local_ot_env(1)%schur_coupled_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*quality_ratio
+               END IF
+               local_ot_env(1)%schur_coupled_drop_sum = local_ot_env(1)%schur_coupled_drop_sum + predicted_drop
+               local_ot_env(1)%schur_coupled_measured_sum = local_ot_env(1)%schur_coupled_measured_sum + measured_drop
+            END SELECT
+         END IF
 
          local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
          local_ot_env(1)%schur_model_pending = .FALSE.
 
          logger => cp_get_default_logger()
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),1X,I6,2(1X,L1))') &
-               " OT Schur LS quality pred meas ratio ema gap_ratio delta samples ready enabled:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,6(1X,ES16.8),1X,I6,2(1X,L1))') &
+               " OT Schur LS quality attempt pred meas ratio ema gap_ratio delta samples ready enabled:", &
+               local_ot_env(1)%schur_model_attempt, &
                predicted_drop, measured_drop, quality_ratio, local_ot_env(1)%schur_model_quality_ema, &
                local_ot_env(1)%schur_model_gap_ratio, local_ot_env(1)%delta, &
                local_ot_env(1)%schur_model_quality_samples, &
                local_ot_env(1)%schur_model_quality_ready, local_ot_env(1)%schur_split_candidate_enabled
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),8(1X,ES16.8))') &
+               " OT Schur LS history split_n coupled_n split_ratio split_ema split_pred split_meas "// &
+               "coupled_ratio coupled_ema coupled_pred coupled_meas:", &
+               local_ot_env(1)%schur_split_quality_samples, local_ot_env(1)%schur_coupled_quality_samples, &
+               local_ot_env(1)%schur_split_quality, local_ot_env(1)%schur_split_quality_ema, &
+               local_ot_env(1)%schur_split_drop_sum, local_ot_env(1)%schur_split_measured_sum, &
+               local_ot_env(1)%schur_coupled_quality, local_ot_env(1)%schur_coupled_quality_ema, &
+               local_ot_env(1)%schur_coupled_drop_sum, local_ot_env(1)%schur_coupled_measured_sum
          END IF
 
       END SUBROUTINE update_kpoint_ot_schur_line_search_quality
@@ -2561,6 +2601,7 @@ CONTAINS
          IF (.NOT. local_ot_env(1)%energy_only .AND. &
              (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
             local_ot_env(1)%schur_model_pending = .FALSE.
+            local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
          END IF
@@ -2595,7 +2636,8 @@ CONTAINS
       LOGICAL                                            :: attempt_failed, failed, new_search_point, solved, &
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
-      REAL(KIND=dp) :: coupled_diag_shift_avg, coupled_direction_scale, coupled_model_drop, coupled_model_gap, &
+      REAL(KIND=dp) :: accepted_model_drop, accepted_model_gap_ratio, coupled_diag_shift_avg, &
+         coupled_direction_scale, coupled_model_drop, coupled_model_gap, &
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
          coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
          diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
@@ -2684,6 +2726,8 @@ CONTAINS
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          coupled_diag_shift_avg = 0.0_dp
+         accepted_model_drop = 0.0_dp
+         accepted_model_gap_ratio = 0.0_dp
          coupled_direction_scale = 0.0_dp
          coupled_model_drop = 0.0_dp
          coupled_norm_ratio = 0.0_dp
@@ -3042,16 +3086,23 @@ CONTAINS
             IF (.NOT. attempt_failed) THEN
                solved = .TRUE.
                schur_used_attempt = schur_attempt
+               accepted_model_drop = model_drop
+               accepted_model_gap_ratio = model_gap_ratio
                EXIT
             END IF
          END DO
          failed = .NOT. solved
 
-         IF (new_search_point .AND. coupled_model_drop > EPSILON(coupled_model_drop)) THEN
+         IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop)) THEN
+            IF (.NOT. local_ot_env(1)%schur_model_pending) THEN
+               local_ot_env(1)%schur_model_attempt = schur_used_attempt
+            ELSE IF (local_ot_env(1)%schur_model_attempt /= schur_used_attempt) THEN
+               local_ot_env(1)%schur_model_attempt = -1
+            END IF
             local_ot_env(1)%schur_model_pending = .TRUE.
-            local_ot_env(1)%schur_model_drop = local_ot_env(1)%schur_model_drop + coupled_model_drop
+            local_ot_env(1)%schur_model_drop = local_ot_env(1)%schur_model_drop + accepted_model_drop
             local_ot_env(1)%schur_model_gap_ratio = MAX(local_ot_env(1)%schur_model_gap_ratio, &
-                                                        coupled_model_gap_ratio)
+                                                        accepted_model_gap_ratio)
          END IF
 
          IF (.NOT. failed) THEN
