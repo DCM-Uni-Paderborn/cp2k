@@ -128,6 +128,9 @@ MODULE qs_scf_loop_utils
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
                                         ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_calibration_min_samples = 4
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_calibration_floor = 2.5E-1_dp, &
+                                        ot_kp_schur_calibration_max_scale = 1.2_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -2644,8 +2647,8 @@ CONTAINS
          diag_shift_sum, gvalue, maxocc, model_drop, model_gap, model_gap_trust, model_gap_ratio, mu, norm_ratio, &
          normp, occ_curv_projection_sum, projected_term, rayleigh_edge_gap, residual_delta, response_shift, &
          response_step_max, response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
-         row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, tether_response, &
-         tether_strength, tether_weight, z_shift, z_weight
+         row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, split_curvature_scale, &
+         split_quality_for_calibration, tether_response, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             rot_floor, rtd, rx_e, rx_model, sol, tether_curv, &
                                                             z_e, z_trial
@@ -2740,6 +2743,8 @@ CONTAINS
          model_gap = 0.0_dp
          model_gap_ratio = 0.0_dp
          model_gap_trust = HUGE(1.0_dp)
+         split_curvature_scale = 1.0_dp
+         split_quality_for_calibration = 1.0_dp
          failed = .FALSE.
          ivar = 0
 
@@ -2894,6 +2899,12 @@ CONTAINS
          split_candidate_enabled = new_search_point .AND. local_ot_env(1)%schur_split_candidate_enabled
          split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level .OR. &
                                       split_candidate_enabled
+         IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
+            split_quality_for_calibration = MAX(ot_kp_schur_calibration_floor, &
+                                                MIN(1.0_dp, local_ot_env(1)%schur_split_quality_ema))
+            split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
+                                        1.0_dp/SQRT(split_quality_for_calibration))
+         END IF
          DO schur_attempt = 1, 3
             attempt_failed = .FALSE.
             reject_reason = 0
@@ -2953,6 +2964,7 @@ CONTAINS
                   schur(r, s) = schur(r, s) - projected_term
                END DO
             END DO
+            IF (schur_attempt == 1) schur(:, :) = split_curvature_scale*schur(:, :)
             DO r = 1, nrot
                row_floor = curvature_floor
                IF (schur_attempt <= 2) row_floor = rot_floor(r)
@@ -3160,14 +3172,15 @@ CONTAINS
                   residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
                   schur_diag_min, rot_floor_min, trust_rejected
                IF (split_candidate_diagnostic) &
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),14(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),16(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop pred meas qratio qema "// &
-                  "resp rtrust rratio mgap mtrust mgratio norm davg:", &
+                  "calib qcal resp rtrust rratio mgap mtrust mgratio norm davg:", &
                   target_group, coupled_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
                   split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
                   coupled_direction_scale, coupled_model_drop, local_ot_env(1)%schur_model_drop, &
                   local_ot_env(1)%schur_model_measured_drop, local_ot_env(1)%schur_model_quality, &
-                  local_ot_env(1)%schur_model_quality_ema, coupled_response_step, response_trust, &
+                  local_ot_env(1)%schur_model_quality_ema, split_curvature_scale, split_quality_for_calibration, &
+                  coupled_response_step, response_trust, &
                   coupled_response_trust_ratio, coupled_model_gap, coupled_model_gap_trust, &
                   coupled_model_gap_ratio, coupled_norm_ratio, &
                   coupled_diag_shift_avg
