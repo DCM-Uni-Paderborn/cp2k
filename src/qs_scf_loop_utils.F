@@ -2428,11 +2428,12 @@ CONTAINS
 
          logger => cp_get_default_logger()
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),1X,I6,2(1X,L1))') &
-               " OT Schur LS quality pred meas ratio ema samples ready enabled:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),1X,I6,2(1X,L1))') &
+               " OT Schur LS quality pred meas ratio ema gap_ratio delta samples ready enabled:", &
                predicted_drop, measured_drop, quality_ratio, local_ot_env(1)%schur_model_quality_ema, &
-               local_ot_env(1)%schur_model_quality_samples, local_ot_env(1)%schur_model_quality_ready, &
-               local_ot_env(1)%schur_split_candidate_enabled
+               local_ot_env(1)%schur_model_gap_ratio, local_ot_env(1)%delta, &
+               local_ot_env(1)%schur_model_quality_samples, &
+               local_ot_env(1)%schur_model_quality_ready, local_ot_env(1)%schur_split_candidate_enabled
          END IF
 
       END SUBROUTINE update_kpoint_ot_schur_line_search_quality
@@ -2575,7 +2576,7 @@ CONTAINS
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
       INTEGER, PARAMETER                                 :: reject_dgesv = 1, reject_nondescent = 2, &
                                                             reject_norm = 3, reject_response = 4, reject_scale = 5, &
-                                                            reject_model = 6
+                                                            reject_model_gap = 6, reject_quality_gate = 7
       REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
                                                             schur_min_coupled_scale = 5.0E-1_dp, &
@@ -2595,7 +2596,7 @@ CONTAINS
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
       REAL(KIND=dp) :: coupled_diag_shift_avg, coupled_direction_scale, coupled_model_drop, coupled_model_gap, &
-         coupled_model_gap_ratio, coupled_norm_ratio, &
+         coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
          coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
          diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_drop, model_gap, model_gap_trust, model_gap_ratio, mu, norm_ratio, &
@@ -2689,6 +2690,7 @@ CONTAINS
          coupled_reject_reason = 0
          coupled_model_gap = 0.0_dp
          coupled_model_gap_ratio = 0.0_dp
+         coupled_model_gap_trust = HUGE(1.0_dp)
          coupled_response_step = 0.0_dp
          coupled_response_trust_ratio = 0.0_dp
          model_gap = 0.0_dp
@@ -2858,7 +2860,7 @@ CONTAINS
             normp = 0.0_dp
             z_e(:) = z_trial(:)
             IF (schur_attempt == 1 .AND. .NOT. split_candidate_diagnostic) THEN
-               coupled_reject_reason = reject_model
+               coupled_reject_reason = reject_quality_gate
                CYCLE
             END IF
             IF (schur_attempt <= 2) THEN
@@ -3011,12 +3013,12 @@ CONTAINS
                          model_gap > model_gap_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
-                        reject_reason = reject_model
+                        reject_reason = reject_model_gap
                      END IF
                      IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
                          .NOT. split_candidate_enabled) THEN
                         attempt_failed = .TRUE.
-                        reject_reason = reject_model
+                        reject_reason = reject_quality_gate
                      END IF
                   END IF
                END IF
@@ -3028,6 +3030,7 @@ CONTAINS
                coupled_model_drop = model_drop
                coupled_model_gap = model_gap
                coupled_model_gap_ratio = model_gap_ratio
+               coupled_model_gap_trust = model_gap_trust
                coupled_norm_ratio = norm_ratio
                coupled_reject_reason = reject_reason
                coupled_response_step = response_step_max
@@ -3105,11 +3108,17 @@ CONTAINS
                   model_drop, response_step_max, response_trust, response_trust_ratio, response_trust_factor, &
                   residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
                   schur_diag_min, rot_floor_min, trust_rejected
-               IF (schur_used_attempt /= 1 .OR. coupled_reject_reason /= 0) &
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),8(1X,ES16.8))') &
-                  " OT Schur split reject group code scale drop resp rtrust mgap mgap_trust norm_ratio davg:", &
-                  target_group, coupled_reject_reason, coupled_direction_scale, coupled_model_drop, coupled_response_step, &
-                  coupled_response_trust_ratio, coupled_model_gap, coupled_model_gap_ratio, coupled_norm_ratio, &
+               IF (split_candidate_diagnostic) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),14(1X,ES16.8))') &
+                  " OT Schur split audit group code samples gate new energy scale drop pred meas qratio qema "// &
+                  "resp rtrust rratio mgap mtrust mgratio norm davg:", &
+                  target_group, coupled_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
+                  split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
+                  coupled_direction_scale, coupled_model_drop, local_ot_env(1)%schur_model_drop, &
+                  local_ot_env(1)%schur_model_measured_drop, local_ot_env(1)%schur_model_quality, &
+                  local_ot_env(1)%schur_model_quality_ema, coupled_response_step, response_trust, &
+                  coupled_response_trust_ratio, coupled_model_gap, coupled_model_gap_trust, &
+                  coupled_model_gap_ratio, coupled_norm_ratio, &
                   coupled_diag_shift_avg
             END IF
          END IF
