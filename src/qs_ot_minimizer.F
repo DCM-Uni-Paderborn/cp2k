@@ -228,7 +228,6 @@ CONTAINS
          END IF
 
          IF (qs_ot_env(1)%line_search_might_be_done) THEN
-            ! here we put the more complicated logic later
             res = .TRUE.
             RETURN
          END IF
@@ -617,10 +616,12 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
       CHARACTER(len=*), PARAMETER :: routineN = 'do_line_search_3pnt'
+      REAL(KIND=dp), PARAMETER                           :: acceptance_tol = 1.0E-12_dp
 
-      INTEGER                                            :: count, handle
-      REAL(KIND=dp)                                      :: denom, ds, fa, fb, fc, nom, pos, val, &
-                                                            xa, xb, xc
+      INTEGER                                            :: best_index, count, handle, i
+      REAL(KIND=dp)                                      :: best_energy, denom, ds, fa, fb, fc, nom, pos, &
+                                                            tol, val, xa, xb, xc
+      TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
 
@@ -630,6 +631,7 @@ CONTAINS
       ! a three point interpolation based on the energy
       qs_ot_env(1)%line_search_count = qs_ot_env(1)%line_search_count + 1
       count = qs_ot_env(1)%line_search_count
+      IF (count + 1 > SIZE(qs_ot_env(1)%OT_pos)) CPABORT("MAX ITER EXCEEDED : FATAL")
       qs_ot_env(1)%ot_energy(count) = qs_ot_env(1)%etotal
       SELECT CASE (count)
       CASE (1)
@@ -658,13 +660,36 @@ CONTAINS
          val = (pos - xa)*(pos - xb)*fc/((xc - xa)*(xc - xb)) + &
                (pos - xb)*(pos - xc)*fa/((xa - xb)*(xa - xc)) + &
                (pos - xc)*(pos - xa)*fb/((xb - xc)*(xb - xa))
-         IF (val < fa .AND. val <= fb .AND. val <= fc) THEN ! OK, we go to a minimum
+         best_index = 1
+         DO i = 2, count
+            IF (qs_ot_env(1)%OT_energy(i) < qs_ot_env(1)%OT_energy(best_index)) best_index = i
+         END DO
+         best_energy = qs_ot_env(1)%OT_energy(best_index)
+         tol = acceptance_tol*MAX(1.0_dp, ABS(best_energy))
+         IF (use_three_point_mermin_search(qs_ot_env) .AND. best_index /= 1 .AND. &
+             val >= best_energy - tol) THEN
+            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,4(1X,ES16.8))') &
+                  " OT Mermin LS keep sampled point idx pos model best:", &
+                  best_index, qs_ot_env(1)%OT_pos(best_index), pos, val, best_energy
+            END IF
+         ELSE IF (val < fa .AND. val <= fb .AND. val <= fc) THEN ! OK, we go to a minimum
             ! we take a guard against too large steps
             qs_ot_env(1)%OT_pos(count + 1) = MAX(MAXVAL(qs_ot_env(1)%OT_pos(1:3))*0.01_dp, &
                                                  MIN(pos, MAXVAL(qs_ot_env(1)%OT_pos(1:3))*4.0_dp))
          ELSE ! just take an extended step
             qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*2.0_dp
          END IF
+         qs_ot_env(1)%energy_only = .FALSE.
+         qs_ot_env(1)%line_search_might_be_done = .TRUE.
+      CASE (4:)
+         IF (.NOT. use_three_point_mermin_search(qs_ot_env)) CPABORT("NYI")
+         ! Restarted or legacy Mermin 3-point histories can already be past the
+         ! endpoint.  Accept the current coordinates as a fresh history point
+         ! instead of replaying non-reversible auxiliary-energy trust steps.
+         qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(count)
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = .TRUE.
       CASE DEFAULT
