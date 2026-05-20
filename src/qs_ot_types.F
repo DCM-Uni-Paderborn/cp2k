@@ -235,10 +235,14 @@ MODULE qs_ot_types
       LOGICAL :: schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_model_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
-      REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_measured_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_model_calibrated_quality = 0.0_dp, schur_model_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
       REAL(KIND=dp) :: schur_split_quality = 0.0_dp, schur_split_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_split_calibrated_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_split_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_drop_sum = 0.0_dp, schur_split_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
@@ -481,12 +485,17 @@ CONTAINS
       qs_ot_env%schur_split_quality_samples = 0
       qs_ot_env%schur_coupled_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
+      qs_ot_env%schur_model_calibrated_drop = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
       qs_ot_env%schur_model_quality = 0.0_dp
       qs_ot_env%schur_model_quality_ema = 0.0_dp
+      qs_ot_env%schur_model_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_model_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_model_gap_ratio = 0.0_dp
       qs_ot_env%schur_split_quality = 0.0_dp
       qs_ot_env%schur_split_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_split_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_split_drop_sum = 0.0_dp
       qs_ot_env%schur_split_measured_sum = 0.0_dp
       qs_ot_env%schur_coupled_quality = 0.0_dp
