@@ -124,6 +124,10 @@ MODULE qs_scf_loop_utils
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_quality_min_samples = 3
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
+                                        ot_kp_schur_quality_max_ratio = 2.0_dp, &
+                                        ot_kp_schur_quality_min_ratio = 1.0E-1_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -717,6 +721,8 @@ CONTAINS
          END DO
       END DO
 
+      local_ot_env(1)%etotal = energy%total + ener_nondiag
+
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                      kp_range, wkp, para_env_inter_kp, scf_control%smear, &
                                                      trial_eigenvalues, trial_occupation, trial_mu)
@@ -724,7 +730,6 @@ CONTAINS
                                                   wkp, scf_control%smear, &
                                                   trial_eigenvalues, trial_occupation, trial_mu)
 
-      local_ot_env(1)%etotal = energy%total + ener_nondiag
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
       scf_env%iter_delta = local_ot_env(1)%delta
 
@@ -2366,6 +2371,72 @@ CONTAINS
 
    CONTAINS
 
+      SUBROUTINE update_kpoint_ot_schur_line_search_quality()
+
+      INTEGER                                           :: local_channel, samples
+      LOGICAL                                           :: mermin_search
+      REAL(KIND=dp)                                     :: measured_drop, predicted_drop, quality_ratio
+      TYPE(cp_logger_type), POINTER                     :: logger
+
+         IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
+         IF (local_ot_env(1)%line_search_count <= 0) RETURN
+         IF (.NOT. local_ot_env(1)%line_search_might_be_done) RETURN
+
+         mermin_search = local_ot_env(1)%settings%occupation_preconditioner
+         IF (mermin_search) THEN
+            mermin_search = .FALSE.
+            DO local_channel = 1, SIZE(local_ot_env)
+               IF (local_ot_env(local_channel)%has_complex_kpoint_state) THEN
+                  mermin_search = .TRUE.
+                  EXIT
+               END IF
+            END DO
+         END IF
+
+         predicted_drop = local_ot_env(1)%schur_model_drop
+         measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
+         local_ot_env(1)%schur_model_measured_drop = measured_drop
+         quality_ratio = 0.0_dp
+
+         IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop) .AND. measured_drop > 0.0_dp) THEN
+            quality_ratio = measured_drop/predicted_drop
+            local_ot_env(1)%schur_model_quality = quality_ratio
+            samples = MIN(local_ot_env(1)%schur_model_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_model_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_model_quality_ema = quality_ratio
+            ELSE
+               local_ot_env(1)%schur_model_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)*local_ot_env(1)%schur_model_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*quality_ratio
+            END IF
+            local_ot_env(1)%schur_model_quality_ready = &
+               samples >= ot_kp_schur_quality_min_samples .AND. &
+               local_ot_env(1)%schur_model_quality_ema >= ot_kp_schur_quality_min_ratio .AND. &
+               local_ot_env(1)%schur_model_quality_ema <= ot_kp_schur_quality_max_ratio .AND. &
+               quality_ratio >= 0.5_dp*ot_kp_schur_quality_min_ratio .AND. &
+               quality_ratio <= 2.0_dp*ot_kp_schur_quality_max_ratio
+         ELSE
+            local_ot_env(1)%schur_model_quality = 0.0_dp
+            local_ot_env(1)%schur_model_quality_ema = 0.0_dp
+            local_ot_env(1)%schur_model_quality_samples = 0
+            local_ot_env(1)%schur_model_quality_ready = .FALSE.
+         END IF
+
+         local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
+         local_ot_env(1)%schur_model_pending = .FALSE.
+
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),1X,I6,2(1X,L1))') &
+               " OT Schur LS quality pred meas ratio ema samples ready enabled:", &
+               predicted_drop, measured_drop, quality_ratio, local_ot_env(1)%schur_model_quality_ema, &
+               local_ot_env(1)%schur_model_quality_samples, local_ot_env(1)%schur_model_quality_ready, &
+               local_ot_env(1)%schur_split_candidate_enabled
+         END IF
+
+      END SUBROUTINE update_kpoint_ot_schur_line_search_quality
+
       SUBROUTINE precondition_kpoint_ot_energy_diagonal(skip_group)
       LOGICAL, DIMENSION(:), INTENT(IN)                  :: skip_group
 
@@ -2485,6 +2556,13 @@ CONTAINS
 
          group_done(:) = .FALSE.
          IF (.NOT. local_ot_env(1)%settings%do_rotation) RETURN
+         CALL update_kpoint_ot_schur_line_search_quality()
+         IF (.NOT. local_ot_env(1)%energy_only .AND. &
+             (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
+            local_ot_env(1)%schur_model_pending = .FALSE.
+            local_ot_env(1)%schur_model_drop = 0.0_dp
+            local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
+         END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
          END DO
@@ -2513,8 +2591,9 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
-      LOGICAL                                            :: attempt_failed, failed, solved, split_candidate_diagnostic, &
-                                                            split_candidate_enabled, trust_rejected
+      LOGICAL                                            :: attempt_failed, failed, new_search_point, solved, &
+                                                            split_candidate_diagnostic, split_candidate_enabled, &
+                                                            trust_rejected
       REAL(KIND=dp) :: coupled_diag_shift_avg, coupled_direction_scale, coupled_model_drop, coupled_model_gap, &
          coupled_model_gap_ratio, coupled_norm_ratio, &
          coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
@@ -2536,6 +2615,10 @@ CONTAINS
          group_done = .FALSE.
          logger => cp_get_default_logger()
          IF (ABS(gsum(target_group)) <= EPSILON(gsum(target_group))) RETURN
+
+         new_search_point = .NOT. local_ot_env(1)%energy_only .AND. &
+                            (local_ot_env(1)%line_search_count == 0 .OR. &
+                             local_ot_env(1)%line_search_might_be_done)
 
          nchannels = SIZE(local_ot_env)
          ALLOCATE (channel_nmo(nchannels), e_offset(nchannels))
@@ -2760,10 +2843,11 @@ CONTAINS
          solved = .FALSE.
          trust_rejected = .FALSE.
          schur_used_attempt = 0
-         split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level
-         ! Audit the split fixed-N/tether Schur model under HIGH print first; it
-         ! must be tied to accepted Mermin line-search drops before production use.
-         split_candidate_enabled = .FALSE.
+         ! Evaluate the split fixed-N/tether Schur model under HIGH audit, or
+         ! after accepted Mermin line-search drops validate the model quality.
+         split_candidate_enabled = new_search_point .AND. local_ot_env(1)%schur_split_candidate_enabled
+         split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level .OR. &
+                                      split_candidate_enabled
          DO schur_attempt = 1, 3
             attempt_failed = .FALSE.
             reject_reason = 0
@@ -2959,6 +3043,13 @@ CONTAINS
             END IF
          END DO
          failed = .NOT. solved
+
+         IF (new_search_point .AND. coupled_model_drop > EPSILON(coupled_model_drop)) THEN
+            local_ot_env(1)%schur_model_pending = .TRUE.
+            local_ot_env(1)%schur_model_drop = local_ot_env(1)%schur_model_drop + coupled_model_drop
+            local_ot_env(1)%schur_model_gap_ratio = MAX(local_ot_env(1)%schur_model_gap_ratio, &
+                                                        coupled_model_gap_ratio)
+         END IF
 
          IF (.NOT. failed) THEN
             DO local_kpoint = 1, SIZE(kpoints%kp_env)
