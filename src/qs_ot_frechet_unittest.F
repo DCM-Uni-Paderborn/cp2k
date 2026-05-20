@@ -52,6 +52,8 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-5_dp, nfail)
    CALL check_complex_fixed_n_response_channel("complex fixed-N response channel", &
                                                2.0E-7_dp, nfail)
+   CALL check_mixed_fixed_n_tether_projector("mixed fixed-N/tether Schur projector", &
+                                             5.0E-14_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -964,6 +966,89 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_fixed_n_response_channel
+
+! **************************************************************************************************
+!> \brief Check the split Schur projector for global fixed-N Mermin response plus channel-local tether.
+! **************************************************************************************************
+   SUBROUTINE check_mixed_fixed_n_tether_projector(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 5, nrot = 3, nchannels = 2
+
+      INTEGER                                            :: first_energy, i, j, local_channel, nmo, r, s
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: err, occ_sum, projected_term, ref_term, &
+                                                            shift_left, shift_right, weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: hproj
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: response
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: projected, reference
+
+      channel_nmo = [3, 2]
+      e_offset = [1, 4]
+      occ_curv = [0.31_dp, 0.74_dp, 0.16_dp, 0.47_dp, 0.22_dp]
+      tether_curv = [0.05_dp, 0.02_dp, 0.08_dp, 0.07_dp, 0.03_dp]
+      response(:, 1) = [0.13_dp, -0.21_dp, 0.09_dp, 0.31_dp, -0.17_dp]
+      response(:, 2) = [-0.05_dp, 0.18_dp, 0.24_dp, -0.11_dp, 0.07_dp]
+      response(:, 3) = [0.22_dp, 0.04_dp, -0.19_dp, 0.15_dp, -0.08_dp]
+
+      hproj(:, :) = 0.0_dp
+      DO i = 1, ne
+         hproj(i, i) = occ_curv(i) + tether_curv(i)
+      END DO
+      occ_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            hproj(i, j) = hproj(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+         END DO
+      END DO
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               hproj(i, j) = hproj(i, j) - tether_curv(i)*tether_curv(j)/weight_sum
+            END DO
+         END DO
+      END DO
+
+      DO s = 1, nrot
+         DO r = 1, nrot
+            ref_term = DOT_PRODUCT(response(:, r), MATMUL(hproj, response(:, s)))
+            projected_term = DOT_PRODUCT((occ_curv(:) + tether_curv(:))*response(:, r), response(:, s))
+
+            shift_left = DOT_PRODUCT(occ_curv, response(:, r))
+            shift_right = DOT_PRODUCT(occ_curv, response(:, s))
+            projected_term = projected_term - shift_left*shift_right/occ_sum
+
+            DO local_channel = 1, nchannels
+               nmo = channel_nmo(local_channel)
+               first_energy = e_offset(local_channel)
+               weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+               shift_left = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                        response(first_energy:first_energy + nmo - 1, r))
+               shift_right = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                         response(first_energy:first_energy + nmo - 1, s))
+               projected_term = projected_term - shift_left*shift_right/weight_sum
+            END DO
+
+            reference(r, s) = ref_term
+            projected(r, s) = projected_term
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(projected(:, :) - reference(:, :)))
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_mixed_fixed_n_tether_projector
 
 ! **************************************************************************************************
 !> \brief Diagonal of U^H H U for each dense complex k-point channel.
