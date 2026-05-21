@@ -129,10 +129,12 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_calibration_min_samples = 4
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_constrained_min_samples = 6
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_calibration_floor = 2.5E-1_dp, &
                                         ot_kp_schur_calibration_max_scale = 1.2_dp, &
                                         ot_kp_schur_calibrated_quality_max_ratio = 2.5_dp, &
-                                        ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp
+                                        ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
+                                        ot_kp_schur_constrained_advantage_ratio = 1.05_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -2381,6 +2383,9 @@ CONTAINS
       INTEGER                                           :: local_channel, samples
       LOGICAL                                           :: mermin_search
       REAL(KIND=dp)                                     :: calibrated_predicted_drop, calibrated_quality_ratio, &
+                                                            constrained_calibrated_predicted_drop, &
+                                                            constrained_calibrated_quality_ratio, &
+                                                            constrained_predicted_drop, constrained_quality_ratio, &
                                                             measured_drop, predicted_drop, quality_ratio
       TYPE(cp_logger_type), POINTER                     :: logger
 
@@ -2443,6 +2448,44 @@ CONTAINS
             local_ot_env(1)%schur_model_quality_samples = 0
             local_ot_env(1)%schur_model_quality_ready = .FALSE.
          END IF
+         constrained_predicted_drop = local_ot_env(1)%schur_constrained_drop
+         constrained_calibrated_predicted_drop = local_ot_env(1)%schur_constrained_calibrated_drop
+         IF (constrained_calibrated_predicted_drop <= EPSILON(constrained_calibrated_predicted_drop)) &
+            constrained_calibrated_predicted_drop = constrained_predicted_drop
+         constrained_quality_ratio = 0.0_dp
+         constrained_calibrated_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%schur_constrained_pending .AND. &
+             constrained_predicted_drop > EPSILON(constrained_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
+            constrained_quality_ratio = measured_drop/constrained_predicted_drop
+            IF (constrained_calibrated_predicted_drop > EPSILON(constrained_calibrated_predicted_drop)) &
+               constrained_calibrated_quality_ratio = measured_drop/constrained_calibrated_predicted_drop
+            local_ot_env(1)%schur_constrained_quality = constrained_quality_ratio
+            local_ot_env(1)%schur_constrained_calibrated_quality = constrained_calibrated_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_constrained_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_constrained_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_constrained_quality_ema = constrained_quality_ratio
+               local_ot_env(1)%schur_constrained_calibrated_quality_ema = constrained_calibrated_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_constrained_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)*local_ot_env(1)%schur_constrained_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*constrained_quality_ratio
+               local_ot_env(1)%schur_constrained_calibrated_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_constrained_calibrated_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*constrained_calibrated_quality_ratio
+            END IF
+            local_ot_env(1)%schur_constrained_drop_sum = &
+               local_ot_env(1)%schur_constrained_drop_sum + constrained_predicted_drop
+            local_ot_env(1)%schur_constrained_measured_sum = &
+               local_ot_env(1)%schur_constrained_measured_sum + measured_drop
+         ELSE IF (local_ot_env(1)%schur_constrained_pending) THEN
+            local_ot_env(1)%schur_constrained_quality = 0.0_dp
+            local_ot_env(1)%schur_constrained_quality_ema = 0.0_dp
+            local_ot_env(1)%schur_constrained_calibrated_quality = 0.0_dp
+            local_ot_env(1)%schur_constrained_calibrated_quality_ema = 0.0_dp
+            local_ot_env(1)%schur_constrained_quality_samples = 0
+         END IF
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) THEN
             SELECT CASE (local_ot_env(1)%schur_model_attempt)
             CASE (1, 2)
@@ -2491,7 +2534,20 @@ CONTAINS
                0.5_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
                local_ot_env(1)%schur_split_calibrated_quality <= &
                2.0_dp*ot_kp_schur_calibrated_quality_max_ratio
+         local_ot_env(1)%schur_constrained_candidate_enabled = &
+            local_ot_env(1)%schur_split_candidate_enabled .AND. &
+            local_ot_env(1)%schur_constrained_quality_samples >= ot_kp_schur_constrained_min_samples .AND. &
+            local_ot_env(1)%schur_constrained_calibrated_quality_ema >= &
+            ot_kp_schur_constrained_advantage_ratio* &
+            MAX(ot_kp_schur_calibrated_quality_min_ratio, local_ot_env(1)%schur_split_calibrated_quality_ema) .AND. &
+            local_ot_env(1)%schur_constrained_calibrated_quality_ema <= &
+            ot_kp_schur_calibrated_quality_max_ratio .AND. &
+            local_ot_env(1)%schur_constrained_calibrated_quality >= &
+            0.5_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
+            local_ot_env(1)%schur_constrained_calibrated_quality <= &
+            2.0_dp*ot_kp_schur_calibrated_quality_max_ratio
          local_ot_env(1)%schur_model_pending = .FALSE.
+         local_ot_env(1)%schur_constrained_pending = .FALSE.
 
          logger => cp_get_default_logger()
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -2516,6 +2572,15 @@ CONTAINS
                local_ot_env(1)%schur_split_drop_sum, local_ot_env(1)%schur_split_measured_sum, &
                local_ot_env(1)%schur_coupled_quality, local_ot_env(1)%schur_coupled_quality_ema, &
                local_ot_env(1)%schur_coupled_drop_sum, local_ot_env(1)%schur_coupled_measured_sum
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES16.8),1X,L1)') &
+               " OT Schur LS constrained n ratio ema cal cal_ema pred meas gap split_cal_ema enabled:", &
+               local_ot_env(1)%schur_constrained_quality_samples, &
+               local_ot_env(1)%schur_constrained_quality, local_ot_env(1)%schur_constrained_quality_ema, &
+               local_ot_env(1)%schur_constrained_calibrated_quality, &
+               local_ot_env(1)%schur_constrained_calibrated_quality_ema, &
+               local_ot_env(1)%schur_constrained_drop_sum, local_ot_env(1)%schur_constrained_measured_sum, &
+               local_ot_env(1)%schur_constrained_gap_ratio, local_ot_env(1)%schur_split_calibrated_quality_ema, &
+               local_ot_env(1)%schur_constrained_candidate_enabled
          END IF
 
       END SUBROUTINE update_kpoint_ot_schur_line_search_quality
@@ -2643,10 +2708,14 @@ CONTAINS
          IF (.NOT. local_ot_env(1)%energy_only .AND. &
              (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
             local_ot_env(1)%schur_model_pending = .FALSE.
+            local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
             local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
+            local_ot_env(1)%schur_constrained_drop = 0.0_dp
+            local_ot_env(1)%schur_constrained_calibrated_drop = 0.0_dp
+            local_ot_env(1)%schur_constrained_gap_ratio = 0.0_dp
          END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
@@ -2679,6 +2748,7 @@ CONTAINS
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, failed, new_search_point, solved, &
+                                                            constrained_candidate_enabled, &
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
@@ -2987,14 +3057,18 @@ CONTAINS
          ! Evaluate the split fixed-N/tether Schur model under HIGH audit, or
          ! after accepted Mermin line-search drops validate the model quality.
          split_candidate_enabled = new_search_point .AND. local_ot_env(1)%schur_split_candidate_enabled
+         constrained_candidate_enabled = new_search_point .AND. &
+                                         local_ot_env(1)%schur_constrained_candidate_enabled
          split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level .OR. &
-                                      split_candidate_enabled
+                                      split_candidate_enabled .OR. constrained_candidate_enabled
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_quality_for_calibration = MAX(ot_kp_schur_calibration_floor, &
                                                 MIN(1.0_dp, local_ot_env(1)%schur_split_quality_ema))
             split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
                                         1.0_dp/SQRT(split_quality_for_calibration))
          END IF
+         ! Attempt order: response-constrained split shadow, raw split,
+         ! dense fixed-N coupled response, and the conservative raw fallback.
          DO schur_attempt = 1, 4
             attempt_failed = .FALSE.
             reject_reason = 0
@@ -3004,15 +3078,16 @@ CONTAINS
             norm_ratio = 0.0_dp
             normp = 0.0_dp
             z_e(:) = z_trial(:)
-            IF (schur_attempt == 2 .AND. logger%iter_info%print_level < high_print_level) THEN
+            IF (schur_attempt == 1 .AND. logger%iter_info%print_level < high_print_level .AND. &
+                .NOT. split_candidate_enabled .AND. .NOT. constrained_candidate_enabled) THEN
                constrained_reject_reason = reject_quality_gate
                CYCLE
             END IF
             IF (schur_attempt <= 2 .AND. .NOT. split_candidate_diagnostic) THEN
                IF (schur_attempt == 1) THEN
-                  coupled_reject_reason = reject_quality_gate
-               ELSE
                   constrained_reject_reason = reject_quality_gate
+               ELSE
+                  coupled_reject_reason = reject_quality_gate
                END IF
                CYCLE
             END IF
@@ -3061,7 +3136,7 @@ CONTAINS
                                                          occ_curv, tether_curv, occ_curv_projection_sum, &
                                                          channel_nmo, e_offset, projected_term, &
                                                          occ_projected_term, tether_projected_term)
-                     IF (schur_attempt == 2) response_penalty_term = &
+                     IF (schur_attempt == 1) response_penalty_term = &
                         schur_response_penalty_scale*projected_term
                      IF (r == s) THEN
                         rot_diag_sum = rot_diag_sum + schur(r, r)
@@ -3206,10 +3281,10 @@ CONTAINS
                         attempt_failed = .TRUE.
                         reject_reason = reject_quality_gate
                      END IF
-                     IF (schur_attempt == 2 .AND. .NOT. attempt_failed) THEN
-                        ! Keep the response-penalized Split model as a HIGH-only
-                        ! shadow candidate until its accepted-step quality beats
-                        ! the current Split/Coupled path in the Al restart chain.
+                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                         .NOT. constrained_candidate_enabled) THEN
+                        ! Learn this candidate from the accepted line-search drop
+                        ! before allowing it to steer the minimizer.
                         attempt_failed = .TRUE.
                         reject_reason = reject_quality_gate
                      END IF
@@ -3217,7 +3292,7 @@ CONTAINS
                END IF
             END IF
 
-            IF (schur_attempt == 1) THEN
+            IF (schur_attempt == 2) THEN
                coupled_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_direction_scale = direction_scale
                coupled_model_drop = model_drop
@@ -3238,7 +3313,7 @@ CONTAINS
                   coupled_response_trust_ratio = response_step_max/response_trust
                coupled_response_weighted_step = response_weighted_step
                coupled_response_weighted_trust_ratio = response_weighted_trust_ratio
-            ELSE IF (schur_attempt == 2) THEN
+            ELSE IF (schur_attempt == 1) THEN
                constrained_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                constrained_direction_scale = direction_scale
                constrained_model_drop = model_drop
@@ -3260,6 +3335,17 @@ CONTAINS
                   constrained_response_trust_ratio = response_step_max/response_trust
                constrained_response_weighted_step = response_weighted_step
                constrained_response_weighted_trust_ratio = response_weighted_trust_ratio
+               IF (new_search_point .AND. split_candidate_enabled .AND. &
+                   model_drop > EPSILON(model_drop) .AND. &
+                   (reject_reason == 0 .OR. reject_reason == reject_quality_gate)) THEN
+                  local_ot_env(1)%schur_constrained_pending = .TRUE.
+                  local_ot_env(1)%schur_constrained_drop = &
+                     local_ot_env(1)%schur_constrained_drop + model_drop
+                  local_ot_env(1)%schur_constrained_calibrated_drop = &
+                     local_ot_env(1)%schur_constrained_calibrated_drop + model_calibrated_drop
+                  local_ot_env(1)%schur_constrained_gap_ratio = &
+                     MAX(local_ot_env(1)%schur_constrained_gap_ratio, model_gap_ratio)
+               END IF
             END IF
 
             IF (.NOT. attempt_failed) THEN

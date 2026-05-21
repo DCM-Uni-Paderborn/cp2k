@@ -234,14 +234,22 @@ MODULE qs_ot_types
       ! Runtime accepted-step calibration only.  Restart files persist the OT
       ! orbitals/history, while this Schur quality model is relearned after read.
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
+      LOGICAL :: schur_constrained_pending = .FALSE., schur_constrained_candidate_enabled = .FALSE.
       LOGICAL :: schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_model_quality_samples = 0
+      INTEGER :: schur_constrained_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_calibrated_quality = 0.0_dp, schur_model_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_drop = 0.0_dp, schur_constrained_calibrated_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_quality = 0.0_dp, schur_constrained_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_calibrated_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_calibrated_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_drop_sum = 0.0_dp, schur_constrained_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_gap_ratio = 0.0_dp
       REAL(KIND=dp) :: schur_split_quality = 0.0_dp, schur_split_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_quality = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_quality_ema = 0.0_dp
@@ -481,9 +489,12 @@ CONTAINS
       qs_ot_env%os_valid = .FALSE.
       qs_ot_env%schur_model_pending = .FALSE.
       qs_ot_env%schur_model_quality_ready = .FALSE.
+      qs_ot_env%schur_constrained_pending = .FALSE.
+      qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
       qs_ot_env%schur_model_attempt = 0
       qs_ot_env%schur_model_quality_samples = 0
+      qs_ot_env%schur_constrained_quality_samples = 0
       qs_ot_env%schur_split_quality_samples = 0
       qs_ot_env%schur_coupled_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
@@ -494,6 +505,15 @@ CONTAINS
       qs_ot_env%schur_model_calibrated_quality = 0.0_dp
       qs_ot_env%schur_model_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_model_gap_ratio = 0.0_dp
+      qs_ot_env%schur_constrained_drop = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_drop = 0.0_dp
+      qs_ot_env%schur_constrained_quality = 0.0_dp
+      qs_ot_env%schur_constrained_quality_ema = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_constrained_drop_sum = 0.0_dp
+      qs_ot_env%schur_constrained_measured_sum = 0.0_dp
+      qs_ot_env%schur_constrained_gap_ratio = 0.0_dp
       qs_ot_env%schur_split_quality = 0.0_dp
       qs_ot_env%schur_split_quality_ema = 0.0_dp
       qs_ot_env%schur_split_calibrated_quality = 0.0_dp
