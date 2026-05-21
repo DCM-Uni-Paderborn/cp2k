@@ -2445,7 +2445,7 @@ CONTAINS
          END IF
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) THEN
             SELECT CASE (local_ot_env(1)%schur_model_attempt)
-            CASE (1)
+            CASE (1, 2)
                local_ot_env(1)%schur_split_quality = quality_ratio
                local_ot_env(1)%schur_split_calibrated_quality = calibrated_quality_ratio
                samples = MIN(local_ot_env(1)%schur_split_quality_samples + 1, HUGE(samples) - 1)
@@ -2464,7 +2464,7 @@ CONTAINS
                END IF
                local_ot_env(1)%schur_split_drop_sum = local_ot_env(1)%schur_split_drop_sum + predicted_drop
                local_ot_env(1)%schur_split_measured_sum = local_ot_env(1)%schur_split_measured_sum + measured_drop
-            CASE (2)
+            CASE (3)
                local_ot_env(1)%schur_coupled_quality = quality_ratio
                samples = MIN(local_ot_env(1)%schur_coupled_quality_samples + 1, HUGE(samples) - 1)
                local_ot_env(1)%schur_coupled_quality_samples = samples
@@ -2665,13 +2665,15 @@ CONTAINS
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
                                                             schur_min_coupled_scale = 5.0E-1_dp, &
                                                             schur_model_gap_factor = 5.0E-1_dp, &
+                                                            schur_response_penalty_scale = 1.0_dp, &
                                                             schur_response_trust_factor = 2.5E-1_dp
 
       INTEGER                                            :: channel_var_start, group, ie, ikpoint, &
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
                                                             nchannels, ne, nmo, nrot, r, s, schur_attempt, &
-                                                            schur_used_attempt, coupled_reject_reason, &
+                                                            schur_used_attempt, constrained_reject_reason, &
+                                                            coupled_reject_reason, &
                                                             reject_reason
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             var_channel, var_ei, var_ej, var_i, &
@@ -2680,6 +2682,12 @@ CONTAINS
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
+         constrained_diag_shift_avg, constrained_direction_scale, constrained_model_calibrated_drop, &
+         constrained_model_drop, constrained_model_gap, constrained_model_gap_ratio, &
+         constrained_model_gap_trust, constrained_norm_ratio, constrained_occ_response_diag_avg, &
+         constrained_response_abs_step, constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
+         constrained_response_step, constrained_response_trust_ratio, constrained_response_weighted_step, &
+         constrained_response_weighted_trust_ratio, constrained_rot_diag_avg, constrained_tether_response_diag_avg, &
          coupled_diag_shift_avg, coupled_direction_scale, coupled_model_calibrated_drop, coupled_model_drop, &
          coupled_model_gap, coupled_occ_response_diag_avg, coupled_rot_diag_avg, coupled_tether_response_diag_avg, &
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
@@ -2689,7 +2697,8 @@ CONTAINS
          density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_trust, &
          model_gap_ratio, mu, norm_ratio, normp, occ_curv_projection_sum, occ_projected_term, &
-         occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_shift, rot_diag_sum, &
+         occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_penalty_diag_sum, &
+         response_penalty_term, response_shift, rot_diag_sum, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
@@ -2777,6 +2786,25 @@ CONTAINS
          density_projector_fraction = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
+         constrained_diag_shift_avg = 0.0_dp
+         constrained_direction_scale = 0.0_dp
+         constrained_model_drop = 0.0_dp
+         constrained_norm_ratio = 0.0_dp
+         constrained_reject_reason = 0
+         constrained_model_gap = 0.0_dp
+         constrained_model_gap_ratio = 0.0_dp
+         constrained_model_gap_trust = HUGE(1.0_dp)
+         constrained_model_calibrated_drop = 0.0_dp
+         constrained_occ_response_diag_avg = 0.0_dp
+         constrained_response_penalty_diag_avg = 0.0_dp
+         constrained_rot_diag_avg = 0.0_dp
+         constrained_tether_response_diag_avg = 0.0_dp
+         constrained_response_abs_step = 0.0_dp
+         constrained_response_abs_trust_ratio = 0.0_dp
+         constrained_response_step = 0.0_dp
+         constrained_response_trust_ratio = 0.0_dp
+         constrained_response_weighted_step = 0.0_dp
+         constrained_response_weighted_trust_ratio = 0.0_dp
          coupled_diag_shift_avg = 0.0_dp
          accepted_model_drop = 0.0_dp
          accepted_model_calibrated_drop = 0.0_dp
@@ -2967,7 +2995,7 @@ CONTAINS
             split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
                                         1.0_dp/SQRT(split_quality_for_calibration))
          END IF
-         DO schur_attempt = 1, 3
+         DO schur_attempt = 1, 4
             attempt_failed = .FALSE.
             reject_reason = 0
             direction_scale = 0.0_dp
@@ -2976,23 +3004,29 @@ CONTAINS
             norm_ratio = 0.0_dp
             normp = 0.0_dp
             z_e(:) = z_trial(:)
-            IF (schur_attempt == 1 .AND. .NOT. split_candidate_diagnostic) THEN
-               coupled_reject_reason = reject_quality_gate
+            IF (schur_attempt == 2 .AND. logger%iter_info%print_level < high_print_level) THEN
+               constrained_reject_reason = reject_quality_gate
+               CYCLE
+            END IF
+            IF (schur_attempt <= 2 .AND. .NOT. split_candidate_diagnostic) THEN
+               IF (schur_attempt == 1) THEN
+                  coupled_reject_reason = reject_quality_gate
+               ELSE
+                  constrained_reject_reason = reject_quality_gate
+               END IF
                CYCLE
             END IF
             IF (schur_attempt <= 2) THEN
-               IF (schur_attempt == 1) THEN
-                  schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
-               ELSE
-                  schur(:, :) = rot_hessian_coupled(:, :)
-               END IF
+               schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
+            ELSE IF (schur_attempt == 3) THEN
+               schur(:, :) = rot_hessian_coupled(:, :)
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
             DO r = 1, nrot
-               IF (schur_attempt == 1) THEN
+               IF (schur_attempt <= 2) THEN
                   rhs(r) = grad_rot(r) + DOT_PRODUCT(response_split(:, r), grad_e)
-               ELSE IF (schur_attempt == 2) THEN
+               ELSE IF (schur_attempt == 3) THEN
                   rtd(r) = DOT_PRODUCT(curv, response_coupled(:, r))
                   rhs(r) = grad_rot(r) + DOT_PRODUCT(response_coupled(:, r), grad_e)
                ELSE
@@ -3013,6 +3047,7 @@ CONTAINS
             model_gap_ratio = 0.0_dp
             model_gap_trust = HUGE(1.0_dp)
             occ_response_diag_sum = 0.0_dp
+            response_penalty_diag_sum = 0.0_dp
             rot_diag_sum = 0.0_dp
             tether_response_diag_sum = 0.0_dp
             rot_floor_min = curvature_floor
@@ -3020,17 +3055,21 @@ CONTAINS
 
             DO s = 1, nrot
                DO r = 1, nrot
-                  IF (schur_attempt == 1) THEN
+                  response_penalty_term = 0.0_dp
+                  IF (schur_attempt <= 2) THEN
                      CALL kpoint_ot_mixed_projected_term(response_split(:, r), response_split(:, s), &
                                                          occ_curv, tether_curv, occ_curv_projection_sum, &
                                                          channel_nmo, e_offset, projected_term, &
                                                          occ_projected_term, tether_projected_term)
+                     IF (schur_attempt == 2) response_penalty_term = &
+                        schur_response_penalty_scale*projected_term
                      IF (r == s) THEN
                         rot_diag_sum = rot_diag_sum + schur(r, r)
                         occ_response_diag_sum = occ_response_diag_sum + occ_projected_term
                         tether_response_diag_sum = tether_response_diag_sum + tether_projected_term
+                        response_penalty_diag_sum = response_penalty_diag_sum + response_penalty_term
                      END IF
-                  ELSE IF (schur_attempt == 2) THEN
+                  ELSE IF (schur_attempt == 3) THEN
                      dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
                      projected_term = dense_term
                      IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
@@ -3041,15 +3080,15 @@ CONTAINS
                      IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                         projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
                   END IF
-                  schur(r, s) = schur(r, s) - projected_term
+                  schur(r, s) = schur(r, s) - projected_term + response_penalty_term
                END DO
             END DO
-            IF (schur_attempt == 1) schur(:, :) = split_curvature_scale*schur(:, :)
+            IF (schur_attempt <= 2) schur(:, :) = split_curvature_scale*schur(:, :)
             DO r = 1, nrot
                row_floor = curvature_floor
-               IF (schur_attempt <= 2) row_floor = rot_floor(r)
+               IF (schur_attempt <= 3) row_floor = rot_floor(r)
                rot_floor_min = MIN(rot_floor_min, row_floor)
-               IF (schur_attempt <= 2) THEN
+               IF (schur_attempt <= 3) THEN
                   ! First try the coupled finite-rotation Schur block itself.  The
                   ! line-search safeguards below reject non-descent or overlarge
                   ! response directions; the Gershgorin model remains the fallback.
@@ -3074,10 +3113,10 @@ CONTAINS
             END IF
 
             IF (.NOT. attempt_failed) THEN
-               IF (schur_attempt == 1) THEN
+               IF (schur_attempt <= 2) THEN
                   rx_e(:) = MATMUL(response_split, sol)
                   rx_model(:) = MATMUL(response_coupled, sol)
-               ELSE IF (schur_attempt == 2) THEN
+               ELSE IF (schur_attempt == 3) THEN
                   rx_e(:) = MATMUL(response_coupled, sol)
                   rx_model(:) = rx_e(:)
                ELSE
@@ -3093,7 +3132,7 @@ CONTAINS
                CALL para_env_inter_kp%sum(rx_shift)
                CALL para_env_inter_kp%sum(rx_weight)
                IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
-               IF (schur_attempt == 1) THEN
+               IF (schur_attempt <= 2) THEN
                   rx_shift = 0.0_dp
                   rx_weight = 0.0_dp
                   DO ie = 1, ne
@@ -3130,7 +3169,7 @@ CONTAINS
                      sol(:) = direction_scale*sol(:)
                      model_drop = 0.5_dp*direction_scale*gdotp
                      model_calibrated_drop = model_drop
-                     IF (schur_attempt == 1) model_calibrated_drop = &
+                     IF (schur_attempt <= 2) model_calibrated_drop = &
                         split_quality_for_calibration*model_drop
                      response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
                      CALL para_env_inter_kp%max(response_abs_step)
@@ -3141,29 +3180,36 @@ CONTAINS
                         response_weighted_trust_ratio = response_weighted_step/response_trust
                      IF (response_abs_trust > EPSILON(response_abs_trust)) &
                         response_abs_trust_ratio = response_abs_step/response_abs_trust
-                     IF (schur_attempt == 1) THEN
+                     IF (schur_attempt <= 2) THEN
                         model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
                         model_gap_trust = schur_model_gap_factor*response_trust
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
                      END IF
-                     IF (schur_attempt <= 2 .AND. direction_scale < schur_min_coupled_scale) THEN
+                     IF (schur_attempt <= 3 .AND. direction_scale < schur_min_coupled_scale) THEN
                         attempt_failed = .TRUE.
                         reject_reason = reject_scale
                      END IF
-                     IF (schur_attempt <= 2 .AND. .NOT. attempt_failed .AND. &
+                     IF (schur_attempt <= 3 .AND. .NOT. attempt_failed .AND. &
                          response_step_max > response_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
                         reject_reason = reject_response
                      END IF
-                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                     IF (schur_attempt <= 2 .AND. .NOT. attempt_failed .AND. &
                          model_gap > model_gap_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
                         reject_reason = reject_model_gap
                      END IF
-                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
+                     IF (schur_attempt <= 2 .AND. .NOT. attempt_failed .AND. &
                          .NOT. split_candidate_enabled) THEN
+                        attempt_failed = .TRUE.
+                        reject_reason = reject_quality_gate
+                     END IF
+                     IF (schur_attempt == 2 .AND. .NOT. attempt_failed) THEN
+                        ! Keep the response-penalized Split model as a HIGH-only
+                        ! shadow candidate until its accepted-step quality beats
+                        ! the current Split/Coupled path in the Al restart chain.
                         attempt_failed = .TRUE.
                         reject_reason = reject_quality_gate
                      END IF
@@ -3192,6 +3238,28 @@ CONTAINS
                   coupled_response_trust_ratio = response_step_max/response_trust
                coupled_response_weighted_step = response_weighted_step
                coupled_response_weighted_trust_ratio = response_weighted_trust_ratio
+            ELSE IF (schur_attempt == 2) THEN
+               constrained_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
+               constrained_direction_scale = direction_scale
+               constrained_model_drop = model_drop
+               constrained_model_calibrated_drop = model_calibrated_drop
+               constrained_model_gap = model_gap
+               constrained_model_gap_ratio = model_gap_ratio
+               constrained_model_gap_trust = model_gap_trust
+               constrained_norm_ratio = norm_ratio
+               constrained_occ_response_diag_avg = occ_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
+               constrained_response_penalty_diag_avg = response_penalty_diag_sum/REAL(MAX(1, nrot), KIND=dp)
+               constrained_rot_diag_avg = rot_diag_sum/REAL(MAX(1, nrot), KIND=dp)
+               constrained_tether_response_diag_avg = tether_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
+               constrained_reject_reason = reject_reason
+               constrained_response_abs_step = response_abs_step
+               constrained_response_abs_trust_ratio = response_abs_trust_ratio
+               constrained_response_step = response_step_max
+               constrained_response_trust_ratio = 0.0_dp
+               IF (response_trust > EPSILON(response_trust)) &
+                  constrained_response_trust_ratio = response_step_max/response_trust
+               constrained_response_weighted_step = response_weighted_step
+               constrained_response_weighted_trust_ratio = response_weighted_trust_ratio
             END IF
 
             IF (.NOT. attempt_failed) THEN
@@ -3280,7 +3348,7 @@ CONTAINS
                   response_weighted_trust_ratio, response_abs_trust, response_abs_trust_ratio, &
                   response_trust_factor, residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, &
                   diag_shift_max, schur_diag_min, rot_floor_min, trust_rejected
-               IF (split_candidate_diagnostic) &
+               IF (split_candidate_diagnostic) THEN
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),25(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop cdrop pred meas "// &
                   "qratio qema cqual cema calib qcal resp rtrust rratio wresp wratio atrust aratio mgap mtrust mgratio norm "// &
@@ -3300,6 +3368,22 @@ CONTAINS
                   coupled_model_gap_ratio, coupled_norm_ratio, &
                   coupled_diag_shift_avg, coupled_rot_diag_avg, coupled_occ_response_diag_avg, &
                   coupled_tether_response_diag_avg
+                  IF (constrained_reject_reason /= 0 .OR. &
+                      constrained_model_drop > EPSILON(constrained_model_drop)) &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),22(1X,ES16.8))') &
+                     " OT Schur constrained audit group code samples gate new energy scale drop cdrop "// &
+                     "resp rtrust rratio wresp wratio atrust aratio mgap mtrust mgratio norm davg rdiag odiag tdiag pdiag "// &
+                     "calib qcal:", &
+                     target_group, constrained_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
+                     split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
+                     constrained_direction_scale, constrained_model_drop, constrained_model_calibrated_drop, &
+                     constrained_response_step, response_trust, constrained_response_trust_ratio, &
+                     constrained_response_weighted_step, constrained_response_weighted_trust_ratio, response_abs_trust, &
+                     constrained_response_abs_trust_ratio, constrained_model_gap, constrained_model_gap_trust, &
+                     constrained_model_gap_ratio, constrained_norm_ratio, constrained_diag_shift_avg, &
+                     constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
+                     constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration
+               END IF
             END IF
          END IF
 
