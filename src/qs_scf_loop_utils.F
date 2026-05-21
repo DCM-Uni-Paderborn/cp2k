@@ -2683,15 +2683,18 @@ CONTAINS
          coupled_diag_shift_avg, coupled_direction_scale, coupled_model_calibrated_drop, coupled_model_drop, &
          coupled_model_gap, coupled_occ_response_diag_avg, coupled_rot_diag_avg, coupled_tether_response_diag_avg, &
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
-         coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
-         diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
+         coupled_response_abs_step, coupled_response_abs_trust_ratio, coupled_response_step, &
+         coupled_response_trust_ratio, coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
+         curv_projection_sum, dense_term, diag_shift, diag_shift_avg, direction_scale, gdotp, gnorm, &
+         density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_trust, &
          model_gap_ratio, mu, norm_ratio, normp, occ_curv_projection_sum, occ_projected_term, &
          occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_shift, rot_diag_sum, &
-         response_step_max, response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
-         row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, split_curvature_scale, &
-         split_quality_for_calibration, tether_projected_term, tether_response, tether_response_diag_sum, &
-         tether_strength, tether_weight, z_shift, z_weight
+         response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
+         response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
+         split_curvature_scale, split_quality_for_calibration, tether_projected_term, tether_response, &
+         tether_response_diag_sum, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             rot_floor, rtd, rx_e, rx_model, sol, tether_curv, &
                                                             z_e, z_trial
@@ -2764,6 +2767,8 @@ CONTAINS
          rot_floor(:) = curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
+         response_abs_step = 0.0_dp
+         response_abs_trust = HUGE(1.0_dp)
          response_step_max = 0.0_dp
          response_trust = HUGE(1.0_dp)
          response_trust_base = HUGE(1.0_dp)
@@ -2787,8 +2792,12 @@ CONTAINS
          coupled_occ_response_diag_avg = 0.0_dp
          coupled_rot_diag_avg = 0.0_dp
          coupled_tether_response_diag_avg = 0.0_dp
+         coupled_response_abs_step = 0.0_dp
+         coupled_response_abs_trust_ratio = 0.0_dp
          coupled_response_step = 0.0_dp
          coupled_response_trust_ratio = 0.0_dp
+         coupled_response_weighted_step = 0.0_dp
+         coupled_response_weighted_trust_ratio = 0.0_dp
          model_gap = 0.0_dp
          model_gap_ratio = 0.0_dp
          model_gap_trust = HUGE(1.0_dp)
@@ -2933,6 +2942,7 @@ CONTAINS
 
          IF (sigma > EPSILON(sigma)) THEN
             response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
+            response_abs_trust = ot_kp_fermi_window_outer_factor*sigma
             IF (residual_delta > 0.0_dp .AND. ot_kp_canonical_density_max_weight > 0.0_dp) THEN
                density_projector_fraction = &
                   kpoint_ot_canonical_projector_weight(residual_delta, ot_kp_canonical_density_max_weight)/ &
@@ -2992,7 +3002,11 @@ CONTAINS
             END DO
             diag_shift_sum = 0.0_dp
             diag_shift_max = 0.0_dp
+            response_abs_step = 0.0_dp
+            response_abs_trust_ratio = 0.0_dp
             response_step_max = 0.0_dp
+            response_weighted_step = 0.0_dp
+            response_weighted_trust_ratio = 0.0_dp
             model_drop = 0.0_dp
             model_calibrated_drop = 0.0_dp
             model_gap = 0.0_dp
@@ -3118,7 +3132,15 @@ CONTAINS
                      model_calibrated_drop = model_drop
                      IF (schur_attempt == 1) model_calibrated_drop = &
                         split_quality_for_calibration*model_drop
-                     response_step_max = direction_scale*MAXVAL(ABS(rx_e))
+                     response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
+                     CALL para_env_inter_kp%max(response_abs_step)
+                     response_step_max = response_abs_step
+                     response_weighted_step = direction_scale* &
+                                              kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                     IF (response_trust > EPSILON(response_trust)) &
+                        response_weighted_trust_ratio = response_weighted_step/response_trust
+                     IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                        response_abs_trust_ratio = response_abs_step/response_abs_trust
                      IF (schur_attempt == 1) THEN
                         model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
                         model_gap_trust = schur_model_gap_factor*response_trust
@@ -3162,10 +3184,14 @@ CONTAINS
                coupled_rot_diag_avg = rot_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_tether_response_diag_avg = tether_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_reject_reason = reject_reason
+               coupled_response_abs_step = response_abs_step
+               coupled_response_abs_trust_ratio = response_abs_trust_ratio
                coupled_response_step = response_step_max
                coupled_response_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   coupled_response_trust_ratio = response_step_max/response_trust
+               coupled_response_weighted_step = response_weighted_step
+               coupled_response_weighted_trust_ratio = response_weighted_trust_ratio
             END IF
 
             IF (.NOT. attempt_failed) THEN
@@ -3237,20 +3263,27 @@ CONTAINS
             group_done = .TRUE.
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
                diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
+               response_abs_trust_ratio = 0.0_dp
+               IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                  response_abs_trust_ratio = response_abs_step/response_abs_trust
                response_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   response_trust_ratio = response_step_max/response_trust
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),15(1X,ES16.8),1(1X,L1))') &
-                  " OT Schur ne nrot att scale gdotp normp drop resp trust rtrust fac "// &
+               response_weighted_trust_ratio = 0.0_dp
+               IF (response_trust > EPSILON(response_trust)) &
+                  response_weighted_trust_ratio = response_weighted_step/response_trust
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),18(1X,ES16.8),1(1X,L1))') &
+                  " OT Schur ne nrot att scale gdotp normp drop resp trust rtrust wresp wratio atrust aratio fac "// &
                   "delta proj dsum davg dmax dmin floor reject:", &
                   target_group, ne, nrot, schur_used_attempt, direction_scale, gdotp, normp, &
-                  model_drop, response_step_max, response_trust, response_trust_ratio, response_trust_factor, &
-                  residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
-                  schur_diag_min, rot_floor_min, trust_rejected
+                  model_drop, response_step_max, response_trust, response_trust_ratio, response_weighted_step, &
+                  response_weighted_trust_ratio, response_abs_trust, response_abs_trust_ratio, &
+                  response_trust_factor, residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, &
+                  diag_shift_max, schur_diag_min, rot_floor_min, trust_rejected
                IF (split_candidate_diagnostic) &
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),22(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),25(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop cdrop pred meas "// &
-                  "qratio qema cqual cema calib qcal resp rtrust rratio mgap mtrust mgratio norm "// &
+                  "qratio qema cqual cema calib qcal resp rtrust rratio wresp wratio atrust aratio mgap mtrust mgratio norm "// &
                   "davg rdiag odiag tdiag:", &
                   target_group, coupled_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
                   split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
@@ -3261,7 +3294,9 @@ CONTAINS
                   local_ot_env(1)%schur_split_calibrated_quality_ema, &
                   split_curvature_scale, split_quality_for_calibration, &
                   coupled_response_step, response_trust, &
-                  coupled_response_trust_ratio, coupled_model_gap, coupled_model_gap_trust, &
+                  coupled_response_trust_ratio, coupled_response_weighted_step, &
+                  coupled_response_weighted_trust_ratio, response_abs_trust, coupled_response_abs_trust_ratio, &
+                  coupled_model_gap, coupled_model_gap_trust, &
                   coupled_model_gap_ratio, coupled_norm_ratio, &
                   coupled_diag_shift_avg, coupled_rot_diag_avg, coupled_occ_response_diag_avg, &
                   coupled_tether_response_diag_avg
@@ -3348,6 +3383,24 @@ CONTAINS
          IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
          IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
       END SUBROUTINE kpoint_ot_mixed_projected_term
+
+      FUNCTION kpoint_ot_weighted_response_step(response_vec, curv, curv_sum) RESULT(step)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_vec, curv
+      REAL(KIND=dp), INTENT(IN)                         :: curv_sum
+      REAL(KIND=dp)                                     :: step
+
+      REAL(KIND=dp)                                     :: weighted_norm
+
+         weighted_norm = DOT_PRODUCT(curv(:)*response_vec(:), response_vec(:))
+         CALL para_env_inter_kp%sum(weighted_norm)
+         IF (curv_sum > EPSILON(curv_sum)) THEN
+            step = SQRT(MAX(0.0_dp, weighted_norm/curv_sum))
+         ELSE
+            step = MAXVAL(ABS(response_vec))
+            CALL para_env_inter_kp%max(step)
+         END IF
+
+      END FUNCTION kpoint_ot_weighted_response_step
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
