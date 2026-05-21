@@ -231,6 +231,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: canonical_tether_energy = 0.0_dp, canonical_tether_strength = 0.0_dp
       REAL(KIND=dp) :: canonical_tether_weight_sum = 0.0_dp, canonical_tether_shift = 0.0_dp
       REAL(KIND=dp) :: canonical_tether_grad_max = 0.0_dp
+      ! Runtime accepted-step calibration only.  Restart files persist the OT
+      ! orbitals/history, while this Schur quality model is relearned after read.
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
       LOGICAL :: schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_model_quality_samples = 0

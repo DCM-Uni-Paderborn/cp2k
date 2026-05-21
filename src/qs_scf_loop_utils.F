@@ -2681,22 +2681,23 @@ CONTAINS
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
          coupled_diag_shift_avg, coupled_direction_scale, coupled_model_calibrated_drop, coupled_model_drop, &
-         coupled_model_gap, &
+         coupled_model_gap, coupled_occ_response_diag_avg, coupled_rot_diag_avg, coupled_tether_response_diag_avg, &
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
          coupled_response_step, coupled_response_trust_ratio, curv_projection_sum, dense_term, diag_shift, &
          diag_shift_avg, direction_scale, gdotp, gnorm, density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_trust, &
-         model_gap_ratio, mu, norm_ratio, normp, occ_curv_projection_sum, projected_term, rayleigh_edge_gap, &
-         residual_delta, response_shift, &
+         model_gap_ratio, mu, norm_ratio, normp, occ_curv_projection_sum, occ_projected_term, &
+         occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_shift, rot_diag_sum, &
          response_step_max, response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
          row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, split_curvature_scale, &
-         split_quality_for_calibration, tether_response, tether_strength, tether_weight, z_shift, z_weight
+         split_quality_for_calibration, tether_projected_term, tether_response, tether_response_diag_sum, &
+         tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             rot_floor, rtd, rx_e, rx_model, sol, tether_curv, &
                                                             z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             response_coupled, response_split, rot_hessian, &
-                                                            rot_hessian_coupled, schur
+                                                            rot_hessian_coupled, rot_hessian_projector, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -2741,7 +2742,7 @@ CONTAINS
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
          ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), response_split(ne, nrot), rot_hessian(nrot, nrot), &
-                   rot_hessian_coupled(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
+                   rot_hessian_coupled(nrot, nrot), rot_hessian_projector(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
@@ -2759,6 +2760,7 @@ CONTAINS
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
+         rot_hessian_projector(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
@@ -2782,6 +2784,9 @@ CONTAINS
          coupled_model_gap_ratio = 0.0_dp
          coupled_model_gap_trust = HUGE(1.0_dp)
          coupled_model_calibrated_drop = 0.0_dp
+         coupled_occ_response_diag_avg = 0.0_dp
+         coupled_rot_diag_avg = 0.0_dp
+         coupled_tether_response_diag_avg = 0.0_dp
          coupled_response_step = 0.0_dp
          coupled_response_trust_ratio = 0.0_dp
          model_gap = 0.0_dp
@@ -2872,7 +2877,7 @@ CONTAINS
                                                     e_offset(local_channel), h_re, h_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
-                                                    response, failed)
+                                                    rot_hessian_projector, response, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -2882,8 +2887,8 @@ CONTAINS
             DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model)
             DEALLOCATE (grad_rot, rhs, rtd, sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, schur, &
-                        ipiv, channel_nmo, e_offset)
+            DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, &
+                        rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
             RETURN
          END IF
 
@@ -2904,6 +2909,8 @@ CONTAINS
          rot_hessian(:, :) = 0.5_dp*(rot_hessian(:, :) + TRANSPOSE(rot_hessian(:, :)))
          rot_hessian_coupled(:, :) = 0.5_dp*(rot_hessian_coupled(:, :) + &
                                              TRANSPOSE(rot_hessian_coupled(:, :)))
+         rot_hessian_projector(:, :) = 0.5_dp*(rot_hessian_projector(:, :) + &
+                                               TRANSPOSE(rot_hessian_projector(:, :)))
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
@@ -2964,7 +2971,11 @@ CONTAINS
                CYCLE
             END IF
             IF (schur_attempt <= 2) THEN
-               schur(:, :) = rot_hessian_coupled(:, :)
+               IF (schur_attempt == 1) THEN
+                  schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
+               ELSE
+                  schur(:, :) = rot_hessian_coupled(:, :)
+               END IF
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
@@ -2987,6 +2998,9 @@ CONTAINS
             model_gap = 0.0_dp
             model_gap_ratio = 0.0_dp
             model_gap_trust = HUGE(1.0_dp)
+            occ_response_diag_sum = 0.0_dp
+            rot_diag_sum = 0.0_dp
+            tether_response_diag_sum = 0.0_dp
             rot_floor_min = curvature_floor
             schur_diag_min = HUGE(1.0_dp)
 
@@ -2995,7 +3009,13 @@ CONTAINS
                   IF (schur_attempt == 1) THEN
                      CALL kpoint_ot_mixed_projected_term(response_split(:, r), response_split(:, s), &
                                                          occ_curv, tether_curv, occ_curv_projection_sum, &
-                                                         channel_nmo, e_offset, projected_term)
+                                                         channel_nmo, e_offset, projected_term, &
+                                                         occ_projected_term, tether_projected_term)
+                     IF (r == s) THEN
+                        rot_diag_sum = rot_diag_sum + schur(r, r)
+                        occ_response_diag_sum = occ_response_diag_sum + occ_projected_term
+                        tether_response_diag_sum = tether_response_diag_sum + tether_projected_term
+                     END IF
                   ELSE IF (schur_attempt == 2) THEN
                      dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
                      projected_term = dense_term
@@ -3138,6 +3158,9 @@ CONTAINS
                coupled_model_gap_ratio = model_gap_ratio
                coupled_model_gap_trust = model_gap_trust
                coupled_norm_ratio = norm_ratio
+               coupled_occ_response_diag_avg = occ_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
+               coupled_rot_diag_avg = rot_diag_sum/REAL(MAX(1, nrot), KIND=dp)
+               coupled_tether_response_diag_avg = tether_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_reject_reason = reject_reason
                coupled_response_step = response_step_max
                coupled_response_trust_ratio = 0.0_dp
@@ -3225,9 +3248,10 @@ CONTAINS
                   residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, diag_shift_max, &
                   schur_diag_min, rot_floor_min, trust_rejected
                IF (split_candidate_diagnostic) &
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),19(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),22(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop cdrop pred meas "// &
-                  "qratio qema cqual cema calib qcal resp rtrust rratio mgap mtrust mgratio norm davg:", &
+                  "qratio qema cqual cema calib qcal resp rtrust rratio mgap mtrust mgratio norm "// &
+                  "davg rdiag odiag tdiag:", &
                   target_group, coupled_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
                   split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
                   coupled_direction_scale, coupled_model_drop, coupled_model_calibrated_drop, &
@@ -3239,15 +3263,16 @@ CONTAINS
                   coupled_response_step, response_trust, &
                   coupled_response_trust_ratio, coupled_model_gap, coupled_model_gap_trust, &
                   coupled_model_gap_ratio, coupled_norm_ratio, &
-                  coupled_diag_shift_avg
+                  coupled_diag_shift_avg, coupled_rot_diag_avg, coupled_occ_response_diag_avg, &
+                  coupled_tether_response_diag_avg
             END IF
          END IF
 
          DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model)
          DEALLOCATE (grad_rot, rhs, rtd, sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, schur, &
-                     ipiv, channel_nmo, e_offset)
+         DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, &
+                     rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
@@ -3288,21 +3313,25 @@ CONTAINS
       END SUBROUTINE project_kpoint_ot_schur_response
 
       SUBROUTINE kpoint_ot_mixed_projected_term(response_left, response_right, occ_curv, tether_curv, &
-                                                occ_curv_sum, channel_nmo, e_offset, projected_term)
+                                                occ_curv_sum, channel_nmo, e_offset, projected_term, &
+                                                occ_projected_term, tether_projected_term)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_left, response_right, occ_curv, tether_curv
       REAL(KIND=dp), INTENT(IN)                         :: occ_curv_sum
       INTEGER, DIMENSION(:), INTENT(IN)                 :: channel_nmo, e_offset
       REAL(KIND=dp), INTENT(OUT)                        :: projected_term
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL              :: occ_projected_term, tether_projected_term
 
       INTEGER                                           :: first_energy, local_channel, nmo
-      REAL(KIND=dp)                                     :: left_shift, right_shift, weight_sum
+      REAL(KIND=dp)                                     :: left_shift, occ_term, right_shift, tether_term, &
+                                                            weight_sum
 
-         projected_term = DOT_PRODUCT((occ_curv(:) + tether_curv(:))*response_left(:), response_right(:))
+         occ_term = DOT_PRODUCT(occ_curv(:)*response_left(:), response_right(:))
          IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
             left_shift = DOT_PRODUCT(occ_curv, response_left)
             right_shift = DOT_PRODUCT(occ_curv, response_right)
-            projected_term = projected_term - left_shift*right_shift/occ_curv_sum
+            occ_term = occ_term - left_shift*right_shift/occ_curv_sum
          END IF
+         tether_term = DOT_PRODUCT(tether_curv(:)*response_left(:), response_right(:))
          DO local_channel = 1, SIZE(channel_nmo)
             nmo = channel_nmo(local_channel)
             IF (nmo <= 0) CYCLE
@@ -3313,26 +3342,31 @@ CONTAINS
                                      response_left(first_energy:first_energy + nmo - 1))
             right_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
                                       response_right(first_energy:first_energy + nmo - 1))
-            projected_term = projected_term - left_shift*right_shift/weight_sum
+            tether_term = tether_term - left_shift*right_shift/weight_sum
          END DO
+         projected_term = occ_term + tether_term
+         IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
+         IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
       END SUBROUTINE kpoint_ot_mixed_projected_term
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
                                                  var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
-                                                 response, failed)
+                                                 rot_hessian_projector, response, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, response
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, &
+                                                            rot_hessian_projector, response
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, occ_mat, occ_mat_coupled, u
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, occ_mat, &
+                                                            occ_mat_coupled, occ_mat_m, occ_mat_p, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -3352,8 +3386,9 @@ CONTAINS
          CALL local_ot_env(local_channel)%para_env%sum(u_re)
          CALL local_ot_env(local_channel)%para_env%sum(u_im)
 
-         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), occ_mat(nmo, nmo), &
-                   occ_mat_coupled(nmo, nmo))
+         ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), &
+                   chc_p(nmo, nmo), chc_m(nmo, nmo), occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), &
+                   occ_mat_m(nmo, nmo), occ_mat_coupled(nmo, nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -3401,6 +3436,26 @@ CONTAINS
                   rot_hessian(r, s) = 2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
                END SELECT
             END DO
+            CALL dense_rotated_chc(x_p_re, x_p_im, base, chc_p)
+            CALL dense_rotated_chc(x_m_re, x_m_im, base, chc_m)
+            CALL dense_history_safe_occ_projector(chc_p, occupation_numbers, kpoint_weight, &
+                                                  local_ot_env(local_channel)%delta, occ_mat_p)
+            CALL dense_history_safe_occ_projector(chc_m, occupation_numbers, kpoint_weight, &
+                                                  local_ot_env(local_channel)%delta, occ_mat_m)
+            CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat_p, grad_p_re, grad_p_im, eps_p)
+            CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat_m, grad_m_re, grad_m_im, eps_m)
+            DO r = first_var, last_var
+               imo = var_i(r)
+               jmo = var_j(r)
+               SELECT CASE (var_kind(r))
+               CASE (1)
+                  rot_hessian_projector(r, s) = &
+                     2.0_dp*(grad_p_re(imo, jmo) - grad_m_re(imo, jmo))/(2.0_dp*fd_step)
+               CASE (2)
+                  rot_hessian_projector(r, s) = &
+                     2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
+               END SELECT
+            END DO
             CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat_coupled, grad_p_re, &
                                              grad_p_im, eps_p)
             CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat_coupled, grad_m_re, &
@@ -3422,10 +3477,37 @@ CONTAINS
             END DO
          END DO
 
-         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, occ_mat, occ_mat_coupled)
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, occ_mat, occ_mat_p, occ_mat_m, &
+                     occ_mat_coupled)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m)
       END SUBROUTINE build_finite_ref_rotation_model
+
+      SUBROUTINE dense_rotated_chc(x_re, x_im, base, chc)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: chc
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, generator, u
+      INTEGER                                            :: j, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+         n = SIZE(x_re, 1)
+         ALLOCATE (generator(n, n), evec(n, n), u(n, n), evals(n))
+
+         generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+         CALL diag_complex(generator, evec, evals)
+
+         u(:, :) = evec(:, :)
+         DO j = 1, n
+            u(:, j) = EXP(CMPLX(0.0_dp, -evals(j), KIND=dp))*u(:, j)
+         END DO
+         u(:, :) = MATMUL(u, CONJG(TRANSPOSE(evec)))
+
+         chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+
+         DEALLOCATE (generator, evec, u, evals)
+      END SUBROUTINE dense_rotated_chc
 
       SUBROUTINE dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, delta, occ_mat)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc

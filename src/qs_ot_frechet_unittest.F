@@ -56,6 +56,8 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-14_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
+   CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
+                                            2.0E-6_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -1095,6 +1097,25 @@ CONTAINS
    END SUBROUTINE perturb_complex_rotation_var
 
 ! **************************************************************************************************
+!> \brief Perturb one packed complex rotation variable in a dense 2-D fixture.
+! **************************************************************************************************
+   SUBROUTINE perturb_complex_rotation_var_2d(x_re, x_im, i, j, kind, step)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: x_re, x_im
+      INTEGER, INTENT(IN)                                :: i, j, kind
+      REAL(KIND=dp), INTENT(IN)                          :: step
+
+      SELECT CASE (kind)
+      CASE (1)
+         x_re(i, j) = x_re(i, j) + step
+         x_re(j, i) = x_re(j, i) - step
+      CASE (2)
+         x_im(i, j) = x_im(i, j) + step
+         x_im(j, i) = x_im(j, i) + step
+      END SELECT
+
+   END SUBROUTINE perturb_complex_rotation_var_2d
+
+! **************************************************************************************************
 !> \brief Pack off-diagonal real/imaginary rotation gradients into a vector.
 ! **************************************************************************************************
    SUBROUTINE extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_vec)
@@ -1114,6 +1135,27 @@ CONTAINS
       END DO
 
    END SUBROUTINE extract_rotation_gradient_vector
+
+! **************************************************************************************************
+!> \brief Pack off-diagonal real/imaginary rotation gradients from a dense 2-D fixture.
+! **************************************************************************************************
+   SUBROUTINE extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_vec)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: grad_re, grad_im
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: grad_vec
+
+      INTEGER                                            :: r
+
+      DO r = 1, SIZE(var_i)
+         SELECT CASE (var_kind(r))
+         CASE (1)
+            grad_vec(r) = grad_re(var_i(r), var_j(r))
+         CASE (2)
+            grad_vec(r) = grad_im(var_i(r), var_j(r))
+         END SELECT
+      END DO
+
+   END SUBROUTINE extract_rotation_gradient_vector_2d
 
 ! **************************************************************************************************
 !> \brief Dense complex k-point Mermin value with occupations from auxiliary energies.
@@ -1297,6 +1339,207 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_rotation_gradient
+
+! **************************************************************************************************
+!> \brief Check that the finite rotation Hessian includes the moving occupation projector.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_hessian(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-7_dp, &
+                                                            fd_step = 2.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, occ_mat
+      INTEGER                                            :: i, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: active_err, err, fd, symmetry_err, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrozen, hmove
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.37_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(-0.08_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.21_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.07_dp, -0.03_dp, KIND=dp)
+      base(1, 3) = CMPLX(-0.04_dp, 0.05_dp, KIND=dp)
+      base(2, 3) = CMPLX(0.03_dp, 0.04_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(3, 1) = CONJG(base(1, 3))
+      base(3, 2) = CONJG(base(2, 3))
+
+      occ_scale(:) = [1.54_dp, 0.83_dp, 0.25_dp]
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.05_dp
+      x_re(1, 3) = -0.025_dp
+      x_re(2, 3) = 0.035_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+         END DO
+      END DO
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.015_dp
+      x_im(2, 2) = -0.03_dp
+      x_im(3, 3) = 0.02_dp
+      x_im(1, 2) = -0.015_dp
+      x_im(1, 3) = 0.02_dp
+      x_im(2, 3) = 0.025_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+
+      r = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            r = r + 1
+            var_i(r) = i
+            var_j(r) = j
+            var_kind(r) = 1
+            r = r + 1
+            var_i(r) = i
+            var_j(r) = j
+            var_kind(r) = 2
+         END DO
+      END DO
+
+      CALL dense_spectral_projector_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
+
+      err = 0.0_dp
+      DO s = 1, nrot
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+         value_p = dense_spectral_projector_value(x_p_re, x_p_im, base, occ_scale)
+         value_m = dense_spectral_projector_value(x_m_re, x_m_im, base, occ_scale)
+         fd = (value_p - value_m)/(2.0_dp*fd_step)
+         SELECT CASE (var_kind(s))
+         CASE (1)
+            err = MAX(err, ABS(fd - grad_re(var_i(s), var_j(s))))
+         CASE (2)
+            err = MAX(err, ABS(fd - grad_im(var_i(s), var_j(s))))
+         END SELECT
+      END DO
+
+      CALL dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_mat)
+      DO s = 1, nrot
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_spectral_projector_gradient(x_p_re, x_p_im, base, occ_scale, &
+                                                grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_spectral_projector_gradient(x_m_re, x_m_im, base, occ_scale, &
+                                                grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hmove(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_mat, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_mat, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hfrozen(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+      END DO
+
+      symmetry_err = MAXVAL(ABS(hmove(:, :) - TRANSPOSE(hmove(:, :))))
+      active_err = MAXVAL(ABS(hmove(:, :) - hfrozen(:, :)))
+      err = MAX(err, symmetry_err)
+
+      IF (err > tol .OR. active_err < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active_err
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_hessian
+
+! **************************************************************************************************
+!> \brief Dense value 1/2 sum_i f_i lambda_i[U^H H U].
+! **************************************************************************************************
+   FUNCTION dense_spectral_projector_value(x_re, x_im, base, occ_scale) RESULT(value)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp)                                      :: value
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec, u
+      INTEGER                                            :: n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), evec(n, n), u(n, n), evals(n))
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      CALL diag_complex(chc, evec, evals)
+      value = 0.5_dp*SUM(occ_scale(:)*evals(:))
+      DEALLOCATE (chc, evec, u, evals)
+
+   END FUNCTION dense_spectral_projector_value
+
+! **************************************************************************************************
+!> \brief Dense spectral occupation projector in the current rotated REF basis.
+! **************************************************************************************************
+   SUBROUTINE dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_mat)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec, u, weighted_evec
+      INTEGER                                            :: i, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), evec(n, n), u(n, n), weighted_evec(n, n), evals(n))
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      CALL diag_complex(chc, evec, evals)
+      weighted_evec(:, :) = evec(:, :)
+      DO i = 1, n
+         weighted_evec(:, i) = occ_scale(i)*weighted_evec(:, i)
+      END DO
+      occ_mat(:, :) = MATMUL(weighted_evec, CONJG(TRANSPOSE(evec)))
+      DEALLOCATE (chc, evec, u, weighted_evec, evals)
+
+   END SUBROUTINE dense_spectral_occ_projector
+
+! **************************************************************************************************
+!> \brief Gradient of the dense spectral occupation-projector value.
+! **************************************************************************************************
+   SUBROUTINE dense_spectral_projector_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: occ_mat
+      INTEGER                                            :: n
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (occ_mat(n, n))
+      CALL dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_mat)
+      CALL dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
+      DEALLOCATE (occ_mat)
+
+   END SUBROUTINE dense_spectral_projector_gradient
 
 ! **************************************************************************************************
 !> \brief Dense value 1/2 Tr[P U^H H U] for a doubled Hermitian occupation projector.
