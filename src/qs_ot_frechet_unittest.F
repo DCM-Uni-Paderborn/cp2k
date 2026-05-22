@@ -52,6 +52,8 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-5_dp, nfail)
    CALL check_complex_fixed_n_response_channel("complex fixed-N response channel", &
                                                2.0E-7_dp, nfail)
+   CALL check_complex_projector_blended_response_channel("complex projector-blended response channel", &
+                                                         5.0E-9_dp, nfail)
    CALL check_mixed_fixed_n_tether_projector("mixed fixed-N/tether Schur projector", &
                                              5.0E-14_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
@@ -970,6 +972,120 @@ CONTAINS
    END SUBROUTINE check_complex_fixed_n_response_channel
 
 ! **************************************************************************************************
+!> \brief Check the response blend used by the finite complex split Schur model.
+!>        The diagonal-gauge occupation response follows d[U^H H U]_ii/dtheta,
+!>        while the spectral projector part follows canonical eigenvalues, which
+!>        are invariant under local finite REF-gauge rotations.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_blended_response_channel(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nkp = 1, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-6_dp, &
+                                                            projector_weight = 0.35_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, ivar, j, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: active_err, err
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eig_m, eig_p, h_m, h_p
+      REAL(KIND=dp), DIMENSION(n)                        :: combined_cross, combined_response, curv, &
+                                                            diag_response, occ_curv, occ_response, &
+                                                            spectral_response, tether_curv
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+
+      base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1, 1) = CMPLX(-0.28_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 1) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 1) = CMPLX(0.22_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 1) = CMPLX(0.060_dp, -0.020_dp, KIND=dp)
+      base(1, 3, 1) = CMPLX(-0.025_dp, 0.035_dp, KIND=dp)
+      base(2, 3, 1) = CMPLX(0.040_dp, 0.025_dp, KIND=dp)
+      base(2, 1, 1) = CONJG(base(1, 2, 1))
+      base(3, 1, 1) = CONJG(base(1, 3, 1))
+      base(3, 2, 1) = CONJG(base(2, 3, 1))
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.040_dp
+      x_re(1, 3, 1) = -0.035_dp
+      x_re(2, 3, 1) = 0.020_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i, 1) = -x_re(i, j, 1)
+         END DO
+      END DO
+
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 1, 1) = 0.018_dp
+      x_im(2, 2, 1) = -0.022_dp
+      x_im(3, 3, 1) = 0.014_dp
+      x_im(1, 2, 1) = -0.018_dp
+      x_im(1, 3, 1) = 0.016_dp
+      x_im(2, 3, 1) = 0.026_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i, 1) = x_im(i, j, 1)
+         END DO
+      END DO
+
+      ivar = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 2
+         END DO
+      END DO
+
+      occ_curv(:) = [0.65_dp, 1.10_dp, 0.42_dp]
+      tether_curv(:) = [0.18_dp, 0.27_dp, 0.09_dp]
+      curv(:) = occ_curv(:) + tether_curv(:)
+
+      err = 0.0_dp
+      active_err = 0.0_dp
+      DO s = 1, nrot
+         x_p_re(:, :, :) = x_re(:, :, :)
+         x_m_re(:, :, :) = x_re(:, :, :)
+         x_p_im(:, :, :) = x_im(:, :, :)
+         x_m_im(:, :, :) = x_im(:, :, :)
+         CALL perturb_complex_rotation_var(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, h_p)
+         CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, h_m)
+         CALL dense_complex_kpoint_eigvals(x_p_re, x_p_im, base, eig_p)
+         CALL dense_complex_kpoint_eigvals(x_m_re, x_m_im, base, eig_m)
+
+         diag_response(:) = (h_p(:, 1) - h_m(:, 1))/(2.0_dp*fd_step)
+         spectral_response(:) = (eig_p(:, 1) - eig_m(:, 1))/(2.0_dp*fd_step)
+         occ_response(:) = (1.0_dp - projector_weight)*diag_response(:) + &
+                           projector_weight*spectral_response(:)
+         combined_cross(:) = occ_curv(:)*occ_response(:) + tether_curv(:)*diag_response(:)
+         combined_response(:) = combined_cross(:)/curv(:)
+
+         err = MAX(err, MAXVAL(ABS(curv(:)*combined_response(:) - combined_cross(:))))
+         err = MAX(err, MAXVAL(ABS(spectral_response(:))))
+         active_err = MAX(active_err, MAXVAL(ABS(combined_response(:) - diag_response(:))))
+      END DO
+
+      IF (err > tol .OR. active_err < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active_err
+      END IF
+
+   END SUBROUTINE check_complex_projector_blended_response_channel
+
+! **************************************************************************************************
 !> \brief Check the split Schur projector for global fixed-N Mermin response plus channel-local tether.
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_tether_projector(label, tol, nfail)
@@ -1076,6 +1192,29 @@ CONTAINS
       DEALLOCATE (chc, u)
 
    END SUBROUTINE dense_complex_kpoint_hdiag
+
+! **************************************************************************************************
+!> \brief Eigenvalues of U^H H U for each dense complex k-point channel.
+! **************************************************************************************************
+   SUBROUTINE dense_complex_kpoint_eigvals(x_re, x_im, base, eigvals)
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(IN)   :: base
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: eigvals
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec, u
+      INTEGER                                            :: ik, n, nkp
+
+      n = SIZE(x_re, 1)
+      nkp = SIZE(x_re, 3)
+      ALLOCATE (chc(n, n), evec(n, n), u(n, n))
+      DO ik = 1, nkp
+         CALL dense_rotation_u(x_re(:, :, ik), x_im(:, :, ik), u)
+         chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base(:, :, ik), u))
+         CALL diag_complex(chc, evec, eigvals(:, ik))
+      END DO
+      DEALLOCATE (chc, evec, u)
+
+   END SUBROUTINE dense_complex_kpoint_eigvals
 
 ! **************************************************************************************************
 !> \brief Perturb one off-diagonal real or imaginary anti-Hermitian rotation variable.

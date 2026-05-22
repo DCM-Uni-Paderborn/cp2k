@@ -2790,8 +2790,9 @@ CONTAINS
                                                             rx_e, rx_model, sol, tether_curv, &
                                                             z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            response_coupled, response_split, rot_hessian, &
-                                                            rot_hessian_coupled, rot_hessian_projector, schur
+                                                            response_coupled, response_occ, response_split, &
+                                                            rot_hessian, rot_hessian_coupled, &
+                                                            rot_hessian_projector, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -2835,8 +2836,9 @@ CONTAINS
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), response_split(ne, nrot), rot_hessian(nrot, nrot), &
-                   rot_hessian_coupled(nrot, nrot), rot_hessian_projector(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
+         ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), response_occ(ne, nrot), &
+                   response_split(ne, nrot), rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
+                   rot_hessian_projector(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
 
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
@@ -2851,6 +2853,7 @@ CONTAINS
          sol(:) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
+         response_occ(:, :) = 0.0_dp
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
@@ -3005,7 +3008,7 @@ CONTAINS
                                                     e_offset(local_channel), h_re, h_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
-                                                    rot_hessian_projector, response, failed)
+                                                    rot_hessian_projector, response, response_occ, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -3015,8 +3018,8 @@ CONTAINS
             DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, &
-                        rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
+            DEALLOCATE (rot_floor, response, response_coupled, response_occ, response_split, rot_hessian, &
+                        rot_hessian_coupled, rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
             RETURN
          END IF
 
@@ -3043,10 +3046,19 @@ CONTAINS
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
          CALL para_env_inter_kp%sum(occ_curv_projection_sum)
-         ! The coupled candidate sees only the finite fixed-N occupation-response range;
-         ! the fallback keeps the raw Rayleigh response that has proven robust in the tail.
+         ! The split candidate follows the same diagonal/spectral projector blend as
+         ! the finite complex rotation gradient: occupation curvature sees only the
+         ! diagonal-gauge Rayleigh response, while the channel-local tether still sees
+         ! the full Rayleigh diagonal it anchors.
          response_coupled(:, :) = response(:, :)
-         response_split(:, :) = response(:, :)
+         response_split(:, :) = 0.0_dp
+         DO r = 1, nrot
+            DO ie = 1, ne
+               IF (curv(ie) > EPSILON(curv(ie))) &
+                  response_split(ie, r) = (occ_curv(ie)*response_occ(ie, r) + &
+                                           tether_curv(ie)*response(ie, r))/curv(ie)
+            END DO
+         END DO
          DO r = 1, nrot
             response_shift = DOT_PRODUCT(curv, response_coupled(:, r))
             CALL para_env_inter_kp%sum(response_shift)
@@ -3536,8 +3548,8 @@ CONTAINS
          DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, &
-                     rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
+         DEALLOCATE (rot_floor, response, response_coupled, response_occ, response_split, rot_hessian, &
+                     rot_hessian_coupled, rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
@@ -3635,7 +3647,7 @@ CONTAINS
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
                                                  var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
-                                                 rot_hessian_projector, response, failed)
+                                                 rot_hessian_projector, response, response_occ, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
@@ -3643,7 +3655,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, &
-                                                            rot_hessian_projector, response
+                                                            rot_hessian_projector, response, response_occ
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
@@ -3651,6 +3663,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, occ_mat, &
                                                             occ_mat_coupled, occ_mat_m, occ_mat_p, u
       INTEGER                                            :: ie, imo, jmo, r, s
+      REAL(KIND=dp)                                      :: projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
@@ -3681,6 +3694,8 @@ CONTAINS
          DO imo = 1, nmo
             occ_mat_coupled(imo, imo) = CMPLX(2.0_dp*kpoint_weight*occupation_numbers(imo), 0.0_dp, KIND=dp)
          END DO
+         projector_weight = kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
+                                                                 ot_kp_canonical_projector_max_weight)
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))
          ALLOCATE (grad_p_re(nmo, nmo), grad_p_im(nmo, nmo), grad_m_re(nmo, nmo), grad_m_im(nmo, nmo))
@@ -3756,7 +3771,13 @@ CONTAINS
                END SELECT
             END DO
             DO ie = 1, nmo
-               response(first_energy + ie - 1, s) = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
+               raw_response = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
+               response(first_energy + ie - 1, s) = raw_response
+               ! The spectral occupation-projector part follows canonical eigenvalues
+               ! of U^H H U, which are invariant under finite REF-gauge rotations in
+               ! this local model; only the diagonal gauge fraction has Rayleigh
+               ! occupation response.
+               response_occ(first_energy + ie - 1, s) = (1.0_dp - projector_weight)*raw_response
             END DO
          END DO
 
