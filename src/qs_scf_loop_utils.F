@@ -134,7 +134,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibration_max_scale = 1.2_dp, &
                                         ot_kp_schur_calibrated_quality_max_ratio = 2.5_dp, &
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
-                                        ot_kp_schur_constrained_advantage_ratio = 1.05_dp
+                                        ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
+                                        ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -2477,6 +2478,8 @@ CONTAINS
             END IF
             local_ot_env(1)%schur_constrained_drop_sum = &
                local_ot_env(1)%schur_constrained_drop_sum + constrained_predicted_drop
+            local_ot_env(1)%schur_constrained_calibrated_drop_sum = &
+               local_ot_env(1)%schur_constrained_calibrated_drop_sum + constrained_calibrated_predicted_drop
             local_ot_env(1)%schur_constrained_measured_sum = &
                local_ot_env(1)%schur_constrained_measured_sum + measured_drop
          ELSE IF (local_ot_env(1)%schur_constrained_pending) THEN
@@ -2506,6 +2509,8 @@ CONTAINS
                      ot_kp_schur_quality_ema_alpha*calibrated_quality_ratio
                END IF
                local_ot_env(1)%schur_split_drop_sum = local_ot_env(1)%schur_split_drop_sum + predicted_drop
+               local_ot_env(1)%schur_split_calibrated_drop_sum = &
+                  local_ot_env(1)%schur_split_calibrated_drop_sum + calibrated_predicted_drop
                local_ot_env(1)%schur_split_measured_sum = local_ot_env(1)%schur_split_measured_sum + measured_drop
             CASE (3)
                local_ot_env(1)%schur_coupled_quality = quality_ratio
@@ -2572,14 +2577,17 @@ CONTAINS
                local_ot_env(1)%schur_split_drop_sum, local_ot_env(1)%schur_split_measured_sum, &
                local_ot_env(1)%schur_coupled_quality, local_ot_env(1)%schur_coupled_quality_ema, &
                local_ot_env(1)%schur_coupled_drop_sum, local_ot_env(1)%schur_coupled_measured_sum
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES16.8),1X,L1)') &
-               " OT Schur LS constrained n ratio ema cal cal_ema pred meas gap split_cal_ema enabled:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,10(1X,ES16.8),1X,L1)') &
+               " OT Schur LS constrained n ratio ema cal cal_ema pred cpred meas gap split_cal_ema split_cpred enabled:", &
                local_ot_env(1)%schur_constrained_quality_samples, &
                local_ot_env(1)%schur_constrained_quality, local_ot_env(1)%schur_constrained_quality_ema, &
                local_ot_env(1)%schur_constrained_calibrated_quality, &
                local_ot_env(1)%schur_constrained_calibrated_quality_ema, &
-               local_ot_env(1)%schur_constrained_drop_sum, local_ot_env(1)%schur_constrained_measured_sum, &
-               local_ot_env(1)%schur_constrained_gap_ratio, local_ot_env(1)%schur_split_calibrated_quality_ema, &
+               local_ot_env(1)%schur_constrained_drop_sum, &
+               local_ot_env(1)%schur_constrained_calibrated_drop_sum, &
+               local_ot_env(1)%schur_constrained_measured_sum, local_ot_env(1)%schur_constrained_gap_ratio, &
+               local_ot_env(1)%schur_split_calibrated_quality_ema, &
+               local_ot_env(1)%schur_split_calibrated_drop_sum, &
                local_ot_env(1)%schur_constrained_candidate_enabled
          END IF
 
@@ -2741,6 +2749,7 @@ CONTAINS
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
                                                             nchannels, ne, nmo, nrot, r, s, schur_attempt, &
+                                                            selected_attempt, &
                                                             schur_used_attempt, constrained_reject_reason, &
                                                             coupled_reject_reason, &
                                                             reject_reason
@@ -2749,12 +2758,14 @@ CONTAINS
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, failed, new_search_point, solved, &
                                                             constrained_candidate_enabled, &
+                                                            constrained_candidate_ready, constrained_candidate_selected, &
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
          constrained_diag_shift_avg, constrained_direction_scale, constrained_model_calibrated_drop, &
          constrained_model_drop, constrained_model_gap, constrained_model_gap_ratio, &
-         constrained_model_gap_trust, constrained_norm_ratio, constrained_occ_response_diag_avg, &
+         constrained_expected_drop, constrained_expected_drop_ratio, constrained_gdotp, &
+         constrained_model_gap_trust, constrained_normp, constrained_norm_ratio, constrained_occ_response_diag_avg, &
          constrained_response_abs_step, constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
          constrained_response_step, constrained_response_trust_ratio, constrained_response_weighted_step, &
          constrained_response_weighted_trust_ratio, constrained_rot_diag_avg, constrained_tether_response_diag_avg, &
@@ -2772,10 +2783,11 @@ CONTAINS
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
-         split_curvature_scale, split_quality_for_calibration, tether_projected_term, tether_response, &
+         split_curvature_scale, split_expected_drop, split_quality_for_calibration, tether_projected_term, tether_response, &
          tether_response_diag_sum, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
-                                                            rot_floor, rtd, rx_e, rx_model, sol, tether_curv, &
+                                                            constrained_sol, constrained_z_e, rot_floor, rtd, &
+                                                            rx_e, rx_model, sol, tether_curv, &
                                                             z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             response_coupled, response_split, rot_hessian, &
@@ -2819,8 +2831,8 @@ CONTAINS
          END IF
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_trial(ne), rx_e(ne), &
-                   rx_model(ne))
-         ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot))
+                   rx_model(ne), constrained_z_e(ne))
+         ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
          ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), response_split(ne, nrot), rot_hessian(nrot, nrot), &
@@ -2858,7 +2870,11 @@ CONTAINS
          schur_diag_min = HUGE(1.0_dp)
          constrained_diag_shift_avg = 0.0_dp
          constrained_direction_scale = 0.0_dp
+         constrained_expected_drop = 0.0_dp
+         constrained_expected_drop_ratio = 0.0_dp
+         constrained_gdotp = 0.0_dp
          constrained_model_drop = 0.0_dp
+         constrained_normp = 0.0_dp
          constrained_norm_ratio = 0.0_dp
          constrained_reject_reason = 0
          constrained_model_gap = 0.0_dp
@@ -2901,9 +2917,14 @@ CONTAINS
          model_gap_trust = HUGE(1.0_dp)
          model_calibrated_drop = 0.0_dp
          split_curvature_scale = 1.0_dp
+         split_expected_drop = 0.0_dp
          split_quality_for_calibration = 1.0_dp
          failed = .FALSE.
+         constrained_candidate_ready = .FALSE.
+         constrained_candidate_selected = .FALSE.
          ivar = 0
+         constrained_sol(:) = 0.0_dp
+         constrained_z_e(:) = 0.0_dp
 
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -2991,8 +3012,8 @@ CONTAINS
 
          CPASSERT(ivar == nrot)
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model)
-            DEALLOCATE (grad_rot, rhs, rtd, sol)
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e)
+            DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, &
                         rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
@@ -3281,15 +3302,20 @@ CONTAINS
                         attempt_failed = .TRUE.
                         reject_reason = reject_quality_gate
                      END IF
-                     IF (schur_attempt == 1 .AND. .NOT. attempt_failed .AND. &
-                         .NOT. constrained_candidate_enabled) THEN
-                        ! Learn this candidate from the accepted line-search drop
-                        ! before allowing it to steer the minimizer.
-                        attempt_failed = .TRUE.
-                        reject_reason = reject_quality_gate
-                     END IF
                   END IF
                END IF
+            END IF
+
+            IF (schur_attempt == 1 .AND. .NOT. attempt_failed) THEN
+               constrained_candidate_ready = .TRUE.
+               constrained_sol(:) = sol(:)
+               constrained_z_e(:) = z_e(:)
+               constrained_gdotp = gdotp
+               constrained_normp = normp
+               ! Delay the constrained candidate until the raw Split candidate for
+               ! the same search point gives an absolute Mermin-drop comparator.
+               attempt_failed = .TRUE.
+               reject_reason = reject_quality_gate
             END IF
 
             IF (schur_attempt == 2) THEN
@@ -3348,9 +3374,42 @@ CONTAINS
                END IF
             END IF
 
+            IF (schur_attempt == 2 .AND. constrained_candidate_ready .AND. &
+                model_calibrated_drop > EPSILON(model_calibrated_drop)) THEN
+               split_expected_drop = model_calibrated_drop* &
+                                     MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                         local_ot_env(1)%schur_split_calibrated_quality_ema)
+               constrained_expected_drop = constrained_model_calibrated_drop* &
+                                           MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                               local_ot_env(1)%schur_constrained_calibrated_quality_ema)
+               IF (split_expected_drop > EPSILON(split_expected_drop)) &
+                  constrained_expected_drop_ratio = constrained_expected_drop/split_expected_drop
+               IF (.NOT. attempt_failed .AND. constrained_candidate_enabled .AND. &
+                   constrained_expected_drop_ratio >= ot_kp_schur_constrained_drop_advantage_ratio) THEN
+                  constrained_candidate_selected = .TRUE.
+                  z_e(:) = constrained_z_e(:)
+                  sol(:) = constrained_sol(:)
+                  direction_scale = constrained_direction_scale
+                  gdotp = constrained_gdotp
+                  normp = constrained_normp
+                  norm_ratio = constrained_norm_ratio
+                  model_drop = constrained_model_drop
+                  model_calibrated_drop = constrained_model_calibrated_drop
+                  model_gap_ratio = constrained_model_gap_ratio
+                  response_step_max = constrained_response_step
+                  response_abs_step = constrained_response_abs_step
+                  response_abs_trust_ratio = constrained_response_abs_trust_ratio
+                  response_weighted_step = constrained_response_weighted_step
+                  response_weighted_trust_ratio = constrained_response_weighted_trust_ratio
+                  constrained_reject_reason = 0
+               END IF
+            END IF
+
             IF (.NOT. attempt_failed) THEN
                solved = .TRUE.
-               schur_used_attempt = schur_attempt
+               selected_attempt = schur_attempt
+               IF (constrained_candidate_selected) selected_attempt = 1
+               schur_used_attempt = selected_attempt
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
                accepted_model_gap_ratio = model_gap_ratio
@@ -3456,10 +3515,10 @@ CONTAINS
                   coupled_tether_response_diag_avg
                   IF (constrained_reject_reason /= 0 .OR. &
                       constrained_model_drop > EPSILON(constrained_model_drop)) &
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),22(1X,ES16.8))') &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),25(1X,ES16.8))') &
                      " OT Schur constrained audit group code samples gate new energy scale drop cdrop "// &
                      "resp rtrust rratio wresp wratio atrust aratio mgap mtrust mgratio norm davg rdiag odiag tdiag pdiag "// &
-                     "calib qcal:", &
+                     "calib qcal split_exp constr_exp exp_ratio:", &
                      target_group, constrained_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
                      split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
                      constrained_direction_scale, constrained_model_drop, constrained_model_calibrated_drop, &
@@ -3468,13 +3527,14 @@ CONTAINS
                      constrained_response_abs_trust_ratio, constrained_model_gap, constrained_model_gap_trust, &
                      constrained_model_gap_ratio, constrained_norm_ratio, constrained_diag_shift_avg, &
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
-                     constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration
+                     constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
+                     split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
                END IF
             END IF
          END IF
 
-         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model)
-         DEALLOCATE (grad_rot, rhs, rtd, sol)
+         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e)
+         DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, response, response_coupled, response_split, rot_hessian, rot_hessian_coupled, &
                      rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)

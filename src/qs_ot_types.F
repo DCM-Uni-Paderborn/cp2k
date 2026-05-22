@@ -249,11 +249,13 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_constrained_calibrated_quality = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_drop_sum = 0.0_dp, schur_constrained_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_constrained_calibrated_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_gap_ratio = 0.0_dp
       REAL(KIND=dp) :: schur_split_quality = 0.0_dp, schur_split_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_quality = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_drop_sum = 0.0_dp, schur_split_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_split_calibrated_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
@@ -513,6 +515,7 @@ CONTAINS
       qs_ot_env%schur_constrained_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_constrained_drop_sum = 0.0_dp
       qs_ot_env%schur_constrained_measured_sum = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_drop_sum = 0.0_dp
       qs_ot_env%schur_constrained_gap_ratio = 0.0_dp
       qs_ot_env%schur_split_quality = 0.0_dp
       qs_ot_env%schur_split_quality_ema = 0.0_dp
@@ -520,6 +523,7 @@ CONTAINS
       qs_ot_env%schur_split_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_split_drop_sum = 0.0_dp
       qs_ot_env%schur_split_measured_sum = 0.0_dp
+      qs_ot_env%schur_split_calibrated_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_quality = 0.0_dp
       qs_ot_env%schur_coupled_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_drop_sum = 0.0_dp
