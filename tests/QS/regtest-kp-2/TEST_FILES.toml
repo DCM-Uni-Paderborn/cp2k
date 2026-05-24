@@ -22,8 +22,8 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05970988404722},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14579655204755},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14579655204755},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14579102781266},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14579102781266},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104035E-4},
                                            {matcher="OT_SCF_convergence", tol=1.0E-1, ref=2.6078E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
@@ -32,7 +32,7 @@
 # after the write/read/continue chain. It is intentionally not listed here,
 # so the default restart/smearing regtest stays cheap while the optional
 # physics tail can still be checked against the ~1E-5 Mermin path.  Current
-# local reference: 441 SCF steps, E_total = Mermin = -8.14585255774876 Ha.
+# local reference: 382 SCF steps, E_total = Mermin = -8.14585251032902 Ha.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]

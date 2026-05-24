@@ -3347,8 +3347,18 @@ CONTAINS
                         attempt_failed = .TRUE.
                         reject_reason = reject_scale
                      END IF
+                     ! Trust the Schur response in the fixed-N Mermin metric.  A
+                     ! single weakly-curved band may have a large absolute energy
+                     ! response; the broad outer guard below catches real Fermi-window
+                     ! escapes without rejecting curvature-weighted rotation steps.
                      IF (schur_attempt <= 3 .AND. .NOT. attempt_failed .AND. &
-                         response_step_max > response_trust) THEN
+                         response_weighted_step > response_trust) THEN
+                        attempt_failed = .TRUE.
+                        trust_rejected = .TRUE.
+                        reject_reason = reject_response
+                     END IF
+                     IF (schur_attempt <= 3 .AND. .NOT. attempt_failed .AND. &
+                         response_abs_step > response_abs_trust) THEN
                         attempt_failed = .TRUE.
                         trust_rejected = .TRUE.
                         reject_reason = reject_response
