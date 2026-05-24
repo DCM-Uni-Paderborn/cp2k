@@ -2750,7 +2750,7 @@ CONTAINS
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
                                                             nchannels, ne, nmo, nrot, r, s, schur_attempt, &
-                                                            selected_attempt, &
+                                                            selected_attempt, split_selected_attempt, &
                                                             schur_used_attempt, constrained_reject_reason, &
                                                             coupled_reject_reason, &
                                                             reject_reason
@@ -2760,6 +2760,7 @@ CONTAINS
       LOGICAL                                            :: attempt_failed, failed, new_search_point, solved, &
                                                             constrained_candidate_enabled, &
                                                             constrained_candidate_ready, constrained_candidate_selected, &
+                                                            split_candidate_ready, split_candidate_selected, &
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
@@ -2776,7 +2777,8 @@ CONTAINS
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
          coupled_response_abs_step, coupled_response_abs_trust_ratio, coupled_response_step, &
          coupled_response_trust_ratio, coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
-         curv_projection_sum, dense_term, diag_shift, diag_shift_avg, direction_scale, gdotp, gnorm, &
+         curv_projection_sum, dense_expected_drop, dense_term, diag_shift, diag_shift_avg, direction_scale, gdotp, &
+         gnorm, &
          density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
@@ -2786,11 +2788,16 @@ CONTAINS
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
+         split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, split_direction_scale, &
+         split_gdotp, split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, split_normp, &
+         split_norm_ratio, split_residual_delta, split_response_abs_step, split_response_abs_trust, &
+         split_response_abs_trust_ratio, split_response_step, split_response_trust, split_response_trust_factor, &
+         split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, split_schur_diag_min, &
          split_curvature_scale, split_expected_drop, split_quality_for_calibration, tether_projected_term, tether_response, &
          tether_response_diag_sum, tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, rot_floor, rtd, &
-                                                            rx_e, rx_model, sol, tether_curv, &
+                                                            rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
                                                             z_e, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             response_coupled, response_occ, response_split, &
@@ -2835,8 +2842,8 @@ CONTAINS
          END IF
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_trial(ne), rx_e(ne), &
-                   rx_model(ne), constrained_z_e(ne))
-         ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot))
+                   rx_model(ne), constrained_z_e(ne), split_z_e(ne))
+         ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot), split_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
          ALLOCATE (response(ne, nrot), response_coupled(ne, nrot), response_occ(ne, nrot), &
@@ -2920,20 +2927,47 @@ CONTAINS
          coupled_response_trust_ratio = 0.0_dp
          coupled_response_weighted_step = 0.0_dp
          coupled_response_weighted_trust_ratio = 0.0_dp
+         dense_expected_drop = 0.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
          model_gap_trust = HUGE(1.0_dp)
          model_calibrated_drop = 0.0_dp
          split_curvature_scale = 1.0_dp
+         split_direction_scale = 0.0_dp
          split_expected_drop = 0.0_dp
+         split_gdotp = 0.0_dp
+         split_model_calibrated_drop = 0.0_dp
+         split_model_drop = 0.0_dp
+         split_model_gap_ratio = 0.0_dp
+         split_normp = 0.0_dp
+         split_norm_ratio = 0.0_dp
+         split_response_abs_step = 0.0_dp
+         split_response_abs_trust_ratio = 0.0_dp
+         split_response_step = 0.0_dp
+         split_response_weighted_step = 0.0_dp
+         split_response_weighted_trust_ratio = 0.0_dp
          split_quality_for_calibration = 1.0_dp
+         split_density_projector_fraction = 0.0_dp
+         split_diag_shift_max = 0.0_dp
+         split_diag_shift_sum = 0.0_dp
+         split_residual_delta = 0.0_dp
+         split_response_abs_trust = HUGE(1.0_dp)
+         split_response_trust = HUGE(1.0_dp)
+         split_response_trust_factor = 1.0_dp
+         split_rot_floor_min = curvature_floor
+         split_schur_diag_min = HUGE(1.0_dp)
          failed = .FALSE.
          constrained_candidate_ready = .FALSE.
          constrained_candidate_selected = .FALSE.
+         split_candidate_ready = .FALSE.
+         split_candidate_selected = .FALSE.
+         split_selected_attempt = 0
          ivar = 0
          constrained_sol(:) = 0.0_dp
          constrained_z_e(:) = 0.0_dp
+         split_sol(:) = 0.0_dp
+         split_z_e(:) = 0.0_dp
 
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -3021,8 +3055,8 @@ CONTAINS
 
          CPASSERT(ivar == nrot)
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e)
-            DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol)
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e, split_z_e)
+            DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, split_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, response, response_coupled, response_occ, response_split, rot_hessian, &
                         rot_hessian_coupled, rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
@@ -3434,11 +3468,72 @@ CONTAINS
                   constrained_reject_reason = 0
                END IF
             END IF
+            IF (schur_attempt == 2 .AND. .NOT. attempt_failed) THEN
+               IF (.NOT. constrained_candidate_selected) split_expected_drop = model_calibrated_drop* &
+                  MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                      local_ot_env(1)%schur_split_calibrated_quality_ema)
+               split_candidate_ready = .TRUE.
+               split_selected_attempt = MERGE(1, 2, constrained_candidate_selected)
+               split_z_e(:) = z_e(:)
+               split_sol(:) = sol(:)
+               split_direction_scale = direction_scale
+               split_gdotp = gdotp
+               split_normp = normp
+               split_norm_ratio = norm_ratio
+               split_model_drop = model_drop
+               split_model_calibrated_drop = model_calibrated_drop
+               split_model_gap_ratio = model_gap_ratio
+               split_density_projector_fraction = density_projector_fraction
+               split_diag_shift_max = diag_shift_max
+               split_diag_shift_sum = diag_shift_sum
+               split_residual_delta = residual_delta
+               split_response_step = response_step_max
+               split_response_abs_step = response_abs_step
+               split_response_abs_trust = response_abs_trust
+               split_response_abs_trust_ratio = response_abs_trust_ratio
+               split_response_trust = response_trust
+               split_response_trust_factor = response_trust_factor
+               split_response_weighted_step = response_weighted_step
+               split_response_weighted_trust_ratio = response_weighted_trust_ratio
+               split_rot_floor_min = rot_floor_min
+               split_schur_diag_min = schur_diag_min
+               attempt_failed = .TRUE.
+               reject_reason = reject_quality_gate
+            ELSE IF (schur_attempt == 3 .AND. split_candidate_ready) THEN
+               IF (.NOT. attempt_failed) dense_expected_drop = model_calibrated_drop
+               split_candidate_selected = attempt_failed .OR. split_expected_drop > dense_expected_drop
+               IF (split_candidate_selected) THEN
+                  attempt_failed = .FALSE.
+                  z_e(:) = split_z_e(:)
+                  sol(:) = split_sol(:)
+                  direction_scale = split_direction_scale
+                  gdotp = split_gdotp
+                  normp = split_normp
+                  norm_ratio = split_norm_ratio
+                  model_drop = split_model_drop
+                  model_calibrated_drop = split_model_calibrated_drop
+                  model_gap_ratio = split_model_gap_ratio
+                  density_projector_fraction = split_density_projector_fraction
+                  diag_shift_max = split_diag_shift_max
+                  diag_shift_sum = split_diag_shift_sum
+                  residual_delta = split_residual_delta
+                  response_step_max = split_response_step
+                  response_abs_step = split_response_abs_step
+                  response_abs_trust = split_response_abs_trust
+                  response_abs_trust_ratio = split_response_abs_trust_ratio
+                  response_trust = split_response_trust
+                  response_trust_factor = split_response_trust_factor
+                  response_weighted_step = split_response_weighted_step
+                  response_weighted_trust_ratio = split_response_weighted_trust_ratio
+                  rot_floor_min = split_rot_floor_min
+                  schur_diag_min = split_schur_diag_min
+               END IF
+            END IF
 
             IF (.NOT. attempt_failed) THEN
                solved = .TRUE.
                selected_attempt = schur_attempt
-               IF (constrained_candidate_selected) selected_attempt = 1
+               IF (split_candidate_selected) selected_attempt = split_selected_attempt
                schur_used_attempt = selected_attempt
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
@@ -3561,12 +3656,18 @@ CONTAINS
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),4(1X,ES16.8))') &
+                     " OT Schur candidate selection used split_used split_ready constr_selected "// &
+                     "split_selected split_exp dense_exp drop cdrop:", &
+                     schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
+                     split_candidate_selected, split_expected_drop, dense_expected_drop, &
+                     accepted_model_drop, accepted_model_calibrated_drop
                END IF
             END IF
          END IF
 
-         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e)
-         DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol)
+         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_trial, rx_e, rx_model, constrained_z_e, split_z_e)
+         DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, split_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, response, response_coupled, response_occ, response_split, rot_hessian, &
                      rot_hessian_coupled, rot_hessian_projector, schur, ipiv, channel_nmo, e_offset)
