@@ -2735,8 +2735,9 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: group_done
 
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
-      INTEGER, PARAMETER                                 :: reject_dgesv = 1, reject_nondescent = 2, &
-                                                            reject_norm = 3, reject_response = 4, reject_scale = 5, &
+      INTEGER, PARAMETER                                 :: reject_dgesv = 1, reject_model_mismatch = 8, &
+                                                            reject_nondescent = 2, reject_norm = 3, &
+                                                            reject_response = 4, reject_scale = 5, &
                                                             reject_model_gap = 6, reject_quality_gate = 7
       REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
@@ -3302,6 +3303,12 @@ CONTAINS
                         model_gap_trust = schur_model_gap_factor*response_trust
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
                      END IF
+                     IF (schur_attempt <= 2 .AND. .NOT. attempt_failed .AND. &
+                         model_calibrated_drop <= EPSILON(model_drop)) THEN
+                        attempt_failed = .TRUE.
+                        trust_rejected = .TRUE.
+                        reject_reason = reject_model_mismatch
+                     END IF
                      IF (schur_attempt <= 3 .AND. direction_scale < schur_min_coupled_scale) THEN
                         attempt_failed = .TRUE.
                         reject_reason = reject_scale
@@ -3385,7 +3392,7 @@ CONTAINS
                constrained_response_weighted_step = response_weighted_step
                constrained_response_weighted_trust_ratio = response_weighted_trust_ratio
                IF (new_search_point .AND. split_candidate_enabled .AND. &
-                   model_drop > EPSILON(model_drop) .AND. &
+                   model_calibrated_drop > EPSILON(model_drop) .AND. &
                    (reject_reason == 0 .OR. reject_reason == reject_quality_gate)) THEN
                   local_ot_env(1)%schur_constrained_pending = .TRUE.
                   local_ot_env(1)%schur_constrained_drop = &
