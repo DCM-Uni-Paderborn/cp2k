@@ -2763,20 +2763,22 @@ CONTAINS
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
          constrained_diag_shift_avg, constrained_direction_scale, constrained_model_calibrated_drop, &
-         constrained_model_drop, constrained_model_gap, constrained_model_gap_ratio, &
+         constrained_model_drop, constrained_model_gap, constrained_model_gap_drop, constrained_model_gap_ratio, &
          constrained_expected_drop, constrained_expected_drop_ratio, constrained_gdotp, &
          constrained_model_gap_trust, constrained_normp, constrained_norm_ratio, constrained_occ_response_diag_avg, &
          constrained_response_abs_step, constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
          constrained_response_step, constrained_response_trust_ratio, constrained_response_weighted_step, &
          constrained_response_weighted_trust_ratio, constrained_rot_diag_avg, constrained_tether_response_diag_avg, &
          coupled_diag_shift_avg, coupled_direction_scale, coupled_model_calibrated_drop, coupled_model_drop, &
-         coupled_model_gap, coupled_occ_response_diag_avg, coupled_rot_diag_avg, coupled_tether_response_diag_avg, &
+         coupled_model_gap, coupled_model_gap_drop, coupled_occ_response_diag_avg, coupled_rot_diag_avg, &
+         coupled_tether_response_diag_avg, &
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
          coupled_response_abs_step, coupled_response_abs_trust_ratio, coupled_response_step, &
          coupled_response_trust_ratio, coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
          curv_projection_sum, dense_term, diag_shift, diag_shift_avg, direction_scale, gdotp, gnorm, &
          density_projector_fraction, diag_shift_max, &
-         diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_trust, &
+         diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
+         model_gap_trust, &
          model_gap_ratio, mu, norm_ratio, normp, occ_curv_projection_sum, occ_projected_term, &
          occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, &
@@ -2881,6 +2883,7 @@ CONTAINS
          constrained_norm_ratio = 0.0_dp
          constrained_reject_reason = 0
          constrained_model_gap = 0.0_dp
+         constrained_model_gap_drop = 0.0_dp
          constrained_model_gap_ratio = 0.0_dp
          constrained_model_gap_trust = HUGE(1.0_dp)
          constrained_model_calibrated_drop = 0.0_dp
@@ -2903,6 +2906,7 @@ CONTAINS
          coupled_norm_ratio = 0.0_dp
          coupled_reject_reason = 0
          coupled_model_gap = 0.0_dp
+         coupled_model_gap_drop = 0.0_dp
          coupled_model_gap_ratio = 0.0_dp
          coupled_model_gap_trust = HUGE(1.0_dp)
          coupled_model_calibrated_drop = 0.0_dp
@@ -2916,6 +2920,7 @@ CONTAINS
          coupled_response_weighted_step = 0.0_dp
          coupled_response_weighted_trust_ratio = 0.0_dp
          model_gap = 0.0_dp
+         model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
          model_gap_trust = HUGE(1.0_dp)
          model_calibrated_drop = 0.0_dp
@@ -3152,6 +3157,7 @@ CONTAINS
             model_drop = 0.0_dp
             model_calibrated_drop = 0.0_dp
             model_gap = 0.0_dp
+            model_gap_drop = 0.0_dp
             model_gap_ratio = 0.0_dp
             model_gap_trust = HUGE(1.0_dp)
             occ_response_diag_sum = 0.0_dp
@@ -3290,6 +3296,9 @@ CONTAINS
                         response_abs_trust_ratio = response_abs_step/response_abs_trust
                      IF (schur_attempt <= 2) THEN
                         model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
+                        model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
+                        model_calibrated_drop = &
+                           MAX(0.0_dp, split_quality_for_calibration*model_drop - model_gap_drop)
                         model_gap_trust = schur_model_gap_factor*response_trust
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
                      END IF
@@ -3336,6 +3345,7 @@ CONTAINS
                coupled_model_drop = model_drop
                coupled_model_calibrated_drop = model_calibrated_drop
                coupled_model_gap = model_gap
+               coupled_model_gap_drop = model_gap_drop
                coupled_model_gap_ratio = model_gap_ratio
                coupled_model_gap_trust = model_gap_trust
                coupled_norm_ratio = norm_ratio
@@ -3357,6 +3367,7 @@ CONTAINS
                constrained_model_drop = model_drop
                constrained_model_calibrated_drop = model_calibrated_drop
                constrained_model_gap = model_gap
+               constrained_model_gap_drop = model_gap_drop
                constrained_model_gap_ratio = model_gap_ratio
                constrained_model_gap_trust = model_gap_trust
                constrained_norm_ratio = norm_ratio
@@ -3506,9 +3517,10 @@ CONTAINS
                   response_trust_factor, residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, &
                   diag_shift_max, schur_diag_min, rot_floor_min, trust_rejected
                IF (split_candidate_diagnostic) THEN
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),25(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),27(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop cdrop pred meas "// &
-                  "qratio qema cqual cema calib qcal resp rtrust rratio wresp wratio atrust aratio mgap mtrust mgratio norm "// &
+                  "qratio qema cqual cema calib qcal resp rtrust rratio wresp wratio atrust aratio mgap mdrop "// &
+                  "mtrust mgratio norm "// &
                   "davg rdiag odiag tdiag:", &
                   target_group, coupled_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
                   split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
@@ -3521,7 +3533,7 @@ CONTAINS
                   coupled_response_step, response_trust, &
                   coupled_response_trust_ratio, coupled_response_weighted_step, &
                   coupled_response_weighted_trust_ratio, response_abs_trust, coupled_response_abs_trust_ratio, &
-                  coupled_model_gap, coupled_model_gap_trust, &
+                  coupled_model_gap, coupled_model_gap_drop, coupled_model_gap_trust, &
                   coupled_model_gap_ratio, coupled_norm_ratio, &
                   coupled_diag_shift_avg, coupled_rot_diag_avg, coupled_occ_response_diag_avg, &
                   coupled_tether_response_diag_avg
@@ -3529,15 +3541,16 @@ CONTAINS
                       constrained_model_drop > EPSILON(constrained_model_drop)) &
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),25(1X,ES16.8))') &
                      " OT Schur constrained audit group code samples gate new energy scale drop cdrop "// &
-                     "resp rtrust rratio wresp wratio atrust aratio mgap mtrust mgratio norm davg rdiag odiag tdiag pdiag "// &
+                     "resp rtrust rratio wresp wratio atrust aratio mgap mdrop mtrust mgratio norm davg rdiag "// &
+                     "odiag tdiag pdiag "// &
                      "calib qcal split_exp constr_exp exp_ratio:", &
                      target_group, constrained_reject_reason, local_ot_env(1)%schur_model_quality_samples, &
                      split_candidate_enabled, new_search_point, local_ot_env(1)%energy_only, &
                      constrained_direction_scale, constrained_model_drop, constrained_model_calibrated_drop, &
                      constrained_response_step, response_trust, constrained_response_trust_ratio, &
                      constrained_response_weighted_step, constrained_response_weighted_trust_ratio, response_abs_trust, &
-                     constrained_response_abs_trust_ratio, constrained_model_gap, constrained_model_gap_trust, &
-                     constrained_model_gap_ratio, constrained_norm_ratio, constrained_diag_shift_avg, &
+                     constrained_response_abs_trust_ratio, constrained_model_gap, constrained_model_gap_drop, &
+                     constrained_model_gap_trust, constrained_model_gap_ratio, constrained_norm_ratio, constrained_diag_shift_avg, &
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
@@ -3643,6 +3656,17 @@ CONTAINS
          END IF
 
       END FUNCTION kpoint_ot_weighted_response_step
+
+      FUNCTION kpoint_ot_response_mismatch_drop(response_actual, response_model, curv, scale) RESULT(drop)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_actual, response_model, curv
+      REAL(KIND=dp), INTENT(IN)                         :: scale
+      REAL(KIND=dp)                                     :: drop
+
+         drop = SUM(curv(:)*(response_model(:) - response_actual(:))**2)
+         CALL para_env_inter_kp%sum(drop)
+         drop = 0.5_dp*scale*scale*MAX(0.0_dp, drop)
+
+      END FUNCTION kpoint_ot_response_mismatch_drop
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
