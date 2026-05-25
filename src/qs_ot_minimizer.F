@@ -621,7 +621,8 @@ CONTAINS
       INTEGER                                            :: best_index, count, handle, i
       LOGICAL                                            :: mermin_search
       REAL(KIND=dp)                                      :: best_energy, denom, ds, fa, fb, fc, nom, pos, &
-                                                            slope_mismatch, slope_model, tol, val, xa, xb, xc
+                                                            best_drop, model_drop, model_quality, slope_mismatch, &
+                                                            slope_model, tol, val, xa, xb, xc
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -671,6 +672,10 @@ CONTAINS
             IF (qs_ot_env(1)%OT_energy(i) < qs_ot_env(1)%OT_energy(best_index)) best_index = i
          END DO
          best_energy = qs_ot_env(1)%OT_energy(best_index)
+         model_drop = fa - val
+         best_drop = fa - best_energy
+         model_quality = 0.0_dp
+         IF (model_drop > EPSILON(model_drop)) model_quality = best_drop/model_drop
          tol = acceptance_tol*MAX(1.0_dp, ABS(best_energy))
          mermin_search = use_three_point_mermin_search(qs_ot_env)
          IF (mermin_search .AND. best_index /= 1 .AND. val >= best_energy - tol) THEN
@@ -685,10 +690,10 @@ CONTAINS
          IF (mermin_search) THEN
             logger => cp_get_default_logger()
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,7(1X,ES16.8))') &
-                  " OT Mermin LS model idx pos model best slope0 fit mismatch next:", &
-                  best_index, pos, val, best_energy, qs_ot_env(1)%ot_grad(1), slope_model, &
-                  slope_mismatch, qs_ot_env(1)%OT_pos(count + 1)
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,10(1X,ES16.8))') &
+                  " OT Mermin LS model idx pos model best mdrop bdrop q slope0 fit mismatch next:", &
+                  best_index, pos, val, best_energy, model_drop, best_drop, model_quality, &
+                  qs_ot_env(1)%ot_grad(1), slope_model, slope_mismatch, qs_ot_env(1)%OT_pos(count + 1)
             END IF
          END IF
          qs_ot_env(1)%energy_only = .FALSE.
