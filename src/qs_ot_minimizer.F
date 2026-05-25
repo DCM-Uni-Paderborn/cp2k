@@ -1056,8 +1056,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_new_cg_direction'
 
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin
-      LOGICAL                                            :: do_ener, do_ks
-      REAL(KIND=dp)                                      :: beta_pr, gnorm_cross, gnorm_ener, &
+      LOGICAL                                            :: do_ener, do_ks, negative_beta, reset_to_sd
+      REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
                                                             gnorm_matrix_im, gnorm_matrix_re, &
                                                             gnorm_rot_im, gnorm_rot_re, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -1069,6 +1069,8 @@ CONTAINS
 
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
+      negative_beta = .FALSE.
+      reset_to_sd = .FALSE.
 
       gnorm_matrix_re = 0.0_dp
       gnorm_matrix_im = 0.0_dp
@@ -1236,6 +1238,8 @@ CONTAINS
             gnorm_matrix_re, gnorm_matrix_im, gnorm_rot_re, gnorm_rot_im, &
             gnorm_ener, qs_ot_env(1)%gnorm
       END IF
+      beta_raw = beta_pr
+      negative_beta = beta_pr < 0.0_dp
       beta_pr = MAX(beta_pr, 0.0_dp) ! reset to SD
 
       test_down = 0.0_dp
@@ -1274,6 +1278,7 @@ CONTAINS
       END IF
 
       IF (test_down >= 0.0_dp) THEN ! reset to SD
+         reset_to_sd = .TRUE.
          beta_pr = 0.0_dp
          IF (do_ks) THEN
             DO ispin = 1, nspin
@@ -1296,6 +1301,12 @@ CONTAINS
                qs_ot_env(ispin)%ener_dx = beta_pr*qs_ot_env(ispin)%ener_dx - qs_ot_env(ispin)%ener_gx
             END DO
          END IF
+      END IF
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,L1))') &
+            " OT CG beta raw used gnorm old cross down neg reset:", &
+            beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, &
+            negative_beta, reset_to_sd
       END IF
       ! since we change the direction we have to adjust the gradient
       qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm

@@ -25,10 +25,10 @@
     &END QS
     &SCF
       ADDED_MOS 12
-      ! Tight enough to exercise the hard k-point OT physics path while still
-      ! keeping this optional companion practical on developer machines.
-      EPS_SCF 1.0E-5
-      MAX_SCF 620
+      ! Tight enough to exercise the hard k-point OT physics path.  This
+      ! companion is intentionally not part of the default regtest list.
+      EPS_SCF 1.0E-6
+      MAX_SCF 950
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC

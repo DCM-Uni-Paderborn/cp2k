@@ -31,8 +31,8 @@
 # Slow/manual converged-physics companion: run Al_kp_ot_restart_converge.inp
 # after the write/read/continue chain. It is intentionally not listed here,
 # so the default restart/smearing regtest stays cheap while the optional
-# physics tail can still be checked against the ~1E-5 Mermin path.  Current
-# local reference: 460 SCF steps, E_total = Mermin = -8.14585250186738 Ha.
+# physics tail can still be checked against the 1E-6 Mermin path.  Current
+# local reference: 945 SCF steps, E_total = Mermin = -8.14585274322012 Ha.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
