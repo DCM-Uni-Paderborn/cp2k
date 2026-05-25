@@ -2777,24 +2777,32 @@ CONTAINS
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
          coupled_response_abs_step, coupled_response_abs_trust_ratio, coupled_response_step, &
          coupled_response_trust_ratio, coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
-         curv_projection_sum, dense_expected_drop, dense_term, diag_shift, diag_shift_avg, direction_scale, gdotp, &
+         coupled_gdot_energy, coupled_gdot_rotation, coupled_norm_energy, coupled_norm_rotation, &
+         coupled_scale_quality, curv_projection_sum, dense_direction_scale, dense_expected_drop, dense_term, &
+         dense_gdot_energy, dense_gdot_rotation, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
+         dense_scale_quality, diag_shift, diag_shift_avg, direction_scale, gdotp, gdot_energy, gdot_rotation, &
          gnorm, &
          density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
-         model_gap_ratio, mu, norm_ratio, normp, occ_curv_projection_sum, occ_projected_term, &
+         model_gap_ratio, mu, norm_energy, norm_ratio, norm_rotation, normp, occ_curv_projection_sum, &
+         occ_projected_term, &
          occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
-         response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, schur_diag_min, &
-         split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, split_direction_scale, &
-         split_gdotp, split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, split_normp, &
+         response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, scale_quality, &
+         schur_diag_min, split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, &
+         split_direction_scale, &
+         split_gdotp, split_gdot_energy, split_gdot_rotation, split_model_calibrated_drop, split_model_drop, &
+         split_model_gap_ratio, split_norm_energy, split_norm_rotation, split_normp, &
          split_norm_ratio, split_residual_delta, split_response_abs_step, split_response_abs_trust, &
          split_response_abs_trust_ratio, split_response_step, split_response_trust, split_response_trust_factor, &
          split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, split_schur_diag_min, &
-         split_curvature_scale, split_expected_drop, split_quality_for_calibration, tether_projected_term, tether_response, &
-         tether_response_diag_sum, tether_strength, tether_weight, z_shift, z_weight
+         split_scale_quality, split_curvature_scale, split_expected_drop, split_quality_for_calibration, &
+         constrained_gdot_energy, constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
+         constrained_scale_quality, tether_projected_term, tether_response, tether_response_diag_sum, tether_strength, &
+         tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, rot_floor, rtd, &
                                                             rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
@@ -2886,9 +2894,14 @@ CONTAINS
          constrained_expected_drop = 0.0_dp
          constrained_expected_drop_ratio = 0.0_dp
          constrained_gdotp = 0.0_dp
+         constrained_gdot_energy = 0.0_dp
+         constrained_gdot_rotation = 0.0_dp
+         constrained_norm_energy = 0.0_dp
+         constrained_norm_rotation = 0.0_dp
          constrained_model_drop = 0.0_dp
          constrained_normp = 0.0_dp
          constrained_norm_ratio = 0.0_dp
+         constrained_scale_quality = 0.0_dp
          constrained_reject_reason = 0
          constrained_model_gap = 0.0_dp
          constrained_model_gap_drop = 0.0_dp
@@ -2910,8 +2923,13 @@ CONTAINS
          accepted_model_calibrated_drop = 0.0_dp
          accepted_model_gap_ratio = 0.0_dp
          coupled_direction_scale = 0.0_dp
+         coupled_gdot_energy = 0.0_dp
+         coupled_gdot_rotation = 0.0_dp
          coupled_model_drop = 0.0_dp
+         coupled_norm_energy = 0.0_dp
+         coupled_norm_rotation = 0.0_dp
          coupled_norm_ratio = 0.0_dp
+         coupled_scale_quality = 0.0_dp
          coupled_reject_reason = 0
          coupled_model_gap = 0.0_dp
          coupled_model_gap_drop = 0.0_dp
@@ -2927,7 +2945,14 @@ CONTAINS
          coupled_response_trust_ratio = 0.0_dp
          coupled_response_weighted_step = 0.0_dp
          coupled_response_weighted_trust_ratio = 0.0_dp
+         dense_direction_scale = 0.0_dp
          dense_expected_drop = 0.0_dp
+         dense_gdot_energy = 0.0_dp
+         dense_gdot_rotation = 0.0_dp
+         dense_norm_energy = 0.0_dp
+         dense_norm_rotation = 0.0_dp
+         dense_quality_for_selection = 1.0_dp
+         dense_scale_quality = 0.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -2937,11 +2962,16 @@ CONTAINS
          split_direction_scale = 0.0_dp
          split_expected_drop = 0.0_dp
          split_gdotp = 0.0_dp
+         split_gdot_energy = 0.0_dp
+         split_gdot_rotation = 0.0_dp
          split_model_calibrated_drop = 0.0_dp
          split_model_drop = 0.0_dp
          split_model_gap_ratio = 0.0_dp
+         split_norm_energy = 0.0_dp
+         split_norm_rotation = 0.0_dp
          split_normp = 0.0_dp
          split_norm_ratio = 0.0_dp
+         split_scale_quality = 0.0_dp
          split_response_abs_step = 0.0_dp
          split_response_abs_trust_ratio = 0.0_dp
          split_response_step = 0.0_dp
@@ -3137,6 +3167,21 @@ CONTAINS
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_quality_for_calibration = MAX(ot_kp_schur_calibration_floor, &
                                                 MIN(1.0_dp, local_ot_env(1)%schur_split_quality_ema))
+         ELSE IF (local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
+            ! Bootstrap Split curvature from the accepted dense/coupled Mermin
+            ! model quality.  Otherwise Split candidates that are already known
+            ! to be over-optimistic can be rejected by the OT z.z=g.z scale gate
+            ! before they ever collect their own calibration samples.
+            split_quality_for_calibration = MAX(ot_kp_schur_calibration_floor, &
+                                                MIN(1.0_dp, local_ot_env(1)%schur_model_quality_ema))
+         END IF
+         IF (local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
+            dense_quality_for_selection = MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                              MIN(ot_kp_schur_calibrated_quality_max_ratio, &
+                                                  local_ot_env(1)%schur_coupled_quality_ema))
+         END IF
+         IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
+             local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
                                         1.0_dp/SQRT(split_quality_for_calibration))
          END IF
@@ -3146,8 +3191,13 @@ CONTAINS
             attempt_failed = .FALSE.
             reject_reason = 0
             direction_scale = 0.0_dp
+            scale_quality = 0.0_dp
             gdotp = 0.0_dp
+            gdot_energy = 0.0_dp
+            gdot_rotation = 0.0_dp
             gnorm = 0.0_dp
+            norm_energy = 0.0_dp
+            norm_rotation = 0.0_dp
             norm_ratio = 0.0_dp
             normp = 0.0_dp
             z_e(:) = z_trial(:)
@@ -3294,9 +3344,13 @@ CONTAINS
                END IF
                z_e(:) = z_e(:) + rx_e(:)
 
-               gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
+               gdot_energy = DOT_PRODUCT(grad_e, z_e)
+               gdot_rotation = DOT_PRODUCT(grad_rot, sol)
+               norm_energy = DOT_PRODUCT(z_e, z_e)
+               norm_rotation = DOT_PRODUCT(sol, sol)
+               gdotp = gdot_energy + gdot_rotation
                gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
-               normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(sol, sol)
+               normp = norm_energy + norm_rotation
                norm_ratio = normp/MAX(gnorm, EPSILON(1.0_dp))
                IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) THEN
                   attempt_failed = .TRUE.
@@ -3314,6 +3368,7 @@ CONTAINS
                      attempt_failed = .TRUE.
                      reject_reason = reject_nondescent
                   ELSE
+                     scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
                      z_e(:) = direction_scale*z_e(:)
                      sol(:) = direction_scale*sol(:)
                      model_drop = 0.5_dp*direction_scale*gdotp
@@ -3383,7 +3438,12 @@ CONTAINS
                constrained_sol(:) = sol(:)
                constrained_z_e(:) = z_e(:)
                constrained_gdotp = gdotp
+               constrained_gdot_energy = gdot_energy
+               constrained_gdot_rotation = gdot_rotation
+               constrained_norm_energy = norm_energy
+               constrained_norm_rotation = norm_rotation
                constrained_normp = normp
+               constrained_scale_quality = scale_quality
                ! Delay the constrained candidate until the raw Split candidate for
                ! the same search point gives an absolute Mermin-drop comparator.
                attempt_failed = .TRUE.
@@ -3393,13 +3453,18 @@ CONTAINS
             IF (schur_attempt == 2) THEN
                coupled_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_direction_scale = direction_scale
+               coupled_gdot_energy = gdot_energy
+               coupled_gdot_rotation = gdot_rotation
                coupled_model_drop = model_drop
                coupled_model_calibrated_drop = model_calibrated_drop
                coupled_model_gap = model_gap
                coupled_model_gap_drop = model_gap_drop
                coupled_model_gap_ratio = model_gap_ratio
                coupled_model_gap_trust = model_gap_trust
+               coupled_norm_energy = norm_energy
+               coupled_norm_rotation = norm_rotation
                coupled_norm_ratio = norm_ratio
+               coupled_scale_quality = scale_quality
                coupled_occ_response_diag_avg = occ_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_rot_diag_avg = rot_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                coupled_tether_response_diag_avg = tether_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
@@ -3415,13 +3480,18 @@ CONTAINS
             ELSE IF (schur_attempt == 1) THEN
                constrained_diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                constrained_direction_scale = direction_scale
+               constrained_gdot_energy = gdot_energy
+               constrained_gdot_rotation = gdot_rotation
                constrained_model_drop = model_drop
                constrained_model_calibrated_drop = model_calibrated_drop
                constrained_model_gap = model_gap
                constrained_model_gap_drop = model_gap_drop
                constrained_model_gap_ratio = model_gap_ratio
                constrained_model_gap_trust = model_gap_trust
+               constrained_norm_energy = norm_energy
+               constrained_norm_rotation = norm_rotation
                constrained_norm_ratio = norm_ratio
+               constrained_scale_quality = scale_quality
                constrained_occ_response_diag_avg = occ_response_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                constrained_response_penalty_diag_avg = response_penalty_diag_sum/REAL(MAX(1, nrot), KIND=dp)
                constrained_rot_diag_avg = rot_diag_sum/REAL(MAX(1, nrot), KIND=dp)
@@ -3465,8 +3535,13 @@ CONTAINS
                   sol(:) = constrained_sol(:)
                   direction_scale = constrained_direction_scale
                   gdotp = constrained_gdotp
+                  gdot_energy = constrained_gdot_energy
+                  gdot_rotation = constrained_gdot_rotation
+                  norm_energy = constrained_norm_energy
+                  norm_rotation = constrained_norm_rotation
                   normp = constrained_normp
                   norm_ratio = constrained_norm_ratio
+                  scale_quality = constrained_scale_quality
                   model_drop = constrained_model_drop
                   model_calibrated_drop = constrained_model_calibrated_drop
                   model_gap_ratio = constrained_model_gap_ratio
@@ -3488,8 +3563,13 @@ CONTAINS
                split_sol(:) = sol(:)
                split_direction_scale = direction_scale
                split_gdotp = gdotp
+               split_gdot_energy = gdot_energy
+               split_gdot_rotation = gdot_rotation
+               split_norm_energy = norm_energy
+               split_norm_rotation = norm_rotation
                split_normp = normp
                split_norm_ratio = norm_ratio
+               split_scale_quality = scale_quality
                split_model_drop = model_drop
                split_model_calibrated_drop = model_calibrated_drop
                split_model_gap_ratio = model_gap_ratio
@@ -3510,7 +3590,13 @@ CONTAINS
                attempt_failed = .TRUE.
                reject_reason = reject_quality_gate
             ELSE IF (schur_attempt == 3 .AND. split_candidate_ready) THEN
-               IF (.NOT. attempt_failed) dense_expected_drop = model_calibrated_drop
+               dense_direction_scale = direction_scale
+               dense_gdot_energy = gdot_energy
+               dense_gdot_rotation = gdot_rotation
+               dense_norm_energy = norm_energy
+               dense_norm_rotation = norm_rotation
+               dense_scale_quality = scale_quality
+               IF (.NOT. attempt_failed) dense_expected_drop = model_calibrated_drop*dense_quality_for_selection
                split_candidate_selected = attempt_failed .OR. split_expected_drop > dense_expected_drop
                IF (split_candidate_selected) THEN
                   attempt_failed = .FALSE.
@@ -3518,8 +3604,13 @@ CONTAINS
                   sol(:) = split_sol(:)
                   direction_scale = split_direction_scale
                   gdotp = split_gdotp
+                  gdot_energy = split_gdot_energy
+                  gdot_rotation = split_gdot_rotation
+                  norm_energy = split_norm_energy
+                  norm_rotation = split_norm_rotation
                   normp = split_normp
                   norm_ratio = split_norm_ratio
+                  scale_quality = split_scale_quality
                   model_drop = split_model_drop
                   model_calibrated_drop = split_model_calibrated_drop
                   model_gap_ratio = split_model_gap_ratio
@@ -3666,12 +3757,22 @@ CONTAINS
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),4(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),5(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used split_ready constr_selected "// &
-                     "split_selected split_exp dense_exp drop cdrop:", &
+                     "split_selected split_exp dense_exp dense_q drop cdrop:", &
                      schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
                      split_candidate_selected, split_expected_drop, dense_expected_drop, &
-                     accepted_model_drop, accepted_model_calibrated_drop
+                     dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
+                     " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
+                     "split_ge split_gr split_ne split_nr constr_scale constr_sq constr_ge constr_gr constr_ne "// &
+                     "constr_nr dense_scale dense_sq dense_q:", &
+                     target_group, coupled_reject_reason, constrained_reject_reason, schur_used_attempt, &
+                     schur_min_coupled_scale, coupled_direction_scale, coupled_scale_quality, &
+                     coupled_gdot_energy, coupled_gdot_rotation, coupled_norm_energy, coupled_norm_rotation, &
+                     constrained_direction_scale, constrained_scale_quality, constrained_gdot_energy, &
+                     constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
+                     dense_direction_scale, dense_scale_quality, dense_quality_for_selection
                END IF
             END IF
          END IF
@@ -3774,6 +3875,18 @@ CONTAINS
          END IF
 
       END FUNCTION kpoint_ot_weighted_response_step
+
+      FUNCTION kpoint_ot_schur_scale_quality(direction_scale, scale_floor) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: direction_scale, scale_floor
+      REAL(KIND=dp)                                     :: quality
+
+         IF (scale_floor > EPSILON(scale_floor)) THEN
+            quality = MIN(1.0_dp, MAX(0.0_dp, direction_scale)/scale_floor)
+         ELSE
+            quality = 1.0_dp
+         END IF
+
+      END FUNCTION kpoint_ot_schur_scale_quality
 
       FUNCTION kpoint_ot_response_mismatch_drop(response_actual, response_model, curv, scale) RESULT(drop)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_actual, response_model, curv
