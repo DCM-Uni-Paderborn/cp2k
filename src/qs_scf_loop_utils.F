@@ -3117,9 +3117,9 @@ CONTAINS
          occ_curv_projection_sum = SUM(occ_curv)
          CALL para_env_inter_kp%sum(occ_curv_projection_sum)
          ! The split candidate follows the same diagonal/spectral projector blend as
-         ! the finite complex rotation gradient: occupation curvature sees only the
-         ! diagonal-gauge Rayleigh response, while the channel-local tether still sees
-         ! the full Rayleigh diagonal it anchors.
+         ! the finite complex rotation gradient: occupation curvature sees the
+         ! finite projector response, while the channel-local tether still sees the
+         ! full Rayleigh diagonal it anchors.
          response_coupled(:, :) = response(:, :)
          response_split(:, :) = 0.0_dp
          DO r = 1, nrot
@@ -3915,11 +3915,12 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, occ_mat, &
-                                                            occ_mat_coupled, occ_mat_m, occ_mat_p, u
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, occ_basis, occ_mat, &
+                                                            occ_mat_coupled, occ_mat_m, occ_mat_p, &
+                                                            projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp)                                      :: projector_weight, raw_response
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
                                                             x_m_re, x_p_im, x_p_re, x_re
@@ -3939,7 +3940,8 @@ CONTAINS
 
          ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), &
                    chc_p(nmo, nmo), chc_m(nmo, nmo), occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), &
-                   occ_mat_m(nmo, nmo), occ_mat_coupled(nmo, nmo))
+                   occ_mat_m(nmo, nmo), occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), &
+                   projector_evec(nmo, nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -3951,10 +3953,30 @@ CONTAINS
          END DO
          projector_weight = kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
                                                                  ot_kp_canonical_projector_max_weight)
+         IF (projector_weight > 0.0_dp) THEN
+            ALLOCATE (projector_evals(nmo))
+            CALL diag_complex(chc, projector_evec, projector_evals)
+            DEALLOCATE (projector_evals)
+         END IF
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))
          ALLOCATE (grad_p_re(nmo, nmo), grad_p_im(nmo, nmo), grad_m_re(nmo, nmo), grad_m_im(nmo, nmo))
          ALLOCATE (eps_p(nmo), eps_m(nmo))
+
+         DO ie = 1, nmo
+            CALL dense_history_safe_occ_projector_basis(projector_evec, projector_weight, ie, occ_basis)
+            CALL dense_ref_rotation_gradient(x_re, x_im, base, occ_basis, grad_p_re, grad_p_im, eps_p)
+            DO r = first_var, last_var
+               imo = var_i(r)
+               jmo = var_j(r)
+               SELECT CASE (var_kind(r))
+               CASE (1)
+                  response_occ(first_energy + ie - 1, r) = 2.0_dp*grad_p_re(imo, jmo)
+               CASE (2)
+                  response_occ(first_energy + ie - 1, r) = 2.0_dp*grad_p_im(imo, jmo)
+               END SELECT
+            END DO
+         END DO
 
          DO s = first_var, last_var
             x_p_re(:, :) = x_re(:, :)
@@ -4028,19 +4050,38 @@ CONTAINS
             DO ie = 1, nmo
                raw_response = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
                response(first_energy + ie - 1, s) = raw_response
-               ! The spectral occupation-projector part follows canonical eigenvalues
-               ! of U^H H U, which are invariant under finite REF-gauge rotations in
-               ! this local model; only the diagonal gauge fraction has Rayleigh
-               ! occupation response.
-               response_occ(first_energy + ie - 1, s) = (1.0_dp - projector_weight)*raw_response
             END DO
          END DO
 
-         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, occ_mat, occ_mat_p, occ_mat_m, &
-                     occ_mat_coupled)
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, occ_basis, occ_mat, &
+                     occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m)
       END SUBROUTINE build_finite_ref_rotation_model
+
+      SUBROUTINE dense_history_safe_occ_projector_basis(evec, projector_weight, iband, occ_mat)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: evec
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight
+      INTEGER, INTENT(IN)                                :: iband
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
+
+      INTEGER                                            :: i, j, n
+
+         n = SIZE(evec, 1)
+         occ_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+
+         IF (projector_weight > 0.0_dp) THEN
+            DO j = 1, n
+               DO i = 1, n
+                  occ_mat(i, j) = projector_weight*evec(i, iband)*CONJG(evec(j, iband))
+               END DO
+            END DO
+         END IF
+
+         occ_mat(iband, iband) = occ_mat(iband, iband) + &
+                                  CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
+
+      END SUBROUTINE dense_history_safe_occ_projector_basis
 
       SUBROUTINE dense_rotated_chc(x_re, x_im, base, chc)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im

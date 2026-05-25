@@ -973,9 +973,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the response blend used by the finite complex split Schur model.
-!>        The diagonal-gauge occupation response follows d[U^H H U]_ii/dtheta,
-!>        while the spectral projector part follows canonical eigenvalues, which
-!>        are invariant under local finite REF-gauge rotations.
+!>        The occupation-projector response is the derivative of the rotation
+!>        gradient with respect to the band occupation weights.  For a purely
+!>        diagonal projector this reduces to d[U^H H U]_ii/dtheta; with a
+!>        spectral projector blend it also contains the finite complex projector
+!>        rotation response.
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_blended_response_channel(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -984,6 +986,7 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3, nkp = 1, nrot = n*(n - 1)
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_occ_step = 1.0E-6_dp, &
                                                             fd_step = 1.0E-6_dp, &
                                                             projector_weight = 0.35_dp
 
@@ -991,10 +994,12 @@ CONTAINS
       INTEGER                                            :: i, ivar, j, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: active_err, err
-      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eig_m, eig_p, h_m, h_p
-      REAL(KIND=dp), DIMENSION(n)                        :: combined_cross, combined_response, curv, &
-                                                            diag_response, occ_curv, occ_response, &
-                                                            spectral_response, tether_curv
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: h_m, h_p
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_scale, occ_scale_m, occ_scale_p
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im_2d, grad_re_2d
+      REAL(KIND=dp), DIMENSION(n, nrot)                  :: diag_response, projector_response, &
+                                                            response_fd, zero_response
       REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
 
       base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -1045,10 +1050,13 @@ CONTAINS
          END DO
       END DO
 
-      occ_curv(:) = [0.65_dp, 1.10_dp, 0.42_dp]
-      tether_curv(:) = [0.18_dp, 0.27_dp, 0.09_dp]
-      curv(:) = occ_curv(:) + tether_curv(:)
+      occ_scale(:) = [1.42_dp, 0.77_dp, 0.31_dp]
 
+      CALL dense_blended_projector_response(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
+                                            0.0_dp, var_i, var_j, var_kind, zero_response)
+      CALL dense_blended_projector_response(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
+                                            projector_weight, var_i, var_j, var_kind, projector_response)
+      response_fd(:, :) = 0.0_dp
       err = 0.0_dp
       active_err = 0.0_dp
       DO s = 1, nrot
@@ -1061,20 +1069,30 @@ CONTAINS
 
          CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, h_p)
          CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, h_m)
-         CALL dense_complex_kpoint_eigvals(x_p_re, x_p_im, base, eig_p)
-         CALL dense_complex_kpoint_eigvals(x_m_re, x_m_im, base, eig_m)
-
-         diag_response(:) = (h_p(:, 1) - h_m(:, 1))/(2.0_dp*fd_step)
-         spectral_response(:) = (eig_p(:, 1) - eig_m(:, 1))/(2.0_dp*fd_step)
-         occ_response(:) = (1.0_dp - projector_weight)*diag_response(:) + &
-                           projector_weight*spectral_response(:)
-         combined_cross(:) = occ_curv(:)*occ_response(:) + tether_curv(:)*diag_response(:)
-         combined_response(:) = combined_cross(:)/curv(:)
-
-         err = MAX(err, MAXVAL(ABS(curv(:)*combined_response(:) - combined_cross(:))))
-         err = MAX(err, MAXVAL(ABS(spectral_response(:))))
-         active_err = MAX(active_err, MAXVAL(ABS(combined_response(:) - diag_response(:))))
+         diag_response(:, s) = (h_p(:, 1) - h_m(:, 1))/(2.0_dp*fd_step)
+         err = MAX(err, MAXVAL(ABS(zero_response(:, s) - diag_response(:, s))))
+         active_err = MAX(active_err, MAXVAL(ABS(projector_response(:, s) - diag_response(:, s))))
       END DO
+
+      DO i = 1, n
+         occ_scale_p(:) = occ_scale(:)
+         occ_scale_m(:) = occ_scale(:)
+         occ_scale_p(i) = occ_scale_p(i) + fd_occ_step
+         occ_scale_m(i) = occ_scale_m(i) - fd_occ_step
+         CALL dense_blended_projector_rotation_gradient(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
+                                                        occ_scale_p, projector_weight, grad_re_2d, &
+                                                        grad_im_2d, h_p(:, 1))
+         CALL extract_rotation_gradient_vector_2d(grad_re_2d, grad_im_2d, var_i, var_j, &
+                                                  var_kind, grad_p_vec)
+         CALL dense_blended_projector_rotation_gradient(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
+                                                        occ_scale_m, projector_weight, grad_re_2d, &
+                                                        grad_im_2d, h_m(:, 1))
+         CALL extract_rotation_gradient_vector_2d(grad_re_2d, grad_im_2d, var_i, var_j, &
+                                                  var_kind, grad_m_vec)
+         response_fd(i, :) = 2.0_dp*(grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_occ_step)
+      END DO
+
+      err = MAX(err, MAXVAL(ABS(projector_response(:, :) - response_fd(:, :))))
 
       IF (err > tol .OR. active_err < active_tol) THEN
          nfail = nfail + 1
@@ -1084,6 +1102,88 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_blended_response_channel
+
+! **************************************************************************************************
+!> \brief Dense derivative of the blended projector rotation gradient with respect to occupations.
+! **************************************************************************************************
+   SUBROUTINE dense_blended_projector_response(x_re, x_im, base, projector_weight, &
+                                               var_i, var_j, var_kind, response)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: response
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec, occ_mat, u
+      INTEGER                                            :: band, i, j, n, r
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_diag, evals
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), evec(n, n), occ_mat(n, n), u(n, n), evals(n))
+      ALLOCATE (grad_re(n, n), grad_im(n, n), eps_diag(n))
+
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      IF (projector_weight > 0.0_dp) CALL diag_complex(chc, evec, evals)
+
+      DO band = 1, n
+         occ_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         IF (projector_weight > 0.0_dp) THEN
+            DO j = 1, n
+               DO i = 1, n
+                  occ_mat(i, j) = projector_weight*evec(i, band)*CONJG(evec(j, band))
+               END DO
+            END DO
+         END IF
+         occ_mat(band, band) = occ_mat(band, band) + &
+                                CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
+         CALL dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
+         DO r = 1, SIZE(var_i)
+            SELECT CASE (var_kind(r))
+            CASE (1)
+               response(band, r) = 2.0_dp*grad_re(var_i(r), var_j(r))
+            CASE (2)
+               response(band, r) = 2.0_dp*grad_im(var_i(r), var_j(r))
+            END SELECT
+         END DO
+      END DO
+
+      DEALLOCATE (chc, evec, occ_mat, u, evals, grad_re, grad_im, eps_diag)
+
+   END SUBROUTINE dense_blended_projector_response
+
+! **************************************************************************************************
+!> \brief Dense gradient for the same blended projector model with arbitrary occupation weights.
+! **************************************************************************************************
+   SUBROUTINE dense_blended_projector_rotation_gradient(x_re, x_im, base, occ_scale, &
+                                                        projector_weight, grad_re, grad_im, eps_diag)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad_re, grad_im
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: occ_mat
+      INTEGER                                            :: i, n
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (occ_mat(n, n))
+      IF (projector_weight > 0.0_dp) THEN
+         CALL dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_mat)
+         occ_mat(:, :) = projector_weight*occ_mat(:, :)
+      ELSE
+         occ_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      END IF
+      DO i = 1, n
+         occ_mat(i, i) = occ_mat(i, i) + &
+                         CMPLX((1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+      CALL dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
+      DEALLOCATE (occ_mat)
+
+   END SUBROUTINE dense_blended_projector_rotation_gradient
 
 ! **************************************************************************************************
 !> \brief Check the split Schur projector for global fixed-N Mermin response plus channel-local tether.
