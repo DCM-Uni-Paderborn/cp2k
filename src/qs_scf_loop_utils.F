@@ -2800,6 +2800,7 @@ CONTAINS
          split_response_abs_trust_ratio, split_response_step, split_response_trust, split_response_trust_factor, &
          split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, split_schur_diag_min, &
          split_scale_quality, split_curvature_scale, split_expected_drop, split_quality_for_calibration, &
+         split_quality_for_selection, split_dense_expected_ratio, constrained_quality_for_selection, &
          constrained_gdot_energy, constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
          constrained_scale_quality, tether_projected_term, tether_response, tether_response_diag_sum, tether_strength, &
          tether_weight, z_shift, z_weight
@@ -2960,6 +2961,7 @@ CONTAINS
          model_calibrated_drop = 0.0_dp
          split_curvature_scale = 1.0_dp
          split_direction_scale = 0.0_dp
+         split_dense_expected_ratio = 0.0_dp
          split_expected_drop = 0.0_dp
          split_gdotp = 0.0_dp
          split_gdot_energy = 0.0_dp
@@ -2978,6 +2980,8 @@ CONTAINS
          split_response_weighted_step = 0.0_dp
          split_response_weighted_trust_ratio = 0.0_dp
          split_quality_for_calibration = 1.0_dp
+         split_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
+         constrained_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_density_projector_fraction = 0.0_dp
          split_diag_shift_max = 0.0_dp
          split_diag_shift_sum = 0.0_dp
@@ -3180,6 +3184,16 @@ CONTAINS
                                               MIN(ot_kp_schur_calibrated_quality_max_ratio, &
                                                   local_ot_env(1)%schur_coupled_quality_ema))
          END IF
+         split_quality_for_selection = MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                           local_ot_env(1)%schur_split_calibrated_quality_ema)
+         IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
+            split_quality_for_selection = MIN(ot_kp_schur_calibrated_quality_max_ratio, &
+                                              split_quality_for_selection)
+         constrained_quality_for_selection = MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                                 local_ot_env(1)%schur_constrained_calibrated_quality_ema)
+         IF (local_ot_env(1)%schur_constrained_quality_samples >= ot_kp_schur_constrained_min_samples) &
+            constrained_quality_for_selection = MIN(ot_kp_schur_calibrated_quality_max_ratio, &
+                                                    constrained_quality_for_selection)
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
              local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
@@ -3520,12 +3534,8 @@ CONTAINS
 
             IF (schur_attempt == 2 .AND. constrained_candidate_ready .AND. &
                 model_calibrated_drop > EPSILON(model_calibrated_drop)) THEN
-               split_expected_drop = model_calibrated_drop* &
-                                     MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                                         local_ot_env(1)%schur_split_calibrated_quality_ema)
-               constrained_expected_drop = constrained_model_calibrated_drop* &
-                                           MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                                               local_ot_env(1)%schur_constrained_calibrated_quality_ema)
+               split_expected_drop = model_calibrated_drop*split_quality_for_selection
+               constrained_expected_drop = constrained_model_calibrated_drop*constrained_quality_for_selection
                IF (split_expected_drop > EPSILON(split_expected_drop)) &
                   constrained_expected_drop_ratio = constrained_expected_drop/split_expected_drop
                IF (.NOT. attempt_failed .AND. constrained_candidate_enabled .AND. &
@@ -3554,9 +3564,8 @@ CONTAINS
                END IF
             END IF
             IF (schur_attempt == 2 .AND. .NOT. attempt_failed) THEN
-               IF (.NOT. constrained_candidate_selected) split_expected_drop = model_calibrated_drop* &
-                  MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                      local_ot_env(1)%schur_split_calibrated_quality_ema)
+               IF (.NOT. constrained_candidate_selected) &
+                  split_expected_drop = model_calibrated_drop*split_quality_for_selection
                split_candidate_ready = .TRUE.
                split_selected_attempt = MERGE(1, 2, constrained_candidate_selected)
                split_z_e(:) = z_e(:)
@@ -3597,6 +3606,9 @@ CONTAINS
                dense_norm_rotation = norm_rotation
                dense_scale_quality = scale_quality
                IF (.NOT. attempt_failed) dense_expected_drop = model_calibrated_drop*dense_quality_for_selection
+               split_dense_expected_ratio = 0.0_dp
+               IF (dense_expected_drop > EPSILON(dense_expected_drop)) &
+                  split_dense_expected_ratio = split_expected_drop/dense_expected_drop
                split_candidate_selected = attempt_failed .OR. split_expected_drop > dense_expected_drop
                IF (split_candidate_selected) THEN
                   attempt_failed = .FALSE.
@@ -3757,12 +3769,13 @@ CONTAINS
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),5(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),8(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used split_ready constr_selected "// &
-                     "split_selected split_exp dense_exp dense_q drop cdrop:", &
+                     "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel exp_ratio:", &
                      schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
                      split_candidate_selected, split_expected_drop, dense_expected_drop, &
-                     dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop
+                     dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
+                     split_quality_for_selection, constrained_quality_for_selection, split_dense_expected_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
                      " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
                      "split_ge split_gr split_ne split_nr constr_scale constr_sq constr_ge constr_gr constr_ne "// &
