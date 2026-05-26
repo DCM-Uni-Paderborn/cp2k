@@ -235,10 +235,12 @@ MODULE qs_ot_types
       ! orbitals/history, while this Schur quality model is relearned after read.
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
       LOGICAL :: schur_constrained_pending = .FALSE., schur_constrained_candidate_enabled = .FALSE.
+      LOGICAL :: schur_split_shadow_pending = .FALSE.
       LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_cg_attempt = 0, schur_model_quality_samples = 0
       INTEGER :: schur_constrained_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
+      INTEGER :: schur_split_shadow_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
@@ -256,6 +258,12 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_split_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_drop_sum = 0.0_dp, schur_split_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_split_shadow_drop = 0.0_dp, schur_split_shadow_calibrated_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_split_shadow_quality = 0.0_dp, schur_split_shadow_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_split_shadow_calibrated_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_split_shadow_calibrated_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_split_shadow_drop_sum = 0.0_dp, schur_split_shadow_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_split_shadow_calibrated_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
@@ -493,6 +501,7 @@ CONTAINS
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_constrained_pending = .FALSE.
       qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
+      qs_ot_env%schur_split_shadow_pending = .FALSE.
       qs_ot_env%schur_history_mixed = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
       qs_ot_env%schur_model_attempt = 0
@@ -501,6 +510,7 @@ CONTAINS
       qs_ot_env%schur_constrained_quality_samples = 0
       qs_ot_env%schur_split_quality_samples = 0
       qs_ot_env%schur_coupled_quality_samples = 0
+      qs_ot_env%schur_split_shadow_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_calibrated_drop = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
@@ -526,6 +536,15 @@ CONTAINS
       qs_ot_env%schur_split_drop_sum = 0.0_dp
       qs_ot_env%schur_split_measured_sum = 0.0_dp
       qs_ot_env%schur_split_calibrated_drop_sum = 0.0_dp
+      qs_ot_env%schur_split_shadow_drop = 0.0_dp
+      qs_ot_env%schur_split_shadow_calibrated_drop = 0.0_dp
+      qs_ot_env%schur_split_shadow_quality = 0.0_dp
+      qs_ot_env%schur_split_shadow_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_shadow_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_split_shadow_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_shadow_drop_sum = 0.0_dp
+      qs_ot_env%schur_split_shadow_measured_sum = 0.0_dp
+      qs_ot_env%schur_split_shadow_calibrated_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_quality = 0.0_dp
       qs_ot_env%schur_coupled_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_drop_sum = 0.0_dp

@@ -2387,7 +2387,10 @@ CONTAINS
                                                             constrained_calibrated_predicted_drop, &
                                                             constrained_calibrated_quality_ratio, &
                                                             constrained_predicted_drop, constrained_quality_ratio, &
-                                                            measured_drop, predicted_drop, quality_ratio
+                                                            measured_drop, predicted_drop, quality_ratio, &
+                                                            split_shadow_calibrated_predicted_drop, &
+                                                            split_shadow_calibrated_quality_ratio, &
+                                                            split_shadow_predicted_drop, split_shadow_quality_ratio
       TYPE(cp_logger_type), POINTER                     :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -2421,6 +2424,7 @@ CONTAINS
             END IF
             local_ot_env(1)%schur_model_pending = .FALSE.
             local_ot_env(1)%schur_constrained_pending = .FALSE.
+            local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_history_mixed = .FALSE.
             RETURN
          END IF
@@ -2502,6 +2506,40 @@ CONTAINS
             local_ot_env(1)%schur_constrained_calibrated_quality_ema = 0.0_dp
             local_ot_env(1)%schur_constrained_quality_samples = 0
          END IF
+         split_shadow_predicted_drop = local_ot_env(1)%schur_split_shadow_drop
+         split_shadow_calibrated_predicted_drop = local_ot_env(1)%schur_split_shadow_calibrated_drop
+         IF (split_shadow_calibrated_predicted_drop <= EPSILON(split_shadow_calibrated_predicted_drop)) &
+            split_shadow_calibrated_predicted_drop = split_shadow_predicted_drop
+         split_shadow_quality_ratio = 0.0_dp
+         split_shadow_calibrated_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%schur_split_shadow_pending .AND. &
+             split_shadow_predicted_drop > EPSILON(split_shadow_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
+            split_shadow_quality_ratio = measured_drop/split_shadow_predicted_drop
+            IF (split_shadow_calibrated_predicted_drop > EPSILON(split_shadow_calibrated_predicted_drop)) &
+               split_shadow_calibrated_quality_ratio = measured_drop/split_shadow_calibrated_predicted_drop
+            local_ot_env(1)%schur_split_shadow_quality = split_shadow_quality_ratio
+            local_ot_env(1)%schur_split_shadow_calibrated_quality = split_shadow_calibrated_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_split_shadow_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_split_shadow_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_split_shadow_quality_ema = split_shadow_quality_ratio
+               local_ot_env(1)%schur_split_shadow_calibrated_quality_ema = split_shadow_calibrated_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_split_shadow_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)*local_ot_env(1)%schur_split_shadow_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*split_shadow_quality_ratio
+               local_ot_env(1)%schur_split_shadow_calibrated_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_split_shadow_calibrated_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*split_shadow_calibrated_quality_ratio
+            END IF
+            local_ot_env(1)%schur_split_shadow_drop_sum = &
+               local_ot_env(1)%schur_split_shadow_drop_sum + split_shadow_predicted_drop
+            local_ot_env(1)%schur_split_shadow_calibrated_drop_sum = &
+               local_ot_env(1)%schur_split_shadow_calibrated_drop_sum + split_shadow_calibrated_predicted_drop
+            local_ot_env(1)%schur_split_shadow_measured_sum = &
+               local_ot_env(1)%schur_split_shadow_measured_sum + measured_drop
+         END IF
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) THEN
             SELECT CASE (local_ot_env(1)%schur_model_attempt)
             CASE (1, 2)
@@ -2566,6 +2604,7 @@ CONTAINS
             2.0_dp*ot_kp_schur_calibrated_quality_max_ratio
          local_ot_env(1)%schur_model_pending = .FALSE.
          local_ot_env(1)%schur_constrained_pending = .FALSE.
+         local_ot_env(1)%schur_split_shadow_pending = .FALSE.
 
          logger => cp_get_default_logger()
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -2590,6 +2629,16 @@ CONTAINS
                local_ot_env(1)%schur_split_drop_sum, local_ot_env(1)%schur_split_measured_sum, &
                local_ot_env(1)%schur_coupled_quality, local_ot_env(1)%schur_coupled_quality_ema, &
                local_ot_env(1)%schur_coupled_drop_sum, local_ot_env(1)%schur_coupled_measured_sum
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
+               " OT Schur LS split shadow n ratio ema cal cal_ema pred cpred meas latest_cal:", &
+               local_ot_env(1)%schur_split_shadow_quality_samples, &
+               local_ot_env(1)%schur_split_shadow_quality, local_ot_env(1)%schur_split_shadow_quality_ema, &
+               local_ot_env(1)%schur_split_shadow_calibrated_quality, &
+               local_ot_env(1)%schur_split_shadow_calibrated_quality_ema, &
+               local_ot_env(1)%schur_split_shadow_drop_sum, &
+               local_ot_env(1)%schur_split_shadow_calibrated_drop_sum, &
+               local_ot_env(1)%schur_split_shadow_measured_sum, &
+               split_shadow_calibrated_quality_ratio
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,10(1X,ES16.8),1X,L1)') &
                " OT Schur LS constrained n ratio ema cal cal_ema pred cpred meas gap split_cal_ema split_cpred enabled:", &
                local_ot_env(1)%schur_constrained_quality_samples, &
@@ -2730,6 +2779,7 @@ CONTAINS
              (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
             local_ot_env(1)%schur_model_pending = .FALSE.
             local_ot_env(1)%schur_constrained_pending = .FALSE.
+            local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
@@ -2738,6 +2788,8 @@ CONTAINS
             local_ot_env(1)%schur_constrained_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_gap_ratio = 0.0_dp
+            local_ot_env(1)%schur_split_shadow_drop = 0.0_dp
+            local_ot_env(1)%schur_split_shadow_calibrated_drop = 0.0_dp
          END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
@@ -3688,6 +3740,14 @@ CONTAINS
                IF (dense_expected_drop > EPSILON(dense_expected_drop)) &
                   split_dense_expected_ratio = split_expected_drop/dense_expected_drop
                split_candidate_selected = attempt_failed .OR. split_expected_drop > dense_expected_drop
+               IF (new_search_point .AND. split_candidate_ready .AND. .NOT. split_candidate_selected .AND. &
+                   split_model_drop > EPSILON(split_model_drop)) THEN
+                  local_ot_env(1)%schur_split_shadow_pending = .TRUE.
+                  local_ot_env(1)%schur_split_shadow_drop = &
+                     local_ot_env(1)%schur_split_shadow_drop + split_model_drop
+                  local_ot_env(1)%schur_split_shadow_calibrated_drop = &
+                     local_ot_env(1)%schur_split_shadow_calibrated_drop + split_model_calibrated_drop
+               END IF
                IF (split_candidate_selected) THEN
                   attempt_failed = .FALSE.
                   z_e(:) = split_z_e(:)
