@@ -2785,7 +2785,8 @@ CONTAINS
          constrained_response_abs_step, constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
          constrained_response_step, constrained_response_trust_ratio, constrained_response_weighted_step, &
          constrained_response_weighted_trust_ratio, constrained_rot_diag_avg, constrained_tether_response_diag_avg, &
-         coupled_diag_shift_avg, coupled_direction_scale, coupled_model_calibrated_drop, coupled_model_drop, &
+         constrained_trust_quality, coupled_diag_shift_avg, coupled_direction_scale, coupled_model_calibrated_drop, &
+         coupled_model_drop, &
          coupled_model_gap, coupled_model_gap_drop, coupled_occ_response_diag_avg, coupled_rot_diag_avg, &
          coupled_tether_response_diag_avg, &
          coupled_model_gap_ratio, coupled_model_gap_trust, coupled_norm_ratio, &
@@ -2794,8 +2795,8 @@ CONTAINS
          coupled_gdot_energy, coupled_gdot_rotation, coupled_norm_energy, coupled_norm_rotation, &
          coupled_scale_quality, curv_projection_sum, dense_direction_scale, dense_expected_drop, dense_term, &
          dense_gdot_energy, dense_gdot_rotation, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
-         dense_scale_quality, diag_shift, diag_shift_avg, direction_scale, gdotp, gdot_energy, gdot_rotation, &
-         gnorm, &
+         dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, direction_scale, gdotp, gdot_energy, &
+         gdot_rotation, gnorm, &
          density_projector_fraction, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
@@ -2816,8 +2817,8 @@ CONTAINS
          split_scale_quality, split_curvature_scale, split_expected_drop, split_quality_for_calibration, &
          split_quality_for_selection, split_dense_expected_ratio, constrained_quality_for_selection, &
          constrained_gdot_energy, constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
-         constrained_scale_quality, tether_projected_term, tether_response, tether_response_diag_sum, tether_strength, &
-         tether_weight, z_shift, z_weight
+         constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
+         tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, rot_floor, rtd, &
                                                             rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
@@ -2933,6 +2934,7 @@ CONTAINS
          constrained_response_trust_ratio = 0.0_dp
          constrained_response_weighted_step = 0.0_dp
          constrained_response_weighted_trust_ratio = 0.0_dp
+         constrained_trust_quality = 1.0_dp
          coupled_diag_shift_avg = 0.0_dp
          accepted_model_drop = 0.0_dp
          accepted_model_calibrated_drop = 0.0_dp
@@ -2968,6 +2970,7 @@ CONTAINS
          dense_norm_rotation = 0.0_dp
          dense_quality_for_selection = 1.0_dp
          dense_scale_quality = 0.0_dp
+         dense_trust_quality = 1.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -2996,6 +2999,7 @@ CONTAINS
          split_quality_for_calibration = 1.0_dp
          split_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          constrained_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
+         split_trust_quality = 1.0_dp
          split_density_projector_fraction = 0.0_dp
          split_diag_shift_max = 0.0_dp
          split_diag_shift_sum = 0.0_dp
@@ -3183,31 +3187,66 @@ CONTAINS
          split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level .OR. &
                                       split_candidate_enabled .OR. constrained_candidate_enabled
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
-            split_quality_for_calibration = MAX(ot_kp_schur_calibration_floor, &
-                                                MIN(1.0_dp, local_ot_env(1)%schur_split_quality_ema))
+            split_quality_for_calibration = &
+               kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_drop_sum, &
+                                               local_ot_env(1)%schur_split_measured_sum, &
+                                               local_ot_env(1)%schur_split_quality_ema, &
+                                               local_ot_env(1)%schur_split_quality_samples, &
+                                               ot_kp_schur_calibration_min_samples, &
+                                               local_ot_env(1)%schur_split_quality_ema, &
+                                               ot_kp_schur_calibration_floor, 1.0_dp)
+            split_quality_for_calibration = MAX(split_quality_for_calibration, &
+                                                MAX(ot_kp_schur_calibration_floor, &
+                                                    MIN(1.0_dp, local_ot_env(1)%schur_split_quality_ema)))
          ELSE IF (local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             ! Bootstrap Split curvature from the accepted dense/coupled Mermin
             ! model quality.  Otherwise Split candidates that are already known
             ! to be over-optimistic can be rejected by the OT z.z=g.z scale gate
             ! before they ever collect their own calibration samples.
-            split_quality_for_calibration = MAX(ot_kp_schur_calibration_floor, &
-                                                MIN(1.0_dp, local_ot_env(1)%schur_model_quality_ema))
+            split_quality_for_calibration = &
+               kpoint_ot_schur_history_quality(local_ot_env(1)%schur_coupled_drop_sum, &
+                                               local_ot_env(1)%schur_coupled_measured_sum, &
+                                               local_ot_env(1)%schur_model_quality_ema, &
+                                               local_ot_env(1)%schur_model_quality_samples, &
+                                               ot_kp_schur_calibration_min_samples, &
+                                               local_ot_env(1)%schur_model_quality_ema, &
+                                               ot_kp_schur_calibration_floor, 1.0_dp)
+            split_quality_for_calibration = MAX(split_quality_for_calibration, &
+                                                MAX(ot_kp_schur_calibration_floor, &
+                                                    MIN(1.0_dp, local_ot_env(1)%schur_model_quality_ema)))
          END IF
          IF (local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
-            dense_quality_for_selection = MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                                              MIN(ot_kp_schur_calibrated_quality_max_ratio, &
-                                                  local_ot_env(1)%schur_coupled_quality_ema))
+            dense_quality_for_selection = &
+               kpoint_ot_schur_history_quality(local_ot_env(1)%schur_coupled_drop_sum, &
+                                               local_ot_env(1)%schur_coupled_measured_sum, &
+                                               local_ot_env(1)%schur_coupled_quality_ema, &
+                                               local_ot_env(1)%schur_coupled_quality_samples, &
+                                               ot_kp_schur_calibration_min_samples, 1.0_dp, &
+                                               ot_kp_schur_calibrated_quality_min_ratio, &
+                                               ot_kp_schur_calibrated_quality_max_ratio)
+            dense_quality_for_selection = MAX(dense_quality_for_selection, &
+                                              MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                                  MIN(ot_kp_schur_calibrated_quality_max_ratio, &
+                                                      local_ot_env(1)%schur_coupled_quality_ema)))
          END IF
-         split_quality_for_selection = MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                                           local_ot_env(1)%schur_split_calibrated_quality_ema)
-         IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
-            split_quality_for_selection = MIN(ot_kp_schur_calibrated_quality_max_ratio, &
-                                              split_quality_for_selection)
-         constrained_quality_for_selection = MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                                                 local_ot_env(1)%schur_constrained_calibrated_quality_ema)
-         IF (local_ot_env(1)%schur_constrained_quality_samples >= ot_kp_schur_constrained_min_samples) &
-            constrained_quality_for_selection = MIN(ot_kp_schur_calibrated_quality_max_ratio, &
-                                                    constrained_quality_for_selection)
+         split_quality_for_selection = &
+            kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
+                                            local_ot_env(1)%schur_split_measured_sum, &
+                                            local_ot_env(1)%schur_split_calibrated_quality_ema, &
+                                            local_ot_env(1)%schur_split_quality_samples, &
+                                            ot_kp_schur_calibration_min_samples, &
+                                            local_ot_env(1)%schur_split_calibrated_quality_ema, &
+                                            ot_kp_schur_calibrated_quality_min_ratio, &
+                                            ot_kp_schur_calibrated_quality_max_ratio)
+         constrained_quality_for_selection = &
+            kpoint_ot_schur_history_quality(local_ot_env(1)%schur_constrained_calibrated_drop_sum, &
+                                            local_ot_env(1)%schur_constrained_measured_sum, &
+                                            local_ot_env(1)%schur_constrained_calibrated_quality_ema, &
+                                            local_ot_env(1)%schur_constrained_quality_samples, &
+                                            ot_kp_schur_constrained_min_samples, &
+                                            local_ot_env(1)%schur_constrained_calibrated_quality_ema, &
+                                            ot_kp_schur_calibrated_quality_min_ratio, &
+                                            ot_kp_schur_calibrated_quality_max_ratio)
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
              local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
@@ -3549,8 +3588,20 @@ CONTAINS
 
             IF (schur_attempt == 2 .AND. constrained_candidate_ready .AND. &
                 model_calibrated_drop > EPSILON(model_calibrated_drop)) THEN
-               split_expected_drop = model_calibrated_drop*split_quality_for_selection
-               constrained_expected_drop = constrained_model_calibrated_drop*constrained_quality_for_selection
+               split_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
+                                                                   response_abs_trust_ratio, &
+                                                                   model_gap_ratio)
+               constrained_trust_quality = &
+                  kpoint_ot_schur_trust_quality(constrained_response_weighted_trust_ratio, &
+                                                constrained_response_abs_trust_ratio, &
+                                                constrained_model_gap_ratio)
+               split_expected_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
+                                                                   split_quality_for_selection, &
+                                                                   split_trust_quality)
+               constrained_expected_drop = &
+                  kpoint_ot_schur_expected_drop(constrained_model_calibrated_drop, &
+                                               constrained_quality_for_selection, &
+                                               constrained_trust_quality)
                IF (split_expected_drop > EPSILON(split_expected_drop)) &
                   constrained_expected_drop_ratio = constrained_expected_drop/split_expected_drop
                IF (.NOT. attempt_failed .AND. constrained_candidate_enabled .AND. &
@@ -3579,8 +3630,14 @@ CONTAINS
                END IF
             END IF
             IF (schur_attempt == 2 .AND. .NOT. attempt_failed) THEN
-               IF (.NOT. constrained_candidate_selected) &
-                  split_expected_drop = model_calibrated_drop*split_quality_for_selection
+               IF (.NOT. constrained_candidate_selected) THEN
+                  split_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
+                                                                      response_abs_trust_ratio, &
+                                                                      model_gap_ratio)
+                  split_expected_drop = &
+                     kpoint_ot_schur_expected_drop(model_calibrated_drop, split_quality_for_selection, &
+                                                  split_trust_quality)
+               END IF
                split_candidate_ready = .TRUE.
                split_selected_attempt = MERGE(1, 2, constrained_candidate_selected)
                split_z_e(:) = z_e(:)
@@ -3620,7 +3677,13 @@ CONTAINS
                dense_norm_energy = norm_energy
                dense_norm_rotation = norm_rotation
                dense_scale_quality = scale_quality
-               IF (.NOT. attempt_failed) dense_expected_drop = model_calibrated_drop*dense_quality_for_selection
+               dense_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
+                                                                   response_abs_trust_ratio, &
+                                                                   model_gap_ratio)
+               IF (.NOT. attempt_failed) &
+                  dense_expected_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
+                                                                     dense_quality_for_selection, &
+                                                                     dense_trust_quality)
                split_dense_expected_ratio = 0.0_dp
                IF (dense_expected_drop > EPSILON(dense_expected_drop)) &
                   split_dense_expected_ratio = split_expected_drop/dense_expected_drop
@@ -3784,13 +3847,15 @@ CONTAINS
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),8(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),11(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used split_ready constr_selected "// &
-                     "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel exp_ratio:", &
+                     "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
+                     "split_tq dense_tq constr_tq exp_ratio:", &
                      schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
                      split_candidate_selected, split_expected_drop, dense_expected_drop, &
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
-                     split_quality_for_selection, constrained_quality_for_selection, split_dense_expected_ratio
+                     split_quality_for_selection, constrained_quality_for_selection, split_trust_quality, &
+                     dense_trust_quality, constrained_trust_quality, split_dense_expected_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
                      " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
                      "split_ge split_gr split_ne split_nr constr_scale constr_sq constr_ge constr_gr constr_ne "// &
@@ -3956,6 +4021,45 @@ CONTAINS
          END IF
 
       END FUNCTION kpoint_ot_schur_scale_quality
+
+      FUNCTION kpoint_ot_schur_history_quality(predicted_sum, measured_sum, ema_quality, &
+                                               samples, min_samples, default_quality, &
+                                               min_quality, max_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: predicted_sum, measured_sum, ema_quality, &
+                                                            default_quality, min_quality, max_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp)                                     :: quality
+
+         quality = default_quality
+         IF (samples >= min_samples) THEN
+            IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
+               quality = measured_sum/predicted_sum
+            ELSE IF (ema_quality > 0.0_dp) THEN
+               quality = ema_quality
+            END IF
+         END IF
+         quality = MAX(min_quality, MIN(max_quality, quality))
+
+      END FUNCTION kpoint_ot_schur_history_quality
+
+      FUNCTION kpoint_ot_schur_trust_quality(weighted_trust_ratio, abs_trust_ratio, &
+                                             gap_trust_ratio) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: weighted_trust_ratio, abs_trust_ratio, gap_trust_ratio
+      REAL(KIND=dp)                                     :: quality, trust_ratio
+
+         trust_ratio = MAX(1.0_dp, weighted_trust_ratio, abs_trust_ratio, gap_trust_ratio)
+         quality = 1.0_dp/trust_ratio
+
+      END FUNCTION kpoint_ot_schur_trust_quality
+
+      FUNCTION kpoint_ot_schur_expected_drop(model_drop, history_quality, trust_quality) RESULT(expected_drop)
+      REAL(KIND=dp), INTENT(IN)                         :: model_drop, history_quality, trust_quality
+      REAL(KIND=dp)                                     :: expected_drop
+
+         expected_drop = MAX(0.0_dp, model_drop)*MAX(0.0_dp, history_quality)* &
+                         MAX(0.0_dp, MIN(1.0_dp, trust_quality))
+
+      END FUNCTION kpoint_ot_schur_expected_drop
 
       FUNCTION kpoint_ot_response_mismatch_drop(response_actual, response_model, curv, scale) RESULT(drop)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_actual, response_model, curv
