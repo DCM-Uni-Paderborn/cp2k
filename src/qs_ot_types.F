@@ -235,7 +235,7 @@ MODULE qs_ot_types
       ! orbitals/history, while this Schur quality model is relearned after read.
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
       LOGICAL :: schur_constrained_pending = .FALSE., schur_constrained_candidate_enabled = .FALSE.
-      LOGICAL :: schur_split_candidate_enabled = .FALSE.
+      LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_cg_attempt = 0, schur_model_quality_samples = 0
       INTEGER :: schur_constrained_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
@@ -493,6 +493,7 @@ CONTAINS
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_constrained_pending = .FALSE.
       qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
+      qs_ot_env%schur_history_mixed = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
       qs_ot_env%schur_model_attempt = 0
       qs_ot_env%schur_cg_attempt = 0

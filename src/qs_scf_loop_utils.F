@@ -2411,6 +2411,19 @@ CONTAINS
             calibrated_predicted_drop = predicted_drop
          measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
          local_ot_env(1)%schur_model_measured_drop = measured_drop
+         IF (local_ot_env(1)%schur_history_mixed) THEN
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,3(1X,ES16.8))') &
+                  " OT Schur LS quality skipped mixed CG history attempt pred cal meas:", &
+                  local_ot_env(1)%schur_model_attempt, predicted_drop, &
+                  calibrated_predicted_drop, measured_drop
+            END IF
+            local_ot_env(1)%schur_model_pending = .FALSE.
+            local_ot_env(1)%schur_constrained_pending = .FALSE.
+            local_ot_env(1)%schur_history_mixed = .FALSE.
+            RETURN
+         END IF
          quality_ratio = 0.0_dp
          calibrated_quality_ratio = 0.0_dp
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) &
@@ -2717,6 +2730,7 @@ CONTAINS
              (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
             local_ot_env(1)%schur_model_pending = .FALSE.
             local_ot_env(1)%schur_constrained_pending = .FALSE.
+            local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
             local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp

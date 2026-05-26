@@ -1063,7 +1063,7 @@ CONTAINS
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin, &
                                                             schur_attempt, schur_last_attempt
       LOGICAL                                            :: do_ener, do_ks, negative_beta, reset_to_sd, &
-                                                            schur_history_change
+                                                            schur_history_change, schur_history_mixed
       REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
                                                             gnorm_matrix_im, gnorm_matrix_re, &
                                                             gnorm_rot_im, gnorm_rot_re, test_down, tmp
@@ -1087,6 +1087,7 @@ CONTAINS
                              schur_attempt /= schur_last_attempt .AND. &
                              schur_attempt /= 0 .AND. schur_last_attempt /= 0 .AND. &
                              (schur_attempt <= 2 .OR. schur_last_attempt <= 2)
+      schur_history_mixed = .FALSE.
 
       gnorm_matrix_re = 0.0_dp
       gnorm_matrix_im = 0.0_dp
@@ -1318,11 +1319,14 @@ CONTAINS
             END DO
          END IF
       END IF
+      schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
+      qs_ot_env(1)%schur_history_mixed = schur_history_mixed
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,I6),3(1X,L1))') &
-            " OT CG beta raw used gnorm old cross down schur_att last neg hist_change reset:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,I6),4(1X,L1))') &
+            " OT CG beta raw used gnorm old cross down schur_att last neg hist_change mixed reset:", &
             beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, &
-            schur_attempt, schur_last_attempt, negative_beta, schur_history_change, reset_to_sd
+            schur_attempt, schur_last_attempt, negative_beta, schur_history_change, schur_history_mixed, &
+            reset_to_sd
       END IF
       ! since we change the direction we have to adjust the gradient
       qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm
