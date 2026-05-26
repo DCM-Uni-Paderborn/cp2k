@@ -58,6 +58,8 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_cross_projector("mixed fixed-N/tether Schur cross projector", &
                                                    5.0E-14_dp, nfail)
+   CALL check_mixed_fixed_n_tether_exact_response("mixed fixed-N/tether exact response", &
+                                                  5.0E-12_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -1360,6 +1362,121 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_mixed_fixed_n_tether_cross_projector
+
+! **************************************************************************************************
+!> \brief Check exact dense elimination for the mixed fixed-N/tether energy block.
+! **************************************************************************************************
+   SUBROUTINE check_mixed_fixed_n_tether_exact_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nrot = 3, nchannels = 2
+
+      INTEGER                                            :: first_energy, i, info, j, local_channel, nmo, r
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: active_err, channel_occ_sum, curv_max, err, &
+                                                            gauge_weight, ref_value, shift, test_value, &
+                                                            weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                       :: bq, occ_curv, tether_curv, x
+      REAL(KIND=dp), DIMENSION(nrot)                     :: q
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, rhs
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: exact
+
+      channel_nmo = [3, 3]
+      e_offset = [1, 4]
+      occ_curv = [0.31_dp, 0.74_dp, 0.16_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      tether_curv = [0.05_dp, 0.02_dp, 0.08_dp, 0.07_dp, 0.03_dp, 0.0_dp]
+      response_occ(:, 1) = [0.13_dp, -0.21_dp, 0.09_dp, 0.31_dp, -0.17_dp, 0.05_dp]
+      response_occ(:, 2) = [-0.05_dp, 0.18_dp, 0.24_dp, -0.11_dp, 0.07_dp, -0.09_dp]
+      response_occ(:, 3) = [0.22_dp, 0.04_dp, -0.19_dp, 0.15_dp, -0.08_dp, 0.12_dp]
+      response_tether(:, 1) = [0.06_dp, -0.09_dp, 0.18_dp, 0.27_dp, -0.14_dp, 0.11_dp]
+      response_tether(:, 2) = [-0.12_dp, 0.21_dp, 0.05_dp, -0.08_dp, 0.16_dp, -0.03_dp]
+      response_tether(:, 3) = [0.19_dp, -0.02_dp, -0.11_dp, 0.23_dp, -0.04_dp, 0.08_dp]
+      q = [0.21_dp, -0.13_dp, 0.17_dp]
+
+      h(:, :) = 0.0_dp
+      b(:, :) = 0.0_dp
+      DO i = 1, ne
+         h(i, i) = occ_curv(i) + tether_curv(i)
+      END DO
+      weight_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            h(i, j) = h(i, j) - occ_curv(i)*occ_curv(j)/weight_sum
+         END DO
+      END DO
+      DO r = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, response_occ(:, r))/weight_sum
+         b(:, r) = b(:, r) + occ_curv(:)*(response_occ(:, r) - shift)
+      END DO
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               h(i, j) = h(i, j) - tether_curv(i)*tether_curv(j)/weight_sum
+            END DO
+         END DO
+         DO r = 1, nrot
+            shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                response_tether(first_energy:first_energy + nmo - 1, r))/weight_sum
+            b(first_energy:first_energy + nmo - 1, r) = b(first_energy:first_energy + nmo - 1, r) + &
+               tether_curv(first_energy:first_energy + nmo - 1)* &
+               (response_tether(first_energy:first_energy + nmo - 1, r) - shift)
+         END DO
+      END DO
+
+      curv_max = MAXVAL(occ_curv + tether_curv)
+      gauge_weight = curv_max/REAL(ne, KIND=dp)
+      h(:, :) = h(:, :) + gauge_weight
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         channel_occ_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum) .OR. channel_occ_sum > EPSILON(channel_occ_sum)) CYCLE
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               h(i, j) = h(i, j) + gauge_weight
+            END DO
+         END DO
+      END DO
+      DO i = 1, ne
+         IF (occ_curv(i) + tether_curv(i) > EPSILON(curv_max)) CYCLE
+         h(i, :) = 0.0_dp
+         h(:, i) = 0.0_dp
+         h(i, i) = 1.0_dp
+         b(i, :) = 0.0_dp
+      END DO
+      rhs(:, :) = b(:, :)
+      h_ref(:, :) = h(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in dgesv", info
+         RETURN
+      END IF
+
+      exact(:, :) = MATMUL(TRANSPOSE(b), rhs)
+      active_err = ABS(exact(1, 1) - DOT_PRODUCT(response_occ(:, 1), occ_curv(:)*response_occ(:, 1)))
+      bq(:) = MATMUL(b, q)
+      x(:) = MATMUL(rhs, q)
+      ref_value = -0.5_dp*DOT_PRODUCT(q, MATMUL(exact, q))
+      test_value = 0.5_dp*DOT_PRODUCT(x, MATMUL(h_ref, x)) - DOT_PRODUCT(x, bq)
+      err = MAX(MAXVAL(ABS(exact(:, :) - TRANSPOSE(exact(:, :)))), ABS(ref_value - test_value))
+
+      IF (err > tol .OR. active_err < 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active_err
+      END IF
+
+   END SUBROUTINE check_mixed_fixed_n_tether_exact_response
 
 ! **************************************************************************************************
 !> \brief Diagonal of U^H H U for each dense complex k-point channel.
