@@ -3284,10 +3284,11 @@ CONTAINS
                DO r = 1, nrot
                   response_penalty_term = 0.0_dp
                   IF (schur_attempt <= 2) THEN
-                     CALL kpoint_ot_mixed_projected_term(response_split(:, r), response_split(:, s), &
-                                                         occ_curv, tether_curv, occ_curv_projection_sum, &
-                                                         channel_nmo, e_offset, projected_term, &
-                                                         occ_projected_term, tether_projected_term)
+                     CALL kpoint_ot_mixed_projected_cross_term(response_occ(:, r), response_occ(:, s), &
+                                                               response(:, r), response(:, s), &
+                                                               occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                               channel_nmo, e_offset, projected_term, &
+                                                               occ_projected_term, tether_projected_term)
                      IF (schur_attempt == 1) response_penalty_term = &
                         schur_response_penalty_scale*projected_term
                      IF (r == s) THEN
@@ -3884,6 +3885,47 @@ CONTAINS
          IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
          IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
       END SUBROUTINE kpoint_ot_mixed_projected_term
+
+      SUBROUTINE kpoint_ot_mixed_projected_cross_term(response_occ_left, response_occ_right, &
+                                                      response_tether_left, response_tether_right, &
+                                                      occ_curv, tether_curv, occ_curv_sum, &
+                                                      channel_nmo, e_offset, projected_term, &
+                                                      occ_projected_term, tether_projected_term)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_occ_left, response_occ_right, &
+                                                            response_tether_left, response_tether_right, &
+                                                            occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                         :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                 :: channel_nmo, e_offset
+      REAL(KIND=dp), INTENT(OUT)                        :: projected_term
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL              :: occ_projected_term, tether_projected_term
+
+      INTEGER                                           :: first_energy, local_channel, nmo
+      REAL(KIND=dp)                                     :: left_shift, occ_term, right_shift, tether_term, &
+                                                            weight_sum
+
+         occ_term = DOT_PRODUCT(occ_curv(:)*response_occ_left(:), response_occ_right(:))
+         IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+            left_shift = DOT_PRODUCT(occ_curv, response_occ_left)
+            right_shift = DOT_PRODUCT(occ_curv, response_occ_right)
+            occ_term = occ_term - left_shift*right_shift/occ_curv_sum
+         END IF
+         tether_term = DOT_PRODUCT(tether_curv(:)*response_tether_left(:), response_tether_right(:))
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+            IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+            left_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                     response_tether_left(first_energy:first_energy + nmo - 1))
+            right_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                      response_tether_right(first_energy:first_energy + nmo - 1))
+            tether_term = tether_term - left_shift*right_shift/weight_sum
+         END DO
+         projected_term = occ_term + tether_term
+         IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
+         IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
+      END SUBROUTINE kpoint_ot_mixed_projected_cross_term
 
       FUNCTION kpoint_ot_weighted_response_step(response_vec, curv, curv_sum) RESULT(step)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_vec, curv
