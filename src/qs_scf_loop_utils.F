@@ -2388,6 +2388,8 @@ CONTAINS
                                                             constrained_calibrated_quality_ratio, &
                                                             constrained_predicted_drop, constrained_quality_ratio, &
                                                             measured_drop, predicted_drop, quality_ratio, &
+                                                            residual_current_delta, residual_drop, &
+                                                            residual_quality_ratio, &
                                                             split_shadow_calibrated_predicted_drop, &
                                                             split_shadow_calibrated_quality_ratio, &
                                                             split_shadow_predicted_drop, split_shadow_quality_ratio
@@ -2414,6 +2416,12 @@ CONTAINS
             calibrated_predicted_drop = predicted_drop
          measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
          local_ot_env(1)%schur_model_measured_drop = measured_drop
+         residual_current_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
+         residual_drop = MAX(0.0_dp, local_ot_env(1)%schur_model_delta - residual_current_delta)
+         local_ot_env(1)%schur_model_residual_drop = residual_drop
+         residual_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%schur_model_delta > EPSILON(residual_current_delta)) &
+            residual_quality_ratio = residual_drop/local_ot_env(1)%schur_model_delta
          IF (local_ot_env(1)%schur_history_mixed) THEN
             logger => cp_get_default_logger()
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -2563,6 +2571,15 @@ CONTAINS
                local_ot_env(1)%schur_split_calibrated_drop_sum = &
                   local_ot_env(1)%schur_split_calibrated_drop_sum + calibrated_predicted_drop
                local_ot_env(1)%schur_split_measured_sum = local_ot_env(1)%schur_split_measured_sum + measured_drop
+               local_ot_env(1)%schur_split_residual_quality = residual_quality_ratio
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_split_residual_quality_ema = residual_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_split_residual_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_split_residual_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*residual_quality_ratio
+               END IF
             CASE (3)
                local_ot_env(1)%schur_coupled_quality = quality_ratio
                samples = MIN(local_ot_env(1)%schur_coupled_quality_samples + 1, HUGE(samples) - 1)
@@ -2576,6 +2593,15 @@ CONTAINS
                END IF
                local_ot_env(1)%schur_coupled_drop_sum = local_ot_env(1)%schur_coupled_drop_sum + predicted_drop
                local_ot_env(1)%schur_coupled_measured_sum = local_ot_env(1)%schur_coupled_measured_sum + measured_drop
+               local_ot_env(1)%schur_coupled_residual_quality = residual_quality_ratio
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_coupled_residual_quality_ema = residual_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_coupled_residual_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_coupled_residual_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*residual_quality_ratio
+               END IF
             END SELECT
          END IF
 
@@ -2618,16 +2644,20 @@ CONTAINS
                local_ot_env(1)%schur_model_gap_ratio, local_ot_env(1)%delta, &
                local_ot_env(1)%schur_model_quality_samples, &
                local_ot_env(1)%schur_model_quality_ready, local_ot_env(1)%schur_split_candidate_enabled
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),10(1X,ES16.8))') &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),14(1X,ES16.8))') &
                " OT Schur LS history split_n coupled_n split_ratio split_ema split_cal split_cal_ema "// &
-               "split_pred split_meas "// &
-               "coupled_ratio coupled_ema coupled_pred coupled_meas:", &
+               "split_resid split_resid_ema split_pred split_meas "// &
+               "coupled_ratio coupled_ema coupled_resid coupled_resid_ema coupled_pred coupled_meas:", &
                local_ot_env(1)%schur_split_quality_samples, local_ot_env(1)%schur_coupled_quality_samples, &
                local_ot_env(1)%schur_split_quality, local_ot_env(1)%schur_split_quality_ema, &
                local_ot_env(1)%schur_split_calibrated_quality, &
                local_ot_env(1)%schur_split_calibrated_quality_ema, &
+               local_ot_env(1)%schur_split_residual_quality, &
+               local_ot_env(1)%schur_split_residual_quality_ema, &
                local_ot_env(1)%schur_split_drop_sum, local_ot_env(1)%schur_split_measured_sum, &
                local_ot_env(1)%schur_coupled_quality, local_ot_env(1)%schur_coupled_quality_ema, &
+               local_ot_env(1)%schur_coupled_residual_quality, &
+               local_ot_env(1)%schur_coupled_residual_quality_ema, &
                local_ot_env(1)%schur_coupled_drop_sum, local_ot_env(1)%schur_coupled_measured_sum
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
                " OT Schur LS split shadow n ratio ema cal cal_ema pred cpred meas latest_cal:", &
@@ -2785,6 +2815,8 @@ CONTAINS
             local_ot_env(1)%schur_model_drop = 0.0_dp
             local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
+            local_ot_env(1)%schur_model_delta = 0.0_dp
+            local_ot_env(1)%schur_model_residual_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_gap_ratio = 0.0_dp
@@ -2850,7 +2882,7 @@ CONTAINS
          coupled_scale_quality, curv_projection_sum, dense_direction_scale, dense_expected_drop, dense_term, &
          dense_gdot_energy, dense_gdot_rotation, dense_model_gap, dense_model_gap_drop, dense_model_gap_ratio, &
          dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
-         dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, direction_scale, &
+         dense_residual_quality, dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, direction_scale, &
          energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
          gdot_rotation, gnorm, &
          density_projector_fraction, diag_shift_max, &
@@ -2871,7 +2903,8 @@ CONTAINS
          split_response_abs_trust_ratio, split_response_step, split_response_trust, split_response_trust_factor, &
          split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, split_schur_diag_min, &
          split_scale_quality, split_curvature_scale, split_expected_drop, split_quality_for_calibration, &
-         split_quality_for_selection, split_dense_expected_ratio, constrained_quality_for_selection, &
+         split_quality_for_selection, split_dense_expected_ratio, split_residual_quality, &
+         residual_reference_quality, constrained_quality_for_selection, &
          constrained_gdot_energy, constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
          constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
          tether_strength, tether_weight, z_shift, z_weight
@@ -2965,6 +2998,7 @@ CONTAINS
          response_trust_base = HUGE(1.0_dp)
          response_trust_factor = 1.0_dp
          residual_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
+         residual_reference_quality = 0.0_dp
          density_projector_fraction = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
@@ -3036,6 +3070,7 @@ CONTAINS
          dense_norm_energy = 0.0_dp
          dense_norm_rotation = 0.0_dp
          dense_quality_for_selection = 1.0_dp
+         dense_residual_quality = 1.0_dp
          dense_scale_quality = 0.0_dp
          dense_trust_quality = 1.0_dp
          energy_gauge_weight = 0.0_dp
@@ -3068,6 +3103,7 @@ CONTAINS
          split_response_weighted_trust_ratio = 0.0_dp
          split_quality_for_calibration = 1.0_dp
          split_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
+         split_residual_quality = 1.0_dp
          constrained_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_trust_quality = 1.0_dp
          split_density_projector_fraction = 0.0_dp
@@ -3334,6 +3370,27 @@ CONTAINS
                                             local_ot_env(1)%schur_constrained_calibrated_quality_ema, &
                                             ot_kp_schur_calibrated_quality_min_ratio, &
                                             ot_kp_schur_calibrated_quality_max_ratio)
+         IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
+             local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) &
+            residual_reference_quality = ot_kp_schur_quality_min_ratio
+         IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
+            residual_reference_quality = MAX(residual_reference_quality, &
+                                             local_ot_env(1)%schur_split_residual_quality_ema)
+         IF (local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) &
+            residual_reference_quality = MAX(residual_reference_quality, &
+                                             local_ot_env(1)%schur_coupled_residual_quality_ema)
+         IF (residual_reference_quality > EPSILON(residual_reference_quality)) THEN
+            IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
+               split_residual_quality = &
+                  MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                      MIN(1.0_dp, local_ot_env(1)%schur_split_residual_quality_ema/residual_reference_quality))
+            IF (local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) &
+               dense_residual_quality = &
+                  MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                      MIN(1.0_dp, local_ot_env(1)%schur_coupled_residual_quality_ema/residual_reference_quality))
+            split_quality_for_selection = split_quality_for_selection*split_residual_quality
+            dense_quality_for_selection = dense_quality_for_selection*dense_residual_quality
+         END IF
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
              local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_curvature_scale = MIN(ot_kp_schur_calibration_max_scale, &
@@ -3879,6 +3936,7 @@ CONTAINS
                local_ot_env(1)%schur_model_calibrated_drop + accepted_model_calibrated_drop
             local_ot_env(1)%schur_model_gap_ratio = MAX(local_ot_env(1)%schur_model_gap_ratio, &
                                                         accepted_model_gap_ratio)
+            local_ot_env(1)%schur_model_delta = MAX(local_ot_env(1)%schur_model_delta, residual_delta)
          END IF
 
          IF (.NOT. failed) THEN
@@ -3983,16 +4041,18 @@ CONTAINS
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
                      " OT Schur exact energy response ready gauge diag:", &
                      exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),15(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
-                     "split_tq dense_tq constr_tq exp_ratio dense_mgap dense_mdrop dense_mtrust dense_mratio:", &
+                     "split_tq dense_tq constr_tq exp_ratio dense_mgap dense_mdrop dense_mtrust dense_mratio "// &
+                     "split_rq dense_rq:", &
                      schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
                      split_candidate_selected, split_expected_drop, dense_expected_drop, &
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
                      split_quality_for_selection, constrained_quality_for_selection, split_trust_quality, &
                      dense_trust_quality, constrained_trust_quality, split_dense_expected_ratio, &
-                     dense_model_gap, dense_model_gap_drop, dense_model_gap_trust, dense_model_gap_ratio
+                     dense_model_gap, dense_model_gap_drop, dense_model_gap_trust, dense_model_gap_ratio, &
+                     split_residual_quality, dense_residual_quality
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
                      " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
                      "split_ge split_gr split_ne split_nr constr_scale constr_sq constr_ge constr_gr constr_ne "// &

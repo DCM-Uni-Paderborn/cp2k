@@ -246,6 +246,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_calibrated_quality = 0.0_dp, schur_model_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
+      REAL(KIND=dp) :: schur_model_delta = 0.0_dp, schur_model_residual_drop = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_drop = 0.0_dp, schur_constrained_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_quality = 0.0_dp, schur_constrained_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_calibrated_quality = 0.0_dp
@@ -256,6 +257,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_split_quality = 0.0_dp, schur_split_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_quality = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_split_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_split_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_split_drop_sum = 0.0_dp, schur_split_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_split_calibrated_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_split_shadow_drop = 0.0_dp, schur_split_shadow_calibrated_drop = 0.0_dp
@@ -265,6 +268,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_split_shadow_drop_sum = 0.0_dp, schur_split_shadow_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_split_shadow_calibrated_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
@@ -519,6 +524,8 @@ CONTAINS
       qs_ot_env%schur_model_calibrated_quality = 0.0_dp
       qs_ot_env%schur_model_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_model_gap_ratio = 0.0_dp
+      qs_ot_env%schur_model_delta = 0.0_dp
+      qs_ot_env%schur_model_residual_drop = 0.0_dp
       qs_ot_env%schur_constrained_drop = 0.0_dp
       qs_ot_env%schur_constrained_calibrated_drop = 0.0_dp
       qs_ot_env%schur_constrained_quality = 0.0_dp
@@ -533,6 +540,8 @@ CONTAINS
       qs_ot_env%schur_split_quality_ema = 0.0_dp
       qs_ot_env%schur_split_calibrated_quality = 0.0_dp
       qs_ot_env%schur_split_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_residual_quality = 0.0_dp
+      qs_ot_env%schur_split_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_split_drop_sum = 0.0_dp
       qs_ot_env%schur_split_measured_sum = 0.0_dp
       qs_ot_env%schur_split_calibrated_drop_sum = 0.0_dp
@@ -547,6 +556,8 @@ CONTAINS
       qs_ot_env%schur_split_shadow_calibrated_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_quality = 0.0_dp
       qs_ot_env%schur_coupled_quality_ema = 0.0_dp
+      qs_ot_env%schur_coupled_residual_quality = 0.0_dp
+      qs_ot_env%schur_coupled_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_measured_sum = 0.0_dp
 
