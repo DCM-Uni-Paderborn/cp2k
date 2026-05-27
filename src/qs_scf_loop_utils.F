@@ -2851,7 +2851,7 @@ CONTAINS
                                                             nchannels, ne, nmo, nrot, r, s, schur_attempt, &
                                                             selected_attempt, split_selected_attempt, &
                                                             schur_used_attempt, constrained_reject_reason, &
-                                                            coupled_reject_reason, &
+                                                            coupled_reject_reason, dense_reject_reason, &
                                                             reject_reason
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, ipiv_energy, &
                                                             var_channel, var_ei, var_ej, var_i, &
@@ -3074,6 +3074,7 @@ CONTAINS
          dense_norm_rotation = 0.0_dp
          dense_projector_coupled_weight = 0.0_dp
          dense_quality_for_selection = 1.0_dp
+         dense_reject_reason = 0
          dense_residual_quality = 1.0_dp
          dense_scale_quality = 0.0_dp
          dense_trust_quality = 1.0_dp
@@ -3654,8 +3655,13 @@ CONTAINS
                         reject_reason = reject_model_mismatch
                      END IF
                      IF (schur_attempt <= 3 .AND. direction_scale < schur_min_coupled_scale) THEN
-                        attempt_failed = .TRUE.
-                        reject_reason = reject_scale
+                        IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                            projector_coupled_weight > 0.0_dp) THEN
+                           model_calibrated_drop = scale_quality*model_calibrated_drop
+                        ELSE
+                           attempt_failed = .TRUE.
+                           reject_reason = reject_scale
+                        END IF
                      END IF
                      ! Trust the Schur response in the fixed-N Mermin metric.  A
                      ! single weakly-curved band may have a large absolute energy
@@ -3868,6 +3874,7 @@ CONTAINS
                dense_norm_energy = norm_energy
                dense_norm_rotation = norm_rotation
                dense_projector_coupled_weight = projector_coupled_weight
+               dense_reject_reason = reject_reason
                dense_scale_quality = scale_quality
                dense_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
                                                                    response_abs_trust_ratio, &
@@ -3919,6 +3926,28 @@ CONTAINS
                   rot_floor_min = split_rot_floor_min
                   schur_diag_min = split_schur_diag_min
                END IF
+            END IF
+
+            IF (schur_attempt == 3 .AND. .NOT. split_candidate_ready) THEN
+               dense_direction_scale = direction_scale
+               dense_gdot_energy = gdot_energy
+               dense_gdot_rotation = gdot_rotation
+               dense_model_gap = model_gap
+               dense_model_gap_drop = model_gap_drop
+               dense_model_gap_ratio = model_gap_ratio
+               dense_model_gap_trust = model_gap_trust
+               dense_norm_energy = norm_energy
+               dense_norm_rotation = norm_rotation
+               dense_projector_coupled_weight = projector_coupled_weight
+               dense_reject_reason = reject_reason
+               dense_scale_quality = scale_quality
+               dense_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
+                                                                  response_abs_trust_ratio, &
+                                                                  model_gap_ratio)
+               IF (.NOT. attempt_failed) &
+                  dense_expected_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
+                                                                     dense_quality_for_selection, &
+                                                                     dense_trust_quality)
             END IF
 
             IF (.NOT. attempt_failed) THEN
@@ -4058,13 +4087,14 @@ CONTAINS
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
                      MERGE(1.0_dp, 0.0_dp, residual_delta > ot_kp_schur_projector_coupled_tail_delta), &
                      dense_projector_coupled_weight, accepted_projector_coupled_weight
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),17(1X,ES16.8))') &
-                     " OT Schur candidate selection used split_used split_ready constr_selected "// &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),17(1X,ES16.8))') &
+                     " OT Schur candidate selection used split_used dense_code split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
                      "split_tq dense_tq constr_tq exp_ratio dense_mgap dense_mdrop dense_mtrust dense_mratio "// &
                      "split_rq dense_rq:", &
-                     schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
-                     split_candidate_selected, split_expected_drop, dense_expected_drop, &
+                     schur_used_attempt, split_selected_attempt, dense_reject_reason, &
+                     split_candidate_ready, constrained_candidate_selected, split_candidate_selected, &
+                     split_expected_drop, dense_expected_drop, &
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
                      split_quality_for_selection, constrained_quality_for_selection, split_trust_quality, &
                      dense_trust_quality, constrained_trust_quality, split_dense_expected_ratio, &

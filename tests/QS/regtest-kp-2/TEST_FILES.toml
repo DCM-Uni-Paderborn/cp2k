@@ -14,18 +14,18 @@
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.72125649265876},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.72125649265876},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.56558241304757},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.56558241304757},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.05970988404722},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05970988404722},
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-7.98570485671797},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.98570485671797},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14577070933220},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14577070933220},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14578027429963},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14578027429963},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104038E-4},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.4124E-4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.3470E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
 # Slow/manual converged-physics companion: run Al_kp_ot_restart_converge.inp
@@ -33,7 +33,7 @@
 # so the default restart/smearing regtest stays cheap while the optional
 # physics tail can still be checked against the 1E-6 Mermin path, including
 # the NO_TEXT first/last-band smearing guards. Current local reference:
-# 927 SCF steps, E_total = Mermin = -8.14585273494467 Ha.
+# 864 SCF steps, E_total = Mermin = -8.14585273475098 Ha.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
