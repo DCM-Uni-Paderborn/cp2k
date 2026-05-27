@@ -2893,7 +2893,8 @@ CONTAINS
          occ_projected_term, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
          response_penalty_diag_sum, &
-         response_penalty_term, response_shift, rot_diag_sum, &
+         response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
+         projector_response_gap_max, projector_response_gap_norm, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, scale_quality, &
@@ -3275,10 +3276,24 @@ CONTAINS
             CALL project_kpoint_ot_schur_response(response_split(:, r), occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
          END DO
+         projector_response_gap_avg = 0.0_dp
+         projector_response_gap_max = 0.0_dp
+         DO r = 1, nrot
+            projector_response_gap_norm = DOT_PRODUCT(occ_curv(:)*(response_occ(:, r) - response(:, r)), &
+                                                      response_occ(:, r) - response(:, r))
+            CALL para_env_inter_kp%sum(projector_response_gap_norm)
+            IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
+               projector_response_gap_avg = projector_response_gap_avg + &
+                  SQRT(MAX(0.0_dp, projector_response_gap_norm/occ_curv_projection_sum))
+            projector_response_gap_max = MAX(projector_response_gap_max, &
+                                             MAXVAL(ABS(response_occ(:, r) - response(:, r))))
+         END DO
+         projector_response_gap_avg = projector_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
+         CALL para_env_inter_kp%max(projector_response_gap_max)
          CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ, response, grad_e, &
-                                                   channel_nmo, e_offset, energy_hessian, energy_cross, &
-                                                   response_exact, z_exact_trial, ipiv_energy, &
-                                                   exact_energy_model_ready, energy_gauge_weight)
+                                                    channel_nmo, e_offset, energy_hessian, energy_cross, &
+                                                    response_exact, z_exact_trial, ipiv_energy, &
+                                                    exact_energy_model_ready, energy_gauge_weight)
          IF (exact_energy_model_ready) THEN
             z_shift = DOT_PRODUCT(curv, z_exact_trial)
             CALL para_env_inter_kp%sum(z_shift)
@@ -4079,9 +4094,10 @@ CONTAINS
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
-                     " OT Schur exact energy response ready gauge diag:", &
-                     exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,4(1X,ES16.8))') &
+                     " OT Schur exact energy response ready gauge diag occ_gap occ_gap_max:", &
+                     exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg, &
+                     projector_response_gap_avg, projector_response_gap_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
                      " OT Schur projector curvature residual tail eligible dense accepted:", &
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
