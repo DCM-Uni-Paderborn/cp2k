@@ -135,7 +135,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibrated_quality_max_ratio = 2.5_dp, &
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
-                                        ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp
+                                        ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
+                                        ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
@@ -3435,7 +3436,16 @@ CONTAINS
             IF (schur_attempt <= 2) THEN
                schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
             ELSE IF (schur_attempt == 3) THEN
-               schur(:, :) = rot_hessian_coupled(:, :)
+               IF (exact_attempt_response .AND. &
+                   residual_delta > ot_kp_schur_projector_coupled_tail_delta) THEN
+                  ! Use the finite complex occupation-projector curvature while
+                  ! residuals are still outside the delicate final tail.  Below
+                  ! that point the fixed-occupation coupled block gives the
+                  ! observed stable 1E-6 path.
+                  schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
+               ELSE
+                  schur(:, :) = rot_hessian_coupled(:, :)
+               END IF
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
