@@ -60,6 +60,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_exact_response("mixed fixed-N/tether exact response", &
                                                   5.0E-12_dp, nfail)
+   CALL check_mixed_fixed_n_tether_exact_schur("mixed fixed-N/tether exact Schur", &
+                                               5.0E-11_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -1477,6 +1479,173 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_mixed_fixed_n_tether_exact_response
+
+! **************************************************************************************************
+!> \brief Check exact energy-block elimination against the full augmented Schur system.
+! **************************************************************************************************
+   SUBROUTINE check_mixed_fixed_n_tether_exact_schur(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nrot = 3, nchannels = 2, ntot = ne + nrot
+
+      INTEGER                                            :: info
+      INTEGER, DIMENSION(MAX(ne, ntot))                  :: ipiv
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: err
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, z_aug, z_red
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_red
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, rhs_energy
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: a, schur
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
+      REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
+
+      channel_nmo = [3, 3]
+      e_offset = [1, 4]
+      grad_e = [0.11_dp, -0.07_dp, 0.04_dp, -0.09_dp, 0.13_dp, 0.03_dp]
+      grad_rot = [0.17_dp, -0.19_dp, 0.08_dp]
+      response_occ(:, 1) = [0.13_dp, -0.21_dp, 0.09_dp, 0.31_dp, -0.17_dp, 0.05_dp]
+      response_occ(:, 2) = [-0.05_dp, 0.18_dp, 0.24_dp, -0.11_dp, 0.07_dp, -0.09_dp]
+      response_occ(:, 3) = [0.22_dp, 0.04_dp, -0.19_dp, 0.15_dp, -0.08_dp, 0.12_dp]
+      response_tether(:, 1) = [0.06_dp, -0.09_dp, 0.18_dp, 0.27_dp, -0.14_dp, 0.11_dp]
+      response_tether(:, 2) = [-0.12_dp, 0.21_dp, 0.05_dp, -0.08_dp, 0.16_dp, -0.03_dp]
+      response_tether(:, 3) = [0.19_dp, -0.02_dp, -0.11_dp, 0.23_dp, -0.04_dp, 0.08_dp]
+
+      CALL build_test_mixed_energy_block(channel_nmo, e_offset, response_occ, response_tether, h, b)
+
+      a(:, :) = RESHAPE([1.37_dp, 0.04_dp, -0.03_dp, &
+                         0.04_dp, 1.11_dp, 0.05_dp, &
+                         -0.03_dp, 0.05_dp, 0.93_dp], SHAPE(a))
+      rhs_energy(:, 1:nrot) = b(:, 1:nrot)
+      CALL dgesv(ne, nrot, h, ne, ipiv(1:ne), rhs_energy, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed energy dgesv", info
+         RETURN
+      END IF
+
+      schur(:, :) = a(:, :) - MATMUL(TRANSPOSE(b), rhs_energy)
+      z_red(:) = grad_e(:)
+      CALL build_test_mixed_energy_block(channel_nmo, e_offset, response_occ, response_tether, h, b)
+      CALL dgesv(ne, 1, h, ne, ipiv(1:ne), z_red, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed gradient dgesv", info
+         RETURN
+      END IF
+      q_red(:) = grad_rot(:) + MATMUL(TRANSPOSE(rhs_energy), grad_e)
+      CALL dgesv(nrot, 1, schur, nrot, ipiv(1:nrot), q_red, nrot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed Schur dgesv", info
+         RETURN
+      END IF
+      z_red(:) = z_red(:) + MATMUL(rhs_energy, q_red)
+
+      CALL build_test_mixed_energy_block(channel_nmo, e_offset, response_occ, response_tether, h, b)
+      aug(:, :) = 0.0_dp
+      aug(1:ne, 1:ne) = h(:, :)
+      aug(1:ne, ne + 1:ntot) = -b(:, :)
+      aug(ne + 1:ntot, 1:ne) = -TRANSPOSE(b)
+      aug(ne + 1:ntot, ne + 1:ntot) = a(:, :)
+      rhs_aug(1:ne) = grad_e(:)
+      rhs_aug(ne + 1:ntot) = grad_rot(:)
+      CALL dgesv(ntot, 1, aug, ntot, ipiv(1:ntot), rhs_aug, ntot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed augmented dgesv", info
+         RETURN
+      END IF
+      z_aug(:) = rhs_aug(1:ne)
+      q_aug(:) = rhs_aug(ne + 1:ntot)
+
+      err = MAX(MAXVAL(ABS(z_red - z_aug)), MAXVAL(ABS(q_red - q_aug)))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_mixed_fixed_n_tether_exact_schur
+
+! **************************************************************************************************
+!> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.
+! **************************************************************************************************
+   SUBROUTINE build_test_mixed_energy_block(channel_nmo, e_offset, response_occ, response_tether, h, b)
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_occ, response_tether
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: h, b
+
+      INTEGER                                            :: first_energy, i, j, local_channel, ne, nchannels, nmo, nrot, r
+      REAL(KIND=dp)                                      :: channel_occ_sum, curv_max, gauge_weight, shift, weight_sum
+      REAL(KIND=dp), DIMENSION(SIZE(h, 1))               :: occ_curv, tether_curv
+
+      ne = SIZE(h, 1)
+      nrot = SIZE(b, 2)
+      nchannels = SIZE(channel_nmo)
+      occ_curv = [0.31_dp, 0.74_dp, 0.16_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      tether_curv = [0.05_dp, 0.02_dp, 0.08_dp, 0.07_dp, 0.03_dp, 0.0_dp]
+      h(:, :) = 0.0_dp
+      b(:, :) = 0.0_dp
+      DO i = 1, ne
+         h(i, i) = occ_curv(i) + tether_curv(i)
+      END DO
+      weight_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            h(i, j) = h(i, j) - occ_curv(i)*occ_curv(j)/weight_sum
+         END DO
+      END DO
+      DO r = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, response_occ(:, r))/weight_sum
+         b(:, r) = b(:, r) + occ_curv(:)*(response_occ(:, r) - shift)
+      END DO
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               h(i, j) = h(i, j) - tether_curv(i)*tether_curv(j)/weight_sum
+            END DO
+         END DO
+         DO r = 1, nrot
+            shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                response_tether(first_energy:first_energy + nmo - 1, r))/weight_sum
+            b(first_energy:first_energy + nmo - 1, r) = b(first_energy:first_energy + nmo - 1, r) + &
+               tether_curv(first_energy:first_energy + nmo - 1)* &
+               (response_tether(first_energy:first_energy + nmo - 1, r) - shift)
+         END DO
+      END DO
+
+      curv_max = MAXVAL(occ_curv + tether_curv)
+      gauge_weight = curv_max/REAL(ne, KIND=dp)
+      h(:, :) = h(:, :) + gauge_weight
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         channel_occ_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum) .OR. channel_occ_sum > EPSILON(channel_occ_sum)) CYCLE
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               h(i, j) = h(i, j) + gauge_weight
+            END DO
+         END DO
+      END DO
+      DO i = 1, ne
+         IF (occ_curv(i) + tether_curv(i) > EPSILON(curv_max)) CYCLE
+         h(i, :) = 0.0_dp
+         h(:, i) = 0.0_dp
+         h(i, i) = 1.0_dp
+         b(i, :) = 0.0_dp
+      END DO
+
+   END SUBROUTINE build_test_mixed_energy_block
 
 ! **************************************************************************************************
 !> \brief Diagonal of U^H H U for each dense complex k-point channel.

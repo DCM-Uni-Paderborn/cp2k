@@ -2823,7 +2823,8 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, ipiv_energy, &
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
-      LOGICAL                                            :: attempt_failed, failed, new_search_point, solved, &
+      LOGICAL                                            :: attempt_failed, exact_attempt_response, failed, &
+                                                            new_search_point, response_model_available, solved, &
                                                             constrained_candidate_enabled, &
                                                             constrained_candidate_ready, constrained_candidate_selected, &
                                                             exact_energy_model_ready, &
@@ -2847,7 +2848,8 @@ CONTAINS
          coupled_response_trust_ratio, coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
          coupled_gdot_energy, coupled_gdot_rotation, coupled_norm_energy, coupled_norm_rotation, &
          coupled_scale_quality, curv_projection_sum, dense_direction_scale, dense_expected_drop, dense_term, &
-         dense_gdot_energy, dense_gdot_rotation, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
+         dense_gdot_energy, dense_gdot_rotation, dense_model_gap, dense_model_gap_drop, dense_model_gap_ratio, &
+         dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
          dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, direction_scale, &
          energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
          gdot_rotation, gnorm, &
@@ -3027,6 +3029,10 @@ CONTAINS
          dense_expected_drop = 0.0_dp
          dense_gdot_energy = 0.0_dp
          dense_gdot_rotation = 0.0_dp
+         dense_model_gap = 0.0_dp
+         dense_model_gap_drop = 0.0_dp
+         dense_model_gap_ratio = 0.0_dp
+         dense_model_gap_trust = 0.0_dp
          dense_norm_energy = 0.0_dp
          dense_norm_rotation = 0.0_dp
          dense_quality_for_selection = 1.0_dp
@@ -3348,7 +3354,10 @@ CONTAINS
             norm_rotation = 0.0_dp
             norm_ratio = 0.0_dp
             normp = 0.0_dp
-            IF (schur_attempt <= 2 .AND. exact_energy_model_ready) THEN
+            exact_attempt_response = exact_energy_model_ready .AND. schur_attempt <= 3
+            response_model_available = schur_attempt <= 2 .OR. &
+                                       (schur_attempt == 3 .AND. exact_attempt_response)
+            IF (exact_attempt_response) THEN
                z_e(:) = z_exact_trial(:)
             ELSE
                z_e(:) = z_trial(:)
@@ -3381,8 +3390,12 @@ CONTAINS
                      rhs(r) = grad_rot(r) + DOT_PRODUCT(response_split(:, r), grad_e)
                   END IF
                ELSE IF (schur_attempt == 3) THEN
-                  rtd(r) = DOT_PRODUCT(curv, response_coupled(:, r))
-                  rhs(r) = grad_rot(r) + DOT_PRODUCT(response_coupled(:, r), grad_e)
+                  IF (exact_attempt_response) THEN
+                     rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact(:, r), grad_e)
+                  ELSE
+                     rtd(r) = DOT_PRODUCT(curv, response_coupled(:, r))
+                     rhs(r) = grad_rot(r) + DOT_PRODUCT(response_coupled(:, r), grad_e)
+                  END IF
                ELSE
                   rtd(r) = DOT_PRODUCT(curv, response(:, r))
                   rhs(r) = grad_rot(r) + DOT_PRODUCT(response(:, r), grad_e)
@@ -3428,10 +3441,14 @@ CONTAINS
                         response_penalty_diag_sum = response_penalty_diag_sum + response_penalty_term
                      END IF
                   ELSE IF (schur_attempt == 3) THEN
-                     dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
-                     projected_term = dense_term
-                     IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                        projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
+                     IF (exact_attempt_response) THEN
+                        projected_term = DOT_PRODUCT(energy_cross(:, r), response_exact(:, s))
+                     ELSE
+                        dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
+                        projected_term = dense_term
+                        IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                           projected_term = projected_term - rtd(r)*rtd(s)/curv_projection_sum
+                     END IF
                   ELSE
                      dense_term = DOT_PRODUCT(curv(:)*response(:, r), response(:, s))
                      projected_term = dense_term
@@ -3479,8 +3496,13 @@ CONTAINS
                   END IF
                   rx_model(:) = MATMUL(response_coupled, sol)
                ELSE IF (schur_attempt == 3) THEN
-                  rx_e(:) = MATMUL(response_coupled, sol)
-                  rx_model(:) = rx_e(:)
+                  IF (exact_attempt_response) THEN
+                     rx_e(:) = MATMUL(response_exact, sol)
+                     rx_model(:) = MATMUL(response_coupled, sol)
+                  ELSE
+                     rx_e(:) = MATMUL(response_coupled, sol)
+                     rx_model(:) = rx_e(:)
+                  END IF
                ELSE
                   rx_e(:) = MATMUL(response, sol)
                   rx_model(:) = rx_e(:)
@@ -3494,7 +3516,7 @@ CONTAINS
                CALL para_env_inter_kp%sum(rx_shift)
                CALL para_env_inter_kp%sum(rx_weight)
                IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
-               IF (schur_attempt <= 2) THEN
+               IF (response_model_available) THEN
                   rx_shift = 0.0_dp
                   rx_weight = 0.0_dp
                   DO ie = 1, ne
@@ -3547,11 +3569,15 @@ CONTAINS
                         response_weighted_trust_ratio = response_weighted_step/response_trust
                      IF (response_abs_trust > EPSILON(response_abs_trust)) &
                         response_abs_trust_ratio = response_abs_step/response_abs_trust
-                     IF (schur_attempt <= 2) THEN
+                     IF (response_model_available) THEN
                         model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
                         model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
-                        model_calibrated_drop = &
-                           MAX(0.0_dp, split_quality_for_calibration*model_drop - model_gap_drop)
+                        IF (schur_attempt <= 2) THEN
+                           model_calibrated_drop = &
+                              MAX(0.0_dp, split_quality_for_calibration*model_drop - model_gap_drop)
+                        ELSE
+                           model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+                        END IF
                         model_gap_trust = schur_model_gap_factor*response_trust
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
                      END IF
@@ -3769,6 +3795,10 @@ CONTAINS
                dense_direction_scale = direction_scale
                dense_gdot_energy = gdot_energy
                dense_gdot_rotation = gdot_rotation
+               dense_model_gap = model_gap
+               dense_model_gap_drop = model_gap_drop
+               dense_model_gap_ratio = model_gap_ratio
+               dense_model_gap_trust = model_gap_trust
                dense_norm_energy = norm_energy
                dense_norm_rotation = norm_rotation
                dense_scale_quality = scale_quality
@@ -3953,15 +3983,16 @@ CONTAINS
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
                      " OT Schur exact energy response ready gauge diag:", &
                      exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),11(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),15(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
-                     "split_tq dense_tq constr_tq exp_ratio:", &
+                     "split_tq dense_tq constr_tq exp_ratio dense_mgap dense_mdrop dense_mtrust dense_mratio:", &
                      schur_used_attempt, split_selected_attempt, split_candidate_ready, constrained_candidate_selected, &
                      split_candidate_selected, split_expected_drop, dense_expected_drop, &
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
                      split_quality_for_selection, constrained_quality_for_selection, split_trust_quality, &
-                     dense_trust_quality, constrained_trust_quality, split_dense_expected_ratio
+                     dense_trust_quality, constrained_trust_quality, split_dense_expected_ratio, &
+                     dense_model_gap, dense_model_gap_drop, dense_model_gap_trust, dense_model_gap_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
                      " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
                      "split_ge split_gr split_ne split_nr constr_scale constr_sq constr_ge constr_gr constr_ne "// &
