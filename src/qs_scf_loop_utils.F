@@ -2886,12 +2886,13 @@ CONTAINS
          dense_residual_quality, dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, direction_scale, &
          energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
          gdot_rotation, gnorm, &
-         density_projector_fraction, diag_shift_max, &
+         accepted_projector_coupled_weight, density_projector_fraction, dense_projector_coupled_weight, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
          model_gap_ratio, mu, norm_energy, norm_ratio, norm_rotation, normp, occ_curv_projection_sum, &
          occ_projected_term, &
-         occ_response_diag_sum, projected_term, rayleigh_edge_gap, residual_delta, response_penalty_diag_sum, &
+         occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
+         response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
@@ -3037,6 +3038,7 @@ CONTAINS
          accepted_model_drop = 0.0_dp
          accepted_model_calibrated_drop = 0.0_dp
          accepted_model_gap_ratio = 0.0_dp
+         accepted_projector_coupled_weight = 0.0_dp
          coupled_direction_scale = 0.0_dp
          coupled_gdot_energy = 0.0_dp
          coupled_gdot_rotation = 0.0_dp
@@ -3070,6 +3072,7 @@ CONTAINS
          dense_model_gap_trust = 0.0_dp
          dense_norm_energy = 0.0_dp
          dense_norm_rotation = 0.0_dp
+         dense_projector_coupled_weight = 0.0_dp
          dense_quality_for_selection = 1.0_dp
          dense_residual_quality = 1.0_dp
          dense_scale_quality = 0.0_dp
@@ -3415,6 +3418,7 @@ CONTAINS
             exact_attempt_response = exact_energy_model_ready .AND. schur_attempt <= 3
             response_model_available = schur_attempt <= 2 .OR. &
                                        (schur_attempt == 3 .AND. exact_attempt_response)
+            projector_coupled_weight = 0.0_dp
             IF (exact_attempt_response) THEN
                z_e(:) = z_exact_trial(:)
             ELSE
@@ -3437,15 +3441,10 @@ CONTAINS
                schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
             ELSE IF (schur_attempt == 3) THEN
                IF (exact_attempt_response .AND. &
-                   residual_delta > ot_kp_schur_projector_coupled_tail_delta) THEN
-                  ! Use the finite complex occupation-projector curvature while
-                  ! residuals are still outside the delicate final tail.  Below
-                  ! that point the fixed-occupation coupled block gives the
-                  ! observed stable 1E-6 path.
-                  schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
-               ELSE
-                  schur(:, :) = rot_hessian_coupled(:, :)
-               END IF
+                   residual_delta > ot_kp_schur_projector_coupled_tail_delta) &
+                  projector_coupled_weight = 1.0_dp
+               schur(:, :) = rot_hessian_coupled(:, :) + &
+                  projector_coupled_weight*(rot_hessian_projector(:, :) - rot_hessian(:, :))
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
@@ -3868,6 +3867,7 @@ CONTAINS
                dense_model_gap_trust = model_gap_trust
                dense_norm_energy = norm_energy
                dense_norm_rotation = norm_rotation
+               dense_projector_coupled_weight = projector_coupled_weight
                dense_scale_quality = scale_quality
                dense_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
                                                                    response_abs_trust_ratio, &
@@ -3929,6 +3929,8 @@ CONTAINS
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
                accepted_model_gap_ratio = model_gap_ratio
+               accepted_projector_coupled_weight = projector_coupled_weight
+               IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
                EXIT
             END IF
          END DO
@@ -4051,6 +4053,11 @@ CONTAINS
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8))') &
                      " OT Schur exact energy response ready gauge diag:", &
                      exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                     " OT Schur projector curvature residual tail eligible dense accepted:", &
+                     residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
+                     MERGE(1.0_dp, 0.0_dp, residual_delta > ot_kp_schur_projector_coupled_tail_delta), &
+                     dense_projector_coupled_weight, accepted_projector_coupled_weight
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),3(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
