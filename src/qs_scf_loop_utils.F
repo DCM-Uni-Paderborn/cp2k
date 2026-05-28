@@ -2932,6 +2932,8 @@ CONTAINS
          occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
+         projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
+         projector_hessian_diag_avg, &
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
@@ -3133,6 +3135,10 @@ CONTAINS
          exact_energy_model_ready = .FALSE.
          exact_response_diag_avg = 0.0_dp
          response_mixed_diag_avg = 0.0_dp
+         projector_hessian_abs_avg = 0.0_dp
+         projector_hessian_delta_diag_avg = 0.0_dp
+         projector_hessian_delta_max = 0.0_dp
+         projector_hessian_diag_avg = 0.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -3307,6 +3313,20 @@ CONTAINS
                                              TRANSPOSE(rot_hessian_coupled(:, :)))
          rot_hessian_projector(:, :) = 0.5_dp*(rot_hessian_projector(:, :) + &
                                                TRANSPOSE(rot_hessian_projector(:, :)))
+         DO r = 1, nrot
+            projector_hessian_diag_avg = projector_hessian_diag_avg + rot_hessian_projector(r, r)
+            projector_hessian_delta_diag_avg = projector_hessian_delta_diag_avg + &
+                                               rot_hessian_projector(r, r) - rot_hessian(r, r)
+            DO s = 1, nrot
+               projector_hessian_abs_avg = projector_hessian_abs_avg + &
+                                           ABS(rot_hessian_projector(r, s) - rot_hessian(r, s))
+               projector_hessian_delta_max = MAX(projector_hessian_delta_max, &
+                                                 ABS(rot_hessian_projector(r, s) - rot_hessian(r, s)))
+            END DO
+         END DO
+         projector_hessian_diag_avg = projector_hessian_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_hessian_delta_diag_avg = projector_hessian_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_hessian_abs_avg = projector_hessian_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
@@ -4208,6 +4228,10 @@ CONTAINS
                      projector_response_gap_avg, projector_response_gap_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,ES16.8)') &
                      " OT Schur mixed response diag:", response_mixed_diag_avg
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                     " OT Schur projector Hessian diag delta_diag abs_avg delta_max:", &
+                     projector_hessian_diag_avg, projector_hessian_delta_diag_avg, &
+                     projector_hessian_abs_avg, projector_hessian_delta_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
