@@ -136,6 +136,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
+                                        ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
                                         ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
 
    PUBLIC :: qs_scf_set_loop_flags, &
@@ -2933,7 +2934,7 @@ CONTAINS
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
-         projector_hessian_diag_avg, &
+         projector_hessian_diag_avg, projector_diag_compensation, &
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
@@ -3139,6 +3140,7 @@ CONTAINS
          projector_hessian_delta_diag_avg = 0.0_dp
          projector_hessian_delta_max = 0.0_dp
          projector_hessian_diag_avg = 0.0_dp
+         projector_diag_compensation = 0.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -3523,6 +3525,7 @@ CONTAINS
             response_model_available = schur_attempt <= 2 .OR. &
                                        (schur_attempt == 3 .AND. exact_attempt_response)
             projector_coupled_weight = 0.0_dp
+            projector_diag_compensation = 0.0_dp
             IF (exact_attempt_response) THEN
                z_e(:) = z_exact_trial(:)
             ELSE
@@ -3544,11 +3547,17 @@ CONTAINS
             IF (schur_attempt <= 2) THEN
                schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
             ELSE IF (schur_attempt == 3) THEN
-               IF (exact_attempt_response .AND. &
-                   residual_delta > ot_kp_schur_projector_coupled_tail_delta) &
-                  projector_coupled_weight = 1.0_dp
+               IF (exact_attempt_response) &
+                  projector_coupled_weight = kpoint_ot_projector_coupled_weight(residual_delta, &
+                     dense_quality_for_selection, local_ot_env(1)%schur_coupled_quality_samples, &
+                     density_projector_fraction, projector_hessian_diag_avg, projector_hessian_delta_diag_avg)
                schur(:, :) = rot_hessian_coupled(:, :) + &
                   projector_coupled_weight*(rot_hessian_projector(:, :) - rot_hessian(:, :))
+               ! In the low residual tail the finite projector Hessian carries useful
+               ! shape information, but its mean diagonal softening is too aggressive.
+               IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                  projector_diag_compensation = &
+                     MAX(0.0_dp, -projector_coupled_weight*projector_hessian_delta_diag_avg)
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
@@ -3637,6 +3646,7 @@ CONTAINS
             END DO
             IF (schur_attempt <= 2) schur(:, :) = split_curvature_scale*schur(:, :)
             DO r = 1, nrot
+               IF (projector_diag_compensation > 0.0_dp) schur(r, r) = schur(r, r) + projector_diag_compensation
                row_floor = curvature_floor
                IF (schur_attempt <= 3) row_floor = rot_floor(r)
                rot_floor_min = MIN(rot_floor_min, row_floor)
@@ -4583,6 +4593,33 @@ CONTAINS
                          MAX(0.0_dp, MIN(1.0_dp, trust_quality))
 
       END FUNCTION kpoint_ot_schur_expected_drop
+
+      FUNCTION kpoint_ot_projector_coupled_weight(residual_delta, history_quality, samples, &
+                                                  density_projector_fraction, projector_diag_avg, &
+                                                  projector_delta_diag_avg) RESULT(projector_weight)
+      REAL(KIND=dp), INTENT(IN)                         :: residual_delta, history_quality, &
+                                                            density_projector_fraction, projector_diag_avg, &
+                                                            projector_delta_diag_avg
+      INTEGER, INTENT(IN)                               :: samples
+      REAL(KIND=dp)                                     :: diag_ratio, projector_weight, quality_weight
+
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) THEN
+            projector_weight = 1.0_dp
+            RETURN
+         END IF
+
+         projector_weight = 0.0_dp
+         IF (samples < ot_kp_schur_calibration_min_samples) RETURN
+
+         quality_weight = (1.0_dp - MIN(1.0_dp, MAX(0.0_dp, history_quality)))/ &
+                          MAX(EPSILON(1.0_dp), 1.0_dp - ot_kp_schur_calibrated_quality_min_ratio)
+         quality_weight = MAX(0.0_dp, MIN(1.0_dp, quality_weight))
+         diag_ratio = ABS(projector_delta_diag_avg)/MAX(ABS(projector_diag_avg), EPSILON(1.0_dp))
+         projector_weight = ot_kp_schur_projector_coupled_tail_max_weight* &
+                            quality_weight*MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))/ &
+                            MAX(1.0_dp, 1.0_dp + diag_ratio)
+
+      END FUNCTION kpoint_ot_projector_coupled_weight
 
       FUNCTION kpoint_ot_response_mismatch_drop(response_actual, response_model, curv, scale) RESULT(drop)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_actual, response_model, curv
