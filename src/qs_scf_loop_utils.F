@@ -2389,6 +2389,8 @@ CONTAINS
                                                             constrained_calibrated_quality_ratio, &
                                                             constrained_predicted_drop, constrained_quality_ratio, &
                                                             measured_drop, predicted_drop, quality_ratio, &
+                                                            occgap_shadow_predicted_drop, &
+                                                            occgap_shadow_quality_ratio, &
                                                             residual_current_delta, residual_drop, &
                                                             residual_quality_ratio, &
                                                             split_shadow_calibrated_predicted_drop, &
@@ -2434,6 +2436,7 @@ CONTAINS
             local_ot_env(1)%schur_model_pending = .FALSE.
             local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
             local_ot_env(1)%schur_history_mixed = .FALSE.
             RETURN
          END IF
@@ -2549,6 +2552,27 @@ CONTAINS
             local_ot_env(1)%schur_split_shadow_measured_sum = &
                local_ot_env(1)%schur_split_shadow_measured_sum + measured_drop
          END IF
+         occgap_shadow_predicted_drop = local_ot_env(1)%schur_occgap_shadow_drop
+         occgap_shadow_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%schur_occgap_shadow_pending .AND. &
+             occgap_shadow_predicted_drop > EPSILON(occgap_shadow_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
+            occgap_shadow_quality_ratio = measured_drop/occgap_shadow_predicted_drop
+            local_ot_env(1)%schur_occgap_shadow_quality = occgap_shadow_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_occgap_shadow_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_occgap_shadow_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_occgap_shadow_quality_ema = occgap_shadow_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_occgap_shadow_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_occgap_shadow_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*occgap_shadow_quality_ratio
+            END IF
+            local_ot_env(1)%schur_occgap_shadow_drop_sum = &
+               local_ot_env(1)%schur_occgap_shadow_drop_sum + occgap_shadow_predicted_drop
+            local_ot_env(1)%schur_occgap_shadow_measured_sum = &
+               local_ot_env(1)%schur_occgap_shadow_measured_sum + measured_drop
+         END IF
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) THEN
             SELECT CASE (local_ot_env(1)%schur_model_attempt)
             CASE (1, 2)
@@ -2632,6 +2656,7 @@ CONTAINS
          local_ot_env(1)%schur_model_pending = .FALSE.
          local_ot_env(1)%schur_constrained_pending = .FALSE.
          local_ot_env(1)%schur_split_shadow_pending = .FALSE.
+         local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
 
          logger => cp_get_default_logger()
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -2670,6 +2695,15 @@ CONTAINS
                local_ot_env(1)%schur_split_shadow_calibrated_drop_sum, &
                local_ot_env(1)%schur_split_shadow_measured_sum, &
                split_shadow_calibrated_quality_ratio
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,6(1X,ES16.8))') &
+               " OT Schur LS occ-gap shadow n ratio ema pred meas gap latest:", &
+               local_ot_env(1)%schur_occgap_shadow_quality_samples, &
+               local_ot_env(1)%schur_occgap_shadow_quality, &
+               local_ot_env(1)%schur_occgap_shadow_quality_ema, &
+               local_ot_env(1)%schur_occgap_shadow_drop_sum, &
+               local_ot_env(1)%schur_occgap_shadow_measured_sum, &
+               local_ot_env(1)%schur_occgap_shadow_gap_ratio, &
+               occgap_shadow_predicted_drop
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,10(1X,ES16.8),1X,L1)') &
                " OT Schur LS constrained n ratio ema cal cal_ema pred cpred meas gap split_cal_ema split_cpred enabled:", &
                local_ot_env(1)%schur_constrained_quality_samples, &
@@ -2811,6 +2845,7 @@ CONTAINS
             local_ot_env(1)%schur_model_pending = .FALSE.
             local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
             local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
@@ -2823,6 +2858,8 @@ CONTAINS
             local_ot_env(1)%schur_constrained_gap_ratio = 0.0_dp
             local_ot_env(1)%schur_split_shadow_drop = 0.0_dp
             local_ot_env(1)%schur_split_shadow_calibrated_drop = 0.0_dp
+            local_ot_env(1)%schur_occgap_shadow_drop = 0.0_dp
+            local_ot_env(1)%schur_occgap_shadow_gap_ratio = 0.0_dp
          END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
@@ -2865,9 +2902,11 @@ CONTAINS
                                                             split_candidate_diagnostic, split_candidate_enabled, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
+         accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          constrained_diag_shift_avg, constrained_direction_scale, constrained_model_calibrated_drop, &
          constrained_model_drop, constrained_model_gap, constrained_model_gap_drop, constrained_model_gap_ratio, &
          constrained_expected_drop, constrained_expected_drop_ratio, constrained_gdotp, &
+         constrained_occgap_shadow_drop, constrained_occgap_shadow_gap_ratio, &
          constrained_model_gap_trust, constrained_normp, constrained_norm_ratio, constrained_occ_response_diag_avg, &
          constrained_response_abs_step, constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
          constrained_response_step, constrained_response_trust_ratio, constrained_response_weighted_step, &
@@ -2890,7 +2929,8 @@ CONTAINS
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
          model_gap_ratio, mu, norm_energy, norm_ratio, norm_rotation, normp, occ_curv_projection_sum, &
-         occ_projected_term, &
+         occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
+         occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
@@ -2902,7 +2942,8 @@ CONTAINS
          split_direction_scale, &
          split_gdotp, split_gdot_energy, split_gdot_rotation, split_model_calibrated_drop, split_model_drop, &
          split_model_gap_ratio, split_norm_energy, split_norm_rotation, split_normp, &
-         split_norm_ratio, split_residual_delta, split_response_abs_step, split_response_abs_trust, &
+         split_norm_ratio, split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, &
+         split_residual_delta, split_response_abs_step, split_response_abs_trust, &
          split_response_abs_trust_ratio, split_response_step, split_response_trust, split_response_trust_factor, &
          split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, split_schur_diag_min, &
          split_scale_quality, split_curvature_scale, split_expected_drop, split_quality_for_calibration, &
@@ -3022,6 +3063,8 @@ CONTAINS
          constrained_model_gap = 0.0_dp
          constrained_model_gap_drop = 0.0_dp
          constrained_model_gap_ratio = 0.0_dp
+         constrained_occgap_shadow_drop = 0.0_dp
+         constrained_occgap_shadow_gap_ratio = 0.0_dp
          constrained_model_gap_trust = HUGE(1.0_dp)
          constrained_model_calibrated_drop = 0.0_dp
          constrained_occ_response_diag_avg = 0.0_dp
@@ -3039,6 +3082,8 @@ CONTAINS
          accepted_model_drop = 0.0_dp
          accepted_model_calibrated_drop = 0.0_dp
          accepted_model_gap_ratio = 0.0_dp
+         accepted_occgap_shadow_drop = 0.0_dp
+         accepted_occgap_shadow_gap_ratio = 0.0_dp
          accepted_projector_coupled_weight = 0.0_dp
          coupled_direction_scale = 0.0_dp
          coupled_gdot_energy = 0.0_dp
@@ -3087,6 +3132,11 @@ CONTAINS
          model_gap_ratio = 0.0_dp
          model_gap_trust = HUGE(1.0_dp)
          model_calibrated_drop = 0.0_dp
+         occgap_shadow_abs_step = 0.0_dp
+         occgap_shadow_drop = 0.0_dp
+         occgap_shadow_gap_ratio = 0.0_dp
+         occgap_shadow_quality = 1.0_dp
+         occgap_shadow_step = 0.0_dp
          split_curvature_scale = 1.0_dp
          split_direction_scale = 0.0_dp
          split_dense_expected_ratio = 0.0_dp
@@ -3097,6 +3147,8 @@ CONTAINS
          split_model_calibrated_drop = 0.0_dp
          split_model_drop = 0.0_dp
          split_model_gap_ratio = 0.0_dp
+         split_occgap_shadow_drop = 0.0_dp
+         split_occgap_shadow_gap_ratio = 0.0_dp
          split_norm_energy = 0.0_dp
          split_norm_rotation = 0.0_dp
          split_normp = 0.0_dp
@@ -3496,6 +3548,11 @@ CONTAINS
             model_gap_drop = 0.0_dp
             model_gap_ratio = 0.0_dp
             model_gap_trust = HUGE(1.0_dp)
+            occgap_shadow_abs_step = 0.0_dp
+            occgap_shadow_drop = 0.0_dp
+            occgap_shadow_gap_ratio = 0.0_dp
+            occgap_shadow_quality = 1.0_dp
+            occgap_shadow_step = 0.0_dp
             occ_response_diag_sum = 0.0_dp
             response_penalty_diag_sum = 0.0_dp
             rot_diag_sum = 0.0_dp
@@ -3678,6 +3735,22 @@ CONTAINS
                            reject_reason = reject_scale
                         END IF
                      END IF
+                     IF (schur_attempt <= 3 .AND. .NOT. attempt_failed) THEN
+                        rx_model(:) = MATMUL(response_occ - response, sol)
+                        occgap_shadow_abs_step = MAXVAL(ABS(rx_model))
+                        CALL para_env_inter_kp%max(occgap_shadow_abs_step)
+                        occgap_shadow_step = kpoint_ot_weighted_response_step(rx_model, occ_curv, &
+                                                                              occ_curv_projection_sum)
+                        IF (response_trust > EPSILON(response_trust)) &
+                           occgap_shadow_gap_ratio = MAX(occgap_shadow_gap_ratio, &
+                                                         occgap_shadow_step/response_trust)
+                        IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                           occgap_shadow_gap_ratio = MAX(occgap_shadow_gap_ratio, &
+                                                         occgap_shadow_abs_step/response_abs_trust)
+                        occgap_shadow_quality = 1.0_dp/MAX(1.0_dp, occgap_shadow_gap_ratio)
+                        occgap_shadow_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
+                                                                           1.0_dp, occgap_shadow_quality)
+                     END IF
                      ! Trust the Schur response in the fixed-N Mermin metric.  A
                      ! single weakly-curved band may have a large absolute energy
                      ! response; the broad outer guard below catches real Fermi-window
@@ -3720,6 +3793,8 @@ CONTAINS
                constrained_norm_rotation = norm_rotation
                constrained_normp = normp
                constrained_scale_quality = scale_quality
+               constrained_occgap_shadow_drop = occgap_shadow_drop
+               constrained_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                ! Delay the constrained candidate until the raw Split candidate for
                ! the same search point gives an absolute Mermin-drop comparator.
                attempt_failed = .TRUE.
@@ -3829,6 +3904,8 @@ CONTAINS
                   model_drop = constrained_model_drop
                   model_calibrated_drop = constrained_model_calibrated_drop
                   model_gap_ratio = constrained_model_gap_ratio
+                  occgap_shadow_drop = constrained_occgap_shadow_drop
+                  occgap_shadow_gap_ratio = constrained_occgap_shadow_gap_ratio
                   response_step_max = constrained_response_step
                   response_abs_step = constrained_response_abs_step
                   response_abs_trust_ratio = constrained_response_abs_trust_ratio
@@ -3862,6 +3939,8 @@ CONTAINS
                split_model_drop = model_drop
                split_model_calibrated_drop = model_calibrated_drop
                split_model_gap_ratio = model_gap_ratio
+               split_occgap_shadow_drop = occgap_shadow_drop
+               split_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                split_density_projector_fraction = density_projector_fraction
                split_diag_shift_max = diag_shift_max
                split_diag_shift_sum = diag_shift_sum
@@ -3926,6 +4005,8 @@ CONTAINS
                   model_drop = split_model_drop
                   model_calibrated_drop = split_model_calibrated_drop
                   model_gap_ratio = split_model_gap_ratio
+                  occgap_shadow_drop = split_occgap_shadow_drop
+                  occgap_shadow_gap_ratio = split_occgap_shadow_gap_ratio
                   density_projector_fraction = split_density_projector_fraction
                   diag_shift_max = split_diag_shift_max
                   diag_shift_sum = split_diag_shift_sum
@@ -3973,6 +4054,8 @@ CONTAINS
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
                accepted_model_gap_ratio = model_gap_ratio
+               accepted_occgap_shadow_drop = occgap_shadow_drop
+               accepted_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                accepted_projector_coupled_weight = projector_coupled_weight
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
                EXIT
@@ -3993,6 +4076,13 @@ CONTAINS
             local_ot_env(1)%schur_model_gap_ratio = MAX(local_ot_env(1)%schur_model_gap_ratio, &
                                                         accepted_model_gap_ratio)
             local_ot_env(1)%schur_model_delta = MAX(local_ot_env(1)%schur_model_delta, residual_delta)
+            IF (accepted_occgap_shadow_drop > EPSILON(accepted_occgap_shadow_drop)) THEN
+               local_ot_env(1)%schur_occgap_shadow_pending = .TRUE.
+               local_ot_env(1)%schur_occgap_shadow_drop = &
+                  local_ot_env(1)%schur_occgap_shadow_drop + accepted_occgap_shadow_drop
+               local_ot_env(1)%schur_occgap_shadow_gap_ratio = &
+                  MAX(local_ot_env(1)%schur_occgap_shadow_gap_ratio, accepted_occgap_shadow_gap_ratio)
+            END IF
          END IF
 
          IF (.NOT. failed) THEN
@@ -4098,6 +4188,11 @@ CONTAINS
                      " OT Schur exact energy response ready gauge diag occ_gap occ_gap_max:", &
                      exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg, &
                      projector_response_gap_avg, projector_response_gap_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                     " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
+                     accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
+                     1.0_dp/MAX(1.0_dp, accepted_occgap_shadow_gap_ratio), &
+                     accepted_occgap_shadow_gap_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
                      " OT Schur projector curvature residual tail eligible dense accepted:", &
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
