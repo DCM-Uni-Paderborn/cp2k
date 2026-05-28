@@ -3,6 +3,7 @@
 ! in TEST_FILES.toml so the default regtest stays cheap.
 ! Local 2026-05 reference: 843 SCF steps, E_total = Mermin =
 ! -8.14585273101776 Ha, with no first/last-band smearing warnings.
+! Tail-weight sweep: 0.05 -> 894 steps, 0.10 -> 843, 0.15 -> 927.
 &GLOBAL
   PRINT_LEVEL LOW
   PROJECT Al_kp_ot_restart

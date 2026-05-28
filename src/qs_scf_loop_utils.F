@@ -4594,6 +4594,15 @@ CONTAINS
 
       END FUNCTION kpoint_ot_schur_expected_drop
 
+!> \brief accepted-drop calibrated finite Projector-Hessian weight for the low residual tail
+!> \param residual_delta current OT residual
+!> \param history_quality measured/predicted dense-coupled Mermin drop quality
+!> \param samples number of accepted dense-coupled quality samples
+!> \param density_projector_fraction active canonical density-projector fraction
+!> \param projector_diag_avg average finite Projector-Hessian diagonal
+!> \param projector_delta_diag_avg average finite Projector-Hessian diagonal shift
+!> \return full finite Projector weight above the validated tail gate, otherwise
+!>         a small Mermin-mismatch-calibrated correction
       FUNCTION kpoint_ot_projector_coupled_weight(residual_delta, history_quality, samples, &
                                                   density_projector_fraction, projector_diag_avg, &
                                                   projector_delta_diag_avg) RESULT(projector_weight)

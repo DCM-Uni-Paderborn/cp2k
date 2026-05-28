@@ -34,6 +34,7 @@
 # physics tail can still be checked against the 1E-6 Mermin path, including
 # the NO_TEXT first/last-band smearing guards. Current local reference:
 # 843 SCF steps, E_total = Mermin = -8.14585273101776 Ha.
+# Tail-weight sweep: 0.05 -> 894 steps, 0.10 -> 843, 0.15 -> 927.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
