@@ -14,16 +14,16 @@
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.56558241304757},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.56558241304757},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.56558234972226},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.56558234972226},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-7.98570485671797},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.98570485671797},
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.01172771809144},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.01172771809144},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14578027429963},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14578027429963},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14577777712577},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14577777712577},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104038E-4},
                                            {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.3470E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},

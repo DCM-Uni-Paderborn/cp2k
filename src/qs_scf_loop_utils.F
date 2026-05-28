@@ -2935,6 +2935,7 @@ CONTAINS
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
+         response_mixed_diag_avg, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, scale_quality, &
@@ -2955,12 +2956,12 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, rot_floor, rtd, &
                                                             rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
-                                                            z_e, z_exact_trial, z_trial
+                                                            z_e, z_exact_raw_trial, z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            energy_cross, energy_hessian, &
-                                                            response_coupled, response_occ, response_split, &
-                                                            response_exact, rot_hessian, rot_hessian_coupled, &
-                                                            rot_hessian_projector, schur
+                                                            energy_cross, energy_cross_raw, energy_hessian, &
+                                                            response_coupled, response_exact, response_exact_raw, &
+                                                            response_occ, response_split, rot_hessian, &
+                                                            rot_hessian_coupled, rot_hessian_projector, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -2999,14 +3000,15 @@ CONTAINS
             RETURN
          END IF
 
-         ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_exact_trial(ne), &
-                   z_trial(ne), rx_e(ne), rx_model(ne), constrained_z_e(ne), split_z_e(ne))
+         ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_exact_raw_trial(ne), &
+                   z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), constrained_z_e(ne), split_z_e(ne))
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot), split_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (energy_cross(ne, nrot), energy_hessian(ne, ne), response(ne, nrot), &
-                   response_coupled(ne, nrot), response_exact(ne, nrot), response_occ(ne, nrot), &
-                   response_split(ne, nrot), rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
+         ALLOCATE (energy_cross(ne, nrot), energy_cross_raw(ne, nrot), energy_hessian(ne, ne), &
+                   response(ne, nrot), response_coupled(ne, nrot), response_exact(ne, nrot), &
+                   response_exact_raw(ne, nrot), response_occ(ne, nrot), response_split(ne, nrot), &
+                   rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    rot_hessian_projector(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
          ALLOCATE (ipiv_energy(ne))
 
@@ -3015,6 +3017,7 @@ CONTAINS
          occ_curv(:) = 0.0_dp
          tether_curv(:) = 0.0_dp
          z_e(:) = 0.0_dp
+         z_exact_raw_trial(:) = 0.0_dp
          z_exact_trial(:) = 0.0_dp
          rx_e(:) = 0.0_dp
          rx_model(:) = 0.0_dp
@@ -3023,10 +3026,12 @@ CONTAINS
          rtd(:) = 0.0_dp
          sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
+         energy_cross_raw(:, :) = 0.0_dp
          energy_hessian(:, :) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
          response_exact(:, :) = 0.0_dp
+         response_exact_raw(:, :) = 0.0_dp
          response_occ(:, :) = 0.0_dp
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
@@ -3127,6 +3132,7 @@ CONTAINS
          energy_gauge_weight = 0.0_dp
          exact_energy_model_ready = .FALSE.
          exact_response_diag_avg = 0.0_dp
+         response_mixed_diag_avg = 0.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -3271,13 +3277,14 @@ CONTAINS
 
          CPASSERT(ivar == nrot)
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_trial, z_trial, rx_e, rx_model, &
-                        constrained_z_e, split_z_e)
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_raw_trial, z_exact_trial, z_trial, &
+                        rx_e, rx_model, constrained_z_e, split_z_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, split_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, energy_cross, energy_hessian, response, response_coupled, response_exact, &
-                        response_occ, response_split, rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
-                        schur, ipiv, ipiv_energy, channel_nmo, e_offset)
+            DEALLOCATE (rot_floor, energy_cross, energy_cross_raw, energy_hessian, response, response_coupled, &
+                        response_exact, response_exact_raw, response_occ, response_split, rot_hessian, &
+                        rot_hessian_coupled, rot_hessian_projector, schur, ipiv, ipiv_energy, channel_nmo, &
+                        e_offset)
             RETURN
          END IF
 
@@ -3346,6 +3353,11 @@ CONTAINS
                                                     channel_nmo, e_offset, energy_hessian, energy_cross, &
                                                     response_exact, z_exact_trial, ipiv_energy, &
                                                     exact_energy_model_ready, energy_gauge_weight)
+         IF (exact_energy_model_ready) &
+            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response, response, grad_e, &
+                                                       channel_nmo, e_offset, energy_hessian, energy_cross_raw, &
+                                                       response_exact_raw, z_exact_raw_trial, ipiv_energy, &
+                                                       exact_energy_model_ready, energy_gauge_weight)
          IF (exact_energy_model_ready) THEN
             z_shift = DOT_PRODUCT(curv, z_exact_trial)
             CALL para_env_inter_kp%sum(z_shift)
@@ -3354,8 +3366,12 @@ CONTAINS
             DO r = 1, nrot
                exact_response_diag_avg = exact_response_diag_avg + &
                                          DOT_PRODUCT(energy_cross(:, r), response_exact(:, r))
+               response_mixed_diag_avg = response_mixed_diag_avg + &
+                                         0.5_dp*(DOT_PRODUCT(energy_cross(:, r), response_exact_raw(:, r)) + &
+                                                 DOT_PRODUCT(energy_cross_raw(:, r), response_exact(:, r)))
             END DO
             exact_response_diag_avg = exact_response_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+            response_mixed_diag_avg = response_mixed_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          END IF
 
          IF (sigma > EPSILON(sigma)) THEN
@@ -3570,7 +3586,8 @@ CONTAINS
                                                                channel_nmo, e_offset, projected_term, &
                                                                occ_projected_term, tether_projected_term)
                      IF (exact_energy_model_ready) &
-                        projected_term = DOT_PRODUCT(energy_cross(:, r), response_exact(:, s))
+                        projected_term = 0.5_dp*(DOT_PRODUCT(energy_cross(:, r), response_exact_raw(:, s)) + &
+                                                DOT_PRODUCT(energy_cross_raw(:, r), response_exact(:, s)))
                      IF (schur_attempt == 1) response_penalty_term = &
                         schur_response_penalty_scale*projected_term
                      IF (r == s) THEN
@@ -3581,7 +3598,8 @@ CONTAINS
                      END IF
                   ELSE IF (schur_attempt == 3) THEN
                      IF (exact_attempt_response) THEN
-                        projected_term = DOT_PRODUCT(energy_cross(:, r), response_exact(:, s))
+                        projected_term = 0.5_dp*(DOT_PRODUCT(energy_cross(:, r), response_exact_raw(:, s)) + &
+                                                DOT_PRODUCT(energy_cross_raw(:, r), response_exact(:, s)))
                      ELSE
                         dense_term = DOT_PRODUCT(curv(:)*response_coupled(:, r), response_coupled(:, s))
                         projected_term = dense_term
@@ -3629,14 +3647,14 @@ CONTAINS
             IF (.NOT. attempt_failed) THEN
                IF (schur_attempt <= 2) THEN
                   IF (exact_energy_model_ready) THEN
-                     rx_e(:) = MATMUL(response_exact, sol)
+                     rx_e(:) = MATMUL(response_exact_raw, sol)
                   ELSE
                      rx_e(:) = MATMUL(response_split, sol)
                   END IF
                   rx_model(:) = MATMUL(response_coupled, sol)
                ELSE IF (schur_attempt == 3) THEN
                   IF (exact_attempt_response) THEN
-                     rx_e(:) = MATMUL(response_exact, sol)
+                     rx_e(:) = MATMUL(response_exact_raw, sol)
                      rx_model(:) = MATMUL(response_coupled, sol)
                   ELSE
                      rx_e(:) = MATMUL(response_coupled, sol)
@@ -4188,6 +4206,8 @@ CONTAINS
                      " OT Schur exact energy response ready gauge diag occ_gap occ_gap_max:", &
                      exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg, &
                      projector_response_gap_avg, projector_response_gap_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,ES16.8)') &
+                     " OT Schur mixed response diag:", response_mixed_diag_avg
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
@@ -4225,13 +4245,13 @@ CONTAINS
             END IF
          END IF
 
-         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_trial, z_trial, rx_e, rx_model, &
-                     constrained_z_e, split_z_e)
+         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_raw_trial, z_exact_trial, z_trial, &
+                     rx_e, rx_model, constrained_z_e, split_z_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, split_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, energy_cross, energy_hessian, response, response_coupled, response_exact, &
-                     response_occ, response_split, rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
-                     schur, ipiv, ipiv_energy, channel_nmo, e_offset)
+         DEALLOCATE (rot_floor, energy_cross, energy_cross_raw, energy_hessian, response, response_coupled, &
+                     response_exact, response_exact_raw, response_occ, response_split, rot_hessian, &
+                     rot_hessian_coupled, rot_hessian_projector, schur, ipiv, ipiv_energy, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &

@@ -58,6 +58,8 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_cross_projector("mixed fixed-N/tether Schur cross projector", &
                                                    5.0E-14_dp, nfail)
+   CALL check_mixed_fixed_n_asymmetric_response_schur("mixed fixed-N asymmetric response Schur", &
+                                                      5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_exact_response("mixed fixed-N/tether exact response", &
                                                   5.0E-12_dp, nfail)
    CALL check_mixed_fixed_n_tether_exact_schur("mixed fixed-N/tether exact Schur", &
@@ -1364,6 +1366,77 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_mixed_fixed_n_tether_cross_projector
+
+! **************************************************************************************************
+!> \brief Check the symmetrized Schur term for distinct rotation/energy responses.
+! **************************************************************************************************
+   SUBROUTINE check_mixed_fixed_n_asymmetric_response_schur(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 5, nrot = 3
+
+      INTEGER                                            :: i, j, r, s
+      REAL(KIND=dp)                                      :: active_err, err, occ_sum, shift, symmetry_err
+      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: hocc
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_occ, b_raw, response_occ, response_occ_projected, &
+                                                            response_raw, response_raw_projected
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: mixed, occ_only, reference
+
+      occ_curv = [0.31_dp, 0.74_dp, 0.16_dp, 0.47_dp, 0.22_dp]
+      response_occ(:, 1) = [0.13_dp, -0.21_dp, 0.09_dp, 0.31_dp, -0.17_dp]
+      response_occ(:, 2) = [-0.05_dp, 0.18_dp, 0.24_dp, -0.11_dp, 0.07_dp]
+      response_occ(:, 3) = [0.22_dp, 0.04_dp, -0.19_dp, 0.15_dp, -0.08_dp]
+      response_raw(:, 1) = [0.10_dp, -0.16_dp, 0.14_dp, 0.22_dp, -0.11_dp]
+      response_raw(:, 2) = [-0.01_dp, 0.15_dp, 0.20_dp, -0.03_dp, 0.02_dp]
+      response_raw(:, 3) = [0.17_dp, 0.08_dp, -0.13_dp, 0.10_dp, -0.03_dp]
+
+      hocc(:, :) = 0.0_dp
+      DO i = 1, ne
+         hocc(i, i) = occ_curv(i)
+      END DO
+      occ_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            hocc(i, j) = hocc(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+         END DO
+      END DO
+
+      response_occ_projected(:, :) = response_occ(:, :)
+      response_raw_projected(:, :) = response_raw(:, :)
+      DO r = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, response_occ_projected(:, r))/occ_sum
+         response_occ_projected(:, r) = response_occ_projected(:, r) - shift
+         shift = DOT_PRODUCT(occ_curv, response_raw_projected(:, r))/occ_sum
+         response_raw_projected(:, r) = response_raw_projected(:, r) - shift
+      END DO
+
+      b_occ(:, :) = MATMUL(hocc, response_occ)
+      b_raw(:, :) = MATMUL(hocc, response_raw)
+      DO s = 1, nrot
+         DO r = 1, nrot
+            mixed(r, s) = 0.5_dp*(DOT_PRODUCT(b_occ(:, r), response_raw_projected(:, s)) + &
+                                  DOT_PRODUCT(b_raw(:, r), response_occ_projected(:, s)))
+            reference(r, s) = 0.5_dp*(DOT_PRODUCT(response_occ(:, r), MATMUL(hocc, response_raw(:, s))) + &
+                                      DOT_PRODUCT(response_raw(:, r), MATMUL(hocc, response_occ(:, s))))
+            occ_only(r, s) = DOT_PRODUCT(response_occ(:, r), MATMUL(hocc, response_occ(:, s)))
+         END DO
+      END DO
+
+      symmetry_err = MAXVAL(ABS(mixed(:, :) - TRANSPOSE(mixed(:, :))))
+      active_err = MAXVAL(ABS(mixed(:, :) - occ_only(:, :)))
+      err = MAX(MAXVAL(ABS(mixed(:, :) - reference(:, :))), symmetry_err)
+
+      IF (err > tol .OR. active_err < 1.0E-6_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active_err
+      END IF
+
+   END SUBROUTINE check_mixed_fixed_n_asymmetric_response_schur
 
 ! **************************************************************************************************
 !> \brief Check exact dense elimination for the mixed fixed-N/tether energy block.
