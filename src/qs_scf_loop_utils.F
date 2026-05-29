@@ -137,6 +137,10 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
+                                        ot_kp_schur_projector_response_floor_delta = 3.0E-6_dp, &
+                                        ot_kp_schur_projector_response_full_delta = 1.2E-5_dp, &
+                                        ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
+                                        ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
                                         ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
                                         ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
                                         ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
@@ -3025,7 +3029,9 @@ CONTAINS
          accepted_projector_mode_drop, accepted_projector_mode_response_drop, &
          accepted_projector_mode_response_negative_fraction, accepted_projector_mode_step_negative_fraction, &
          accepted_projector_mode_trust_quality, projector_mode_history_quality, &
-         projector_mode_response_drop_ratio, &
+         projector_mode_history_response_negative, projector_mode_history_response_ratio, &
+         projector_mode_response_correction_drop, projector_mode_response_correction_negative, &
+         projector_mode_response_drop_ratio, projector_mode_response_weight, &
          projector_mode_response_drop, projector_mode_response_negative_fraction, &
          projector_mode_step_negative_fraction, projector_mode_trust_quality, &
          response_penalty_diag_sum, &
@@ -3245,11 +3251,16 @@ CONTAINS
          projector_mode_negative_fraction = 0.0_dp
          projector_mode_quality = 0.0_dp
          projector_mode_history_quality = 1.0_dp
+         projector_mode_history_response_negative = 0.0_dp
+         projector_mode_history_response_ratio = 0.0_dp
+         projector_mode_response_correction_drop = 0.0_dp
+         projector_mode_response_correction_negative = 0.0_dp
          projector_mode_response_drop = 0.0_dp
          projector_mode_response_drop_ratio = 0.0_dp
          projector_mode_response_negative_fraction = 0.0_dp
          projector_mode_step_negative_fraction = 0.0_dp
          projector_mode_trust_quality = 1.0_dp
+         projector_mode_response_weight = 0.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -3583,6 +3594,13 @@ CONTAINS
                                                ot_kp_schur_calibrated_quality_min_ratio, &
                                                ot_kp_schur_calibrated_quality_max_ratio)
          END IF
+         IF (local_ot_env(1)%schur_projector_mode_drop_sum > &
+             EPSILON(local_ot_env(1)%schur_projector_mode_drop_sum)) &
+            projector_mode_history_response_ratio = &
+               local_ot_env(1)%schur_projector_mode_response_drop_sum/ &
+               local_ot_env(1)%schur_projector_mode_drop_sum
+         projector_mode_history_response_negative = &
+            local_ot_env(1)%schur_projector_mode_response_negative_ema
          split_quality_for_selection = &
             kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
                                             local_ot_env(1)%schur_split_measured_sum, &
@@ -3652,11 +3670,14 @@ CONTAINS
             projector_mode_eval_min = 0.0_dp
             projector_mode_negative_fraction = 0.0_dp
             projector_mode_quality = 0.0_dp
+            projector_mode_response_correction_drop = 0.0_dp
+            projector_mode_response_correction_negative = 0.0_dp
             projector_mode_response_drop = 0.0_dp
             projector_mode_response_drop_ratio = 0.0_dp
             projector_mode_response_negative_fraction = 0.0_dp
             projector_mode_step_negative_fraction = 0.0_dp
             projector_mode_trust_quality = 1.0_dp
+            projector_mode_response_weight = 0.0_dp
             IF (exact_attempt_response) THEN
                z_e(:) = z_exact_trial(:)
             ELSE
@@ -3816,6 +3837,22 @@ CONTAINS
                   IF (exact_attempt_response) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
                      rx_model(:) = MATMUL(response_exact, sol)
+                     IF (logger%iter_info%print_level >= high_print_level .AND. &
+                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                         projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                         local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                         ot_kp_schur_calibration_min_samples) &
+                        CALL audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, sol, &
+                                                                      response_exact_raw, response_exact, curv, &
+                                                                      projector_coupled_weight, &
+                                                                      residual_delta, &
+                                                                      projector_mode_history_quality, &
+                                                                      local_ot_env(1)%schur_projector_mode_trust_ema, &
+                                                                      projector_mode_history_response_ratio, &
+                                                                      projector_mode_history_response_negative, rx_e, &
+                                                                      projector_mode_response_weight, &
+                                                                      projector_mode_response_correction_drop, &
+                                                                      projector_mode_response_correction_negative)
                   ELSE
                      rx_e(:) = MATMUL(response_coupled, sol)
                      rx_model(:) = rx_e(:)
@@ -4433,6 +4470,11 @@ CONTAINS
                      projector_mode_response_negative_fraction, projector_mode_response_drop, &
                      projector_mode_response_drop_ratio, &
                      projector_mode_trust_quality
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                     " OT Schur projector response shadow weight drop neg hist_ratio hist_rneg:", &
+                     projector_mode_response_weight, projector_mode_response_correction_drop, &
+                     projector_mode_response_correction_negative, projector_mode_history_response_ratio, &
+                     projector_mode_history_response_negative
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used dense_code split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
@@ -4810,6 +4852,120 @@ CONTAINS
                             MAX(1.0_dp, 1.0_dp + diag_ratio)
 
       END FUNCTION kpoint_ot_projector_coupled_weight
+
+!> \brief audit an accepted-history calibrated finite-response correction in Projector modes
+!> \param rot_hessian diagonal/canonical rotation Hessian
+!> \param rot_hessian_projector finite complex Projector-Hessian
+!> \param step_rot Schur rotation step before line-search normalization
+!> \param response_raw conservative response used by the accepted update
+!> \param response_exact finite fixed-N/tether response model
+!> \param curv energy curvature weights
+!> \param projector_weight scalar finite Projector-Hessian tail weight
+!> \param residual_delta current OT residual
+!> \param history_quality accepted Mermin-drop quality of Projector-mode predictions
+!> \param history_trust accepted Projector-mode trust EMA
+!> \param history_response_ratio accepted response-mismatch drop over predicted drop
+!> \param history_response_negative accepted negative-mode response fraction EMA
+!> \param response_step conservative response vector used by the accepted update
+!> \param applied_weight step-weighted average shadow correction weight
+!> \param correction_drop curvature-weighted norm of the applied correction
+!> \param correction_negative_fraction fraction of the correction in negative Projector modes
+      SUBROUTINE audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, step_rot, &
+                                                          response_raw, response_exact, curv, projector_weight, &
+                                                          residual_delta, history_quality, history_trust, &
+                                                          history_response_ratio, history_response_negative, &
+                                                          response_step, applied_weight, correction_drop, &
+                                                          correction_negative_fraction)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
+                                                            response_raw, response_exact
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, step_rot
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, residual_delta, history_quality, &
+                                                            history_trust, history_response_ratio, &
+                                                            history_response_negative
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_step
+      REAL(KIND=dp), INTENT(OUT)                         :: applied_weight, correction_drop, &
+                                                            correction_negative_fraction
+
+      INTEGER                                            :: imode, nrot_local
+      REAL(KIND=dp)                                      :: base_weight, eval_abs_avg, mode_fraction, &
+                                                            mode_norm, mode_weight, negative_sum, response_total_sum, &
+                                                            residual_weight, spectral_weight, step_weight, &
+                                                            step_weight_sum, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, mode_rx
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
+
+         applied_weight = 0.0_dp
+         correction_drop = 0.0_dp
+         correction_negative_fraction = 0.0_dp
+         IF (projector_weight <= EPSILON(projector_weight)) RETURN
+         IF (history_quality < ot_kp_schur_calibrated_quality_min_ratio) RETURN
+         IF (history_trust <= EPSILON(history_trust)) RETURN
+
+         nrot_local = SIZE(rot_hessian, 1)
+         IF (nrot_local <= 0) RETURN
+         IF (SIZE(response_step) /= SIZE(curv)) RETURN
+
+         residual_weight = (residual_delta - ot_kp_schur_projector_response_floor_delta)/ &
+                           MAX(EPSILON(1.0_dp), &
+                               ot_kp_schur_projector_response_full_delta - &
+                               ot_kp_schur_projector_response_floor_delta)
+         residual_weight = MAX(0.0_dp, MIN(1.0_dp, residual_weight))
+         base_weight = ot_kp_schur_projector_response_max_weight*residual_weight* &
+                       MIN(1.0_dp, MAX(0.0_dp, projector_weight))* &
+                       MIN(1.0_dp, MAX(0.0_dp, history_quality))* &
+                       MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
+                       MAX(1.0_dp, history_response_ratio/ &
+                           ot_kp_schur_projector_response_ratio_gate)
+         IF (base_weight <= EPSILON(base_weight)) RETURN
+
+         ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_norms(nrot_local), &
+                   mode_rx(SIZE(curv)), mode_vec(nrot_local, nrot_local))
+         mode_vec(:, :) = 0.5_dp*((rot_hessian_projector(:, :) - rot_hessian(:, :)) + &
+                                  TRANSPOSE(rot_hessian_projector(:, :) - rot_hessian(:, :)))
+         CALL diamat_all(mode_vec, mode_eval)
+         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+         eval_abs_avg = SUM(ABS(mode_eval))/REAL(MAX(1, nrot_local), KIND=dp)
+         response_total_sum = 0.0_dp
+         mode_norms(:) = 0.0_dp
+         DO imode = 1, nrot_local
+            IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
+            mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
+            mode_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
+            CALL para_env_inter_kp%sum(mode_norm)
+            mode_norms(imode) = MAX(0.0_dp, mode_norm)
+            response_total_sum = response_total_sum + mode_norms(imode)
+         END DO
+
+         step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
+         weight_sum = 0.0_dp
+         negative_sum = 0.0_dp
+         DO imode = 1, nrot_local
+            IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
+            mode_fraction = 0.0_dp
+            IF (response_total_sum > EPSILON(response_total_sum)) &
+               mode_fraction = mode_norms(imode)/response_total_sum
+            spectral_weight = 1.0_dp
+            IF (mode_eval(imode) < 0.0_dp) THEN
+               spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(mode_eval(imode))/ &
+                                            MAX(eval_abs_avg, EPSILON(eval_abs_avg)))
+               spectral_weight = spectral_weight* &
+                                 MAX(0.0_dp, 1.0_dp - MAX(history_response_negative, mode_fraction))
+            END IF
+            mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
+            IF (mode_weight <= EPSILON(mode_weight)) CYCLE
+            mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
+            correction_drop = correction_drop + 0.5_dp*mode_weight*mode_weight*mode_norms(imode)
+            IF (mode_eval(imode) < 0.0_dp) negative_sum = negative_sum + &
+                                                         mode_weight*mode_weight*mode_norms(imode)
+            step_weight = mode_coeff(imode)*mode_coeff(imode)
+            weight_sum = weight_sum + mode_weight*step_weight
+         END DO
+         IF (step_weight_sum > EPSILON(step_weight_sum)) applied_weight = weight_sum/step_weight_sum
+         IF (correction_drop > EPSILON(correction_drop)) &
+            correction_negative_fraction = negative_sum/(2.0_dp*correction_drop)
+         DEALLOCATE (mode_coeff, mode_eval, mode_norms, mode_rx, mode_vec)
+
+      END SUBROUTINE audit_kpoint_ot_projector_response_modes
 
 !> \brief audit a Schur step in the finite Projector-Hessian eigenbasis
 !> \param rot_hessian diagonal/canonical rotation Hessian
