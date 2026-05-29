@@ -2394,6 +2394,12 @@ CONTAINS
                                                             measured_drop, predicted_drop, quality_ratio, &
                                                             occgap_shadow_predicted_drop, &
                                                             occgap_shadow_quality_ratio, &
+                                                            projector_mode_predicted_drop, &
+                                                            projector_mode_quality_ratio, &
+                                                            projector_mode_response_drop_ratio, &
+                                                            projector_mode_response_negative, &
+                                                            projector_mode_step_negative, &
+                                                            projector_mode_trust, &
                                                             residual_current_delta, residual_drop, &
                                                             residual_quality_ratio, &
                                                             split_shadow_calibrated_predicted_drop, &
@@ -2440,6 +2446,7 @@ CONTAINS
             local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_history_mixed = .FALSE.
             RETURN
          END IF
@@ -2633,6 +2640,64 @@ CONTAINS
             END SELECT
          END IF
 
+         projector_mode_predicted_drop = local_ot_env(1)%schur_projector_mode_drop
+         projector_mode_quality_ratio = 0.0_dp
+         projector_mode_response_drop_ratio = 0.0_dp
+         projector_mode_step_negative = 0.0_dp
+         projector_mode_response_negative = 0.0_dp
+         projector_mode_trust = 1.0_dp
+         IF (projector_mode_predicted_drop > EPSILON(projector_mode_predicted_drop)) THEN
+            projector_mode_step_negative = &
+               local_ot_env(1)%schur_projector_mode_step_negative/projector_mode_predicted_drop
+            projector_mode_trust = &
+               local_ot_env(1)%schur_projector_mode_trust/projector_mode_predicted_drop
+            IF (local_ot_env(1)%schur_projector_mode_response_drop > &
+                EPSILON(local_ot_env(1)%schur_projector_mode_response_drop)) &
+               projector_mode_response_negative = &
+                  local_ot_env(1)%schur_projector_mode_response_negative/ &
+                  local_ot_env(1)%schur_projector_mode_response_drop
+            projector_mode_response_drop_ratio = &
+               local_ot_env(1)%schur_projector_mode_response_drop/projector_mode_predicted_drop
+         END IF
+         IF (mermin_search .AND. local_ot_env(1)%schur_projector_mode_pending .AND. &
+             projector_mode_predicted_drop > EPSILON(projector_mode_predicted_drop) .AND. &
+             measured_drop > 0.0_dp) THEN
+            projector_mode_quality_ratio = measured_drop/projector_mode_predicted_drop
+            local_ot_env(1)%schur_projector_mode_quality = projector_mode_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_projector_mode_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_projector_mode_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_projector_mode_quality_ema = projector_mode_quality_ratio
+               local_ot_env(1)%schur_projector_mode_step_negative_ema = projector_mode_step_negative
+               local_ot_env(1)%schur_projector_mode_response_negative_ema = projector_mode_response_negative
+               local_ot_env(1)%schur_projector_mode_trust_ema = projector_mode_trust
+            ELSE
+               local_ot_env(1)%schur_projector_mode_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_mode_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_mode_quality_ratio
+               local_ot_env(1)%schur_projector_mode_step_negative_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_mode_step_negative_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_mode_step_negative
+               local_ot_env(1)%schur_projector_mode_response_negative_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_mode_response_negative_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_mode_response_negative
+               local_ot_env(1)%schur_projector_mode_trust_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_mode_trust_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_mode_trust
+            END IF
+            local_ot_env(1)%schur_projector_mode_drop_sum = &
+               local_ot_env(1)%schur_projector_mode_drop_sum + projector_mode_predicted_drop
+            local_ot_env(1)%schur_projector_mode_measured_sum = &
+               local_ot_env(1)%schur_projector_mode_measured_sum + measured_drop
+            local_ot_env(1)%schur_projector_mode_response_drop_sum = &
+               local_ot_env(1)%schur_projector_mode_response_drop_sum + &
+               local_ot_env(1)%schur_projector_mode_response_drop
+         END IF
+
          local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
             local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_split_candidate_enabled .AND. &
@@ -2660,6 +2725,7 @@ CONTAINS
          local_ot_env(1)%schur_constrained_pending = .FALSE.
          local_ot_env(1)%schur_split_shadow_pending = .FALSE.
          local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+         local_ot_env(1)%schur_projector_mode_pending = .FALSE.
 
          logger => cp_get_default_logger()
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -2719,6 +2785,18 @@ CONTAINS
                local_ot_env(1)%schur_split_calibrated_quality_ema, &
                local_ot_env(1)%schur_split_calibrated_drop_sum, &
                local_ot_env(1)%schur_constrained_candidate_enabled
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,11(1X,ES16.8))') &
+               " OT Schur LS projector modes n ratio ema pred meas rdrop rratio step rneg trust tema latest:", &
+               local_ot_env(1)%schur_projector_mode_quality_samples, &
+               local_ot_env(1)%schur_projector_mode_quality, &
+               local_ot_env(1)%schur_projector_mode_quality_ema, &
+               local_ot_env(1)%schur_projector_mode_drop_sum, &
+               local_ot_env(1)%schur_projector_mode_measured_sum, &
+               local_ot_env(1)%schur_projector_mode_response_drop_sum, &
+               projector_mode_response_drop_ratio, projector_mode_step_negative, &
+               projector_mode_response_negative, projector_mode_trust, &
+               local_ot_env(1)%schur_projector_mode_trust_ema, &
+               local_ot_env(1)%schur_projector_mode_response_drop
          END IF
 
       END SUBROUTINE update_kpoint_ot_schur_line_search_quality
@@ -2849,6 +2927,7 @@ CONTAINS
             local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
@@ -2863,6 +2942,11 @@ CONTAINS
             local_ot_env(1)%schur_split_shadow_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_occgap_shadow_drop = 0.0_dp
             local_ot_env(1)%schur_occgap_shadow_gap_ratio = 0.0_dp
+            local_ot_env(1)%schur_projector_mode_drop = 0.0_dp
+            local_ot_env(1)%schur_projector_mode_response_drop = 0.0_dp
+            local_ot_env(1)%schur_projector_mode_step_negative = 0.0_dp
+            local_ot_env(1)%schur_projector_mode_response_negative = 0.0_dp
+            local_ot_env(1)%schur_projector_mode_trust = 0.0_dp
          END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
@@ -2938,6 +3022,10 @@ CONTAINS
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_diag_compensation, projector_mode_damped_abs_avg, &
          projector_mode_eval_max, projector_mode_eval_min, projector_mode_negative_fraction, projector_mode_quality, &
+         accepted_projector_mode_drop, accepted_projector_mode_response_drop, &
+         accepted_projector_mode_response_negative_fraction, accepted_projector_mode_step_negative_fraction, &
+         accepted_projector_mode_trust_quality, projector_mode_history_quality, &
+         projector_mode_response_drop_ratio, &
          projector_mode_response_drop, projector_mode_response_negative_fraction, &
          projector_mode_step_negative_fraction, projector_mode_trust_quality, &
          response_penalty_diag_sum, &
@@ -3098,6 +3186,11 @@ CONTAINS
          accepted_occgap_shadow_drop = 0.0_dp
          accepted_occgap_shadow_gap_ratio = 0.0_dp
          accepted_projector_coupled_weight = 0.0_dp
+         accepted_projector_mode_drop = 0.0_dp
+         accepted_projector_mode_response_drop = 0.0_dp
+         accepted_projector_mode_response_negative_fraction = 0.0_dp
+         accepted_projector_mode_step_negative_fraction = 0.0_dp
+         accepted_projector_mode_trust_quality = 1.0_dp
          coupled_direction_scale = 0.0_dp
          coupled_gdot_energy = 0.0_dp
          coupled_gdot_rotation = 0.0_dp
@@ -3151,7 +3244,9 @@ CONTAINS
          projector_mode_eval_min = 0.0_dp
          projector_mode_negative_fraction = 0.0_dp
          projector_mode_quality = 0.0_dp
+         projector_mode_history_quality = 1.0_dp
          projector_mode_response_drop = 0.0_dp
+         projector_mode_response_drop_ratio = 0.0_dp
          projector_mode_response_negative_fraction = 0.0_dp
          projector_mode_step_negative_fraction = 0.0_dp
          projector_mode_trust_quality = 1.0_dp
@@ -3476,6 +3571,18 @@ CONTAINS
                                                   MIN(ot_kp_schur_calibrated_quality_max_ratio, &
                                                       local_ot_env(1)%schur_coupled_quality_ema)))
          END IF
+         projector_mode_history_quality = dense_quality_for_selection
+         IF (local_ot_env(1)%schur_projector_mode_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
+            projector_mode_history_quality = &
+               kpoint_ot_schur_history_quality(local_ot_env(1)%schur_projector_mode_drop_sum, &
+                                               local_ot_env(1)%schur_projector_mode_measured_sum, &
+                                               local_ot_env(1)%schur_projector_mode_quality_ema, &
+                                               local_ot_env(1)%schur_projector_mode_quality_samples, &
+                                               ot_kp_schur_calibration_min_samples, &
+                                               dense_quality_for_selection, &
+                                               ot_kp_schur_calibrated_quality_min_ratio, &
+                                               ot_kp_schur_calibrated_quality_max_ratio)
+         END IF
          split_quality_for_selection = &
             kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
                                             local_ot_env(1)%schur_split_measured_sum, &
@@ -3546,6 +3653,7 @@ CONTAINS
             projector_mode_negative_fraction = 0.0_dp
             projector_mode_quality = 0.0_dp
             projector_mode_response_drop = 0.0_dp
+            projector_mode_response_drop_ratio = 0.0_dp
             projector_mode_response_negative_fraction = 0.0_dp
             projector_mode_step_negative_fraction = 0.0_dp
             projector_mode_trust_quality = 1.0_dp
@@ -3699,14 +3807,15 @@ CONTAINS
                IF (schur_attempt <= 2) THEN
                   IF (exact_energy_model_ready) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
+                     rx_model(:) = MATMUL(response_exact, sol)
                   ELSE
                      rx_e(:) = MATMUL(response_split, sol)
+                     rx_model(:) = MATMUL(response_coupled, sol)
                   END IF
-                  rx_model(:) = MATMUL(response_coupled, sol)
                ELSE IF (schur_attempt == 3) THEN
                   IF (exact_attempt_response) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
-                     rx_model(:) = MATMUL(response_coupled, sol)
+                     rx_model(:) = MATMUL(response_exact, sol)
                   ELSE
                      rx_e(:) = MATMUL(response_coupled, sol)
                      rx_model(:) = rx_e(:)
@@ -3790,17 +3899,21 @@ CONTAINS
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
                         IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
                             projector_coupled_weight > 0.0_dp .AND. &
-                            (split_candidate_ready .OR. logger%iter_info%print_level >= high_print_level)) THEN
+                            (local_ot_env(1)%schur_projector_mode_quality_samples < &
+                             ot_kp_schur_calibration_min_samples .OR. split_candidate_ready .OR. &
+                             logger%iter_info%print_level >= high_print_level)) THEN
                            CALL audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, sol, &
-                                                                response_exact_raw, response_coupled, curv, &
-                                                                projector_coupled_weight, &
-                                                                dense_quality_for_selection, dense_residual_quality, &
+                                                                response_exact_raw, response_exact, curv, &
+                                                                model_calibrated_drop, projector_coupled_weight, &
+                                                                projector_mode_history_quality, dense_residual_quality, &
                                                                 projector_mode_quality, projector_mode_negative_fraction, &
                                                                 projector_mode_damped_abs_avg, projector_mode_eval_min, &
                                                                 projector_mode_eval_max, &
                                                                 projector_mode_step_negative_fraction, &
                                                                 projector_mode_response_negative_fraction, &
-                                                                projector_mode_response_drop, projector_mode_trust_quality)
+                                                                projector_mode_response_drop, &
+                                                                projector_mode_response_drop_ratio, &
+                                                                projector_mode_trust_quality)
                            model_calibrated_drop = projector_mode_trust_quality*model_calibrated_drop
                         END IF
                      END IF
@@ -4142,6 +4255,15 @@ CONTAINS
                accepted_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                accepted_projector_coupled_weight = projector_coupled_weight
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
+               IF (selected_attempt == 3 .AND. projector_coupled_weight > 0.0_dp .AND. &
+                   (projector_mode_response_drop > 0.0_dp .OR. &
+                    projector_mode_response_drop_ratio > 0.0_dp)) THEN
+                  accepted_projector_mode_drop = model_calibrated_drop
+                  accepted_projector_mode_response_drop = projector_mode_response_drop
+                  accepted_projector_mode_response_negative_fraction = projector_mode_response_negative_fraction
+                  accepted_projector_mode_step_negative_fraction = projector_mode_step_negative_fraction
+                  accepted_projector_mode_trust_quality = projector_mode_trust_quality
+               END IF
                EXIT
             END IF
          END DO
@@ -4166,6 +4288,22 @@ CONTAINS
                   local_ot_env(1)%schur_occgap_shadow_drop + accepted_occgap_shadow_drop
                local_ot_env(1)%schur_occgap_shadow_gap_ratio = &
                   MAX(local_ot_env(1)%schur_occgap_shadow_gap_ratio, accepted_occgap_shadow_gap_ratio)
+            END IF
+            IF (accepted_projector_mode_drop > EPSILON(accepted_projector_mode_drop)) THEN
+               local_ot_env(1)%schur_projector_mode_pending = .TRUE.
+               local_ot_env(1)%schur_projector_mode_drop = &
+                  local_ot_env(1)%schur_projector_mode_drop + accepted_projector_mode_drop
+               local_ot_env(1)%schur_projector_mode_response_drop = &
+                  local_ot_env(1)%schur_projector_mode_response_drop + accepted_projector_mode_response_drop
+               local_ot_env(1)%schur_projector_mode_step_negative = &
+                  local_ot_env(1)%schur_projector_mode_step_negative + &
+                  accepted_projector_mode_step_negative_fraction*accepted_projector_mode_drop
+               local_ot_env(1)%schur_projector_mode_response_negative = &
+                  local_ot_env(1)%schur_projector_mode_response_negative + &
+                  accepted_projector_mode_response_negative_fraction*accepted_projector_mode_response_drop
+               local_ot_env(1)%schur_projector_mode_trust = &
+                  local_ot_env(1)%schur_projector_mode_trust + &
+                  accepted_projector_mode_trust_quality*accepted_projector_mode_drop
             END IF
          END IF
 
@@ -4288,11 +4426,12 @@ CONTAINS
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
                      MERGE(1.0_dp, 0.0_dp, residual_delta > ot_kp_schur_projector_coupled_tail_delta), &
                      dense_projector_coupled_weight, accepted_projector_coupled_weight
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
-                     " OT Schur projector modes q neg damp emin emax step rneg rdrop trust:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
+                     " OT Schur projector modes q neg damp emin emax step rneg rdrop rratio trust:", &
                      projector_mode_quality, projector_mode_negative_fraction, projector_mode_damped_abs_avg, &
                      projector_mode_eval_min, projector_mode_eval_max, projector_mode_step_negative_fraction, &
                      projector_mode_response_negative_fraction, projector_mode_response_drop, &
+                     projector_mode_response_drop_ratio, &
                      projector_mode_trust_quality
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used dense_code split_ready constr_selected "// &
@@ -4679,6 +4818,7 @@ CONTAINS
 !> \param response_actual actual energy response used by the candidate
 !> \param response_model calibrated response model used for mismatch
 !> \param curv energy curvature weights
+!> \param candidate_drop calibrated candidate Mermin drop before mode trust
 !> \param projector_weight scalar accepted-drop calibrated projector weight
 !> \param history_quality accepted Mermin-drop quality of recent coupled steps
 !> \param residual_quality residual-quality calibration of recent coupled steps
@@ -4690,23 +4830,25 @@ CONTAINS
 !> \param mode_step_negative_fraction fraction of the rotation step in negative eigenmodes
 !> \param mode_response_negative_fraction fraction of response mismatch in negative eigenmodes
 !> \param mode_response_drop total mode-decomposed response-mismatch drop
+!> \param mode_response_drop_ratio response-mismatch drop relative to candidate drop
 !> \param mode_trust_quality conservative quality factor for candidate expected drop
       SUBROUTINE audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, step_rot, &
-                                                 response_actual, response_model, curv, projector_weight, &
+                                                 response_actual, response_model, curv, candidate_drop, projector_weight, &
                                                  history_quality, residual_quality, mode_quality, &
                                                  mode_negative_fraction, mode_damped_abs_avg, &
                                                  mode_eval_min, mode_eval_max, mode_step_negative_fraction, &
                                                  mode_response_negative_fraction, mode_response_drop, &
-                                                 mode_trust_quality)
+                                                 mode_response_drop_ratio, mode_trust_quality)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
                                                             response_actual, response_model
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, step_rot
-      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, history_quality, residual_quality
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop, projector_weight, history_quality, &
+                                                            residual_quality
       REAL(KIND=dp), INTENT(OUT)                         :: mode_quality, mode_negative_fraction, &
                                                             mode_damped_abs_avg, mode_eval_min, mode_eval_max, &
                                                             mode_step_negative_fraction, &
                                                             mode_response_negative_fraction, mode_response_drop, &
-                                                            mode_trust_quality
+                                                            mode_response_drop_ratio, mode_trust_quality
 
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp)                                      :: damped_abs_sum, filtered_eval, mode_response_norm, &
@@ -4724,6 +4866,7 @@ CONTAINS
          mode_step_negative_fraction = 0.0_dp
          mode_response_negative_fraction = 0.0_dp
          mode_response_drop = 0.0_dp
+         mode_response_drop_ratio = 0.0_dp
          mode_trust_quality = 1.0_dp
          IF (projector_weight <= EPSILON(projector_weight)) RETURN
 
@@ -4769,7 +4912,10 @@ CONTAINS
          IF (response_total_sum > EPSILON(response_total_sum)) &
             mode_response_negative_fraction = response_negative_sum/response_total_sum
          mode_response_drop = 0.5_dp*MAX(0.0_dp, response_total_sum)
-         mode_risk = MAX(mode_step_negative_fraction, mode_response_negative_fraction) - mode_quality
+         IF (candidate_drop > EPSILON(candidate_drop)) &
+            mode_response_drop_ratio = mode_response_drop/candidate_drop
+         mode_risk = MAX(mode_response_negative_fraction, &
+                         mode_step_negative_fraction*MIN(1.0_dp, mode_response_drop_ratio)) - mode_quality
          mode_trust_quality = 1.0_dp - ot_kp_schur_projector_mode_trust_max_penalty* &
                               projector_weight*MAX(0.0_dp, mode_risk)
          mode_trust_quality = MAX(1.0_dp - ot_kp_schur_projector_mode_trust_max_penalty*projector_weight, &

@@ -237,11 +237,13 @@ MODULE qs_ot_types
       LOGICAL :: schur_constrained_pending = .FALSE., schur_constrained_candidate_enabled = .FALSE.
       LOGICAL :: schur_split_shadow_pending = .FALSE.
       LOGICAL :: schur_occgap_shadow_pending = .FALSE.
+      LOGICAL :: schur_projector_mode_pending = .FALSE.
       LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_cg_attempt = 0, schur_model_quality_samples = 0
       INTEGER :: schur_constrained_quality_samples = 0
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
       INTEGER :: schur_split_shadow_quality_samples = 0
+      INTEGER :: schur_projector_mode_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
@@ -278,6 +280,19 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_coupled_residual_quality = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_response_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_step_negative = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_response_negative = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_trust = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_response_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_step_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_response_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mode_trust_ema = 1.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
@@ -515,6 +530,7 @@ CONTAINS
       qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
       qs_ot_env%schur_split_shadow_pending = .FALSE.
       qs_ot_env%schur_occgap_shadow_pending = .FALSE.
+      qs_ot_env%schur_projector_mode_pending = .FALSE.
       qs_ot_env%schur_history_mixed = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
       qs_ot_env%schur_model_attempt = 0
@@ -525,6 +541,7 @@ CONTAINS
       qs_ot_env%schur_coupled_quality_samples = 0
       qs_ot_env%schur_split_shadow_quality_samples = 0
       qs_ot_env%schur_occgap_shadow_quality_samples = 0
+      qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_calibrated_drop = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
@@ -575,6 +592,19 @@ CONTAINS
       qs_ot_env%schur_coupled_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_mode_drop = 0.0_dp
+      qs_ot_env%schur_projector_mode_response_drop = 0.0_dp
+      qs_ot_env%schur_projector_mode_step_negative = 0.0_dp
+      qs_ot_env%schur_projector_mode_response_negative = 0.0_dp
+      qs_ot_env%schur_projector_mode_trust = 0.0_dp
+      qs_ot_env%schur_projector_mode_quality = 0.0_dp
+      qs_ot_env%schur_projector_mode_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_mode_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_mode_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_mode_response_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_mode_step_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_mode_response_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_mode_trust_ema = 1.0_dp
 
       CALL dbcsr_set(qs_ot_env%matrix_gx, 0.0_dp)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &
