@@ -137,6 +137,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
+                                        ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
                                         ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
                                         ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
 
@@ -2937,6 +2938,8 @@ CONTAINS
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_diag_compensation, projector_mode_damped_abs_avg, &
          projector_mode_eval_max, projector_mode_eval_min, projector_mode_negative_fraction, projector_mode_quality, &
+         projector_mode_response_drop, projector_mode_response_negative_fraction, &
+         projector_mode_step_negative_fraction, projector_mode_trust_quality, &
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
@@ -3148,6 +3151,10 @@ CONTAINS
          projector_mode_eval_min = 0.0_dp
          projector_mode_negative_fraction = 0.0_dp
          projector_mode_quality = 0.0_dp
+         projector_mode_response_drop = 0.0_dp
+         projector_mode_response_negative_fraction = 0.0_dp
+         projector_mode_step_negative_fraction = 0.0_dp
+         projector_mode_trust_quality = 1.0_dp
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -3538,6 +3545,10 @@ CONTAINS
             projector_mode_eval_min = 0.0_dp
             projector_mode_negative_fraction = 0.0_dp
             projector_mode_quality = 0.0_dp
+            projector_mode_response_drop = 0.0_dp
+            projector_mode_response_negative_fraction = 0.0_dp
+            projector_mode_step_negative_fraction = 0.0_dp
+            projector_mode_trust_quality = 1.0_dp
             IF (exact_attempt_response) THEN
                z_e(:) = z_exact_trial(:)
             ELSE
@@ -3568,13 +3579,6 @@ CONTAINS
                IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                   projector_diag_compensation = &
                      MAX(0.0_dp, -projector_coupled_weight*projector_hessian_delta_diag_avg)
-               IF (logger%iter_info%print_level >= high_print_level .AND. exact_attempt_response .AND. &
-                   projector_coupled_weight > 0.0_dp) &
-                  CALL audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, projector_coupled_weight, &
-                                                       dense_quality_for_selection, dense_residual_quality, &
-                                                       projector_mode_quality, projector_mode_negative_fraction, &
-                                                       projector_mode_damped_abs_avg, projector_mode_eval_min, &
-                                                       projector_mode_eval_max)
             ELSE
                schur(:, :) = rot_hessian(:, :)
             END IF
@@ -3784,6 +3788,21 @@ CONTAINS
                         END IF
                         model_gap_trust = schur_model_gap_factor*response_trust
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
+                        IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                            projector_coupled_weight > 0.0_dp .AND. &
+                            (split_candidate_ready .OR. logger%iter_info%print_level >= high_print_level)) THEN
+                           CALL audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, sol, &
+                                                                response_exact_raw, response_coupled, curv, &
+                                                                projector_coupled_weight, &
+                                                                dense_quality_for_selection, dense_residual_quality, &
+                                                                projector_mode_quality, projector_mode_negative_fraction, &
+                                                                projector_mode_damped_abs_avg, projector_mode_eval_min, &
+                                                                projector_mode_eval_max, &
+                                                                projector_mode_step_negative_fraction, &
+                                                                projector_mode_response_negative_fraction, &
+                                                                projector_mode_response_drop, projector_mode_trust_quality)
+                           model_calibrated_drop = projector_mode_trust_quality*model_calibrated_drop
+                        END IF
                      END IF
                      IF (schur_attempt <= 2 .AND. .NOT. attempt_failed .AND. &
                          model_calibrated_drop <= EPSILON(model_drop)) THEN
@@ -4269,10 +4288,12 @@ CONTAINS
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
                      MERGE(1.0_dp, 0.0_dp, residual_delta > ot_kp_schur_projector_coupled_tail_delta), &
                      dense_projector_coupled_weight, accepted_projector_coupled_weight
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
-                     " OT Schur projector modes q neg damp emin emax:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
+                     " OT Schur projector modes q neg damp emin emax step rneg rdrop trust:", &
                      projector_mode_quality, projector_mode_negative_fraction, projector_mode_damped_abs_avg, &
-                     projector_mode_eval_min, projector_mode_eval_max
+                     projector_mode_eval_min, projector_mode_eval_max, projector_mode_step_negative_fraction, &
+                     projector_mode_response_negative_fraction, projector_mode_response_drop, &
+                     projector_mode_trust_quality
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used split_used dense_code split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
@@ -4651,9 +4672,13 @@ CONTAINS
 
       END FUNCTION kpoint_ot_projector_coupled_weight
 
-!> \brief audit the finite Projector-Hessian correction in its eigenbasis
+!> \brief audit a Schur step in the finite Projector-Hessian eigenbasis
 !> \param rot_hessian diagonal/canonical rotation Hessian
 !> \param rot_hessian_projector finite complex Projector-Hessian
+!> \param step_rot scaled Schur rotation step
+!> \param response_actual actual energy response used by the candidate
+!> \param response_model calibrated response model used for mismatch
+!> \param curv energy curvature weights
 !> \param projector_weight scalar accepted-drop calibrated projector weight
 !> \param history_quality accepted Mermin-drop quality of recent coupled steps
 !> \param residual_quality residual-quality calibration of recent coupled steps
@@ -4662,19 +4687,33 @@ CONTAINS
 !> \param mode_damped_abs_avg average absolute spectral curvature correction
 !> \param mode_eval_min minimum Projector-Hessian delta eigenvalue
 !> \param mode_eval_max maximum Projector-Hessian delta eigenvalue
-      SUBROUTINE audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, projector_weight, &
+!> \param mode_step_negative_fraction fraction of the rotation step in negative eigenmodes
+!> \param mode_response_negative_fraction fraction of response mismatch in negative eigenmodes
+!> \param mode_response_drop total mode-decomposed response-mismatch drop
+!> \param mode_trust_quality conservative quality factor for candidate expected drop
+      SUBROUTINE audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, step_rot, &
+                                                 response_actual, response_model, curv, projector_weight, &
                                                  history_quality, residual_quality, mode_quality, &
                                                  mode_negative_fraction, mode_damped_abs_avg, &
-                                                 mode_eval_min, mode_eval_max)
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector
+                                                 mode_eval_min, mode_eval_max, mode_step_negative_fraction, &
+                                                 mode_response_negative_fraction, mode_response_drop, &
+                                                 mode_trust_quality)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
+                                                            response_actual, response_model
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, step_rot
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight, history_quality, residual_quality
       REAL(KIND=dp), INTENT(OUT)                         :: mode_quality, mode_negative_fraction, &
-                                                            mode_damped_abs_avg, mode_eval_min, mode_eval_max
+                                                            mode_damped_abs_avg, mode_eval_min, mode_eval_max, &
+                                                            mode_step_negative_fraction, &
+                                                            mode_response_negative_fraction, mode_response_drop, &
+                                                            mode_trust_quality
 
       INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp)                                      :: damped_abs_sum, filtered_eval, mode_soft_shift, &
-                                                            negative_count
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_eval
+      REAL(KIND=dp)                                      :: damped_abs_sum, filtered_eval, mode_response_norm, &
+                                                            mode_risk, mode_soft_shift, negative_count, &
+                                                            response_negative_sum, response_total_sum, &
+                                                            step_negative_sum, step_total_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_rx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
 
          mode_quality = 0.0_dp
@@ -4682,17 +4721,17 @@ CONTAINS
          mode_damped_abs_avg = 0.0_dp
          mode_eval_min = 0.0_dp
          mode_eval_max = 0.0_dp
+         mode_step_negative_fraction = 0.0_dp
+         mode_response_negative_fraction = 0.0_dp
+         mode_response_drop = 0.0_dp
+         mode_trust_quality = 1.0_dp
          IF (projector_weight <= EPSILON(projector_weight)) RETURN
-
-         IF (projector_weight >= 1.0_dp - EPSILON(1.0_dp)) THEN
-            mode_quality = 1.0_dp
-            RETURN
-         END IF
 
          nrot_local = SIZE(rot_hessian, 1)
          IF (nrot_local <= 0) RETURN
 
-         ALLOCATE (mode_eval(nrot_local), mode_vec(nrot_local, nrot_local))
+         ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_rx(SIZE(curv)), &
+                   mode_vec(nrot_local, nrot_local))
          mode_vec(:, :) = 0.5_dp*((rot_hessian_projector(:, :) - rot_hessian(:, :)) + &
                                   TRANSPOSE(rot_hessian_projector(:, :) - rot_hessian(:, :)))
          CALL diamat_all(mode_vec, mode_eval)
@@ -4704,15 +4743,38 @@ CONTAINS
          mode_soft_shift = MAX(0.0_dp, -SUM(mode_eval)/REAL(nrot_local, KIND=dp))
          negative_count = 0.0_dp
          damped_abs_sum = 0.0_dp
+         response_negative_sum = 0.0_dp
+         response_total_sum = 0.0_dp
+         step_negative_sum = 0.0_dp
+         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+         step_total_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
          DO imode = 1, nrot_local
             filtered_eval = mode_eval(imode) + mode_soft_shift
-            IF (filtered_eval < 0.0_dp) negative_count = negative_count + 1.0_dp
+            IF (filtered_eval < 0.0_dp) THEN
+               negative_count = negative_count + 1.0_dp
+               step_negative_sum = step_negative_sum + mode_coeff(imode)*mode_coeff(imode)
+            END IF
             damped_abs_sum = damped_abs_sum + ABS(mode_eval(imode) - filtered_eval)
+            mode_rx(:) = mode_coeff(imode)*MATMUL(response_model - response_actual, mode_vec(:, imode))
+            mode_response_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
+            CALL para_env_inter_kp%sum(mode_response_norm)
+            response_total_sum = response_total_sum + mode_response_norm
+            IF (filtered_eval < 0.0_dp) response_negative_sum = response_negative_sum + mode_response_norm
          END DO
 
          mode_negative_fraction = negative_count/REAL(MAX(1, nrot_local), KIND=dp)
          mode_damped_abs_avg = projector_weight*damped_abs_sum/REAL(MAX(1, nrot_local), KIND=dp)
-         DEALLOCATE (mode_eval, mode_vec)
+         IF (step_total_sum > EPSILON(step_total_sum)) &
+            mode_step_negative_fraction = step_negative_sum/step_total_sum
+         IF (response_total_sum > EPSILON(response_total_sum)) &
+            mode_response_negative_fraction = response_negative_sum/response_total_sum
+         mode_response_drop = 0.5_dp*MAX(0.0_dp, response_total_sum)
+         mode_risk = MAX(mode_step_negative_fraction, mode_response_negative_fraction) - mode_quality
+         mode_trust_quality = 1.0_dp - ot_kp_schur_projector_mode_trust_max_penalty* &
+                              projector_weight*MAX(0.0_dp, mode_risk)
+         mode_trust_quality = MAX(1.0_dp - ot_kp_schur_projector_mode_trust_max_penalty*projector_weight, &
+                                  MIN(1.0_dp, mode_trust_quality))
+         DEALLOCATE (mode_coeff, mode_eval, mode_rx, mode_vec)
 
       END SUBROUTINE audit_kpoint_ot_projector_modes
 
