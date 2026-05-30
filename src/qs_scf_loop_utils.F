@@ -3096,7 +3096,9 @@ CONTAINS
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
-         projector_hessian_diag_avg, projector_diag_compensation, projector_mode_damped_abs_avg, &
+         projector_hessian_diag_avg, projector_physical_abs_avg, projector_physical_delta_diag_avg, &
+         projector_physical_delta_max, projector_physical_diag_avg, projector_gauge_abs_avg, &
+         projector_gauge_delta_max, projector_diag_compensation, projector_mode_damped_abs_avg, &
          projector_mode_eval_max, projector_mode_eval_min, projector_mode_negative_fraction, projector_mode_quality, &
          accepted_projector_mode_drop, accepted_projector_mode_response_drop, &
          accepted_projector_mode_response_negative_fraction, accepted_projector_mode_step_negative_fraction, &
@@ -3151,7 +3153,8 @@ CONTAINS
                                                             energy_cross, energy_cross_raw, energy_hessian, &
                                                             response_coupled, response_exact, response_exact_raw, &
                                                             response_occ, response_split, rot_hessian, &
-                                                            rot_hessian_coupled, rot_hessian_projector, schur
+                                                            rot_hessian_coupled, rot_hessian_projector, &
+                                                            rot_hessian_projector_physical, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -3201,7 +3204,8 @@ CONTAINS
                    response(ne, nrot), response_coupled(ne, nrot), response_exact(ne, nrot), &
                    response_exact_raw(ne, nrot), response_occ(ne, nrot), response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
-                   rot_hessian_projector(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
+                   rot_hessian_projector(nrot, nrot), rot_hessian_projector_physical(nrot, nrot), &
+                   schur(nrot, nrot), ipiv(nrot))
          ALLOCATE (ipiv_energy(ne))
 
          curv(:) = 0.0_dp
@@ -3232,6 +3236,7 @@ CONTAINS
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
          rot_hessian_projector(:, :) = 0.0_dp
+         rot_hessian_projector_physical(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
@@ -3340,6 +3345,12 @@ CONTAINS
          projector_hessian_delta_diag_avg = 0.0_dp
          projector_hessian_delta_max = 0.0_dp
          projector_hessian_diag_avg = 0.0_dp
+         projector_physical_abs_avg = 0.0_dp
+         projector_physical_delta_diag_avg = 0.0_dp
+         projector_physical_delta_max = 0.0_dp
+         projector_physical_diag_avg = 0.0_dp
+         projector_gauge_abs_avg = 0.0_dp
+         projector_gauge_delta_max = 0.0_dp
          projector_diag_compensation = 0.0_dp
          projector_mode_damped_abs_avg = 0.0_dp
          projector_mode_eval_max = 0.0_dp
@@ -3523,8 +3534,10 @@ CONTAINS
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
                                                     e_offset(local_channel), h_re, h_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
-                                                    var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
-                                                    rot_hessian_projector, response, response_occ, failed)
+                                                    var_i, var_j, var_kind, &
+                                                    logger%iter_info%print_level >= high_print_level, &
+                                                    rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
+                                                    rot_hessian_projector_physical, response, response_occ, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -3537,8 +3550,8 @@ CONTAINS
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, energy_cross, energy_cross_raw, energy_hessian, response, response_coupled, &
                         response_exact, response_exact_raw, response_occ, response_split, rot_hessian, &
-                        rot_hessian_coupled, rot_hessian_projector, schur, ipiv, ipiv_energy, channel_nmo, &
-                        e_offset)
+                        rot_hessian_coupled, rot_hessian_projector, rot_hessian_projector_physical, schur, &
+                        ipiv, ipiv_energy, channel_nmo, e_offset)
             RETURN
          END IF
 
@@ -3561,20 +3574,37 @@ CONTAINS
                                              TRANSPOSE(rot_hessian_coupled(:, :)))
          rot_hessian_projector(:, :) = 0.5_dp*(rot_hessian_projector(:, :) + &
                                                TRANSPOSE(rot_hessian_projector(:, :)))
+         rot_hessian_projector_physical(:, :) = 0.5_dp*(rot_hessian_projector_physical(:, :) + &
+                                                        TRANSPOSE(rot_hessian_projector_physical(:, :)))
          DO r = 1, nrot
             projector_hessian_diag_avg = projector_hessian_diag_avg + rot_hessian_projector(r, r)
             projector_hessian_delta_diag_avg = projector_hessian_delta_diag_avg + &
                                                rot_hessian_projector(r, r) - rot_hessian(r, r)
+            projector_physical_diag_avg = projector_physical_diag_avg + rot_hessian_projector_physical(r, r)
+            projector_physical_delta_diag_avg = projector_physical_delta_diag_avg + &
+                                                rot_hessian_projector_physical(r, r) - rot_hessian(r, r)
             DO s = 1, nrot
                projector_hessian_abs_avg = projector_hessian_abs_avg + &
                                            ABS(rot_hessian_projector(r, s) - rot_hessian(r, s))
                projector_hessian_delta_max = MAX(projector_hessian_delta_max, &
                                                  ABS(rot_hessian_projector(r, s) - rot_hessian(r, s)))
+               projector_physical_abs_avg = projector_physical_abs_avg + &
+                                            ABS(rot_hessian_projector_physical(r, s) - rot_hessian(r, s))
+               projector_physical_delta_max = MAX(projector_physical_delta_max, &
+                                                  ABS(rot_hessian_projector_physical(r, s) - rot_hessian(r, s)))
+               projector_gauge_abs_avg = projector_gauge_abs_avg + &
+                                         ABS(rot_hessian_projector(r, s) - rot_hessian_projector_physical(r, s))
+               projector_gauge_delta_max = MAX(projector_gauge_delta_max, &
+                                               ABS(rot_hessian_projector(r, s) - rot_hessian_projector_physical(r, s)))
             END DO
          END DO
          projector_hessian_diag_avg = projector_hessian_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_hessian_delta_diag_avg = projector_hessian_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_hessian_abs_avg = projector_hessian_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_diag_avg = projector_physical_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_delta_diag_avg = projector_physical_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_abs_avg = projector_physical_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_gauge_abs_avg = projector_gauge_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
@@ -4743,6 +4773,11 @@ CONTAINS
                      " OT Schur projector Hessian diag delta_diag abs_avg delta_max:", &
                      projector_hessian_diag_avg, projector_hessian_delta_diag_avg, &
                      projector_hessian_abs_avg, projector_hessian_delta_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                     " OT Schur projector physical Hessian diag delta_diag abs_avg delta_max gauge_avg gauge_max:", &
+                     projector_physical_diag_avg, projector_physical_delta_diag_avg, &
+                     projector_physical_abs_avg, projector_physical_delta_max, &
+                     projector_gauge_abs_avg, projector_gauge_delta_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
@@ -4808,7 +4843,8 @@ CONTAINS
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, energy_cross, energy_cross_raw, energy_hessian, response, response_coupled, &
                      response_exact, response_exact_raw, response_occ, response_split, rot_hessian, &
-                     rot_hessian_coupled, rot_hessian_projector, schur, ipiv, ipiv_energy, channel_nmo, e_offset)
+                     rot_hessian_coupled, rot_hessian_projector, rot_hessian_projector_physical, schur, &
+                     ipiv, ipiv_energy, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
@@ -5463,22 +5499,25 @@ CONTAINS
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
-                                                 var_i, var_j, var_kind, rot_hessian, rot_hessian_coupled, &
-                                                 rot_hessian_projector, response, response_occ, failed)
+                                                 var_i, var_j, var_kind, compute_projector_shadow, &
+                                                 rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
+                                                 rot_hessian_projector_physical, response, response_occ, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
+      LOGICAL, INTENT(IN)                                :: compute_projector_shadow
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, &
-                                                            rot_hessian_projector, response, response_occ
+                                                            rot_hessian_projector, rot_hessian_projector_physical, &
+                                                            response, response_occ
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, occ_basis, occ_mat, &
-                                                            occ_mat_coupled, occ_mat_m, occ_mat_p, &
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, dchc, docc_mat, &
+                                                            occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp)                                      :: projector_weight, raw_response
@@ -5501,9 +5540,9 @@ CONTAINS
          CALL local_ot_env(local_channel)%para_env%sum(u_im)
 
          ALLOCATE (chc(nmo, nmo), u(nmo, nmo), base(nmo, nmo), &
-                   chc_p(nmo, nmo), chc_m(nmo, nmo), occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), &
-                   occ_mat_m(nmo, nmo), occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), &
-                   projector_evec(nmo, nmo))
+                   chc_p(nmo, nmo), chc_m(nmo, nmo), dchc(nmo, nmo), docc_mat(nmo, nmo), &
+                   occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
+                   occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -5593,6 +5632,26 @@ CONTAINS
                      2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
                END SELECT
             END DO
+            IF (compute_projector_shadow) THEN
+               dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
+               CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
+                                                                local_ot_env(local_channel)%delta, docc_mat)
+               CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, grad_p_re, grad_p_im, eps_p)
+               DO r = first_var, last_var
+                  imo = var_i(r)
+                  jmo = var_j(r)
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     rot_hessian_projector_physical(r, s) = rot_hessian(r, s) + 2.0_dp*grad_p_re(imo, jmo)
+                  CASE (2)
+                     rot_hessian_projector_physical(r, s) = rot_hessian(r, s) + 2.0_dp*grad_p_im(imo, jmo)
+                  END SELECT
+               END DO
+            ELSE
+               DO r = first_var, last_var
+                  rot_hessian_projector_physical(r, s) = rot_hessian_projector(r, s)
+               END DO
+            END IF
             CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat_coupled, grad_p_re, &
                                              grad_p_im, eps_p)
             CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat_coupled, grad_m_re, &
@@ -5615,8 +5674,8 @@ CONTAINS
             END DO
          END DO
 
-         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, occ_basis, occ_mat, &
-                     occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
+         DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, &
+                     occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m)
       END SUBROUTINE build_finite_ref_rotation_model
@@ -5702,6 +5761,57 @@ CONTAINS
 
          DEALLOCATE (evec, weighted_evec, evals, occ_scale)
       END SUBROUTINE dense_history_safe_occ_projector
+
+      SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
+                                                             delta, docc_mat)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, &
+                                                            scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale
+
+         n = SIZE(chc, 1)
+         docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+
+         projector_weight = kpoint_ot_canonical_projector_weight(delta, ot_kp_canonical_projector_max_weight)
+         IF (projector_weight <= 0.0_dp) RETURN
+
+         ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n), occ_scale(n))
+
+         occ_scale(:) = 2.0_dp*kpoint_weight*occupation_numbers(1:n)
+         CALL diag_complex(chc, evec, evals)
+         work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
+
+         scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+         gap_tol = SQRT(EPSILON(1.0_dp))*scale
+         occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+         kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         DO j = 1, n
+            DO i = 1, n
+               IF (i == j) CYCLE
+               denom = evals(i) - evals(j)
+               IF (ABS(denom) > gap_tol) THEN
+                  coeff = (occ_scale(i) - occ_scale(j))/denom
+               ELSE IF (ABS(occ_scale(i) - occ_scale(j)) <= occ_tol) THEN
+                  coeff = 0.0_dp
+               ELSE
+                  coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
+               END IF
+               kernel(i, j) = coeff*work(i, j)
+            END DO
+         END DO
+
+         docc_mat(:, :) = projector_weight*MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
+         docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
+
+         DEALLOCATE (evec, kernel, work, evals, occ_scale)
+
+      END SUBROUTINE dense_history_safe_occ_projector_derivative
 
       SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
