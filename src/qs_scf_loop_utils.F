@@ -5428,13 +5428,14 @@ CONTAINS
                         projector_physical_response_cross_drop, projector_physical_response_positive_coeff, &
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected exp qsel cdrop mgap rratio aratio dshift:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected exp qsel cdrop mgap rratio aratio comp dshift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                         projector_physical_direct_expected_drop, projector_physical_quality_for_selection, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
                         projector_physical_direct_response_weighted_trust_ratio, &
                         projector_physical_direct_response_abs_trust_ratio, &
+                        projector_physical_direct_diag_compensation, &
                         projector_physical_direct_diag_shift_avg
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector physical candidate ready selected exp qsel cdrop mgap rratio aratio weight:", &
@@ -6290,10 +6291,16 @@ CONTAINS
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_mat)
                DO ie = 1, nmo
-                  IF (ABS(occ_curv_channel(ie)) > curvature_floor) &
+                  IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
                         REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
+                     ! The diagonal projector response is represented by the
+                     ! energy-response channel above.  Keeping it in the
+                     ! rotation Hessian as well double-counts the same density
+                     ! response and creates an artificial physical row floor.
+                     docc_mat(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+                  END IF
                END DO
                CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, grad_p_re, grad_p_im, eps_p)
                DO r = first_var, last_var

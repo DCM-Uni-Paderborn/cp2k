@@ -2229,14 +2229,15 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-7_dp, &
                                                             fd_step = 2.0E-5_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_mat, &
-                                                            occ_mat, u
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_diag, &
+                                                            docc_mat, docc_offdiag, occ_mat, u
       INTEGER                                            :: i, j, r, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: active_err, err, fd, symmetry_err, value_m, value_p
+      REAL(KIND=dp)                                      :: active_diag_err, active_err, active_offdiag_err, err, fd, &
+                                                            split_err, symmetry_err, value_m, value_p
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrechet, hfrozen, hmove
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hdiag, hfrechet, hfrozen, hoffdiag, hmove, hsplit
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
                                                             x_p_im, x_p_re, x_re
 
@@ -2293,6 +2294,8 @@ CONTAINS
       CALL dense_spectral_projector_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
 
       err = 0.0_dp
+      hdiag(:, :) = 0.0_dp
+      hoffdiag(:, :) = 0.0_dp
       DO s = 1, nrot
          x_p_re(:, :) = x_re(:, :)
          x_m_re(:, :) = x_re(:, :)
@@ -2345,18 +2348,38 @@ CONTAINS
          CALL dense_projector_rotation_gradient(x_re, x_im, base, docc_mat, grad_re, grad_im, eps_diag)
          CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
          hfrechet(:, s) = hfrozen(:, s) + grad_p_vec(:)
+         docc_diag(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         docc_offdiag(:, :) = docc_mat(:, :)
+         DO i = 1, n
+            docc_diag(i, i) = docc_mat(i, i)
+            docc_offdiag(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         END DO
+         CALL dense_projector_rotation_gradient(x_re, x_im, base, docc_diag, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         hdiag(:, s) = grad_p_vec(:)
+         CALL dense_projector_rotation_gradient(x_re, x_im, base, docc_offdiag, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         hoffdiag(:, s) = grad_p_vec(:)
       END DO
 
+      hsplit(:, :) = hfrozen(:, :) + hoffdiag(:, :)
       symmetry_err = MAXVAL(ABS(hmove(:, :) - TRANSPOSE(hmove(:, :))))
       active_err = MAXVAL(ABS(hmove(:, :) - hfrozen(:, :)))
+      active_diag_err = MAXVAL(ABS(hdiag(:, :)))
+      active_offdiag_err = MAXVAL(ABS(hoffdiag(:, :)))
+      split_err = MAXVAL(ABS(hmove(:, :) - (hsplit(:, :) + hdiag(:, :))))
       err = MAX(err, symmetry_err)
       err = MAX(err, MAXVAL(ABS(hmove(:, :) - hfrechet(:, :))))
+      err = MAX(err, split_err)
 
-      IF (err > tol .OR. active_err < active_tol) THEN
+      IF (err > tol .OR. active_err < active_tol .OR. active_diag_err < active_tol .OR. &
+          active_offdiag_err < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active_err
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with error/active/diag/offdiag", &
+            err, active_err, active_diag_err, active_offdiag_err
       ELSE
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active_err
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with error/active/diag/offdiag", &
+            err, active_err, active_diag_err, active_offdiag_err
       END IF
 
    END SUBROUTINE check_complex_occ_projector_hessian
