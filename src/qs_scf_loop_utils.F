@@ -2753,8 +2753,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_response_quality >= &
             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
             local_ot_env(1)%schur_projector_response_quality <= &
-            2.0_dp*ot_kp_schur_projector_response_quality_max_ratio .AND. &
-            local_ot_env(1)%schur_projector_response_negative_ema <= 5.0E-2_dp
+            2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
 
          local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
@@ -4010,8 +4009,7 @@ CONTAINS
                                                                 projector_coupled_weight, residual_delta, &
                                                                 projector_mode_history_quality, &
                                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
-                                                                projector_mode_history_response_ratio, &
-                                                                projector_mode_history_response_negative, rx_e, &
+                                                                projector_mode_history_response_ratio, rx_e, &
                                                                 projector_response_rx_e, projector_mode_response_weight, &
                                                                 projector_mode_response_correction_drop, &
                                                                 projector_mode_response_correction_negative, &
@@ -4745,7 +4743,7 @@ CONTAINS
                      projector_mode_response_drop_ratio, &
                      projector_mode_trust_quality
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                     " OT Schur projector response shadow weight drop neg rawneg hist_ratio hist_rneg:", &
+                     " OT Schur projector response shadow weight drop signedneg rawneg hist_ratio hist_rneg:", &
                      projector_mode_response_weight, projector_mode_response_correction_drop, &
                      projector_mode_response_correction_negative, projector_mode_response_raw_negative_fraction, &
                      projector_mode_history_response_ratio, projector_mode_history_response_negative
@@ -5146,34 +5144,33 @@ CONTAINS
 !> \param history_quality accepted Mermin-drop quality of Projector-mode predictions
 !> \param history_trust accepted Projector-mode trust EMA
 !> \param history_response_ratio accepted response-mismatch drop over predicted drop
-!> \param history_response_negative accepted negative-mode response fraction EMA
 !> \param response_base conservative response vector used by the accepted update
 !> \param response_candidate finite-response candidate vector
 !> \param applied_weight step-weighted average shadow correction weight
 !> \param correction_drop curvature-weighted norm of the applied correction
-!> \param correction_negative_fraction fraction of the correction in negative Projector modes
+!> \param correction_negative_fraction fraction of sign-aware correction in negative Projector modes
       SUBROUTINE audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, step_rot, &
                                                           response_raw, response_exact, curv, projector_weight, &
                                                           residual_delta, history_quality, history_trust, &
-                                                          history_response_ratio, history_response_negative, &
-                                                          response_base, response_candidate, applied_weight, &
+                                                          history_response_ratio, response_base, &
+                                                          response_candidate, applied_weight, &
                                                           correction_drop, correction_negative_fraction, &
                                                           raw_negative_fraction)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
                                                             response_raw, response_exact
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, step_rot
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight, residual_delta, history_quality, &
-                                                            history_trust, history_response_ratio, &
-                                                            history_response_negative
+                                                            history_trust, history_response_ratio
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_base
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: response_candidate
       REAL(KIND=dp), INTENT(OUT)                         :: applied_weight, correction_drop, &
                                                             correction_negative_fraction, raw_negative_fraction
 
       INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp)                                      :: base_weight, eval_abs_avg, mode_fraction, &
-                                                            mode_norm, mode_weight, negative_sum, raw_negative_sum, &
-                                                            response_total_sum, residual_weight, spectral_weight, step_weight, &
+      REAL(KIND=dp)                                      :: base_weight, eval_abs_avg, mode_norm, mode_sign, &
+                                                            mode_weight, negative_balance, negative_sum, positive_sum, &
+                                                            raw_negative_sum, response_total_sum, residual_weight, &
+                                                            spectral_weight, step_weight, &
                                                             step_weight_sum, weight_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, mode_rx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
@@ -5225,26 +5222,29 @@ CONTAINS
          END DO
          IF (response_total_sum > EPSILON(response_total_sum)) &
             raw_negative_fraction = raw_negative_sum/response_total_sum
+         positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
+         negative_balance = 0.0_dp
+         IF (raw_negative_sum > EPSILON(raw_negative_sum)) &
+            negative_balance = SQRT(positive_sum/raw_negative_sum)
+         negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
 
          step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
          weight_sum = 0.0_dp
          negative_sum = 0.0_dp
          DO imode = 1, nrot_local
             IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
-            mode_fraction = 0.0_dp
-            IF (response_total_sum > EPSILON(response_total_sum)) &
-               mode_fraction = mode_norms(imode)/response_total_sum
             spectral_weight = 1.0_dp
+            mode_sign = 1.0_dp
             IF (mode_eval(imode) < 0.0_dp) THEN
+               mode_sign = -1.0_dp
                spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(mode_eval(imode))/ &
                                             MAX(eval_abs_avg, EPSILON(eval_abs_avg)))
-               spectral_weight = spectral_weight* &
-                                 MAX(0.0_dp, 1.0_dp - MAX(history_response_negative, mode_fraction))
+               spectral_weight = spectral_weight*negative_balance
             END IF
             mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
             IF (mode_weight <= EPSILON(mode_weight)) CYCLE
             mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
-            response_candidate(:) = response_candidate(:) + mode_weight*mode_rx(:)
+            response_candidate(:) = response_candidate(:) + mode_sign*mode_weight*mode_rx(:)
             correction_drop = correction_drop + 0.5_dp*mode_weight*mode_weight*mode_norms(imode)
             IF (mode_eval(imode) < 0.0_dp) negative_sum = negative_sum + &
                                                          mode_weight*mode_weight*mode_norms(imode)
