@@ -3127,6 +3127,9 @@ CONTAINS
                                                                exact_energy_model_ready, exact_physical_response_ready, &
                                                                projector_physical_candidate_ready, &
                                                                projector_physical_candidate_selected, &
+                                                               projector_physical_direct_candidate_ready, &
+                                                               projector_physical_direct_candidate_selected, &
+                                                               projector_physical_direct_candidate_used, &
                                                                projector_physical_shadow_enabled, &
                                                                projector_response_candidate_ready, &
                                                                projector_response_candidate_selected, &
@@ -3182,6 +3185,20 @@ CONTAINS
             projector_physical_model_gap, projector_physical_model_gap_drop, projector_physical_model_gap_ratio, &
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
+            projector_physical_direct_diag_compensation, projector_physical_direct_diag_shift_avg, &
+            projector_physical_direct_diag_shift_sum, projector_physical_direct_direction_scale, &
+            projector_physical_direct_expected_drop, &
+            projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
+            projector_physical_direct_gdotp, projector_physical_direct_model_calibrated_drop, &
+            projector_physical_direct_model_drop, projector_physical_direct_model_gap, &
+            projector_physical_direct_model_gap_drop, projector_physical_direct_model_gap_ratio, &
+            projector_physical_direct_model_gap_trust, projector_physical_direct_norm_energy, &
+            projector_physical_direct_norm_rotation, projector_physical_direct_normp, &
+            projector_physical_direct_norm_ratio, projector_physical_direct_response_abs_step, &
+            projector_physical_direct_response_abs_trust_ratio, &
+            projector_physical_direct_response_weighted_step, &
+            projector_physical_direct_response_weighted_trust_ratio, projector_physical_direct_scale_quality, &
+            projector_physical_direct_trust_quality, &
             projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
             projector_physical_response_weighted_step, projector_physical_response_weighted_trust_ratio, &
             projector_physical_scale_quality, projector_physical_trust_quality, &
@@ -3228,14 +3245,18 @@ CONTAINS
          constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
          tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
-                                                               constrained_sol, constrained_z_e, projector_physical_model_e, &
-                                                               projector_physical_rx_e, &
-                                                               projector_physical_sol, projector_physical_z_e, &
-                                                               projector_response_rx_e, &
-                                                               projector_response_sol, projector_response_z_e, &
-                                                            rot_floor, rtd, rx_e, rx_model, sol, split_sol, &
-                                                            split_z_e, tether_curv, z_e, z_exact_raw_trial, &
-                                                            z_exact_physical_trial, z_exact_trial, z_trial
+                                                            constrained_sol, constrained_z_e, &
+                                                            projector_physical_direct_model_e, &
+                                                            projector_physical_direct_rx_e, &
+                                                            projector_physical_direct_sol, &
+                                                            projector_physical_direct_z_e, &
+                                                            projector_physical_model_e, projector_physical_rx_e, &
+                                                            projector_physical_sol, projector_physical_z_e, &
+                                                            projector_response_rx_e, projector_response_sol, &
+                                                            projector_response_z_e, rot_floor, rtd, rx_e, rx_model, &
+                                                            sol, split_sol, split_z_e, tether_curv, z_e, &
+                                                            z_exact_raw_trial, z_exact_physical_trial, &
+                                                            z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             energy_cross, energy_cross_physical, energy_cross_raw, &
                                                             energy_hessian, response_coupled, response_exact, &
@@ -3290,11 +3311,14 @@ CONTAINS
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_exact_raw_trial(ne), &
                       z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
-                      constrained_z_e(ne), projector_physical_model_e(ne), projector_physical_rx_e(ne), &
+                      constrained_z_e(ne), projector_physical_direct_model_e(ne), &
+                      projector_physical_direct_rx_e(ne), projector_physical_direct_z_e(ne), &
+                      projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                       projector_physical_z_e(ne), projector_response_rx_e(ne), &
                       projector_response_z_e(ne), split_z_e(ne))
             ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot), &
-                      projector_physical_sol(nrot), projector_response_sol(nrot), split_sol(nrot))
+                      projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
+                      projector_response_sol(nrot), split_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
@@ -3317,6 +3341,9 @@ CONTAINS
          z_exact_trial(:) = 0.0_dp
             rx_e(:) = 0.0_dp
             rx_model(:) = 0.0_dp
+            projector_physical_direct_model_e(:) = 0.0_dp
+            projector_physical_direct_rx_e(:) = 0.0_dp
+            projector_physical_direct_z_e(:) = 0.0_dp
             projector_physical_model_e(:) = 0.0_dp
             projector_physical_rx_e(:) = 0.0_dp
             projector_physical_z_e(:) = 0.0_dp
@@ -3326,6 +3353,7 @@ CONTAINS
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
             sol(:) = 0.0_dp
+            projector_physical_direct_sol(:) = 0.0_dp
             projector_physical_sol(:) = 0.0_dp
             projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
@@ -3469,6 +3497,30 @@ CONTAINS
             projector_mode_history_quality = 1.0_dp
             projector_mode_history_response_negative = 0.0_dp
             projector_mode_history_response_ratio = 0.0_dp
+            projector_physical_direct_diag_compensation = 0.0_dp
+            projector_physical_direct_diag_shift_avg = 0.0_dp
+            projector_physical_direct_diag_shift_sum = 0.0_dp
+            projector_physical_direct_direction_scale = 0.0_dp
+            projector_physical_direct_expected_drop = 0.0_dp
+            projector_physical_direct_gdot_energy = 0.0_dp
+            projector_physical_direct_gdot_rotation = 0.0_dp
+            projector_physical_direct_gdotp = 0.0_dp
+            projector_physical_direct_model_calibrated_drop = 0.0_dp
+            projector_physical_direct_model_drop = 0.0_dp
+            projector_physical_direct_model_gap = 0.0_dp
+            projector_physical_direct_model_gap_drop = 0.0_dp
+            projector_physical_direct_model_gap_ratio = 0.0_dp
+            projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
+            projector_physical_direct_norm_energy = 0.0_dp
+            projector_physical_direct_norm_rotation = 0.0_dp
+            projector_physical_direct_normp = 0.0_dp
+            projector_physical_direct_norm_ratio = 0.0_dp
+            projector_physical_direct_response_abs_step = 0.0_dp
+            projector_physical_direct_response_abs_trust_ratio = 0.0_dp
+            projector_physical_direct_response_weighted_step = 0.0_dp
+            projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
+            projector_physical_direct_scale_quality = 0.0_dp
+            projector_physical_direct_trust_quality = 1.0_dp
             projector_physical_direction_scale = 0.0_dp
             projector_physical_expected_drop = 0.0_dp
             projector_physical_gdot_energy = 0.0_dp
@@ -3588,6 +3640,9 @@ CONTAINS
             constrained_candidate_selected = .FALSE.
             projector_physical_candidate_ready = .FALSE.
             projector_physical_candidate_selected = .FALSE.
+            projector_physical_direct_candidate_ready = .FALSE.
+            projector_physical_direct_candidate_selected = .FALSE.
+            projector_physical_direct_candidate_used = .FALSE.
             projector_response_candidate_ready = .FALSE.
             projector_response_candidate_selected = .FALSE.
          split_candidate_ready = .FALSE.
@@ -3596,6 +3651,8 @@ CONTAINS
             ivar = 0
             constrained_sol(:) = 0.0_dp
             constrained_z_e(:) = 0.0_dp
+            projector_physical_direct_sol(:) = 0.0_dp
+            projector_physical_direct_z_e(:) = 0.0_dp
             projector_physical_sol(:) = 0.0_dp
             projector_physical_z_e(:) = 0.0_dp
             split_sol(:) = 0.0_dp
@@ -3692,11 +3749,13 @@ CONTAINS
             CPASSERT(ivar == nrot)
             IF (failed) THEN
                DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_physical_trial, z_exact_raw_trial, &
-                           z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, projector_physical_model_e, &
+                           z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
+                           projector_physical_direct_model_e, projector_physical_direct_rx_e, &
+                           projector_physical_direct_z_e, projector_physical_model_e, &
                            projector_physical_rx_e, projector_physical_z_e, &
                            projector_response_rx_e, projector_response_z_e, split_z_e)
-               DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_sol, &
-                           projector_response_sol, split_sol)
+               DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
+                           projector_physical_sol, projector_response_sol, split_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, energy_cross, energy_cross_physical, energy_cross_raw, energy_hessian, &
                         response, response_coupled, response_exact, response_exact_physical, &
@@ -4030,6 +4089,24 @@ CONTAINS
                projector_mode_response_weight = 0.0_dp
                projector_physical_candidate_ready = .FALSE.
                projector_physical_candidate_selected = .FALSE.
+               projector_physical_direct_candidate_ready = .FALSE.
+               projector_physical_direct_candidate_selected = .FALSE.
+               projector_physical_direct_candidate_used = .FALSE.
+               projector_physical_direct_diag_compensation = 0.0_dp
+               projector_physical_direct_diag_shift_avg = 0.0_dp
+               projector_physical_direct_diag_shift_sum = 0.0_dp
+               projector_physical_direct_direction_scale = 0.0_dp
+               projector_physical_direct_expected_drop = 0.0_dp
+               projector_physical_direct_model_calibrated_drop = 0.0_dp
+               projector_physical_direct_model_drop = 0.0_dp
+               projector_physical_direct_model_gap = 0.0_dp
+               projector_physical_direct_model_gap_drop = 0.0_dp
+               projector_physical_direct_model_gap_ratio = 0.0_dp
+               projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
+               projector_physical_direct_response_abs_step = 0.0_dp
+               projector_physical_direct_response_abs_trust_ratio = 0.0_dp
+               projector_physical_direct_response_weighted_step = 0.0_dp
+               projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
                projector_physical_expected_drop = 0.0_dp
                projector_physical_model_calibrated_drop = 0.0_dp
                projector_physical_model_drop = 0.0_dp
@@ -4398,14 +4475,185 @@ CONTAINS
                               kpoint_ot_schur_expected_drop(projector_physical_model_calibrated_drop, &
                                                             projector_physical_quality_for_selection, &
                                                             projector_physical_trust_quality)
-                           projector_physical_candidate_ready = &
-                              projector_physical_model_calibrated_drop > EPSILON(projector_physical_model_drop) .AND. &
-                              projector_physical_response_weighted_step <= response_trust .AND. &
-                              projector_physical_response_abs_step <= response_abs_trust
-                        END IF
-                     END IF
-                  END IF
-                  z_e(:) = z_e(:) + rx_e(:)
+                                             projector_physical_candidate_ready = &
+                                                projector_physical_model_calibrated_drop > &
+                                                EPSILON(projector_physical_model_drop) .AND. &
+                                                projector_physical_response_weighted_step <= response_trust .AND. &
+                                                projector_physical_response_abs_step <= response_abs_trust
+                                          END IF
+                                       END IF
+                                    END IF
+                                    IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                                        exact_physical_response_ready .AND. &
+                                        projector_physical_shadow_enabled .AND. &
+                                        projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                        local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                                        ot_kp_schur_calibration_min_samples) THEN
+                                       schur(:, :) = rot_hessian_coupled(:, :) + &
+                                                     projector_coupled_weight*(rot_hessian_projector_physical(:, :) - &
+                                                                               rot_hessian(:, :))
+                                       DO r = 1, nrot
+                                          projector_physical_direct_sol(r) = grad_rot(r) + &
+                                                                             DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                                       END DO
+                                       DO s = 1, nrot
+                                          DO r = 1, nrot
+                                             projected_term = 0.5_dp* &
+                                                (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_raw(:, s)) + &
+                                                 DOT_PRODUCT(energy_cross_raw(:, r), response_exact_physical(:, s)))
+                                             schur(r, s) = schur(r, s) - projected_term
+                                          END DO
+                                       END DO
+                                       projector_physical_direct_diag_compensation = 0.0_dp
+                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                                          projector_physical_direct_diag_compensation = &
+                                             MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
+                                       projector_physical_direct_diag_shift_sum = 0.0_dp
+                                       DO r = 1, nrot
+                                          IF (projector_physical_direct_diag_compensation > 0.0_dp) &
+                                             schur(r, r) = schur(r, r) + projector_physical_direct_diag_compensation
+                                          diag_shift = MAX(0.0_dp, rot_floor(r) - schur(r, r))
+                                          IF (diag_shift > 0.0_dp) THEN
+                                             schur(r, r) = schur(r, r) + diag_shift
+                                             projector_physical_direct_diag_shift_sum = &
+                                                projector_physical_direct_diag_shift_sum + diag_shift
+                                          END IF
+                                       END DO
+                                       projector_physical_direct_diag_shift_avg = &
+                                          projector_physical_direct_diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
+                                       CALL dgesv(nrot, 1, schur, nrot, ipiv, projector_physical_direct_sol, nrot, info)
+                                       IF (info == 0) THEN
+                                          projector_physical_direct_rx_e(:) = &
+                                             MATMUL(response_exact_raw, projector_physical_direct_sol)
+                                          projector_physical_direct_model_e(:) = MATMUL(response_exact_physical, &
+                                                                                         projector_physical_direct_sol)
+                                          rx_shift = DOT_PRODUCT(curv, projector_physical_direct_rx_e)
+                                          CALL para_env_inter_kp%sum(rx_shift)
+                                          IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                                             projector_physical_direct_rx_e(:) = projector_physical_direct_rx_e(:) - &
+                                                                                 rx_shift/curv_projection_sum
+                                          rx_shift = DOT_PRODUCT(curv, projector_physical_direct_model_e)
+                                          CALL para_env_inter_kp%sum(rx_shift)
+                                          IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                                             projector_physical_direct_model_e(:) = projector_physical_direct_model_e(:) - &
+                                                                                    rx_shift/curv_projection_sum
+                                          projector_physical_direct_z_e(:) = z_e(:) + projector_physical_direct_rx_e(:)
+                                          projector_physical_direct_gdot_energy = &
+                                             DOT_PRODUCT(grad_e, projector_physical_direct_z_e)
+                                          projector_physical_direct_gdot_rotation = &
+                                             DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
+                                          projector_physical_direct_norm_energy = DOT_PRODUCT(projector_physical_direct_z_e, &
+                                                                                              projector_physical_direct_z_e)
+                                          projector_physical_direct_norm_rotation = DOT_PRODUCT(projector_physical_direct_sol, &
+                                                                                                projector_physical_direct_sol)
+                                          projector_physical_direct_gdotp = projector_physical_direct_gdot_energy + &
+                                                                            projector_physical_direct_gdot_rotation
+                                          projector_physical_direct_normp = projector_physical_direct_norm_energy + &
+                                                                            projector_physical_direct_norm_rotation
+                                          projector_physical_direct_norm_ratio = projector_physical_direct_normp/ &
+                                                                                 MAX(gnorm, EPSILON(1.0_dp))
+                                          IF (projector_physical_direct_gdotp > 0.0_dp .AND. &
+                                              projector_physical_direct_normp > EPSILON(projector_physical_direct_normp) .AND. &
+                                              projector_physical_direct_norm_ratio <= max_norm_ratio) THEN
+                                             projector_physical_direct_direction_scale = &
+                                                projector_physical_direct_gdotp/ &
+                                                MAX(projector_physical_direct_normp, EPSILON(projector_physical_direct_normp))
+                                             projector_physical_direct_scale_quality = &
+                                                kpoint_ot_schur_scale_quality(projector_physical_direct_direction_scale, &
+                                                                              schur_min_coupled_scale)
+                                             projector_physical_direct_z_e(:) = projector_physical_direct_direction_scale* &
+                                                                                 projector_physical_direct_z_e(:)
+                                             projector_physical_direct_sol(:) = projector_physical_direct_direction_scale* &
+                                                                                 projector_physical_direct_sol(:)
+                                             projector_physical_direct_model_drop = 0.5_dp* &
+                                                projector_physical_direct_direction_scale*projector_physical_direct_gdotp
+                                             projector_physical_direct_response_abs_step = &
+                                                projector_physical_direct_direction_scale* &
+                                                MAXVAL(ABS(projector_physical_direct_rx_e))
+                                             CALL para_env_inter_kp%max(projector_physical_direct_response_abs_step)
+                                             projector_physical_direct_response_weighted_step = &
+                                                projector_physical_direct_direction_scale* &
+                                                kpoint_ot_weighted_response_step(projector_physical_direct_rx_e, curv, &
+                                                                                 curv_projection_sum)
+                                             projector_physical_direct_model_gap = &
+                                                projector_physical_direct_direction_scale* &
+                                                MAXVAL(ABS(projector_physical_direct_model_e - projector_physical_direct_rx_e))
+                                             projector_physical_direct_model_gap_drop = &
+                                                kpoint_ot_response_mismatch_drop(projector_physical_direct_rx_e, &
+                                                                                 projector_physical_direct_model_e, curv, &
+                                                                                 projector_physical_direct_direction_scale)
+                                             projector_physical_direct_model_calibrated_drop = &
+                                                MAX(0.0_dp, projector_physical_direct_model_drop - &
+                                                            projector_physical_direct_model_gap_drop)
+                                             projector_physical_direct_model_gap_trust = schur_model_gap_factor*response_trust
+                                             IF (projector_physical_direct_model_gap_trust > &
+                                                 EPSILON(projector_physical_direct_model_gap_trust)) &
+                                                projector_physical_direct_model_gap_ratio = &
+                                                   projector_physical_direct_model_gap/ &
+                                                   projector_physical_direct_model_gap_trust
+                                             IF (response_trust > EPSILON(response_trust)) &
+                                                projector_physical_direct_response_weighted_trust_ratio = &
+                                                   projector_physical_direct_response_weighted_step/response_trust
+                                             IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                                projector_physical_direct_response_abs_trust_ratio = &
+                                                   projector_physical_direct_response_abs_step/response_abs_trust
+                                             projector_physical_direct_trust_quality = &
+                                                kpoint_ot_schur_trust_quality( &
+                                                   projector_physical_direct_response_weighted_trust_ratio, &
+                                                   projector_physical_direct_response_abs_trust_ratio, &
+                                                   projector_physical_direct_model_gap_ratio)
+                                             IF (projector_physical_direct_direction_scale < schur_min_coupled_scale) &
+                                                projector_physical_direct_model_calibrated_drop = &
+                                                   projector_physical_direct_scale_quality* &
+                                                   projector_physical_direct_model_calibrated_drop
+                                             projector_physical_direct_expected_drop = &
+                                                kpoint_ot_schur_expected_drop(projector_physical_direct_model_calibrated_drop, &
+                                                                              projector_physical_quality_for_selection, &
+                                                                              projector_physical_direct_trust_quality)
+                                             projector_physical_direct_candidate_ready = &
+                                                projector_physical_direct_model_calibrated_drop > &
+                                                EPSILON(projector_physical_direct_model_drop) .AND. &
+                                                projector_physical_direct_response_weighted_step <= response_trust .AND. &
+                                                projector_physical_direct_response_abs_step <= response_abs_trust
+                                          END IF
+                                       END IF
+                                       IF (projector_physical_direct_candidate_ready) THEN
+                                          projector_physical_candidate_ready = .TRUE.
+                                          projector_physical_direct_candidate_used = .TRUE.
+                                          projector_physical_model_e(:) = projector_physical_direct_model_e(:)
+                                          projector_physical_rx_e(:) = projector_physical_direct_rx_e(:)
+                                          projector_physical_z_e(:) = projector_physical_direct_z_e(:)
+                                          projector_physical_sol(:) = projector_physical_direct_sol(:)
+                                          projector_physical_direction_scale = projector_physical_direct_direction_scale
+                                          projector_physical_expected_drop = projector_physical_direct_expected_drop
+                                          projector_physical_gdot_energy = projector_physical_direct_gdot_energy
+                                          projector_physical_gdot_rotation = projector_physical_direct_gdot_rotation
+                                          projector_physical_gdotp = projector_physical_direct_gdotp
+                                          projector_physical_model_calibrated_drop = &
+                                             projector_physical_direct_model_calibrated_drop
+                                          projector_physical_model_drop = projector_physical_direct_model_drop
+                                          projector_physical_model_gap = projector_physical_direct_model_gap
+                                          projector_physical_model_gap_drop = projector_physical_direct_model_gap_drop
+                                          projector_physical_model_gap_ratio = projector_physical_direct_model_gap_ratio
+                                          projector_physical_model_gap_trust = projector_physical_direct_model_gap_trust
+                                          projector_physical_norm_energy = projector_physical_direct_norm_energy
+                                          projector_physical_norm_rotation = projector_physical_direct_norm_rotation
+                                          projector_physical_normp = projector_physical_direct_normp
+                                          projector_physical_norm_ratio = projector_physical_direct_norm_ratio
+                                          projector_physical_response_abs_step = projector_physical_direct_response_abs_step
+                                          projector_physical_response_abs_trust_ratio = &
+                                             projector_physical_direct_response_abs_trust_ratio
+                                          projector_physical_response_weighted_step = &
+                                             projector_physical_direct_response_weighted_step
+                                          projector_physical_response_weighted_trust_ratio = &
+                                             projector_physical_direct_response_weighted_trust_ratio
+                                          projector_physical_scale_quality = projector_physical_direct_scale_quality
+                                          projector_physical_trust_quality = projector_physical_direct_trust_quality
+                                          IF (projector_physical_response_weight <= EPSILON(projector_physical_response_weight)) &
+                                             projector_physical_response_weight = projector_coupled_weight
+                                       END IF
+                                    END IF
+                                    z_e(:) = z_e(:) + rx_e(:)
 
                gdot_energy = DOT_PRODUCT(grad_e, z_e)
                gdot_rotation = DOT_PRODUCT(grad_rot, sol)
@@ -4770,6 +5018,7 @@ CONTAINS
                       projector_physical_expected_drop >= &
                       ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
                      projector_physical_candidate_selected = .TRUE.
+                     projector_physical_direct_candidate_selected = projector_physical_direct_candidate_used
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = projector_physical_z_e(:)
                      sol(:) = projector_physical_sol(:)
@@ -4809,6 +5058,7 @@ CONTAINS
                   IF (split_candidate_selected) THEN
                      attempt_failed = .FALSE.
                      projector_physical_candidate_selected = .FALSE.
+                     projector_physical_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = split_z_e(:)
                   sol(:) = split_sol(:)
@@ -4898,6 +5148,7 @@ CONTAINS
                       projector_physical_expected_drop >= &
                       ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
                      projector_physical_candidate_selected = .TRUE.
+                     projector_physical_direct_candidate_selected = projector_physical_direct_candidate_used
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = projector_physical_z_e(:)
                      sol(:) = projector_physical_sol(:)
@@ -5116,7 +5367,8 @@ CONTAINS
                      constrained_response_step, response_trust, constrained_response_trust_ratio, &
                      constrained_response_weighted_step, constrained_response_weighted_trust_ratio, response_abs_trust, &
                      constrained_response_abs_trust_ratio, constrained_model_gap, constrained_model_gap_drop, &
-                     constrained_model_gap_trust, constrained_model_gap_ratio, constrained_norm_ratio, constrained_diag_shift_avg, &
+                     constrained_model_gap_trust, constrained_model_gap_ratio, constrained_norm_ratio, &
+                     constrained_diag_shift_avg, &
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
@@ -5177,6 +5429,14 @@ CONTAINS
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected exp qsel cdrop mgap rratio aratio dshift:", &
+                        projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+                        projector_physical_direct_expected_drop, projector_physical_quality_for_selection, &
+                        projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
+                        projector_physical_direct_response_weighted_trust_ratio, &
+                        projector_physical_direct_response_abs_trust_ratio, &
+                        projector_physical_direct_diag_shift_avg
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector physical candidate ready selected exp qsel cdrop mgap rratio aratio weight:", &
                         projector_physical_candidate_ready, projector_physical_candidate_selected, &
                         projector_physical_expected_drop, projector_physical_quality_for_selection, &
@@ -5211,11 +5471,13 @@ CONTAINS
          END IF
 
             DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_physical_trial, z_exact_raw_trial, &
-                        z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, projector_physical_model_e, &
-                        projector_physical_rx_e, projector_physical_z_e, &
+                        z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
+                        projector_physical_direct_model_e, projector_physical_direct_rx_e, &
+                        projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
+                        projector_physical_z_e, &
                         projector_response_rx_e, projector_response_z_e, split_z_e)
-            DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_sol, projector_response_sol, &
-                        split_sol)
+            DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
+                        projector_physical_sol, projector_response_sol, split_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, energy_cross, energy_cross_physical, energy_cross_raw, energy_hessian, &
                      response, response_coupled, response_exact, response_exact_physical, response_exact_raw, &
