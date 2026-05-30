@@ -68,6 +68,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
                                             2.0E-6_dp, nfail)
+   CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
+                                                     1.0E-7_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -2043,13 +2045,14 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-7_dp, &
                                                             fd_step = 2.0E-5_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, occ_mat
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_mat, &
+                                                            occ_mat, u
       INTEGER                                            :: i, j, r, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: active_err, err, fd, symmetry_err, value_m, value_p
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrozen, hmove
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrechet, hfrozen, hmove
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
                                                             x_p_im, x_p_re, x_re
 
@@ -2124,6 +2127,8 @@ CONTAINS
          END SELECT
       END DO
 
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
       CALL dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_mat)
       DO s = 1, nrot
          x_p_re(:, :) = x_re(:, :)
@@ -2146,11 +2151,22 @@ CONTAINS
          CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_mat, grad_re, grad_im, eps_diag)
          CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
          hfrozen(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_rotation_u(x_p_re, x_p_im, u)
+         chc_p(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+         CALL dense_rotation_u(x_m_re, x_m_im, u)
+         chc_m(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+         dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
+         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
+         CALL dense_projector_rotation_gradient(x_re, x_im, base, docc_mat, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         hfrechet(:, s) = hfrozen(:, s) + grad_p_vec(:)
       END DO
 
       symmetry_err = MAXVAL(ABS(hmove(:, :) - TRANSPOSE(hmove(:, :))))
       active_err = MAXVAL(ABS(hmove(:, :) - hfrozen(:, :)))
       err = MAX(err, symmetry_err)
+      err = MAX(err, MAXVAL(ABS(hmove(:, :) - hfrechet(:, :))))
 
       IF (err > tol .OR. active_err < active_tol) THEN
          nfail = nfail + 1
@@ -2160,6 +2176,56 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_occ_projector_hessian
+
+! **************************************************************************************************
+!> \brief Separate projector-basis gauge noise from physical occupation response.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_gauge_separation(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-8_dp, gap = 2.0E-5_dp, &
+                                                            slope = -0.65_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, fd_mat, occ_mat_m, &
+                                                            occ_mat_p
+      REAL(KIND=dp)                                      :: err, gauge_err
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_equal, occ_linear
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(0.00_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(gap, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.41_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.31_dp, -0.17_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_equal(:) = [0.74_dp, 0.74_dp, 0.18_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_equal, docc_mat)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_equal, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_equal, occ_mat_m)
+      fd_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      gauge_err = MAX(MAXVAL(ABS(docc_mat(:, :))), MAXVAL(ABS(fd_mat(:, :))))
+
+      occ_linear(:) = occ_equal(:)
+      occ_linear(2) = occ_linear(1) + slope*gap
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_linear, docc_mat)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_linear, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_linear, occ_mat_m)
+      fd_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      err = MAXVAL(ABS(docc_mat(:, :) - fd_mat(:, :)))
+
+      IF (err > tol .OR. gauge_err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/gauge", err, gauge_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/gauge", err, gauge_err
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_gauge_separation
 
 ! **************************************************************************************************
 !> \brief Dense value 1/2 sum_i f_i lambda_i[U^H H U].
@@ -2193,23 +2259,84 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec, u, weighted_evec
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, u
+      INTEGER                                            :: n
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc(n, n), u(n, n))
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      CALL dense_spectral_occ_projector_from_chc(chc, occ_scale, occ_mat)
+      DEALLOCATE (chc, u)
+
+   END SUBROUTINE dense_spectral_occ_projector
+
+! **************************************************************************************************
+!> \brief Dense spectral occupation projector for a supplied Hermitian CHC matrix.
+! **************************************************************************************************
+   SUBROUTINE dense_spectral_occ_projector_from_chc(chc, occ_scale, occ_mat)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
       INTEGER                                            :: i, n
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
-      n = SIZE(x_re, 1)
-      ALLOCATE (chc(n, n), evec(n, n), u(n, n), weighted_evec(n, n), evals(n))
-      CALL dense_rotation_u(x_re, x_im, u)
-      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      n = SIZE(chc, 1)
+      ALLOCATE (evec(n, n), weighted_evec(n, n), evals(n))
       CALL diag_complex(chc, evec, evals)
       weighted_evec(:, :) = evec(:, :)
       DO i = 1, n
          weighted_evec(:, i) = occ_scale(i)*weighted_evec(:, i)
       END DO
       occ_mat(:, :) = MATMUL(weighted_evec, CONJG(TRANSPOSE(evec)))
-      DEALLOCATE (chc, evec, u, weighted_evec, evals)
+      DEALLOCATE (evec, weighted_evec, evals)
 
-   END SUBROUTINE dense_spectral_occ_projector
+   END SUBROUTINE dense_spectral_occ_projector_from_chc
+
+! **************************************************************************************************
+!> \brief Fréchet derivative of the dense spectral occupation projector.
+! **************************************************************************************************
+   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+
+      n = SIZE(chc, 1)
+      ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n))
+
+      CALL diag_complex(chc, evec, evals)
+      work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
+      scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+      gap_tol = SQRT(EPSILON(1.0_dp))*scale
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO j = 1, n
+         DO i = 1, n
+            IF (i == j) CYCLE
+            denom = evals(i) - evals(j)
+            IF (ABS(denom) > gap_tol) THEN
+               coeff = (occ_scale(i) - occ_scale(j))/denom
+            ELSE IF (ABS(occ_scale(i) - occ_scale(j)) <= occ_tol) THEN
+               coeff = 0.0_dp
+            ELSE
+               coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
+            END IF
+            kernel(i, j) = coeff*work(i, j)
+         END DO
+      END DO
+
+      docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
+      docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
+      DEALLOCATE (evec, kernel, work, evals)
+
+   END SUBROUTINE dense_spectral_occ_projector_derivative_chc
 
 ! **************************************************************************************************
 !> \brief Gradient of the dense spectral occupation-projector value.
