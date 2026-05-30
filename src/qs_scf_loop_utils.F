@@ -4512,7 +4512,19 @@ CONTAINS
                                        DO r = 1, nrot
                                           IF (projector_physical_direct_diag_compensation > 0.0_dp) &
                                              schur(r, r) = schur(r, r) + projector_physical_direct_diag_compensation
-                                          diag_shift = MAX(0.0_dp, rot_floor(r) - schur(r, r))
+                                          ! The exact fixed-N Mermin Schur complement has genuinely soft
+                                          ! frontier rotation modes.  Do not re-harden the physical direct
+                                          ! candidate with the generic frontier floor once its own diagonal
+                                          ! curvature is already positive.
+                                          row_floor = SQRT(EPSILON(1.0_dp))* &
+                                                      MAX(1.0_dp, ABS(schur(r, r)), &
+                                                          ABS(rot_hessian_projector_physical(r, r)))
+                                          IF (sigma > EPSILON(sigma)) &
+                                             row_floor = MAX(row_floor, &
+                                                ot_kp_schur_response_trust_min_factor* &
+                                                kpoint_ot_fermi_window_anchor(sigma))
+                                          row_floor = MIN(rot_floor(r), row_floor)
+                                          diag_shift = MAX(0.0_dp, row_floor - schur(r, r))
                                           IF (diag_shift > 0.0_dp) THEN
                                              schur(r, r) = schur(r, r) + diag_shift
                                              projector_physical_direct_diag_shift_sum = &
