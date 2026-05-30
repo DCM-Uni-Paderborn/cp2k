@@ -54,6 +54,8 @@ PROGRAM qs_ot_frechet_unittest
                                                2.0E-7_dp, nfail)
    CALL check_complex_projector_blended_response_channel("complex projector-blended response channel", &
                                                          5.0E-9_dp, nfail)
+   CALL check_complex_projector_physical_response_channel("complex projector physical response channel", &
+                                                          5.0E-9_dp, nfail)
    CALL check_mixed_fixed_n_tether_projector("mixed fixed-N/tether Schur projector", &
                                              5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_cross_projector("mixed fixed-N/tether Schur cross projector", &
@@ -1114,6 +1116,124 @@ CONTAINS
    END SUBROUTINE check_complex_projector_blended_response_channel
 
 ! **************************************************************************************************
+!> \brief Check the finite-complex physical occupation response against eigenvalue differences.
+!>        This is the gauge-stable companion to the band-projector basis response:
+!>        the diagonal part remains the Rayleigh response, while the spectral part
+!>        follows finite eigenvalue shifts rather than the instantaneous projector basis.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_physical_response_channel(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nkp = 1, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            fd_step = 1.0E-6_dp, projector_weight = 0.70_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc_m, chc_p, occ_mat_m, occ_mat_p, u
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, ivar, j, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: active_err, err
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: diag_m, diag_p, eig_m, eig_p
+      REAL(KIND=dp), DIMENSION(n, nrot)                  :: basis_response, physical_response, reference
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+
+      base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1, 1) = CMPLX(-0.015_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 1) = CMPLX(0.011_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 1) = CMPLX(0.38_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 1) = CMPLX(0.020_dp, -0.035_dp, KIND=dp)
+      base(1, 3, 1) = CMPLX(-0.045_dp, 0.015_dp, KIND=dp)
+      base(2, 3, 1) = CMPLX(0.030_dp, 0.040_dp, KIND=dp)
+      base(2, 1, 1) = CONJG(base(1, 2, 1))
+      base(3, 1, 1) = CONJG(base(1, 3, 1))
+      base(3, 2, 1) = CONJG(base(2, 3, 1))
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.055_dp
+      x_re(1, 3, 1) = -0.025_dp
+      x_re(2, 3, 1) = 0.030_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i, 1) = -x_re(i, j, 1)
+         END DO
+      END DO
+
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 1, 1) = 0.012_dp
+      x_im(2, 2, 1) = -0.018_dp
+      x_im(3, 3, 1) = 0.021_dp
+      x_im(1, 2, 1) = -0.028_dp
+      x_im(1, 3, 1) = 0.019_dp
+      x_im(2, 3, 1) = 0.024_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i, 1) = x_im(i, j, 1)
+         END DO
+      END DO
+
+      ivar = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 2
+         END DO
+      END DO
+
+      occ_curv(:) = [0.31_dp, 0.72_dp, 0.19_dp]
+      occ_scale(:) = [1.42_dp, 0.77_dp, 0.31_dp]
+      CALL dense_blended_projector_response(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
+                                            projector_weight, var_i, var_j, var_kind, basis_response)
+      CALL dense_blended_projector_physical_response(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
+                                                     projector_weight, occ_scale, occ_curv, var_i, var_j, var_kind, &
+                                                     physical_response)
+      DO s = 1, nrot
+         x_p_re(:, :, :) = x_re(:, :, :)
+         x_m_re(:, :, :) = x_re(:, :, :)
+         x_p_im(:, :, :) = x_im(:, :, :)
+         x_m_im(:, :, :) = x_im(:, :, :)
+         CALL perturb_complex_rotation_var(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+         CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, diag_p)
+         CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, diag_m)
+         CALL dense_complex_kpoint_eigvals(x_p_re, x_p_im, base, eig_p)
+         CALL dense_complex_kpoint_eigvals(x_m_re, x_m_im, base, eig_m)
+         CALL dense_rotation_u(x_p_re(:, :, 1), x_p_im(:, :, 1), u)
+         chc_p(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base(:, :, 1), u))
+         CALL dense_rotation_u(x_m_re(:, :, 1), x_m_im(:, :, 1), u)
+         chc_m(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base(:, :, 1), u))
+         CALL dense_spectral_occ_projector_from_chc(chc_p, occ_scale, occ_mat_p)
+         CALL dense_spectral_occ_projector_from_chc(chc_m, occ_scale, occ_mat_m)
+         reference(:, s) = (1.0_dp - projector_weight)*(diag_p(:, 1) - diag_m(:, 1))/(2.0_dp*fd_step) + &
+                           projector_weight*(eig_p(:, 1) - eig_m(:, 1))/(2.0_dp*fd_step)
+         DO i = 1, n
+            reference(i, s) = reference(i, s) - projector_weight* &
+                              REAL(occ_mat_p(i, i) - occ_mat_m(i, i), KIND=dp)/ &
+                              (2.0_dp*fd_step*occ_curv(i))
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(physical_response(:, :) - reference(:, :)))
+      active_err = MAXVAL(ABS(physical_response(:, :) - basis_response(:, :)))
+
+      IF (err > tol .OR. active_err < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active_err
+      END IF
+
+   END SUBROUTINE check_complex_projector_physical_response_channel
+
+! **************************************************************************************************
 !> \brief Dense derivative of the blended projector rotation gradient with respect to occupations.
 ! **************************************************************************************************
    SUBROUTINE dense_blended_projector_response(x_re, x_im, base, projector_weight, &
@@ -1162,6 +1282,70 @@ CONTAINS
       DEALLOCATE (chc, evec, occ_mat, u, evals, grad_re, grad_im, eps_diag)
 
    END SUBROUTINE dense_blended_projector_response
+
+! **************************************************************************************************
+!> \brief Dense finite-complex physical occupation response from Rayleigh/eigenvalue shifts.
+! **************************************************************************************************
+   SUBROUTINE dense_blended_projector_physical_response(x_re, x_im, base, projector_weight, occ_scale, &
+                                                        occ_curv, var_i, var_j, var_kind, response)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, occ_scale
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: response
+
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc_m, chc_p, evec, occ_mat_m, occ_mat_p, u
+      INTEGER                                            :: band, n, s
+      REAL(KIND=dp)                                      :: projector_response, raw_response
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals_m, evals_p
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: x_m_im, x_m_re, x_p_im, x_p_re
+
+      n = SIZE(x_re, 1)
+      ALLOCATE (chc_p(n, n), chc_m(n, n), evec(n, n), occ_mat_p(n, n), occ_mat_m(n, n), u(n, n), &
+                evals_p(n), evals_m(n))
+      ALLOCATE (x_p_re(n, n), x_p_im(n, n), x_m_re(n, n), x_m_im(n, n))
+
+      DO s = 1, SIZE(var_i)
+         x_p_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_rotation_u(x_p_re, x_p_im, u)
+         chc_p(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+         CALL dense_rotation_u(x_m_re, x_m_im, u)
+         chc_m(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+         IF (projector_weight > 0.0_dp) THEN
+            CALL diag_complex(chc_p, evec, evals_p)
+            CALL diag_complex(chc_m, evec, evals_m)
+            CALL dense_spectral_occ_projector_from_chc(chc_p, occ_scale, occ_mat_p)
+            CALL dense_spectral_occ_projector_from_chc(chc_m, occ_scale, occ_mat_m)
+         END IF
+
+         DO band = 1, n
+            raw_response = (REAL(chc_p(band, band), KIND=dp) - &
+                            REAL(chc_m(band, band), KIND=dp))/(2.0_dp*fd_step)
+            projector_response = raw_response
+            IF (projector_weight > 0.0_dp) &
+               projector_response = (evals_p(band) - evals_m(band))/(2.0_dp*fd_step)
+            response(band, s) = (1.0_dp - projector_weight)*raw_response + &
+                                projector_weight*projector_response
+            IF (projector_weight > 0.0_dp .AND. ABS(occ_curv(band)) > EPSILON(occ_curv(band))) &
+               response(band, s) = response(band, s) - projector_weight* &
+                                   REAL(occ_mat_p(band, band) - occ_mat_m(band, band), KIND=dp)/ &
+                                   (2.0_dp*fd_step*occ_curv(band))
+         END DO
+      END DO
+
+      DEALLOCATE (chc_p, chc_m, evec, occ_mat_p, occ_mat_m, u, evals_p, evals_m, &
+                  x_p_re, x_p_im, x_m_re, x_m_im)
+
+   END SUBROUTINE dense_blended_projector_physical_response
 
 ! **************************************************************************************************
 !> \brief Dense gradient for the same blended projector model with arbitrary occupation weights.

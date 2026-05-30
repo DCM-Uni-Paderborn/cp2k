@@ -3124,7 +3124,7 @@ CONTAINS
                                                             new_search_point, response_model_available, solved, &
                                                             constrained_candidate_enabled, &
                                                             constrained_candidate_ready, constrained_candidate_selected, &
-                                                               exact_energy_model_ready, &
+                                                               exact_energy_model_ready, exact_physical_response_ready, &
                                                                projector_physical_candidate_ready, &
                                                                projector_physical_candidate_selected, &
                                                                projector_physical_shadow_enabled, &
@@ -3164,6 +3164,7 @@ CONTAINS
          occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
+         physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_physical_abs_avg, projector_physical_delta_diag_avg, &
          projector_physical_delta_max, projector_physical_diag_avg, projector_gauge_abs_avg, &
@@ -3227,17 +3228,19 @@ CONTAINS
          constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
          tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
-                                                               constrained_sol, constrained_z_e, projector_physical_rx_e, &
+                                                               constrained_sol, constrained_z_e, projector_physical_model_e, &
+                                                               projector_physical_rx_e, &
                                                                projector_physical_sol, projector_physical_z_e, &
                                                                projector_response_rx_e, &
                                                                projector_response_sol, projector_response_z_e, &
                                                             rot_floor, rtd, rx_e, rx_model, sol, split_sol, &
                                                             split_z_e, tether_curv, z_e, z_exact_raw_trial, &
-                                                            z_exact_trial, z_trial
+                                                            z_exact_physical_trial, z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            energy_cross, energy_cross_raw, energy_hessian, &
-                                                            response_coupled, response_exact, response_exact_raw, &
-                                                            response_occ, response_split, rot_hessian, &
+                                                            energy_cross, energy_cross_physical, energy_cross_raw, &
+                                                            energy_hessian, response_coupled, response_exact, &
+                                                            response_exact_physical, response_exact_raw, response_occ, &
+                                                            response_occ_physical, response_split, rot_hessian, &
                                                             rot_hessian_coupled, rot_hessian_projector, &
                                                             rot_hessian_projector_physical, schur
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -3286,16 +3289,19 @@ CONTAINS
          END IF
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_exact_raw_trial(ne), &
-                      z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), constrained_z_e(ne), &
-                      projector_physical_rx_e(ne), projector_physical_z_e(ne), projector_response_rx_e(ne), &
+                      z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
+                      constrained_z_e(ne), projector_physical_model_e(ne), projector_physical_rx_e(ne), &
+                      projector_physical_z_e(ne), projector_response_rx_e(ne), &
                       projector_response_z_e(ne), split_z_e(ne))
             ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot), &
                       projector_physical_sol(nrot), projector_response_sol(nrot), split_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (energy_cross(ne, nrot), energy_cross_raw(ne, nrot), energy_hessian(ne, ne), &
-                   response(ne, nrot), response_coupled(ne, nrot), response_exact(ne, nrot), &
-                   response_exact_raw(ne, nrot), response_occ(ne, nrot), response_split(ne, nrot), &
+         ALLOCATE (energy_cross(ne, nrot), energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
+                   energy_hessian(ne, ne), response(ne, nrot), response_coupled(ne, nrot), &
+                   response_exact(ne, nrot), response_exact_physical(ne, nrot), &
+                   response_exact_raw(ne, nrot), response_occ(ne, nrot), response_occ_physical(ne, nrot), &
+                   response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    rot_hessian_projector(nrot, nrot), rot_hessian_projector_physical(nrot, nrot), &
                    schur(nrot, nrot), ipiv(nrot))
@@ -3306,10 +3312,12 @@ CONTAINS
          occ_curv(:) = 0.0_dp
          tether_curv(:) = 0.0_dp
          z_e(:) = 0.0_dp
+         z_exact_physical_trial(:) = 0.0_dp
          z_exact_raw_trial(:) = 0.0_dp
          z_exact_trial(:) = 0.0_dp
             rx_e(:) = 0.0_dp
             rx_model(:) = 0.0_dp
+            projector_physical_model_e(:) = 0.0_dp
             projector_physical_rx_e(:) = 0.0_dp
             projector_physical_z_e(:) = 0.0_dp
             projector_response_rx_e(:) = 0.0_dp
@@ -3321,13 +3329,16 @@ CONTAINS
             projector_physical_sol(:) = 0.0_dp
             projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
+         energy_cross_physical(:, :) = 0.0_dp
          energy_cross_raw(:, :) = 0.0_dp
          energy_hessian(:, :) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
          response_exact(:, :) = 0.0_dp
+         response_exact_physical(:, :) = 0.0_dp
          response_exact_raw(:, :) = 0.0_dp
          response_occ(:, :) = 0.0_dp
+         response_occ_physical(:, :) = 0.0_dp
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
@@ -3345,6 +3356,8 @@ CONTAINS
          residual_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
          residual_reference_quality = 0.0_dp
          density_projector_fraction = 0.0_dp
+         physical_response_gap_avg = 0.0_dp
+         physical_response_gap_max = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          constrained_diag_shift_avg = 0.0_dp
@@ -3569,6 +3582,7 @@ CONTAINS
          split_response_trust_factor = 1.0_dp
          split_rot_floor_min = curvature_floor
          split_schur_diag_min = HUGE(1.0_dp)
+            exact_physical_response_ready = .FALSE.
             failed = .FALSE.
             constrained_candidate_ready = .FALSE.
             constrained_candidate_selected = .FALSE.
@@ -3665,24 +3679,28 @@ CONTAINS
                   CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
                                                        e_offset(local_channel), h_re, h_im, &
                                                        trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
+                                                       occ_curv(e_offset(local_channel):e_offset(local_channel) + nmo - 1), &
                                                        var_i, var_j, var_kind, &
                                                        projector_physical_shadow_enabled, &
                                                        rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
-                                                       rot_hessian_projector_physical, response, response_occ, failed)
+                                                       rot_hessian_projector_physical, response, response_occ, &
+                                                       response_occ_physical, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
 
             CPASSERT(ivar == nrot)
             IF (failed) THEN
-               DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_raw_trial, z_exact_trial, z_trial, &
-                           rx_e, rx_model, constrained_z_e, projector_physical_rx_e, projector_physical_z_e, &
+               DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_physical_trial, z_exact_raw_trial, &
+                           z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, projector_physical_model_e, &
+                           projector_physical_rx_e, projector_physical_z_e, &
                            projector_response_rx_e, projector_response_z_e, split_z_e)
                DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_sol, &
                            projector_response_sol, split_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, energy_cross, energy_cross_raw, energy_hessian, response, response_coupled, &
-                        response_exact, response_exact_raw, response_occ, response_split, rot_hessian, &
+            DEALLOCATE (rot_floor, energy_cross, energy_cross_physical, energy_cross_raw, energy_hessian, &
+                        response, response_coupled, response_exact, response_exact_physical, &
+                        response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
                         rot_hessian_coupled, rot_hessian_projector, rot_hessian_projector_physical, schur, &
                         ipiv, ipiv_energy, channel_nmo, e_offset)
             RETURN
@@ -3768,6 +3786,8 @@ CONTAINS
          END DO
          projector_response_gap_avg = 0.0_dp
          projector_response_gap_max = 0.0_dp
+         physical_response_gap_avg = 0.0_dp
+         physical_response_gap_max = 0.0_dp
          DO r = 1, nrot
             projector_response_gap_norm = DOT_PRODUCT(occ_curv(:)*(response_occ(:, r) - response(:, r)), &
                                                       response_occ(:, r) - response(:, r))
@@ -3777,13 +3797,30 @@ CONTAINS
                   SQRT(MAX(0.0_dp, projector_response_gap_norm/occ_curv_projection_sum))
             projector_response_gap_max = MAX(projector_response_gap_max, &
                                              MAXVAL(ABS(response_occ(:, r) - response(:, r))))
+            physical_response_gap_norm = DOT_PRODUCT(occ_curv(:)*(response_occ_physical(:, r) - response_occ(:, r)), &
+                                                     response_occ_physical(:, r) - response_occ(:, r))
+            CALL para_env_inter_kp%sum(physical_response_gap_norm)
+            IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
+               physical_response_gap_avg = physical_response_gap_avg + &
+                  SQRT(MAX(0.0_dp, physical_response_gap_norm/occ_curv_projection_sum))
+            physical_response_gap_max = MAX(physical_response_gap_max, &
+                                            MAXVAL(ABS(response_occ_physical(:, r) - response_occ(:, r))))
          END DO
          projector_response_gap_avg = projector_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
+         physical_response_gap_avg = physical_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
          CALL para_env_inter_kp%max(projector_response_gap_max)
+         CALL para_env_inter_kp%max(physical_response_gap_max)
          CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ, response, grad_e, &
                                                     channel_nmo, e_offset, energy_hessian, energy_cross, &
                                                     response_exact, z_exact_trial, ipiv_energy, &
                                                     exact_energy_model_ready, energy_gauge_weight)
+         exact_physical_response_ready = .FALSE.
+         IF (exact_energy_model_ready .AND. projector_physical_shadow_enabled) &
+            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ_physical, response, &
+                                                       grad_e, channel_nmo, e_offset, energy_hessian, &
+                                                       energy_cross_physical, response_exact_physical, &
+                                                       z_exact_physical_trial, ipiv_energy, &
+                                                       exact_physical_response_ready, energy_gauge_weight)
          IF (exact_energy_model_ready) &
             CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response, response, grad_e, &
                                                        channel_nmo, e_offset, energy_hessian, energy_cross_raw, &
@@ -4277,13 +4314,19 @@ CONTAINS
                      END IF
                      END IF
                   END IF
-                  IF (schur_attempt == 3 .AND. exact_attempt_response .AND. projector_physical_shadow_enabled .AND. &
+                  IF (schur_attempt == 3 .AND. exact_attempt_response .AND. exact_physical_response_ready .AND. &
+                      projector_physical_shadow_enabled .AND. &
                       projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                       local_ot_env(1)%schur_projector_mode_quality_samples >= &
                       ot_kp_schur_calibration_min_samples) THEN
+                     projector_physical_model_e(:) = MATMUL(response_exact_physical, sol)
+                     rx_shift = DOT_PRODUCT(curv, projector_physical_model_e)
+                     CALL para_env_inter_kp%sum(rx_shift)
+                     IF (rx_weight > EPSILON(rx_weight)) &
+                        projector_physical_model_e(:) = projector_physical_model_e(:) - rx_shift/rx_weight
                      CALL audit_kpoint_ot_projector_response_modes(rot_hessian_projector, &
                                                                    rot_hessian_projector_physical, sol, &
-                                                                   response_exact_raw, response_exact, curv, &
+                                                                   response_exact_raw, response_exact_physical, curv, &
                                                                    projector_coupled_weight, residual_delta, &
                                                                    projector_mode_history_quality, &
                                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -4324,9 +4367,10 @@ CONTAINS
                            projector_physical_response_weighted_step = projector_physical_direction_scale* &
                               kpoint_ot_weighted_response_step(projector_physical_rx_e, curv, curv_projection_sum)
                            projector_physical_model_gap = &
-                              projector_physical_direction_scale*MAXVAL(ABS(rx_model - projector_physical_rx_e))
+                              projector_physical_direction_scale* &
+                              MAXVAL(ABS(projector_physical_model_e - projector_physical_rx_e))
                            projector_physical_model_gap_drop = &
-                              kpoint_ot_response_mismatch_drop(projector_physical_rx_e, rx_model, curv, &
+                              kpoint_ot_response_mismatch_drop(projector_physical_rx_e, projector_physical_model_e, curv, &
                                                                projector_physical_direction_scale)
                            projector_physical_model_calibrated_drop = &
                               MAX(0.0_dp, projector_physical_model_drop - projector_physical_model_gap_drop)
@@ -5076,10 +5120,11 @@ CONTAINS
                      constrained_rot_diag_avg, constrained_occ_response_diag_avg, constrained_tether_response_diag_avg, &
                      constrained_response_penalty_diag_avg, split_curvature_scale, split_quality_for_calibration, &
                      split_expected_drop, constrained_expected_drop, constrained_expected_drop_ratio
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,4(1X,ES16.8))') &
-                     " OT Schur exact energy response ready gauge diag occ_gap occ_gap_max:", &
-                     exact_energy_model_ready, energy_gauge_weight, exact_response_diag_avg, &
-                     projector_response_gap_avg, projector_response_gap_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),6(1X,ES16.8))') &
+                     " OT Schur exact energy response ready physical gauge diag occ_gap occ_gap_max phys_gap phys_gap_max:", &
+                     exact_energy_model_ready, exact_physical_response_ready, energy_gauge_weight, &
+                     exact_response_diag_avg, projector_response_gap_avg, projector_response_gap_max, &
+                     physical_response_gap_avg, physical_response_gap_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,ES16.8)') &
                      " OT Schur mixed response diag:", response_mixed_diag_avg
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
@@ -5165,14 +5210,16 @@ CONTAINS
             END IF
          END IF
 
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_raw_trial, z_exact_trial, z_trial, &
-                        rx_e, rx_model, constrained_z_e, projector_physical_rx_e, projector_physical_z_e, &
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_physical_trial, z_exact_raw_trial, &
+                        z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, projector_physical_model_e, &
+                        projector_physical_rx_e, projector_physical_z_e, &
                         projector_response_rx_e, projector_response_z_e, split_z_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_sol, projector_response_sol, &
                         split_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, energy_cross, energy_cross_raw, energy_hessian, response, response_coupled, &
-                     response_exact, response_exact_raw, response_occ, response_split, rot_hessian, &
+         DEALLOCATE (rot_floor, energy_cross, energy_cross_physical, energy_cross_raw, energy_hessian, &
+                     response, response_coupled, response_exact, response_exact_physical, response_exact_raw, &
+                     response_occ, response_occ_physical, response_split, rot_hessian, &
                      rot_hessian_coupled, rot_hessian_projector, rot_hessian_projector_physical, schur, &
                      ipiv, ipiv_energy, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
@@ -5829,19 +5876,20 @@ CONTAINS
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
-                                                 var_i, var_j, var_kind, compute_projector_shadow, &
+                                                 occ_curv_channel, var_i, var_j, var_kind, compute_projector_shadow, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
-                                                 rot_hessian_projector_physical, response, response_occ, failed)
+                                                 rot_hessian_projector_physical, response, response_occ, &
+                                                 response_occ_physical, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers, occ_curv_channel
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       LOGICAL, INTENT(IN)                                :: compute_projector_shadow
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, &
                                                             rot_hessian_projector, rot_hessian_projector_physical, &
-                                                            response, response_occ
+                                                            response, response_occ, response_occ_physical
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
@@ -5850,8 +5898,9 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: projector_weight, raw_response
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals
+      REAL(KIND=dp)                                      :: projector_response, projector_weight, raw_response
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
+                                                            projector_evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
                                                             x_m_re, x_p_im, x_p_re, x_re
@@ -5892,7 +5941,7 @@ CONTAINS
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))
          ALLOCATE (grad_p_re(nmo, nmo), grad_p_im(nmo, nmo), grad_m_re(nmo, nmo), grad_m_im(nmo, nmo))
-         ALLOCATE (eps_p(nmo), eps_m(nmo))
+         ALLOCATE (eps_p(nmo), eps_m(nmo), projector_evals_p(nmo), projector_evals_m(nmo))
 
          DO ie = 1, nmo
             CALL dense_history_safe_occ_projector_basis(projector_evec, projector_weight, ie, occ_basis)
@@ -5944,6 +5993,18 @@ CONTAINS
             END DO
             CALL dense_rotated_chc(x_p_re, x_p_im, base, chc_p)
             CALL dense_rotated_chc(x_m_re, x_m_im, base, chc_m)
+            IF (compute_projector_shadow .AND. projector_weight > 0.0_dp) THEN
+               CALL diag_complex(chc_p, projector_evec, projector_evals_p)
+               CALL diag_complex(chc_m, projector_evec, projector_evals_m)
+            END IF
+            DO ie = 1, nmo
+               raw_response = (REAL(chc_p(ie, ie), KIND=dp) - REAL(chc_m(ie, ie), KIND=dp))/(2.0_dp*fd_step)
+               projector_response = raw_response
+               IF (compute_projector_shadow .AND. projector_weight > 0.0_dp) &
+                  projector_response = (projector_evals_p(ie) - projector_evals_m(ie))/(2.0_dp*fd_step)
+               response_occ_physical(first_energy + ie - 1, s) = &
+                  (1.0_dp - projector_weight)*raw_response + projector_weight*projector_response
+            END DO
             CALL dense_history_safe_occ_projector(chc_p, occupation_numbers, kpoint_weight, &
                                                   local_ot_env(local_channel)%delta, occ_mat_p)
             CALL dense_history_safe_occ_projector(chc_m, occupation_numbers, kpoint_weight, &
@@ -5966,6 +6027,12 @@ CONTAINS
                dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_mat)
+               DO ie = 1, nmo
+                  IF (ABS(occ_curv_channel(ie)) > curvature_floor) &
+                     response_occ_physical(first_energy + ie - 1, s) = &
+                        response_occ_physical(first_energy + ie - 1, s) - &
+                        REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
+               END DO
                CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, grad_p_re, grad_p_im, eps_p)
                DO r = first_var, last_var
                   imo = var_i(r)
@@ -6007,7 +6074,7 @@ CONTAINS
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
-         DEALLOCATE (eps_p, eps_m)
+         DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
 
       SUBROUTINE dense_history_safe_occ_projector_basis(evec, projector_weight, iband, occ_mat)
