@@ -2935,7 +2935,7 @@ CONTAINS
 
       INTEGER                                            :: group, ikpoint, imo, ispin, &
                                                             local_channel, local_kpoint, nmo
-      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, &
+      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, precond_weight, &
                                                             rayleigh_edge_gap, tether_response, &
                                                             tether_strength, tether_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag
@@ -2981,10 +2981,12 @@ CONTAINS
                                                                      maxocc, wkp(ikpoint), tether_strength)
                   curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature > EPSILON(curvature)) THEN
+                     precond_weight = MAX(curvature, curvature_floor)
                      local_ot_env(local_channel)%ener_gx(imo) = &
-                        local_ot_env(local_channel)%ener_gx(imo)/MAX(curvature, curvature_floor)
-                     precond_sum(group) = precond_sum(group) + local_ot_env(local_channel)%ener_gx(imo)
-                     precond_count(group) = precond_count(group) + 1.0_dp
+                        local_ot_env(local_channel)%ener_gx(imo)/precond_weight
+                     precond_sum(group) = precond_sum(group) + &
+                                          curvature*local_ot_env(local_channel)%ener_gx(imo)
+                     precond_count(group) = precond_count(group) + curvature
                   ELSE
                      local_ot_env(local_channel)%ener_gx(imo) = 0.0_dp
                   END IF

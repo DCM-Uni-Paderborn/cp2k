@@ -46,6 +46,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
+   CALL check_fixed_n_preconditioner_gauge("fixed-N preconditioner gauge", 5.0E-15_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
                                                      2.0E-7_dp, nfail)
    CALL check_complex_fixed_n_schur_hessian("complex fixed-N Schur Hessian", &
@@ -496,6 +497,42 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_energy_projection
+
+! **************************************************************************************************
+!> \brief Check that the diagonal energy preconditioner removes the fixed-N gauge
+!>        in the occupation-curvature metric, not by an arithmetic band average.
+! **************************************************************************************************
+   SUBROUTINE check_fixed_n_preconditioner_gauge(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 5
+      REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
+
+      REAL(KIND=dp)                                      :: err, shift, wrong_err
+      REAL(KIND=dp), DIMENSION(n)                        :: curv, grad, step, wrong_step
+
+      curv = [0.15_dp, 0.8_dp, 2.4_dp, 6.0_dp, 11.0_dp]
+      grad = [0.32_dp, -0.71_dp, 0.14_dp, 0.55_dp, -0.28_dp]
+
+      step(:) = grad(:)/MAX(curv(:), curvature_floor)
+      shift = SUM(curv(:)*step(:))/SUM(curv(:))
+      step(:) = step(:) - shift
+      err = ABS(SUM(curv(:)*step(:)))
+
+      wrong_step(:) = grad(:)/MAX(curv(:), curvature_floor)
+      wrong_step(:) = wrong_step(:) - SUM(wrong_step(:))/REAL(n, KIND=dp)
+      wrong_err = ABS(SUM(curv(:)*wrong_step(:)))
+
+      IF (err > tol .OR. wrong_err <= 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with errors", err, wrong_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with errors", err, wrong_err
+      END IF
+
+   END SUBROUTINE check_fixed_n_preconditioner_gauge
 
 ! **************************************************************************************************
 !> \brief Dense weighted k-point Mermin free-energy model.

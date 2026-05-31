@@ -365,7 +365,7 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
       INTEGER                                            :: group, handle, imo, ispin, ngroups
-      REAL(KIND=dp)                                      :: curvature, occ_denom, thermal_scale
+      REAL(KIND=dp)                                      :: curvature, occ_denom, precond_weight, thermal_scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: precond_count, precond_shift, precond_sum
 
       CALL timeset(routineN, handle)
@@ -400,7 +400,8 @@ CONTAINS
       ! Fermi-Dirac fixed-N Mermin response has diagonal curvature
       ! f_i(maxocc-f_i)/(maxocc*kT).  The preconditioner applies this
       ! occupation-curvature scale, then removes the dense constant-shift
-      ! null mode associated with the chemical potential.
+      ! null mode associated with the chemical potential in the same
+      ! curvature-weighted gauge as the fixed-N response.
       DO ispin = 1, SIZE(qs_ot_env)
          group = MERGE(ispin, 1, ngroups == SIZE(qs_ot_env))
          thermal_scale = mo_array(ispin)%maxocc*smear%electronic_temperature
@@ -410,9 +411,10 @@ CONTAINS
                         (mo_array(ispin)%maxocc - occupation_numbers(ispin)%array(imo))
             curvature = occ_denom/thermal_scale
             IF (curvature > EPSILON(curvature)) THEN
-               qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)/MAX(curvature, curvature_floor)
-               precond_sum(group) = precond_sum(group) + qs_ot_env(ispin)%ener_gx(imo)
-               precond_count(group) = precond_count(group) + 1.0_dp
+               precond_weight = MAX(curvature, curvature_floor)
+               qs_ot_env(ispin)%ener_gx(imo) = qs_ot_env(ispin)%ener_gx(imo)/precond_weight
+               precond_sum(group) = precond_sum(group) + curvature*qs_ot_env(ispin)%ener_gx(imo)
+               precond_count(group) = precond_count(group) + curvature
             ELSE
                qs_ot_env(ispin)%ener_gx(imo) = 0.0_dp
             END IF
