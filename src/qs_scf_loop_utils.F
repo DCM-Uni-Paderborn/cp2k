@@ -4905,6 +4905,56 @@ CONTAINS
                                        projector_physical_direct_delta(:, :) = &
                                           0.5_dp*((rot_hessian_projector_physical(:, :) - rot_hessian(:, :)) + &
                                                   TRANSPOSE(rot_hessian_projector_physical(:, :) - rot_hessian(:, :)))
+                                       projector_physical_direct_diag_compensation = 0.0_dp
+                                       projector_physical_direct_diag_compensation_local_avg = 0.0_dp
+                                       projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
+                                       projector_physical_direct_diag_compensation_local_max = 0.0_dp
+                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+                                          projector_physical_direct_diag_compensation = &
+                                             MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
+                                          ! Retain the trace curvature implied by the finite
+                                          ! Projector response inside the Direct curvature matrix.
+                                          ! This is algebraically the old stabilizing diagonal
+                                          ! correction, but it is now part of the physical Schur
+                                          ! model instead of a post-solve scalar patch.
+                                          IF (projector_physical_delta_diag_avg > &
+                                              projector_hessian_delta_diag_avg) &
+                                             projector_physical_direct_diag_compensation = &
+                                                MAX(projector_physical_direct_diag_compensation, &
+                                                    projector_coupled_weight* &
+                                                    (projector_physical_delta_diag_avg - &
+                                                     projector_hessian_delta_diag_avg))
+                                          DO r = 1, nrot
+                                             diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
+                                                                     projector_physical_direct_delta(r, r))
+                                             projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
+                                             IF (projector_physical_direct_delta(r, r) > projected_term) &
+                                                diag_shift = MAX(diag_shift, projector_coupled_weight* &
+                                                                            (projector_physical_direct_delta(r, r) - &
+                                                                             projected_term))
+                                             projector_physical_direct_diag_compensation_local_avg = &
+                                                projector_physical_direct_diag_compensation_local_avg + diag_shift
+                                             projector_physical_direct_diag_compensation_local_max = &
+                                                MAX(projector_physical_direct_diag_compensation_local_max, diag_shift)
+                                             IF (diag_shift > 0.0_dp) &
+                                                projector_physical_direct_diag_compensation_local_fraction = &
+                                                   projector_physical_direct_diag_compensation_local_fraction + 1.0_dp
+                                          END DO
+                                          projector_physical_direct_diag_compensation_local_avg = &
+                                             projector_physical_direct_diag_compensation_local_avg/REAL(MAX(1, nrot), KIND=dp)
+                                          projector_physical_direct_diag_compensation_local_fraction = &
+                                             projector_physical_direct_diag_compensation_local_fraction/ &
+                                             REAL(MAX(1, nrot), KIND=dp)
+                                          IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                              projector_physical_direct_diag_compensation > 0.0_dp) THEN
+                                             diag_shift = projector_physical_direct_diag_compensation/ &
+                                                          projector_coupled_weight
+                                             DO r = 1, nrot
+                                                projector_physical_direct_delta(r, r) = &
+                                                   projector_physical_direct_delta(r, r) + diag_shift
+                                             END DO
+                                          END IF
+                                       END IF
                                        schur(:, :) = rot_hessian_coupled(:, :) + &
                                                      projector_coupled_weight* &
                                                      projector_physical_direct_delta(:, :)
@@ -4957,55 +5007,11 @@ CONTAINS
                                              schur(r, s) = schur(r, s) - projected_term
                                           END DO
                                        END DO
-                                       projector_physical_direct_diag_compensation = 0.0_dp
-                                       projector_physical_direct_diag_compensation_local_avg = 0.0_dp
-                                       projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
-                                       projector_physical_direct_diag_compensation_local_max = 0.0_dp
-                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
-                                          projector_physical_direct_diag_compensation = &
-                                             MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
-                                          ! Also retain the diagonal trust implied by the finite
-                                          ! Projector response that was removed when separating
-                                          ! physical occupation curvature from projector-gauge
-                                          ! motion.  This keeps the capped physical Hessian while
-                                          ! preventing the Direct solve from becoming too soft in
-                                          ! the same raw-vs-physical curvature gap.
-                                          IF (projector_physical_delta_diag_avg > &
-                                              projector_hessian_delta_diag_avg) &
-                                             projector_physical_direct_diag_compensation = &
-                                                MAX(projector_physical_direct_diag_compensation, &
-                                                    projector_coupled_weight* &
-                                                    (projector_physical_delta_diag_avg - &
-                                                     projector_hessian_delta_diag_avg))
-                                          DO r = 1, nrot
-                                             diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
-                                                                     projector_physical_direct_delta(r, r))
-                                             projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
-                                             IF (projector_physical_direct_delta(r, r) > projected_term) &
-                                                diag_shift = MAX(diag_shift, projector_coupled_weight* &
-                                                                            (projector_physical_direct_delta(r, r) - &
-                                                                             projected_term))
-                                             projector_physical_direct_diag_compensation_local_avg = &
-                                                projector_physical_direct_diag_compensation_local_avg + diag_shift
-                                             projector_physical_direct_diag_compensation_local_max = &
-                                                MAX(projector_physical_direct_diag_compensation_local_max, diag_shift)
-                                             IF (diag_shift > 0.0_dp) &
-                                                projector_physical_direct_diag_compensation_local_fraction = &
-                                                   projector_physical_direct_diag_compensation_local_fraction + 1.0_dp
-                                          END DO
-                                          projector_physical_direct_diag_compensation_local_avg = &
-                                             projector_physical_direct_diag_compensation_local_avg/REAL(MAX(1, nrot), KIND=dp)
-                                          projector_physical_direct_diag_compensation_local_fraction = &
-                                             projector_physical_direct_diag_compensation_local_fraction/ &
-                                             REAL(MAX(1, nrot), KIND=dp)
-                                       END IF
                                        projector_physical_direct_diag_shift_sum = 0.0_dp
                                        projector_physical_direct_diag_shift_max = 0.0_dp
                                        projector_physical_direct_rot_floor_min = curvature_floor
                                        projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
                                        DO r = 1, nrot
-                                          IF (projector_physical_direct_diag_compensation > 0.0_dp) &
-                                             schur(r, r) = schur(r, r) + projector_physical_direct_diag_compensation
                                           ! The exact fixed-N Mermin Schur complement has genuinely soft
                                           ! frontier rotation modes.  Do not re-harden the physical direct
                                           ! candidate with the generic frontier floor once its own diagonal
