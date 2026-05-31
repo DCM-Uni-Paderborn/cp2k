@@ -5549,11 +5549,13 @@ CONTAINS
                         projector_physical_direct_response_abs_trust_ratio, &
                         projector_physical_direct_diag_compensation, &
                         projector_physical_direct_diag_shift_avg
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
-                        " OT Schur projector phys direct model scale drop gapdrop gdotp normp nratio tq sq:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
+                        " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr nratio tq sq:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
                         projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
-                        projector_physical_direct_normp, projector_physical_direct_norm_ratio, &
+                        projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
+                        projector_physical_direct_normp, projector_physical_direct_norm_energy, &
+                        projector_physical_direct_norm_rotation, projector_physical_direct_norm_ratio, &
                         projector_physical_direct_trust_quality, projector_physical_direct_scale_quality
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct curv pcap clipavg clipmax diagmax emin emax:", &
