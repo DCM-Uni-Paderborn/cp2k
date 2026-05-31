@@ -2792,17 +2792,16 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_measured_sum = &
                   local_ot_env(1)%schur_projector_physical_measured_sum + measured_drop
             END IF
+            ! A too-large physical quality ratio means the shadow model is
+            ! conservative, not unstable; selection still uses the clamped
+            ! expected-drop quality below.
             local_ot_env(1)%schur_projector_physical_candidate_enabled = &
                local_ot_env(1)%schur_projector_physical_quality_samples >= &
                ot_kp_schur_projector_response_min_samples .AND. &
                local_ot_env(1)%schur_projector_physical_quality_ema >= &
                ot_kp_schur_projector_response_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_projector_physical_quality_ema <= &
-               ot_kp_schur_projector_response_quality_max_ratio .AND. &
                local_ot_env(1)%schur_projector_physical_quality >= &
-               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_projector_physical_quality <= &
-               2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
+               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
 
             local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
@@ -4240,7 +4239,16 @@ CONTAINS
             DO r = 1, nrot
                IF (projector_diag_compensation > 0.0_dp) schur(r, r) = schur(r, r) + projector_diag_compensation
                row_floor = curvature_floor
-               IF (schur_attempt <= 3) row_floor = rot_floor(r)
+               IF (schur_attempt <= 3) THEN
+                  row_floor = rot_floor(r)
+                  IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                      exact_physical_response_ready .AND. &
+                      residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                      rot_floor(r) <= schur_frontier_curvature_floor + EPSILON(schur_frontier_curvature_floor)) &
+                     row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
+                                                                   rot_hessian_projector_physical(r, r), &
+                                                                   rot_floor(r))
+               END IF
                rot_floor_min = MIN(rot_floor_min, row_floor)
                IF (schur_attempt <= 3) THEN
                   ! First try the coupled finite-rotation Schur block itself.  The
@@ -4516,14 +4524,9 @@ CONTAINS
                                           ! frontier rotation modes.  Do not re-harden the physical direct
                                           ! candidate with the generic frontier floor once its own diagonal
                                           ! curvature is already positive.
-                                          row_floor = SQRT(EPSILON(1.0_dp))* &
-                                                      MAX(1.0_dp, ABS(schur(r, r)), &
-                                                          ABS(rot_hessian_projector_physical(r, r)))
-                                          IF (sigma > EPSILON(sigma)) &
-                                             row_floor = MAX(row_floor, &
-                                                ot_kp_schur_response_trust_min_factor* &
-                                                kpoint_ot_fermi_window_anchor(sigma))
-                                          row_floor = MIN(rot_floor(r), row_floor)
+                                          row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
+                                                                                       rot_hessian_projector_physical(r, r), &
+                                                                                       rot_floor(r))
                                           diag_shift = MAX(0.0_dp, row_floor - schur(r, r))
                                           IF (diag_shift > 0.0_dp) THEN
                                              schur(r, r) = schur(r, r) + diag_shift
@@ -5337,7 +5340,7 @@ CONTAINS
                response_weighted_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   response_weighted_trust_ratio = response_weighted_step/response_trust
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),18(1X,ES16.8),1(1X,L1))') &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),19(1X,ES16.8),1(1X,L1))') &
                   " OT Schur ne nrot att scale gdotp normp drop resp trust rtrust wresp wratio atrust aratio fac "// &
                   "delta proj dsum davg dmax dmin floor reject:", &
                   target_group, ne, nrot, schur_used_attempt, direction_scale, gdotp, normp, &
@@ -5449,6 +5452,12 @@ CONTAINS
                         projector_physical_direct_response_abs_trust_ratio, &
                         projector_physical_direct_diag_compensation, &
                         projector_physical_direct_diag_shift_avg
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                        " OT Schur projector phys direct model scale drop gapdrop gdotp normp nratio tq sq:", &
+                        projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
+                        projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
+                        projector_physical_direct_normp, projector_physical_direct_norm_ratio, &
+                        projector_physical_direct_trust_quality, projector_physical_direct_scale_quality
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector physical candidate ready selected exp qsel cdrop mgap rratio aratio weight:", &
                         projector_physical_candidate_ready, projector_physical_candidate_selected, &
@@ -5753,6 +5762,19 @@ CONTAINS
          END IF
 
       END FUNCTION kpoint_ot_weighted_response_step
+
+      FUNCTION kpoint_ot_physical_rotation_floor(sigma, row_diag, physical_diag, frontier_floor) RESULT(row_floor)
+      REAL(KIND=dp), INTENT(IN)                         :: sigma, row_diag, physical_diag, frontier_floor
+      REAL(KIND=dp)                                     :: row_floor
+
+         row_floor = SQRT(EPSILON(1.0_dp))* &
+                     MAX(1.0_dp, ABS(row_diag), ABS(physical_diag))
+         IF (sigma > EPSILON(sigma)) &
+            row_floor = MAX(row_floor, &
+                            ot_kp_schur_response_trust_min_factor*kpoint_ot_fermi_window_anchor(sigma))
+         row_floor = MIN(frontier_floor, row_floor)
+
+      END FUNCTION kpoint_ot_physical_rotation_floor
 
       FUNCTION kpoint_ot_schur_scale_quality(direction_scale, scale_floor) RESULT(quality)
       REAL(KIND=dp), INTENT(IN)                         :: direction_scale, scale_floor
