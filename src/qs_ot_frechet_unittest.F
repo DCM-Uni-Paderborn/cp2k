@@ -2575,8 +2575,10 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, diag_mat, docc_mat, split_mat
       INTEGER                                            :: i
       REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
-                                                            min_split_weight = 0.45_dp
-      REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm, split_weight
+                                                            min_split_weight = 0.45_dp, &
+                                                            tail_min_split_weight = 0.50_dp
+      REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm, split_weight, &
+                                                            tail_split_weight
       REAL(KIND=dp), DIMENSION(n)                        :: energy_response, occ_curv, occ_scale
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -2605,7 +2607,8 @@ CONTAINS
       occ_curv(:) = [0.41_dp, 0.63_dp, 0.22_dp]
 
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
-      split_weight = dense_occ_projector_physical_split_weight(docc_mat, occ_curv)
+      split_weight = dense_occ_projector_physical_split_weight(docc_mat, occ_curv, 2.0E-4_dp)
+      tail_split_weight = dense_occ_projector_physical_split_weight(docc_mat, occ_curv, 0.0_dp)
 
       DO i = 1, n
          energy_response(i) = -0.5_dp*REAL(docc_mat(i, i), KIND=dp)/occ_curv(i)
@@ -2627,15 +2630,17 @@ CONTAINS
       END DO
       offdiag_norm = MAXVAL(ABS(docc_mat - diag_mat))
       err = MAX(diag_err, MAXVAL(ABS(split_mat - split_weight*(docc_mat - diag_mat))))
+      err = MAX(err, ABS(tail_split_weight - tail_min_split_weight))
 
       IF (err > tol .OR. offdiag_norm <= tol .OR. split_weight < min_split_weight .OR. &
-          split_weight > max_split_weight) THEN
+          split_weight > max_split_weight .OR. tail_split_weight < tail_min_split_weight .OR. &
+          tail_split_weight > max_split_weight) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "failed with error/offdiag/weight", &
-            err, offdiag_norm, split_weight
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with error/offdiag/weight/tail", &
+            err, offdiag_norm, split_weight, tail_split_weight
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "OK with error/offdiag/weight", &
-            err, offdiag_norm, split_weight
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with error/offdiag/weight/tail", &
+            err, offdiag_norm, split_weight, tail_split_weight
       END IF
 
    END SUBROUTINE check_complex_occ_projector_physical_split
@@ -2643,15 +2648,19 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Dense mirror of the occupation-projector physical/gauge split metric.
 ! **************************************************************************************************
-   FUNCTION dense_occ_projector_physical_split_weight(docc_mat, occ_curv) RESULT(split_weight)
+   FUNCTION dense_occ_projector_physical_split_weight(docc_mat, occ_curv, residual_delta) RESULT(split_weight)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       REAL(KIND=dp)                                      :: split_weight
 
       INTEGER                                            :: i, j, n
       REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
-                                                            min_split_weight = 0.45_dp
+                                                            metric_min_split_weight = 0.45_dp, &
+                                                            tail_delta = 1.0E-4_dp, &
+                                                            tail_min_split_weight = 0.50_dp
       REAL(KIND=dp)                                      :: curvature_i, curvature_j, gauge_metric, &
+                                                            min_split_weight, &
                                                             physical_metric, response, total_metric
 
       n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv))
@@ -2678,6 +2687,8 @@ CONTAINS
       ELSE
          split_weight = 0.5_dp
       END IF
+      min_split_weight = metric_min_split_weight
+      IF (residual_delta <= tail_delta) min_split_weight = tail_min_split_weight
       split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
 
    END FUNCTION dense_occ_projector_physical_split_weight

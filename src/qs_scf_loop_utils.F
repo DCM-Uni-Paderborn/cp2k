@@ -6897,7 +6897,8 @@ CONTAINS
                                                                 active_blend_sum, active_blend_max, &
                                                                 slope_limit_count, slope_limit_sum, slope_limit_max)
                projector_split_weight = &
-                  kpoint_ot_projector_physical_split_weight(docc_mat, occ_curv_channel, curvature_floor)
+                  kpoint_ot_projector_physical_split_weight(docc_mat, occ_curv_channel, curvature_floor, &
+                                                            local_ot_env(local_channel)%delta)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -7148,16 +7149,18 @@ CONTAINS
       END SUBROUTINE dense_history_safe_occ_projector_derivative
 
       FUNCTION kpoint_ot_projector_physical_split_weight(docc_mat, occ_curv_channel, &
-                                                         curvature_floor) RESULT(split_weight)
+                                                         curvature_floor, residual_delta) RESULT(split_weight)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel
-      REAL(KIND=dp), INTENT(IN)                          :: curvature_floor
+      REAL(KIND=dp), INTENT(IN)                          :: curvature_floor, residual_delta
       REAL(KIND=dp)                                      :: split_weight
 
       INTEGER                                            :: i, j, n
       REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
-                                                            min_split_weight = 0.45_dp
+                                                            metric_min_split_weight = 0.45_dp, &
+                                                            tail_min_split_weight = 0.50_dp
       REAL(KIND=dp)                                      :: curvature_i, curvature_j, gauge_metric, &
+                                                            min_split_weight, &
                                                             physical_metric, response, total_metric
 
          n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv_channel))
@@ -7184,6 +7187,9 @@ CONTAINS
          ELSE
             split_weight = 0.5_dp
          END IF
+         min_split_weight = metric_min_split_weight
+         IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+            min_split_weight = tail_min_split_weight
          split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
 
       END FUNCTION kpoint_ot_projector_physical_split_weight
