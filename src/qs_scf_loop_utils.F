@@ -4719,6 +4719,10 @@ CONTAINS
                                           projector_physical_direct_spectral_shift_avg = 0.0_dp
                                           projector_physical_direct_spectral_shift_max = 0.0_dp
                                           projector_physical_direct_schur_negative_fraction = 0.0_dp
+                                          ! HIGH-only spectral audit.  These shifts
+                                          ! are not added to the direct Schur solve;
+                                          ! the applied row shifts are reported as
+                                          ! applied_shift in the ready line.
                                           DO r = 1, nrot
                                              IF (projector_physical_direct_schur_eval(r) < 0.0_dp) &
                                                 projector_physical_direct_schur_negative_fraction = &
@@ -5730,7 +5734,7 @@ CONTAINS
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected exp qsel cdrop mgap rratio aratio comp dshift:", &
+                        " OT Schur projector phys direct ready selected exp qsel cdrop mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                         projector_physical_direct_expected_drop, projector_physical_quality_for_selection, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
@@ -5753,7 +5757,7 @@ CONTAINS
                         projector_physical_direct_curv_clip_max, projector_physical_direct_curv_diag_max, &
                         projector_physical_direct_curv_eval_min, projector_physical_direct_curv_eval_max
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                        " OT Schur projector phys direct schur sfloor savg smax sneg emin emax:", &
+                        " OT Schur projector phys direct spectral audit floor shiftavg shiftmax negfrac emin emax:", &
                         projector_physical_direct_spectral_floor, projector_physical_direct_spectral_shift_avg, &
                         projector_physical_direct_spectral_shift_max, &
                         projector_physical_direct_schur_negative_fraction, &
