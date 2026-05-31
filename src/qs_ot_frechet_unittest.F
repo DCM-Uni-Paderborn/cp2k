@@ -2572,11 +2572,12 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, diag_mat, docc_mat, split_mat
-      INTEGER                                            :: i
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, diag_mat, docc_mat, split_mat, &
+                                                            tail_split_mat
+      INTEGER                                            :: i, j
       REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
                                                             min_split_weight = 0.45_dp, &
-                                                            tail_min_split_weight = 0.50_dp
+                                                            tail_min_split_weight = 0.45_dp
       REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm, split_weight, &
                                                             tail_split_weight
       REAL(KIND=dp), DIMENSION(n)                        :: energy_response, occ_curv, occ_scale
@@ -2607,8 +2608,10 @@ CONTAINS
       occ_curv(:) = [0.41_dp, 0.63_dp, 0.22_dp]
 
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
-      split_weight = dense_occ_projector_physical_split_weight(docc_mat, occ_curv, 2.0E-4_dp)
-      tail_split_weight = dense_occ_projector_physical_split_weight(docc_mat, occ_curv, 0.0_dp)
+      split_mat(:, :) = docc_mat(:, :)
+      tail_split_mat(:, :) = docc_mat(:, :)
+      CALL dense_apply_occ_projector_physical_split(split_mat, occ_curv, 2.0E-4_dp)
+      CALL dense_apply_occ_projector_physical_split(tail_split_mat, occ_curv, 0.0_dp)
 
       DO i = 1, n
          energy_response(i) = -0.5_dp*REAL(docc_mat(i, i), KIND=dp)/occ_curv(i)
@@ -2617,11 +2620,6 @@ CONTAINS
       DO i = 1, n
          diag_mat(i, i) = docc_mat(i, i)
       END DO
-      split_mat(:, :) = docc_mat(:, :)
-      DO i = 1, n
-         split_mat(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      END DO
-      split_mat(:, :) = split_weight*split_mat(:, :)
 
       diag_err = 0.0_dp
       DO i = 1, n
@@ -2629,18 +2627,28 @@ CONTAINS
                                       2.0_dp*occ_curv(i)*energy_response(i)))
       END DO
       offdiag_norm = MAXVAL(ABS(docc_mat - diag_mat))
-      err = MAX(diag_err, MAXVAL(ABS(split_mat - split_weight*(docc_mat - diag_mat))))
-      err = MAX(err, ABS(tail_split_weight - tail_min_split_weight))
+      err = diag_err
+      DO j = 2, n
+         DO i = 1, j - 1
+            split_weight = dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, 2.0E-4_dp)
+            tail_split_weight = dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, 0.0_dp)
+            err = MAX(err, ABS(split_mat(i, j) - split_weight*docc_mat(i, j)))
+            err = MAX(err, ABS(split_mat(j, i) - CONJG(split_mat(i, j))))
+            err = MAX(err, ABS(tail_split_mat(i, j) - tail_split_weight*docc_mat(i, j)))
+            err = MAX(err, ABS(tail_split_mat(j, i) - CONJG(tail_split_mat(i, j))))
+            IF (split_weight < min_split_weight .OR. split_weight > max_split_weight .OR. &
+                tail_split_weight < tail_min_split_weight .OR. tail_split_weight > max_split_weight) &
+               err = MAX(err, 1.0_dp)
+         END DO
+      END DO
 
-      IF (err > tol .OR. offdiag_norm <= tol .OR. split_weight < min_split_weight .OR. &
-          split_weight > max_split_weight .OR. tail_split_weight < tail_min_split_weight .OR. &
-          tail_split_weight > max_split_weight) THEN
+      IF (err > tol .OR. offdiag_norm <= tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with error/offdiag/weight/tail", &
-            err, offdiag_norm, split_weight, tail_split_weight
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/offdiag", &
+            err, offdiag_norm
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with error/offdiag/weight/tail", &
-            err, offdiag_norm, split_weight, tail_split_weight
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/offdiag", &
+            err, offdiag_norm
       END IF
 
    END SUBROUTINE check_complex_occ_projector_physical_split
@@ -2648,38 +2656,55 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Dense mirror of the occupation-projector physical/gauge split metric.
 ! **************************************************************************************************
-   FUNCTION dense_occ_projector_physical_split_weight(docc_mat, occ_curv, residual_delta) RESULT(split_weight)
+   SUBROUTINE dense_apply_occ_projector_physical_split(docc_mat, occ_curv, residual_delta)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+
+      INTEGER                                            :: i, j, n
+
+      n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv))
+      DO j = 2, n
+         DO i = 1, j - 1
+            docc_mat(i, j) = dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, &
+                                                                      residual_delta)*docc_mat(i, j)
+            docc_mat(j, i) = CONJG(docc_mat(i, j))
+         END DO
+      END DO
+
+   END SUBROUTINE dense_apply_occ_projector_physical_split
+
+! **************************************************************************************************
+!> \brief Dense mirror of one pairwise physical/gauge split weight.
+! **************************************************************************************************
+   FUNCTION dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, residual_delta) RESULT(split_weight)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      INTEGER, INTENT(IN)                                :: i, j
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       REAL(KIND=dp)                                      :: split_weight
 
-      INTEGER                                            :: i, j, n
       REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
                                                             metric_min_split_weight = 0.45_dp, &
                                                             tail_delta = 1.0E-4_dp, &
-                                                            tail_min_split_weight = 0.50_dp
-      REAL(KIND=dp)                                      :: curvature_i, curvature_j, gauge_metric, &
-                                                            min_split_weight, &
-                                                            physical_metric, response, total_metric
+                                                            tail_min_split_weight = 0.45_dp
+      REAL(KIND=dp)                                      :: curvature_i, curvature_j, diag_response, gauge_metric, &
+                                                            min_split_weight, pair_curvature, &
+                                                            physical_metric, total_metric
 
-      n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv))
       physical_metric = 0.0_dp
-      gauge_metric = 0.0_dp
-
-      DO i = 1, n
-         curvature_i = MAX(0.0_dp, occ_curv(i))
-         IF (curvature_i > SQRT(EPSILON(1.0_dp))) THEN
-            response = 0.5_dp*REAL(docc_mat(i, i), KIND=dp)/curvature_i
-            physical_metric = physical_metric + curvature_i*response*response
-         END IF
-         DO j = 1, n
-            IF (i == j) CYCLE
-            curvature_j = 0.5_dp*(curvature_i + MAX(0.0_dp, occ_curv(j)))
-            curvature_j = MAX(SQRT(EPSILON(1.0_dp)), curvature_j)
-            gauge_metric = gauge_metric + 0.25_dp*ABS(docc_mat(i, j))**2/curvature_j
-         END DO
-      END DO
+      curvature_i = MAX(0.0_dp, occ_curv(i))
+      curvature_j = MAX(0.0_dp, occ_curv(j))
+      IF (curvature_i > SQRT(EPSILON(1.0_dp))) THEN
+         diag_response = 0.5_dp*REAL(docc_mat(i, i), KIND=dp)/curvature_i
+         physical_metric = physical_metric + curvature_i*diag_response*diag_response
+      END IF
+      IF (curvature_j > SQRT(EPSILON(1.0_dp))) THEN
+         diag_response = 0.5_dp*REAL(docc_mat(j, j), KIND=dp)/curvature_j
+         physical_metric = physical_metric + curvature_j*diag_response*diag_response
+      END IF
+      pair_curvature = MAX(SQRT(EPSILON(1.0_dp)), 0.5_dp*(curvature_i + curvature_j))
+      gauge_metric = 0.5_dp*ABS(docc_mat(i, j))**2/pair_curvature
 
       total_metric = physical_metric + gauge_metric
       IF (total_metric > EPSILON(total_metric)) THEN
@@ -2691,7 +2716,7 @@ CONTAINS
       IF (residual_delta <= tail_delta) min_split_weight = tail_min_split_weight
       split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
 
-   END FUNCTION dense_occ_projector_physical_split_weight
+   END FUNCTION dense_occ_projector_physical_pair_weight
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
