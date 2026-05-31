@@ -5755,7 +5755,7 @@ CONTAINS
                         projector_physical_direct_curv_clip_max, projector_physical_direct_curv_diag_max, &
                         projector_physical_direct_curv_eval_min, projector_physical_direct_curv_eval_max
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                        " OT Schur projector phys direct spectral audit floor shiftavg shiftmax negfrac emin emax:", &
+                        " OT Schur projector phys direct spectral audit row_floor hyp_shiftavg hyp_shiftmax negfrac emin emax:", &
                         projector_physical_direct_spectral_floor, projector_physical_direct_spectral_shift_avg, &
                         projector_physical_direct_spectral_shift_max, &
                         projector_physical_direct_schur_negative_fraction, &
