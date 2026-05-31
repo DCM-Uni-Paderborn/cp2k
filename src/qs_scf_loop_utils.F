@@ -4878,6 +4878,19 @@ CONTAINS
                                              projector_physical_direct_diag_compensation = &
                                                 MAX(projector_physical_direct_diag_compensation, &
                                                     projector_coupled_weight*projector_physical_slope_limit_avg)
+                                          ! Also retain the diagonal trust implied by the finite
+                                          ! Projector response that was removed when separating
+                                          ! physical occupation curvature from projector-gauge
+                                          ! motion.  This keeps the capped physical Hessian while
+                                          ! preventing the Direct solve from becoming too soft in
+                                          ! the same raw-vs-physical curvature gap.
+                                          IF (projector_physical_delta_diag_avg > &
+                                              projector_hessian_delta_diag_avg) &
+                                             projector_physical_direct_diag_compensation = &
+                                                MAX(projector_physical_direct_diag_compensation, &
+                                                    projector_coupled_weight* &
+                                                    (projector_physical_delta_diag_avg - &
+                                                     projector_hessian_delta_diag_avg))
                                        END IF
                                        projector_physical_direct_diag_shift_sum = 0.0_dp
                                        projector_physical_direct_diag_shift_max = 0.0_dp
