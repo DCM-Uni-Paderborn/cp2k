@@ -4713,7 +4713,9 @@ CONTAINS
                      CALL para_env_inter_kp%sum(rx_shift)
                      IF (rx_weight > EPSILON(rx_weight)) &
                         projector_physical_model_e(:) = projector_physical_model_e(:) - rx_shift/rx_weight
-                     CALL audit_kpoint_ot_projector_response_modes(rot_hessian_projector, &
+                     ! The physical shadow must see the active occupation-response
+                     ! curvature, not only the tiny projector-basis gauge remainder.
+                     CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                    rot_hessian_projector_physical, sol, &
                                                                    response_exact_raw, response_exact_physical, curv, &
                                                                    projector_coupled_weight, residual_delta, &
