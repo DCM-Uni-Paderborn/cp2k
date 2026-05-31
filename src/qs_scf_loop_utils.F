@@ -4506,9 +4506,13 @@ CONTAINS
                                        END DO
                                        DO s = 1, nrot
                                           DO r = 1, nrot
-                                             projected_term = 0.5_dp* &
-                                                (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_raw(:, s)) + &
-                                                 DOT_PRODUCT(energy_cross_raw(:, r), response_exact_physical(:, s)))
+                                             ! The physical-direct candidate solves the same reduced
+                                             ! fixed-N Mermin subproblem that supplies its occupation
+                                             ! response.  Use the corresponding self response in the
+                                             ! Schur curvature, and leave the raw/physical mismatch to
+                                             ! the line-search model-gap audit below.
+                                             projected_term = DOT_PRODUCT(energy_cross_physical(:, r), &
+                                                                          response_exact_physical(:, s))
                                              schur(r, s) = schur(r, s) - projected_term
                                           END DO
                                        END DO
