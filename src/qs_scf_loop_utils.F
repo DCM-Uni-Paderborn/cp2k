@@ -3380,7 +3380,7 @@ CONTAINS
             projector_physical_density_abs_avg, projector_physical_density_delta_max, &
             projector_physical_density_diag_avg, projector_physical_residual_abs_avg, &
             projector_physical_residual_delta, projector_physical_residual_delta_max, &
-            projector_physical_residual_diag_avg, &
+            projector_physical_residual_diag_avg, projector_physical_trace_balance, &
             projector_physical_direction_scale, projector_physical_expected_drop, &
             projector_physical_gdot_energy, projector_physical_gdot_rotation, projector_physical_gdotp, &
             projector_physical_model_calibrated_drop, projector_physical_model_drop, &
@@ -3637,6 +3637,7 @@ CONTAINS
          projector_physical_residual_abs_avg = 0.0_dp
          projector_physical_residual_delta_max = 0.0_dp
          projector_physical_residual_diag_avg = 0.0_dp
+         projector_physical_trace_balance = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          constrained_diag_shift_avg = 0.0_dp
@@ -4158,6 +4159,7 @@ CONTAINS
             projector_physical_residual_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_residual_abs_avg = &
             projector_physical_residual_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_trace_balance = MAX(0.0_dp, -projector_physical_delta_diag_avg)
          projector_gauge_abs_avg = projector_gauge_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
@@ -6041,11 +6043,11 @@ CONTAINS
                      " OT Schur projector Hessian diag delta_diag abs_avg delta_max:", &
                      projector_hessian_diag_avg, projector_hessian_delta_diag_avg, &
                      projector_hessian_abs_avg, projector_hessian_delta_max
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                     " OT Schur projector physical Hessian diag delta_diag abs_avg delta_max gauge_avg gauge_max:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8))') &
+                     " OT Schur projector physical Hessian diag delta_diag abs_avg delta_max gauge_avg gauge_max trace_balance:", &
                      projector_physical_diag_avg, projector_physical_delta_diag_avg, &
                      projector_physical_abs_avg, projector_physical_delta_max, &
-                     projector_gauge_abs_avg, projector_gauge_delta_max
+                     projector_gauge_abs_avg, projector_gauge_delta_max, projector_physical_trace_balance
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                      " OT Schur projector physical covariance diag abs max residual_diag residual_abs residual_max:", &
                      projector_physical_covariant_diag_avg, projector_physical_covariant_abs_avg, &
