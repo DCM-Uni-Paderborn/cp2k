@@ -4839,8 +4839,11 @@ CONTAINS
                                              ! response.  Use the corresponding self response in the
                                              ! Schur curvature, and leave the raw/physical mismatch to
                                              ! the line-search model-gap audit below.
-                                             projected_term = DOT_PRODUCT(energy_cross_physical(:, r), &
-                                                                          response_exact_physical(:, s))
+                                             projected_term = 0.5_dp* &
+                                                (DOT_PRODUCT(energy_cross_physical(:, r), &
+                                                             response_exact_physical(:, s)) + &
+                                                 DOT_PRODUCT(energy_cross_physical(:, s), &
+                                                             response_exact_physical(:, r)))
                                              schur(r, s) = schur(r, s) - projected_term
                                           END DO
                                        END DO
