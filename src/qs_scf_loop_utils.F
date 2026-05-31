@@ -3191,6 +3191,7 @@ CONTAINS
             projector_physical_direct_direction_scale, &
             projector_physical_direct_expected_drop, &
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
+            projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
             projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
             projector_physical_direct_curv_clip_max, projector_physical_direct_curv_clip_sum, &
             projector_physical_direct_curv_diag_max, projector_physical_direct_curv_eval_max, &
@@ -3530,6 +3531,8 @@ CONTAINS
             projector_physical_direct_model_gap_drop = 0.0_dp
             projector_physical_direct_model_gap_ratio = 0.0_dp
             projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
+            projector_physical_direct_metric_norm_ratio = 0.0_dp
+            projector_physical_direct_metric_norm_rotation = 0.0_dp
             projector_physical_direct_norm_energy = 0.0_dp
             projector_physical_direct_norm_rotation = 0.0_dp
             projector_physical_direct_normp = 0.0_dp
@@ -4132,6 +4135,8 @@ CONTAINS
                projector_physical_direct_model_gap_drop = 0.0_dp
                projector_physical_direct_model_gap_ratio = 0.0_dp
                projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
+               projector_physical_direct_metric_norm_ratio = 0.0_dp
+               projector_physical_direct_metric_norm_rotation = 0.0_dp
                projector_physical_direct_curv_cap = 0.0_dp
                projector_physical_direct_curv_clip_avg = 0.0_dp
                projector_physical_direct_curv_clip_max = 0.0_dp
@@ -4572,8 +4577,8 @@ CONTAINS
                                              MAXVAL(projector_physical_direct_curv_eval)
                                        END IF
                                        DO r = 1, nrot
-                                          projector_physical_direct_sol(r) = grad_rot(r) + &
-                                                                             DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                                          rtd(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                                          projector_physical_direct_sol(r) = rtd(r)
                                        END DO
                                        DO s = 1, nrot
                                           DO r = 1, nrot
@@ -4646,6 +4651,13 @@ CONTAINS
                                                                                               projector_physical_direct_z_e)
                                           projector_physical_direct_norm_rotation = DOT_PRODUCT(projector_physical_direct_sol, &
                                                                                                 projector_physical_direct_sol)
+                                          projector_physical_direct_metric_norm_rotation = &
+                                             MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                          IF (projector_physical_direct_norm_rotation > &
+                                              EPSILON(projector_physical_direct_norm_rotation)) &
+                                             projector_physical_direct_metric_norm_ratio = &
+                                                projector_physical_direct_metric_norm_rotation/ &
+                                                projector_physical_direct_norm_rotation
                                           projector_physical_direct_gdotp = projector_physical_direct_gdot_energy + &
                                                                             projector_physical_direct_gdot_rotation
                                           projector_physical_direct_normp = projector_physical_direct_norm_energy + &
@@ -5549,13 +5561,14 @@ CONTAINS
                         projector_physical_direct_response_abs_trust_ratio, &
                         projector_physical_direct_diag_compensation, &
                         projector_physical_direct_diag_shift_avg
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
-                        " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr nratio tq sq:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,13(1X,ES16.8))') &
+                        " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr mratio nratio tq sq:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
                         projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
                         projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
                         projector_physical_direct_normp, projector_physical_direct_norm_energy, &
-                        projector_physical_direct_norm_rotation, projector_physical_direct_norm_ratio, &
+                        projector_physical_direct_norm_rotation, projector_physical_direct_metric_norm_ratio, &
+                        projector_physical_direct_norm_ratio, &
                         projector_physical_direct_trust_quality, projector_physical_direct_scale_quality
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct curv pcap clipavg clipmax diagmax emin emax:", &
