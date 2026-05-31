@@ -314,6 +314,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_metric = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_metric_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_weight = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_weight_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_correction_drop = 0.0_dp
@@ -652,6 +654,8 @@ CONTAINS
       qs_ot_env%schur_projector_physical_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_physical_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_physical_metric = 0.0_dp
+      qs_ot_env%schur_projector_physical_metric_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_weight = 0.0_dp
       qs_ot_env%schur_projector_physical_weight_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_correction_drop = 0.0_dp
