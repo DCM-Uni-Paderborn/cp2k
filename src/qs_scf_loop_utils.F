@@ -3579,7 +3579,7 @@ CONTAINS
             projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
             projector_physical_direct_scale_quality = 0.0_dp
             projector_physical_direct_schur_negative_fraction = 0.0_dp
-            projector_physical_direct_spectral_floor = curvature_floor
+            projector_physical_direct_spectral_floor = 0.0_dp
             projector_physical_direct_spectral_shift_avg = 0.0_dp
             projector_physical_direct_spectral_shift_max = 0.0_dp
             projector_physical_direct_trust_quality = 1.0_dp
@@ -4199,7 +4199,7 @@ CONTAINS
                projector_physical_direct_response_weighted_step = 0.0_dp
                projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
                projector_physical_direct_schur_negative_fraction = 0.0_dp
-               projector_physical_direct_spectral_floor = curvature_floor
+               projector_physical_direct_spectral_floor = 0.0_dp
                projector_physical_direct_spectral_shift_avg = 0.0_dp
                projector_physical_direct_spectral_shift_max = 0.0_dp
                projector_physical_direct_step_negative_fraction = 0.0_dp
@@ -4707,15 +4707,13 @@ CONTAINS
                                              MINVAL(projector_physical_direct_schur_eval)
                                           projector_physical_direct_schur_eval_max = &
                                              MAXVAL(projector_physical_direct_schur_eval)
+                                          ! Audit against the row floor actually used by the
+                                          ! physical-direct solve.  The generic Schur
+                                          ! curvature floor would reintroduce the inactive
+                                          ! frontier hardening here and print a large
+                                          ! hypothetical shift that was never applied.
                                           projector_physical_direct_spectral_floor = &
-                                             MAX(curvature_floor, projector_physical_direct_rot_floor_min)
-                                          IF (sigma > EPSILON(sigma)) &
-                                             projector_physical_direct_spectral_floor = &
-                                                MAX(projector_physical_direct_spectral_floor, &
-                                                    kpoint_ot_fermi_window_anchor(sigma))
-                                          projector_physical_direct_spectral_floor = &
-                                             MIN(schur_frontier_curvature_floor, &
-                                                 projector_physical_direct_spectral_floor)
+                                             MAX(0.0_dp, projector_physical_direct_rot_floor_min)
                                           projector_physical_direct_spectral_shift_avg = 0.0_dp
                                           projector_physical_direct_spectral_shift_max = 0.0_dp
                                           projector_physical_direct_schur_negative_fraction = 0.0_dp
