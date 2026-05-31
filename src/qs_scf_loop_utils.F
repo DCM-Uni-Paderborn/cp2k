@@ -5270,6 +5270,8 @@ CONTAINS
                                                 IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                                                    projector_physical_direct_rx_e(:) = &
                                                       projector_physical_direct_rx_e(:) - rx_shift/curv_projection_sum
+                                                projector_physical_direct_model_e(:) = &
+                                                   projector_physical_direct_rx_e(:)
                                              END IF
                                           END IF
                                           projector_physical_direct_z_e(:) = z_exact_physical_trial(:) + &
