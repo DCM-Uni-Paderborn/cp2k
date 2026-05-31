@@ -6763,7 +6763,8 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: projector_response, projector_weight, raw_response
+      REAL(KIND=dp)                                      :: projector_response, projector_split_weight, &
+                                                            projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
                                                             projector_evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -6895,6 +6896,8 @@ CONTAINS
                                                                 occ_curv_channel, active_blend_count, &
                                                                 active_blend_sum, active_blend_max, &
                                                                 slope_limit_count, slope_limit_sum, slope_limit_max)
+               projector_split_weight = &
+                  kpoint_ot_projector_physical_split_weight(docc_mat, occ_curv_channel, curvature_floor)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -6910,11 +6913,11 @@ CONTAINS
                   END IF
                END DO
                ! The physical occupation response is represented in the
-               ! energy channel above.  Keep only a damped off-diagonal
-               ! projector derivative in the REF rotation Hessian; the full
-               ! term contains canonical-basis gauge motion that over-hardens
+               ! energy channel above.  Keep only the metric-supported
+               ! off-diagonal projector derivative in the REF rotation
+               ! Hessian; gauge-dominated derivatives otherwise over-harden
                ! the residual-tail physical Direct solve.
-               docc_mat(:, :) = 0.5_dp*docc_mat(:, :)
+               docc_mat(:, :) = projector_split_weight*docc_mat(:, :)
                CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, grad_p_re, grad_p_im, eps_p)
                DO r = first_var, last_var
                   imo = var_i(r)
@@ -7143,6 +7146,47 @@ CONTAINS
          DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
 
       END SUBROUTINE dense_history_safe_occ_projector_derivative
+
+      FUNCTION kpoint_ot_projector_physical_split_weight(docc_mat, occ_curv_channel, &
+                                                         curvature_floor) RESULT(split_weight)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel
+      REAL(KIND=dp), INTENT(IN)                          :: curvature_floor
+      REAL(KIND=dp)                                      :: split_weight
+
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
+                                                            min_split_weight = 0.45_dp
+      REAL(KIND=dp)                                      :: curvature_i, curvature_j, gauge_metric, &
+                                                            physical_metric, response, total_metric
+
+         n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv_channel))
+         physical_metric = 0.0_dp
+         gauge_metric = 0.0_dp
+
+         DO i = 1, n
+            curvature_i = MAX(0.0_dp, occ_curv_channel(i))
+            IF (curvature_i > curvature_floor) THEN
+               response = 0.5_dp*REAL(docc_mat(i, i), KIND=dp)/curvature_i
+               physical_metric = physical_metric + curvature_i*response*response
+            END IF
+            DO j = 1, n
+               IF (i == j) CYCLE
+               curvature_j = 0.5_dp*(curvature_i + MAX(0.0_dp, occ_curv_channel(j)))
+               curvature_j = MAX(curvature_floor, curvature_j)
+               gauge_metric = gauge_metric + 0.25_dp*ABS(docc_mat(i, j))**2/curvature_j
+            END DO
+         END DO
+
+         total_metric = physical_metric + gauge_metric
+         IF (total_metric > EPSILON(total_metric)) THEN
+            split_weight = 0.5_dp + 0.25_dp*(physical_metric - gauge_metric)/total_metric
+         ELSE
+            split_weight = 0.5_dp
+         END IF
+         split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
+
+      END FUNCTION kpoint_ot_projector_physical_split_weight
 
       SUBROUTINE monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_scale

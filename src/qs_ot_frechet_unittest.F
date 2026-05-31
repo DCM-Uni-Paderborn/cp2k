@@ -2563,7 +2563,7 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_slope_limit
 
 ! **************************************************************************************************
-!> \brief Split physical occupation response into energy and damped offdiag rotation channels.
+!> \brief Split physical occupation response into energy and metric-supported rotation channels.
 ! **************************************************************************************************
    SUBROUTINE check_complex_occ_projector_physical_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -2574,7 +2574,9 @@ CONTAINS
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, diag_mat, docc_mat, split_mat
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm
+      REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
+                                                            min_split_weight = 0.45_dp
+      REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm, split_weight
       REAL(KIND=dp), DIMENSION(n)                        :: energy_response, occ_curv, occ_scale
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -2603,6 +2605,7 @@ CONTAINS
       occ_curv(:) = [0.41_dp, 0.63_dp, 0.22_dp]
 
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
+      split_weight = dense_occ_projector_physical_split_weight(docc_mat, occ_curv)
 
       DO i = 1, n
          energy_response(i) = -0.5_dp*REAL(docc_mat(i, i), KIND=dp)/occ_curv(i)
@@ -2615,7 +2618,7 @@ CONTAINS
       DO i = 1, n
          split_mat(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       END DO
-      split_mat(:, :) = 0.5_dp*split_mat(:, :)
+      split_mat(:, :) = split_weight*split_mat(:, :)
 
       diag_err = 0.0_dp
       DO i = 1, n
@@ -2623,18 +2626,61 @@ CONTAINS
                                       2.0_dp*occ_curv(i)*energy_response(i)))
       END DO
       offdiag_norm = MAXVAL(ABS(docc_mat - diag_mat))
-      err = MAX(diag_err, MAXVAL(ABS(split_mat - 0.5_dp*(docc_mat - diag_mat))))
+      err = MAX(diag_err, MAXVAL(ABS(split_mat - split_weight*(docc_mat - diag_mat))))
 
-      IF (err > tol .OR. offdiag_norm <= tol) THEN
+      IF (err > tol .OR. offdiag_norm <= tol .OR. split_weight < min_split_weight .OR. &
+          split_weight > max_split_weight) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/offdiag", &
-            err, offdiag_norm
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "failed with error/offdiag/weight", &
+            err, offdiag_norm, split_weight
       ELSE
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/offdiag", &
-            err, offdiag_norm
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "OK with error/offdiag/weight", &
+            err, offdiag_norm, split_weight
       END IF
 
    END SUBROUTINE check_complex_occ_projector_physical_split
+
+! **************************************************************************************************
+!> \brief Dense mirror of the occupation-projector physical/gauge split metric.
+! **************************************************************************************************
+   FUNCTION dense_occ_projector_physical_split_weight(docc_mat, occ_curv) RESULT(split_weight)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      REAL(KIND=dp)                                      :: split_weight
+
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
+                                                            min_split_weight = 0.45_dp
+      REAL(KIND=dp)                                      :: curvature_i, curvature_j, gauge_metric, &
+                                                            physical_metric, response, total_metric
+
+      n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv))
+      physical_metric = 0.0_dp
+      gauge_metric = 0.0_dp
+
+      DO i = 1, n
+         curvature_i = MAX(0.0_dp, occ_curv(i))
+         IF (curvature_i > SQRT(EPSILON(1.0_dp))) THEN
+            response = 0.5_dp*REAL(docc_mat(i, i), KIND=dp)/curvature_i
+            physical_metric = physical_metric + curvature_i*response*response
+         END IF
+         DO j = 1, n
+            IF (i == j) CYCLE
+            curvature_j = 0.5_dp*(curvature_i + MAX(0.0_dp, occ_curv(j)))
+            curvature_j = MAX(SQRT(EPSILON(1.0_dp)), curvature_j)
+            gauge_metric = gauge_metric + 0.25_dp*ABS(docc_mat(i, j))**2/curvature_j
+         END DO
+      END DO
+
+      total_metric = physical_metric + gauge_metric
+      IF (total_metric > EPSILON(total_metric)) THEN
+         split_weight = 0.5_dp + 0.25_dp*(physical_metric - gauge_metric)/total_metric
+      ELSE
+         split_weight = 0.5_dp
+      END IF
+      split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
+
+   END FUNCTION dense_occ_projector_physical_split_weight
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
