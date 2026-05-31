@@ -4617,10 +4617,10 @@ CONTAINS
                                                    projector_physical_direct_response_weighted_trust_ratio, &
                                                    projector_physical_direct_response_abs_trust_ratio, &
                                                    projector_physical_direct_model_gap_ratio)
-                                             IF (projector_physical_direct_direction_scale < schur_min_coupled_scale) &
-                                                projector_physical_direct_model_calibrated_drop = &
-                                                   projector_physical_direct_scale_quality* &
-                                                   projector_physical_direct_model_calibrated_drop
+                                             ! The physical-direct candidate is selected only after
+                                             ! accepted-drop history proves it conservative.  Keep the
+                                             ! z.z=g.z scale diagnostic, but do not double-discount
+                                             ! its model drop here.
                                              projector_physical_direct_expected_drop = &
                                                 kpoint_ot_schur_expected_drop(projector_physical_direct_model_calibrated_drop, &
                                                                               projector_physical_quality_for_selection, &
