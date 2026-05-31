@@ -6400,9 +6400,11 @@ CONTAINS
                                                                 local_ot_env(local_channel)%delta, docc_mat)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
+                     ! docc_mat is a doubled k-point density response, while
+                     ! occ_curv_channel is w_k*g_i.
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
-                        REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
+                        0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
                      ! The diagonal projector response is represented by the
                      ! energy-response channel above.  Keeping it in the
                      ! rotation Hessian as well double-counts the same density

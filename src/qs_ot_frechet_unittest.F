@@ -1253,7 +1253,7 @@ CONTAINS
                            projector_weight*(eig_p(:, 1) - eig_m(:, 1))/(2.0_dp*fd_step)
          DO i = 1, n
             reference(i, s) = reference(i, s) - projector_weight* &
-                              REAL(occ_mat_p(i, i) - occ_mat_m(i, i), KIND=dp)/ &
+                              0.5_dp*REAL(occ_mat_p(i, i) - occ_mat_m(i, i), KIND=dp)/ &
                               (2.0_dp*fd_step*occ_curv(i))
          END DO
       END DO
@@ -1374,7 +1374,7 @@ CONTAINS
                                 projector_weight*projector_response
             IF (projector_weight > 0.0_dp .AND. ABS(occ_curv(band)) > EPSILON(occ_curv(band))) &
                response(band, s) = response(band, s) - projector_weight* &
-                                   REAL(occ_mat_p(band, band) - occ_mat_m(band, band), KIND=dp)/ &
+                                   0.5_dp*REAL(occ_mat_p(band, band) - occ_mat_m(band, band), KIND=dp)/ &
                                    (2.0_dp*fd_step*occ_curv(band))
          END DO
       END DO
