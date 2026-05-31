@@ -6793,7 +6793,7 @@ CONTAINS
       INTEGER                                            :: i, j, n
       REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, &
                                                             scale
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
          docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -6801,7 +6801,7 @@ CONTAINS
          projector_weight = kpoint_ot_canonical_projector_weight(delta, ot_kp_canonical_projector_max_weight)
          IF (projector_weight <= 0.0_dp) RETURN
 
-         ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n), occ_scale(n))
+         ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n), occ_scale(n), occ_slope(n))
 
          occ_scale(:) = 2.0_dp*kpoint_weight*occupation_numbers(1:n)
          CALL diag_complex(chc, evec, evals)
@@ -6810,21 +6810,19 @@ CONTAINS
          scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
          gap_tol = SQRT(EPSILON(1.0_dp))*scale
          occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+         CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
                IF (i == j) CYCLE
                denom = evals(i) - evals(j)
                IF (ABS(denom) > gap_tol) THEN
-                  coeff = (occ_scale(i) - occ_scale(j))/denom
-               ELSE IF (ABS(occ_scale(i) - occ_scale(j)) <= occ_tol) THEN
+                  coeff = (occ_slope(i) - occ_slope(j))/denom
+               ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN
                   coeff = 0.0_dp
                ELSE
-                  coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
+                  coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
                END IF
-               ! Spectral occupation projectors for monotone smearing must have
-               ! non-positive divided differences; positive slopes are
-               ! rank/gauge noise.
                coeff = MIN(0.0_dp, coeff)
                kernel(i, j) = coeff*work(i, j)
             END DO
@@ -6833,9 +6831,50 @@ CONTAINS
          docc_mat(:, :) = projector_weight*MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
          docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
 
-         DEALLOCATE (evec, kernel, work, evals, occ_scale)
+         DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
 
       END SUBROUTINE dense_history_safe_occ_projector_derivative
+
+      SUBROUTINE monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_scale
+      REAL(KIND=dp), INTENT(IN)                           :: occ_tol
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: occ_mono
+
+      INTEGER                                             :: iblock, i, idx, n, nblock
+      INTEGER, ALLOCATABLE, DIMENSION(:)                  :: block_end, block_start
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: block_level, block_weight
+
+         n = SIZE(occ_scale)
+         IF (n <= 0) RETURN
+
+         ALLOCATE (block_end(n), block_level(n), block_start(n), block_weight(n))
+         nblock = 0
+         DO i = 1, n
+            nblock = nblock + 1
+            block_start(nblock) = i
+            block_end(nblock) = i
+            block_level(nblock) = occ_scale(i)
+            block_weight(nblock) = 1.0_dp
+            DO WHILE (nblock > 1 .AND. &
+                      block_level(nblock - 1) + occ_tol < block_level(nblock))
+               block_level(nblock - 1) = &
+                  (block_weight(nblock - 1)*block_level(nblock - 1) + &
+                   block_weight(nblock)*block_level(nblock))/ &
+                  (block_weight(nblock - 1) + block_weight(nblock))
+               block_weight(nblock - 1) = block_weight(nblock - 1) + block_weight(nblock)
+               block_end(nblock - 1) = block_end(nblock)
+               nblock = nblock - 1
+            END DO
+         END DO
+
+         DO iblock = 1, nblock
+            DO idx = block_start(iblock), block_end(iblock)
+               occ_mono(idx) = block_level(iblock)
+            END DO
+         END DO
+         DEALLOCATE (block_end, block_level, block_start, block_weight)
+
+      END SUBROUTINE monotone_occupation_slopes
 
       SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im

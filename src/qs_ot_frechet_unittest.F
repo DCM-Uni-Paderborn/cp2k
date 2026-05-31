@@ -73,6 +73,8 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-6_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
+   CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
+                                                   5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -2470,6 +2472,96 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_occ_projector_gauge_separation
+
+! **************************************************************************************************
+!> \brief Check monotone projection for noisy occupation slopes before divided differences.
+! **************************************************************************************************
+   SUBROUTINE check_monotone_occupation_slope_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 5
+
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: coeff, err, positive_slope
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, monotone_input, noisy_input, &
+                                                            projected, projected_monotone
+
+      noisy_input = [1.40_dp, 0.82_dp, 0.87_dp, 0.35_dp, 0.36_dp]
+      expected = [1.40_dp, 0.845_dp, 0.845_dp, 0.355_dp, 0.355_dp]
+      monotone_input = [1.40_dp, 0.92_dp, 0.54_dp, 0.31_dp, 0.08_dp]
+      evals = [-0.42_dp, -0.11_dp, 0.02_dp, 0.19_dp, 0.64_dp]
+
+      CALL dense_monotone_occupation_slopes(noisy_input, SQRT(EPSILON(1.0_dp)), projected)
+      CALL dense_monotone_occupation_slopes(monotone_input, SQRT(EPSILON(1.0_dp)), projected_monotone)
+
+      err = MAXVAL(ABS(projected - expected))
+      err = MAX(err, ABS(SUM(projected) - SUM(noisy_input)))
+      err = MAX(err, MAXVAL(ABS(projected_monotone - monotone_input)))
+      positive_slope = 0.0_dp
+      DO j = 1, n
+         DO i = 1, n
+            IF (i == j) CYCLE
+            coeff = (projected(i) - projected(j))/(evals(i) - evals(j))
+            positive_slope = MAX(positive_slope, coeff)
+         END DO
+      END DO
+
+      IF (err > tol .OR. positive_slope > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/positive", &
+            err, positive_slope
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/positive", &
+            err, positive_slope
+      END IF
+
+   END SUBROUTINE check_monotone_occupation_slope_projection
+
+! **************************************************************************************************
+!> \brief Dense PAVA projection to non-increasing occupation slopes.
+! **************************************************************************************************
+   SUBROUTINE dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_scale
+      REAL(KIND=dp), INTENT(IN)                           :: occ_tol
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: occ_mono
+
+      INTEGER                                             :: iblock, i, idx, n, nblock
+      INTEGER, ALLOCATABLE, DIMENSION(:)                  :: block_end, block_start
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: block_level, block_weight
+
+      n = SIZE(occ_scale)
+      IF (n <= 0) RETURN
+
+      ALLOCATE (block_end(n), block_level(n), block_start(n), block_weight(n))
+      nblock = 0
+      DO i = 1, n
+         nblock = nblock + 1
+         block_start(nblock) = i
+         block_end(nblock) = i
+         block_level(nblock) = occ_scale(i)
+         block_weight(nblock) = 1.0_dp
+         DO WHILE (nblock > 1 .AND. &
+                   block_level(nblock - 1) + occ_tol < block_level(nblock))
+            block_level(nblock - 1) = &
+               (block_weight(nblock - 1)*block_level(nblock - 1) + &
+                block_weight(nblock)*block_level(nblock))/ &
+               (block_weight(nblock - 1) + block_weight(nblock))
+            block_weight(nblock - 1) = block_weight(nblock - 1) + block_weight(nblock)
+            block_end(nblock - 1) = block_end(nblock)
+            nblock = nblock - 1
+         END DO
+      END DO
+
+      DO iblock = 1, nblock
+         DO idx = block_start(iblock), block_end(iblock)
+            occ_mono(idx) = block_level(iblock)
+         END DO
+      END DO
+      DEALLOCATE (block_end, block_level, block_start, block_weight)
+
+   END SUBROUTINE dense_monotone_occupation_slopes
 
 ! **************************************************************************************************
 !> \brief Dense value 1/2 sum_i f_i lambda_i[U^H H U].
