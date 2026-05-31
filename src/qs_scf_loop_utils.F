@@ -7122,8 +7122,10 @@ CONTAINS
                   coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
                   IF (track_active_blend .AND. blend > 0.0_dp) THEN
                      active_blend_count = active_blend_count + 1.0_dp
-                     active_blend_sum = active_blend_sum + ABS((coeff - secant_coeff)*work(i, j))
-                     active_blend_max = MAX(active_blend_max, ABS((coeff - secant_coeff)*work(i, j)))
+                     active_blend_sum = active_blend_sum + &
+                                        projector_weight*ABS((coeff - secant_coeff)*work(i, j))
+                     active_blend_max = MAX(active_blend_max, &
+                                            projector_weight*ABS((coeff - secant_coeff)*work(i, j)))
                   END IF
                END IF
                IF (use_occ_curv .AND. analytic_coeff < 0.0_dp) THEN
@@ -7131,8 +7133,8 @@ CONTAINS
                                             MAX(0.0_dp, occ_curv_channel(j)))
                   IF (track_slope_limit .AND. coeff < slope_limit) THEN
                      slope_limit_count = slope_limit_count + 1.0_dp
-                     slope_limit_sum = slope_limit_sum + ABS((coeff - slope_limit)*work(i, j))
-                     slope_limit_max = MAX(slope_limit_max, ABS((coeff - slope_limit)*work(i, j)))
+                     slope_limit_sum = slope_limit_sum + projector_weight*ABS((coeff - slope_limit)*work(i, j))
+                     slope_limit_max = MAX(slope_limit_max, projector_weight*ABS((coeff - slope_limit)*work(i, j)))
                   END IF
                   coeff = MAX(coeff, slope_limit)
                END IF
