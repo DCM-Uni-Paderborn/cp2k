@@ -319,8 +319,22 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_weight = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_weight_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_correction_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_correction_ratio_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_negative = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_direct = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_direct_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_shift = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_shift_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_weight_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_metric_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_correction_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_negative_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_shift_quality_ema = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
@@ -659,8 +673,22 @@ CONTAINS
       qs_ot_env%schur_projector_physical_weight = 0.0_dp
       qs_ot_env%schur_projector_physical_weight_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_correction_drop = 0.0_dp
+      qs_ot_env%schur_projector_physical_correction_ratio_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_negative = 0.0_dp
       qs_ot_env%schur_projector_physical_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_direct = 0.0_dp
+      qs_ot_env%schur_projector_physical_direct_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_shift = 0.0_dp
+      qs_ot_env%schur_projector_physical_shift_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_weight_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_metric_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_correction_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_negative_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_direct_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_shift_quality_ema = 0.0_dp
 
       CALL dbcsr_set(qs_ot_env%matrix_gx, 0.0_dp)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &
