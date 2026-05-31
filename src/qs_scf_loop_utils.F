@@ -3187,7 +3187,8 @@ CONTAINS
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_shift_avg, &
-            projector_physical_direct_diag_shift_sum, projector_physical_direct_direction_scale, &
+            projector_physical_direct_diag_shift_max, projector_physical_direct_diag_shift_sum, &
+            projector_physical_direct_direction_scale, &
             projector_physical_direct_expected_drop, &
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
             projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
@@ -3201,6 +3202,7 @@ CONTAINS
             projector_physical_direct_norm_rotation, projector_physical_direct_normp, &
             projector_physical_direct_norm_ratio, projector_physical_direct_response_abs_step, &
             projector_physical_direct_response_abs_trust_ratio, &
+            projector_physical_direct_rot_floor_min, projector_physical_direct_schur_diag_min, &
             projector_physical_direct_response_weighted_step, &
             projector_physical_direct_response_weighted_trust_ratio, projector_physical_direct_scale_quality, &
             projector_physical_direct_trust_quality, &
@@ -3508,6 +3510,7 @@ CONTAINS
             projector_mode_history_response_ratio = 0.0_dp
             projector_physical_direct_diag_compensation = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
+            projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
             projector_physical_direct_direction_scale = 0.0_dp
             projector_physical_direct_expected_drop = 0.0_dp
@@ -3531,6 +3534,8 @@ CONTAINS
             projector_physical_direct_norm_rotation = 0.0_dp
             projector_physical_direct_normp = 0.0_dp
             projector_physical_direct_norm_ratio = 0.0_dp
+            projector_physical_direct_rot_floor_min = curvature_floor
+            projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
             projector_physical_direct_response_abs_step = 0.0_dp
             projector_physical_direct_response_abs_trust_ratio = 0.0_dp
             projector_physical_direct_response_weighted_step = 0.0_dp
@@ -4117,6 +4122,7 @@ CONTAINS
                projector_physical_direct_candidate_used = .FALSE.
                projector_physical_direct_diag_compensation = 0.0_dp
                projector_physical_direct_diag_shift_avg = 0.0_dp
+               projector_physical_direct_diag_shift_max = 0.0_dp
                projector_physical_direct_diag_shift_sum = 0.0_dp
                projector_physical_direct_direction_scale = 0.0_dp
                projector_physical_direct_expected_drop = 0.0_dp
@@ -4133,6 +4139,8 @@ CONTAINS
                projector_physical_direct_curv_diag_max = 0.0_dp
                projector_physical_direct_curv_eval_max = 0.0_dp
                projector_physical_direct_curv_eval_min = 0.0_dp
+               projector_physical_direct_rot_floor_min = curvature_floor
+               projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
                projector_physical_direct_response_abs_step = 0.0_dp
                projector_physical_direct_response_abs_trust_ratio = 0.0_dp
                projector_physical_direct_response_weighted_step = 0.0_dp
@@ -4584,6 +4592,9 @@ CONTAINS
                                           projector_physical_direct_diag_compensation = &
                                              MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
                                        projector_physical_direct_diag_shift_sum = 0.0_dp
+                                       projector_physical_direct_diag_shift_max = 0.0_dp
+                                       projector_physical_direct_rot_floor_min = curvature_floor
+                                       projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
                                        DO r = 1, nrot
                                           IF (projector_physical_direct_diag_compensation > 0.0_dp) &
                                              schur(r, r) = schur(r, r) + projector_physical_direct_diag_compensation
@@ -4594,12 +4605,18 @@ CONTAINS
                                           row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
                                                                                        rot_hessian_projector_physical(r, r), &
                                                                                        rot_floor(r))
+                                          projector_physical_direct_rot_floor_min = &
+                                             MIN(projector_physical_direct_rot_floor_min, row_floor)
                                           diag_shift = MAX(0.0_dp, row_floor - schur(r, r))
                                           IF (diag_shift > 0.0_dp) THEN
                                              schur(r, r) = schur(r, r) + diag_shift
                                              projector_physical_direct_diag_shift_sum = &
                                                 projector_physical_direct_diag_shift_sum + diag_shift
+                                             projector_physical_direct_diag_shift_max = &
+                                                MAX(projector_physical_direct_diag_shift_max, diag_shift)
                                           END IF
+                                          projector_physical_direct_schur_diag_min = &
+                                             MIN(projector_physical_direct_schur_diag_min, schur(r, r))
                                        END DO
                                        projector_physical_direct_diag_shift_avg = &
                                           projector_physical_direct_diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
@@ -5124,6 +5141,12 @@ CONTAINS
                      response_abs_trust_ratio = projector_physical_response_abs_trust_ratio
                      response_weighted_step = projector_physical_response_weighted_step
                      response_weighted_trust_ratio = projector_physical_response_weighted_trust_ratio
+                     IF (projector_physical_direct_candidate_selected) THEN
+                        diag_shift_sum = projector_physical_direct_diag_shift_sum
+                        diag_shift_max = projector_physical_direct_diag_shift_max
+                        rot_floor_min = projector_physical_direct_rot_floor_min
+                        schur_diag_min = projector_physical_direct_schur_diag_min
+                     END IF
                      dense_expected_drop = projector_physical_expected_drop
                   END IF
                   split_dense_expected_ratio = 0.0_dp
@@ -5254,6 +5277,12 @@ CONTAINS
                      response_abs_trust_ratio = projector_physical_response_abs_trust_ratio
                      response_weighted_step = projector_physical_response_weighted_step
                      response_weighted_trust_ratio = projector_physical_response_weighted_trust_ratio
+                     IF (projector_physical_direct_candidate_selected) THEN
+                        diag_shift_sum = projector_physical_direct_diag_shift_sum
+                        diag_shift_max = projector_physical_direct_diag_shift_max
+                        rot_floor_min = projector_physical_direct_rot_floor_min
+                        schur_diag_min = projector_physical_direct_schur_diag_min
+                     END IF
                      dense_expected_drop = projector_physical_expected_drop
                   END IF
                END IF
