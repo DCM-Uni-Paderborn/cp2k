@@ -75,6 +75,8 @@ PROGRAM qs_ot_frechet_unittest
                                                      1.0E-7_dp, nfail)
    CALL check_complex_occ_projector_active_degenerate_response( &
       "complex occupation-projector active degenerate response", 5.0E-14_dp, nfail)
+   CALL check_complex_occ_projector_slope_limit("complex occupation-projector slope limit", &
+                                                5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2517,6 +2519,48 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_active_degenerate_response
 
 ! **************************************************************************************************
+!> \brief Cap noisy occupation-projector secants by the local Mermin curvature.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_slope_limit(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 2
+      REAL(KIND=dp), PARAMETER                           :: gap = 1.0E-4_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, expected
+      REAL(KIND=dp)                                      :: err, slope_limit
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(gap, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(1.0E-3_dp, -2.0E-3_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_scale(:) = [1.00_dp, 0.90_dp]
+      occ_curv(:) = [180.0_dp, 200.0_dp]
+      slope_limit = -2.0_dp*MAXVAL(occ_curv)
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
+
+      expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      expected(1, 2) = slope_limit*dchc(1, 2)
+      expected(2, 1) = CONJG(expected(1, 2))
+      err = MAXVAL(ABS(docc_mat(:, :) - expected(:, :)))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_slope_limit
+
+! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
 ! **************************************************************************************************
    SUBROUTINE check_monotone_occupation_slope_projection(label, tol, nfail)
@@ -2688,7 +2732,7 @@ CONTAINS
       LOGICAL                                            :: use_occ_curv
       REAL(KIND=dp)                                      :: analytic_coeff, blend, coeff, denom, gap_tol, &
                                                             max_occ_weighted, occ_curv_max, occ_tol, &
-                                                            response_gap_tol, scale
+                                                            response_gap_tol, scale, slope_limit
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
       n = SIZE(chc, 1)
@@ -2726,8 +2770,12 @@ CONTAINS
                blend = 1.0_dp - ABS(denom)/MAX(response_gap_tol, EPSILON(response_gap_tol))
                blend = MAX(0.0_dp, MIN(1.0_dp, blend))
                coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
-               coeff = MIN(0.0_dp, coeff)
             END IF
+            IF (use_occ_curv .AND. analytic_coeff < 0.0_dp) THEN
+               slope_limit = -2.0_dp*MAX(MAX(0.0_dp, occ_curv(i)), MAX(0.0_dp, occ_curv(j)))
+               coeff = MAX(coeff, slope_limit)
+            END IF
+            coeff = MIN(0.0_dp, coeff)
             kernel(i, j) = coeff*work(i, j)
          END DO
       END DO

@@ -320,6 +320,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_weight_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_correction_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_correction_ratio_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_compensation = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_compensation_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_negative = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_negative_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_direct = 0.0_dp
@@ -331,6 +333,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_weight_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_metric_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_correction_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_compensation_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_negative_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_direct_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_selected_quality_ema = 0.0_dp
@@ -674,6 +677,8 @@ CONTAINS
       qs_ot_env%schur_projector_physical_weight_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_correction_drop = 0.0_dp
       qs_ot_env%schur_projector_physical_correction_ratio_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_compensation = 0.0_dp
+      qs_ot_env%schur_projector_physical_compensation_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_negative = 0.0_dp
       qs_ot_env%schur_projector_physical_negative_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_direct = 0.0_dp
@@ -685,6 +690,7 @@ CONTAINS
       qs_ot_env%schur_projector_physical_weight_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_metric_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_correction_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_compensation_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_negative_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_direct_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_selected_quality_ema = 0.0_dp

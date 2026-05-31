@@ -2409,6 +2409,7 @@ CONTAINS
                                                                projector_mode_step_negative, &
                                                                projector_mode_trust, &
                                                                projector_physical_predicted_drop, &
+                                                               projector_physical_compensation_ratio, &
                                                                projector_physical_correction_ratio, &
                                                                projector_physical_direct_ratio, &
                                                                projector_physical_metric_ratio, &
@@ -2417,6 +2418,7 @@ CONTAINS
                                                                projector_physical_quality_ratio, &
                                                                projector_physical_weight_quality, &
                                                                projector_physical_metric_quality, &
+                                                               projector_physical_compensation_quality, &
                                                                projector_physical_correction_quality, &
                                                                projector_physical_negative_quality, &
                                                                projector_physical_direct_quality, &
@@ -2771,6 +2773,7 @@ CONTAINS
                2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
 
             projector_physical_predicted_drop = local_ot_env(1)%schur_projector_physical_drop
+            projector_physical_compensation_ratio = 0.0_dp
             projector_physical_correction_ratio = 0.0_dp
             projector_physical_direct_ratio = 0.0_dp
             projector_physical_metric_ratio = 0.0_dp
@@ -2780,6 +2783,8 @@ CONTAINS
             IF (projector_physical_predicted_drop > EPSILON(projector_physical_predicted_drop)) THEN
                projector_physical_metric_ratio = &
                   local_ot_env(1)%schur_projector_physical_metric/projector_physical_predicted_drop
+               projector_physical_compensation_ratio = &
+                  local_ot_env(1)%schur_projector_physical_compensation/projector_physical_predicted_drop
                projector_physical_correction_ratio = &
                   local_ot_env(1)%schur_projector_physical_correction_drop/projector_physical_predicted_drop
                projector_physical_direct_ratio = &
@@ -2801,6 +2806,8 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_weight_ema = &
                      local_ot_env(1)%schur_projector_physical_weight
                   local_ot_env(1)%schur_projector_physical_metric_ema = projector_physical_metric_ratio
+                  local_ot_env(1)%schur_projector_physical_compensation_ema = &
+                     projector_physical_compensation_ratio
                   local_ot_env(1)%schur_projector_physical_correction_ratio_ema = &
                      projector_physical_correction_ratio
                   local_ot_env(1)%schur_projector_physical_negative_ema = &
@@ -2815,6 +2822,8 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_weight*projector_physical_quality_ratio
                   local_ot_env(1)%schur_projector_physical_metric_quality_ema = &
                      projector_physical_metric_ratio*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_compensation_quality_ema = &
+                     projector_physical_compensation_ratio*projector_physical_quality_ratio
                   local_ot_env(1)%schur_projector_physical_correction_quality_ema = &
                      projector_physical_correction_ratio*projector_physical_quality_ratio
                   local_ot_env(1)%schur_projector_physical_negative_quality_ema = &
@@ -2838,6 +2847,10 @@ CONTAINS
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_metric_ema + &
                      ot_kp_schur_quality_ema_alpha*projector_physical_metric_ratio
+                  local_ot_env(1)%schur_projector_physical_compensation_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_compensation_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_physical_compensation_ratio
                   local_ot_env(1)%schur_projector_physical_correction_ratio_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_correction_ratio_ema + &
@@ -2867,6 +2880,11 @@ CONTAINS
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_metric_quality_ema + &
                      ot_kp_schur_quality_ema_alpha*projector_physical_metric_ratio*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_compensation_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_compensation_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     projector_physical_compensation_ratio*projector_physical_quality_ratio
                   local_ot_env(1)%schur_projector_physical_correction_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_correction_quality_ema + &
@@ -2940,6 +2958,7 @@ CONTAINS
          logger => cp_get_default_logger()
          projector_physical_weight_quality = 0.0_dp
          projector_physical_metric_quality = 0.0_dp
+         projector_physical_compensation_quality = 0.0_dp
          projector_physical_correction_quality = 0.0_dp
          projector_physical_negative_quality = 0.0_dp
          projector_physical_direct_quality = 0.0_dp
@@ -2955,6 +2974,11 @@ CONTAINS
             projector_physical_metric_quality = &
                local_ot_env(1)%schur_projector_physical_metric_quality_ema/ &
                local_ot_env(1)%schur_projector_physical_metric_ema
+         IF (local_ot_env(1)%schur_projector_physical_compensation_ema > &
+             EPSILON(local_ot_env(1)%schur_projector_physical_compensation_ema)) &
+            projector_physical_compensation_quality = &
+               local_ot_env(1)%schur_projector_physical_compensation_quality_ema/ &
+               local_ot_env(1)%schur_projector_physical_compensation_ema
          IF (local_ot_env(1)%schur_projector_physical_correction_ratio_ema > &
              EPSILON(local_ot_env(1)%schur_projector_physical_correction_ratio_ema)) &
             projector_physical_correction_quality = &
@@ -3073,15 +3097,17 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_weight_ema, &
                   local_ot_env(1)%schur_projector_physical_negative_ema, &
                   local_ot_env(1)%schur_projector_physical_candidate_enabled
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,14(1X,ES16.8))') &
-                  " OT Schur LS projector physical feature quality weight metric corr neg direct selected shift "// &
-                  "wema mema cema nema dema sema shema:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,16(1X,ES16.8))') &
+                  " OT Schur LS projector physical feature quality weight metric comp corr neg direct selected shift "// &
+                  "wema mema compema cema nema dema sema shema:", &
                   projector_physical_weight_quality, projector_physical_metric_quality, &
+                  projector_physical_compensation_quality, &
                   projector_physical_correction_quality, projector_physical_negative_quality, &
                   projector_physical_direct_quality, projector_physical_selected_quality, &
                   projector_physical_shift_quality, &
                   local_ot_env(1)%schur_projector_physical_weight_ema, &
                   local_ot_env(1)%schur_projector_physical_metric_ema, &
+                  local_ot_env(1)%schur_projector_physical_compensation_ema, &
                   local_ot_env(1)%schur_projector_physical_correction_ratio_ema, &
                   local_ot_env(1)%schur_projector_physical_negative_ema, &
                   local_ot_env(1)%schur_projector_physical_direct_ema, &
@@ -3249,6 +3275,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_metric = 0.0_dp
                local_ot_env(1)%schur_projector_physical_weight = 0.0_dp
                local_ot_env(1)%schur_projector_physical_correction_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_physical_compensation = 0.0_dp
                local_ot_env(1)%schur_projector_physical_negative = 0.0_dp
                local_ot_env(1)%schur_projector_physical_direct = 0.0_dp
                local_ot_env(1)%schur_projector_physical_selected = 0.0_dp
@@ -5736,6 +5763,9 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_shift = &
                         local_ot_env(1)%schur_projector_physical_shift + &
                         projector_physical_model_calibrated_drop*projector_physical_direct_diag_shift_avg
+                     local_ot_env(1)%schur_projector_physical_compensation = &
+                        local_ot_env(1)%schur_projector_physical_compensation + &
+                        projector_physical_model_calibrated_drop*projector_physical_direct_diag_compensation
                   END IF
                   IF (projector_physical_direct_candidate_used .AND. &
                       projector_physical_direct_metric_norm_ratio > EPSILON(projector_physical_direct_metric_norm_ratio)) &
@@ -5882,7 +5912,7 @@ CONTAINS
                      projector_physical_slope_limit_avg = &
                         projector_physical_slope_limit_sum/projector_physical_slope_limit_count
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
-                     " OT Schur projector physical slope-limit audit n avg max:", &
+                     " OT Schur projector physical slope-limit applied n avg max:", &
                      projector_physical_slope_limit_count, projector_physical_slope_limit_avg, &
                      projector_physical_slope_limit_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
@@ -7070,6 +7100,7 @@ CONTAINS
                      slope_limit_sum = slope_limit_sum + ABS((coeff - slope_limit)*work(i, j))
                      slope_limit_max = MAX(slope_limit_max, ABS((coeff - slope_limit)*work(i, j)))
                   END IF
+                  coeff = MAX(coeff, slope_limit)
                END IF
                coeff = MIN(0.0_dp, coeff)
                kernel(i, j) = coeff*work(i, j)
