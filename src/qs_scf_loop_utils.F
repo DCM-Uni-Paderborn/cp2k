@@ -3202,6 +3202,9 @@ CONTAINS
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_shift_avg, &
             projector_physical_direct_diag_shift_max, projector_physical_direct_diag_shift_sum, &
             projector_physical_direct_direction_scale, &
+            projector_physical_direct_delta_negative_fraction, &
+            projector_physical_direct_delta_negative_norm, &
+            projector_physical_direct_delta_positive_norm, &
             projector_physical_direct_expected_drop, &
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
             projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
@@ -3219,6 +3222,7 @@ CONTAINS
             projector_physical_direct_rot_floor_min, projector_physical_direct_schur_diag_min, &
             projector_physical_direct_response_weighted_step, &
             projector_physical_direct_response_weighted_trust_ratio, projector_physical_direct_scale_quality, &
+            projector_physical_direct_step_negative_fraction, &
             projector_physical_direct_trust_quality, &
             projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
             projector_physical_response_weighted_step, projector_physical_response_weighted_trust_ratio, &
@@ -4140,6 +4144,9 @@ CONTAINS
                projector_physical_direct_diag_shift_avg = 0.0_dp
                projector_physical_direct_diag_shift_max = 0.0_dp
                projector_physical_direct_diag_shift_sum = 0.0_dp
+               projector_physical_direct_delta_negative_fraction = 0.0_dp
+               projector_physical_direct_delta_negative_norm = 0.0_dp
+               projector_physical_direct_delta_positive_norm = 0.0_dp
                projector_physical_direct_direction_scale = 0.0_dp
                projector_physical_direct_expected_drop = 0.0_dp
                projector_physical_direct_model_calibrated_drop = 0.0_dp
@@ -4163,6 +4170,7 @@ CONTAINS
                projector_physical_direct_response_abs_trust_ratio = 0.0_dp
                projector_physical_direct_response_weighted_step = 0.0_dp
                projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
+               projector_physical_direct_step_negative_fraction = 0.0_dp
                projector_physical_expected_drop = 0.0_dp
                projector_physical_model_calibrated_drop = 0.0_dp
                projector_physical_model_drop = 0.0_dp
@@ -4640,6 +4648,39 @@ CONTAINS
                                           projector_physical_direct_diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                                        CALL dgesv(nrot, 1, schur, nrot, ipiv, projector_physical_direct_sol, nrot, info)
                                        IF (info == 0) THEN
+                                          IF (logger%iter_info%print_level >= high_print_level) THEN
+                                             projector_physical_direct_delta_negative_norm = 0.0_dp
+                                             projector_physical_direct_delta_positive_norm = 0.0_dp
+                                             projector_physical_direct_step_negative_fraction = 0.0_dp
+                                             projector_physical_direct_delta_negative_fraction = 0.0_dp
+                                             rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
+                                                                     projector_physical_direct_sol)
+                                             DO r = 1, nrot
+                                                projected_term = &
+                                                   DOT_PRODUCT(projector_physical_direct_delta(:, r), &
+                                                               projector_physical_direct_sol)
+                                                diag_shift = projected_term*projected_term
+                                                IF (projector_physical_direct_curv_eval(r) < 0.0_dp) THEN
+                                                   projector_physical_direct_step_negative_fraction = &
+                                                      projector_physical_direct_step_negative_fraction + diag_shift
+                                                   projector_physical_direct_delta_negative_norm = &
+                                                      projector_physical_direct_delta_negative_norm + &
+                                                      ABS(projector_physical_direct_curv_eval(r))*diag_shift
+                                                ELSE
+                                                   projector_physical_direct_delta_positive_norm = &
+                                                      projector_physical_direct_delta_positive_norm + &
+                                                      projector_physical_direct_curv_eval(r)*diag_shift
+                                                END IF
+                                             END DO
+                                             IF (rx_weight > EPSILON(rx_weight)) &
+                                                projector_physical_direct_step_negative_fraction = &
+                                                   projector_physical_direct_step_negative_fraction/rx_weight
+                                             rx_weight = projector_physical_direct_delta_negative_norm + &
+                                                         projector_physical_direct_delta_positive_norm
+                                             IF (rx_weight > EPSILON(rx_weight)) &
+                                                projector_physical_direct_delta_negative_fraction = &
+                                                   projector_physical_direct_delta_negative_norm/rx_weight
+                                          END IF
                                           projector_physical_direct_rx_e(:) = &
                                              MATMUL(response_exact_raw, projector_physical_direct_sol)
                                           projector_physical_direct_model_e(:) = MATMUL(response_exact_physical, &
@@ -5593,6 +5634,12 @@ CONTAINS
                         projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
                         projector_physical_direct_curv_clip_max, projector_physical_direct_curv_diag_max, &
                         projector_physical_direct_curv_eval_min, projector_physical_direct_curv_eval_max
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                        " OT Schur projector phys direct modes sneg dneg dpos dfrac:", &
+                        projector_physical_direct_step_negative_fraction, &
+                        projector_physical_direct_delta_negative_norm, &
+                        projector_physical_direct_delta_positive_norm, &
+                        projector_physical_direct_delta_negative_fraction
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector physical candidate ready selected exp qsel cdrop mgap rratio aratio weight:", &
                         projector_physical_candidate_ready, projector_physical_candidate_selected, &
