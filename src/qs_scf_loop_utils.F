@@ -6895,12 +6895,10 @@ CONTAINS
                                                                 occ_curv_channel, active_blend_count, &
                                                                 active_blend_sum, active_blend_max, &
                                                                 slope_limit_count, slope_limit_sum, slope_limit_max)
-               ! Keep off-diagonal physical Projector curvature only where the
-               ! local density response is not dominated by projector-gauge
-               ! motion.  The diagonal response is consumed by the energy
-               ! channel below before the REF rotation Hessian is built.
-               CALL kpoint_ot_apply_projector_physical_split(docc_mat, occ_curv_channel, curvature_floor, &
-                                                             local_ot_env(local_channel)%delta)
+               ! Keep the monotone off-diagonal Projector curvature in the
+               ! rotation block.  The diagonal density response is consumed by
+               ! the auxiliary-energy channel below before the REF rotation
+               ! Hessian is built.
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -7078,8 +7076,12 @@ CONTAINS
          gap_tol = SQRT(EPSILON(1.0_dp))*scale
          occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
          response_gap_tol = gap_tol
+         ! Do not use the occupation-curvature channel to re-shape the spectral
+         ! divided differences here.  The accepted k-point Al tail is stabilized
+         ! by the monotone sign projection below; injecting active-degenerate
+         ! slope blends into this intrinsic Projector derivative over-hardens the
+         ! Direct Schur model even though it looks cleaner in isolation.
          use_occ_curv = .FALSE.
-         IF (PRESENT(occ_curv_channel)) use_occ_curv = SIZE(occ_curv_channel) >= n
          track_active_blend = PRESENT(active_blend_count) .AND. PRESENT(active_blend_sum) .AND. &
                               PRESENT(active_blend_max)
          track_slope_limit = PRESENT(slope_limit_count) .AND. PRESENT(slope_limit_sum) .AND. &
