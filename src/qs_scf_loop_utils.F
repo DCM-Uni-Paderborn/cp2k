@@ -3213,6 +3213,8 @@ CONTAINS
             projector_physical_direct_curv_clip_max, projector_physical_direct_curv_clip_sum, &
             projector_physical_direct_curv_diag_max, projector_physical_direct_curv_eval_max, &
             projector_physical_direct_curv_eval_min, &
+            projector_physical_direct_soft_cut, projector_physical_direct_soft_metric_fraction, &
+            projector_physical_direct_soft_norm_fraction, &
             projector_physical_direct_gdotp, projector_physical_direct_model_calibrated_drop, &
             projector_physical_direct_model_drop, projector_physical_direct_model_gap, &
             projector_physical_direct_model_gap_drop, projector_physical_direct_model_gap_ratio, &
@@ -3560,6 +3562,9 @@ CONTAINS
             projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
             projector_physical_direct_metric_norm_ratio = 0.0_dp
             projector_physical_direct_metric_norm_rotation = 0.0_dp
+            projector_physical_direct_soft_cut = 0.0_dp
+            projector_physical_direct_soft_metric_fraction = 0.0_dp
+            projector_physical_direct_soft_norm_fraction = 0.0_dp
             projector_physical_direct_norm_energy = 0.0_dp
             projector_physical_direct_norm_rotation = 0.0_dp
             projector_physical_direct_normp = 0.0_dp
@@ -4175,6 +4180,9 @@ CONTAINS
                projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
                projector_physical_direct_metric_norm_ratio = 0.0_dp
                projector_physical_direct_metric_norm_rotation = 0.0_dp
+               projector_physical_direct_soft_cut = 0.0_dp
+               projector_physical_direct_soft_metric_fraction = 0.0_dp
+               projector_physical_direct_soft_norm_fraction = 0.0_dp
                projector_physical_direct_curv_cap = 0.0_dp
                projector_physical_direct_curv_clip_avg = 0.0_dp
                projector_physical_direct_curv_clip_max = 0.0_dp
@@ -4793,6 +4801,35 @@ CONTAINS
                                              projector_physical_direct_metric_norm_ratio = &
                                                 projector_physical_direct_metric_norm_rotation/ &
                                                 projector_physical_direct_norm_rotation
+                                          IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                              projector_physical_direct_norm_rotation > &
+                                              EPSILON(projector_physical_direct_norm_rotation) .AND. &
+                                              projector_physical_direct_metric_norm_rotation > &
+                                              EPSILON(projector_physical_direct_metric_norm_rotation)) THEN
+                                             projector_physical_direct_soft_cut = &
+                                                projector_physical_direct_metric_norm_ratio
+                                             rhs(:) = MATMUL(TRANSPOSE(projector_physical_direct_schur_vec), &
+                                                             projector_physical_direct_sol)
+                                             projector_physical_direct_soft_norm_fraction = 0.0_dp
+                                             projector_physical_direct_soft_metric_fraction = 0.0_dp
+                                             DO r = 1, nrot
+                                                IF (projector_physical_direct_schur_eval(r) <= &
+                                                    projector_physical_direct_soft_cut) THEN
+                                                   projector_physical_direct_soft_norm_fraction = &
+                                                      projector_physical_direct_soft_norm_fraction + rhs(r)*rhs(r)
+                                                   projector_physical_direct_soft_metric_fraction = &
+                                                      projector_physical_direct_soft_metric_fraction + &
+                                                      MAX(0.0_dp, projector_physical_direct_schur_eval(r))* &
+                                                      rhs(r)*rhs(r)
+                                                END IF
+                                             END DO
+                                             projector_physical_direct_soft_norm_fraction = &
+                                                projector_physical_direct_soft_norm_fraction/ &
+                                                projector_physical_direct_norm_rotation
+                                             projector_physical_direct_soft_metric_fraction = &
+                                                projector_physical_direct_soft_metric_fraction/ &
+                                                projector_physical_direct_metric_norm_rotation
+                                          END IF
                                           projector_physical_direct_gdotp = projector_physical_direct_gdot_energy + &
                                                                             projector_physical_direct_gdot_rotation
                                           projector_physical_direct_normp = projector_physical_direct_norm_energy + &
@@ -5721,6 +5758,11 @@ CONTAINS
                         projector_physical_direct_spectral_shift_max, &
                         projector_physical_direct_schur_negative_fraction, &
                         projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
+                        " OT Schur projector phys direct soft cut nfrac mfrac:", &
+                        projector_physical_direct_soft_cut, &
+                        projector_physical_direct_soft_norm_fraction, &
+                        projector_physical_direct_soft_metric_fraction
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector phys direct modes sneg dneg dpos dfrac:", &
                         projector_physical_direct_step_negative_fraction, &
