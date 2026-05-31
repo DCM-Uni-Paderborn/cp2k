@@ -4558,7 +4558,8 @@ CONTAINS
             diag_shift_fraction = diag_shift_fraction/REAL(MAX(1, nrot), KIND=dp)
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),8(1X,ES16.8))') &
-                  " OT Schur floor audit group ne nrot att preavg premin premax flooravg floormax sfrac dsum dmax:", &
+                  " OT Schur hypothetical row-floor audit group ne nrot att preavg premin premax "// &
+                  "flooravg floormax sfrac dsum dmax:", &
                   target_group, ne, nrot, schur_attempt, diag_prefloor_avg, diag_prefloor_min, diag_prefloor_max, &
                   row_floor_avg, row_floor_max, diag_shift_fraction, diag_shift_sum, diag_shift_max
 
