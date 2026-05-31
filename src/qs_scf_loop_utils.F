@@ -6506,7 +6506,8 @@ CONTAINS
             IF (compute_projector_shadow) THEN
                dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                                local_ot_env(local_channel)%delta, docc_mat)
+                                                                occ_curv_channel, local_ot_env(local_channel)%delta, &
+                                                                docc_mat)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -6648,16 +6649,16 @@ CONTAINS
       END SUBROUTINE dense_history_safe_occ_projector
 
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                             delta, docc_mat)
+                                                             occ_curv_channel, delta, docc_mat)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers, occ_curv_channel
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
       REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, &
-                                                            scale
+                                                            scale, slope_guard
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale
 
          n = SIZE(chc, 1)
@@ -6686,6 +6687,12 @@ CONTAINS
                   coeff = 0.0_dp
                ELSE
                   coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
+               END IF
+               slope_guard = 2.0_dp*MAX(ABS(occ_curv_channel(i)), ABS(occ_curv_channel(j)))
+               IF (slope_guard > EPSILON(slope_guard)) THEN
+                  ! Fermi-active spectral projectors must have a non-positive
+                  ! occupation slope; positive slopes are rank/gauge noise.
+                  coeff = MIN(0.0_dp, coeff)
                END IF
                kernel(i, j) = coeff*work(i, j)
             END DO
