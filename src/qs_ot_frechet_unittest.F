@@ -73,6 +73,8 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-6_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
+   CALL check_complex_occ_projector_active_degenerate_response( &
+      "complex occupation-projector active degenerate response", 5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2474,6 +2476,47 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_gauge_separation
 
 ! **************************************************************************************************
+!> \brief Keep active smearing curvature in nearly degenerate projector modes.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_active_degenerate_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, expected
+      REAL(KIND=dp)                                      :: err
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.42_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.21_dp, -0.13_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_equal(:) = [0.74_dp, 0.74_dp, 0.18_dp]
+      occ_curv(:) = [0.37_dp, 0.37_dp, 0.0_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_equal, docc_mat, occ_curv)
+
+      expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      expected(1, 2) = -(occ_curv(1) + occ_curv(2))*dchc(1, 2)
+      expected(2, 1) = CONJG(expected(1, 2))
+      err = MAXVAL(ABS(docc_mat(:, :) - expected(:, :)))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_active_degenerate_response
+
+! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
 ! **************************************************************************************************
    SUBROUTINE check_monotone_occupation_slope_projection(label, tol, nfail)
@@ -2634,14 +2677,18 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
 ! **************************************************************************************************
-   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
+   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale
+      LOGICAL                                            :: use_occ_curv
+      REAL(KIND=dp)                                      :: analytic_coeff, blend, coeff, denom, gap_tol, &
+                                                            max_occ_weighted, occ_curv_max, occ_tol, &
+                                                            response_gap_tol, scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
       n = SIZE(chc, 1)
@@ -2652,17 +2699,34 @@ CONTAINS
       scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
       gap_tol = SQRT(EPSILON(1.0_dp))*scale
       occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      response_gap_tol = gap_tol
+      use_occ_curv = .FALSE.
+      IF (PRESENT(occ_curv)) use_occ_curv = SIZE(occ_curv) >= n
+      IF (use_occ_curv) THEN
+         occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv(1:n)))
+         max_occ_weighted = 0.5_dp*MAXVAL(ABS(occ_scale(:)))
+         IF (occ_curv_max > EPSILON(occ_curv_max) .AND. max_occ_weighted > 0.0_dp) &
+            response_gap_tol = MAX(response_gap_tol, 0.10_dp*max_occ_weighted/(4.0_dp*occ_curv_max))
+      END IF
       kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO j = 1, n
          DO i = 1, n
             IF (i == j) CYCLE
             denom = evals(i) - evals(j)
+            analytic_coeff = 0.0_dp
+            IF (use_occ_curv) analytic_coeff = -MAX(0.0_dp, occ_curv(i)) - MAX(0.0_dp, occ_curv(j))
             IF (ABS(denom) > gap_tol) THEN
                coeff = (occ_scale(i) - occ_scale(j))/denom
             ELSE IF (ABS(occ_scale(i) - occ_scale(j)) <= occ_tol) THEN
-               coeff = 0.0_dp
+               coeff = analytic_coeff
             ELSE
                coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
+            END IF
+            IF (use_occ_curv .AND. analytic_coeff < 0.0_dp .AND. ABS(denom) < response_gap_tol) THEN
+               blend = 1.0_dp - ABS(denom)/MAX(response_gap_tol, EPSILON(response_gap_tol))
+               blend = MAX(0.0_dp, MIN(1.0_dp, blend))
+               coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
+               coeff = MIN(0.0_dp, coeff)
             END IF
             kernel(i, j) = coeff*work(i, j)
          END DO

@@ -6639,7 +6639,8 @@ CONTAINS
             IF (compute_projector_shadow) THEN
                dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                                local_ot_env(local_channel)%delta, docc_mat)
+                                                                local_ot_env(local_channel)%delta, docc_mat, &
+                                                                occ_curv_channel)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -6781,16 +6782,19 @@ CONTAINS
       END SUBROUTINE dense_history_safe_occ_projector
 
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                             delta, docc_mat)
+                                                             delta, docc_mat, occ_curv_channel)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, &
-                                                            scale
+      LOGICAL                                            :: use_occ_curv
+      REAL(KIND=dp)                                      :: analytic_coeff, blend, coeff, denom, gap_tol, &
+                                                            max_occ_weighted, occ_curv_max, occ_tol, &
+                                                            projector_weight, response_gap_tol, scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -6808,18 +6812,38 @@ CONTAINS
          scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
          gap_tol = SQRT(EPSILON(1.0_dp))*scale
          occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+         response_gap_tol = gap_tol
+         use_occ_curv = .FALSE.
+         IF (PRESENT(occ_curv_channel)) use_occ_curv = SIZE(occ_curv_channel) >= n
+         IF (use_occ_curv) THEN
+            occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv_channel(1:n)))
+            max_occ_weighted = 0.5_dp*MAXVAL(ABS(occ_scale(:)))
+            IF (occ_curv_max > EPSILON(occ_curv_max) .AND. max_occ_weighted > 0.0_dp) &
+               response_gap_tol = MAX(response_gap_tol, &
+                                      0.10_dp*max_occ_weighted/(4.0_dp*occ_curv_max))
+         END IF
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
                IF (i == j) CYCLE
                denom = evals(i) - evals(j)
+               analytic_coeff = 0.0_dp
+               IF (use_occ_curv) &
+                  analytic_coeff = -MAX(0.0_dp, occ_curv_channel(i)) - &
+                                   MAX(0.0_dp, occ_curv_channel(j))
                IF (ABS(denom) > gap_tol) THEN
                   coeff = (occ_slope(i) - occ_slope(j))/denom
                ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN
-                  coeff = 0.0_dp
+                  coeff = analytic_coeff
                ELSE
                   coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
+               END IF
+               IF (use_occ_curv .AND. analytic_coeff < 0.0_dp .AND. &
+                   ABS(denom) < response_gap_tol) THEN
+                  blend = 1.0_dp - ABS(denom)/MAX(response_gap_tol, EPSILON(response_gap_tol))
+                  blend = MAX(0.0_dp, MIN(1.0_dp, blend))
+                  coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
                END IF
                coeff = MIN(0.0_dp, coeff)
                kernel(i, j) = coeff*work(i, j)
