@@ -73,12 +73,6 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-6_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
-   CALL check_complex_occ_projector_active_degenerate_response( &
-      "complex occupation-projector active degenerate response", 5.0E-14_dp, nfail)
-   CALL check_complex_occ_projector_slope_limit("complex occupation-projector slope limit", &
-                                                5.0E-14_dp, nfail)
-   CALL check_complex_occ_projector_physical_split("complex occupation-projector physical split", &
-                                                   5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2480,245 +2474,6 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_gauge_separation
 
 ! **************************************************************************************************
-!> \brief Keep active smearing curvature in nearly degenerate projector modes.
-! **************************************************************************************************
-   SUBROUTINE check_complex_occ_projector_active_degenerate_response(label, tol, nfail)
-      CHARACTER(LEN=*), INTENT(IN)                       :: label
-      REAL(KIND=dp), INTENT(IN)                          :: tol
-      INTEGER, INTENT(INOUT)                             :: nfail
-
-      INTEGER, PARAMETER                                 :: n = 3
-
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, expected
-      REAL(KIND=dp)                                      :: err
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal
-
-      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      chc(1, 1) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      chc(2, 2) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      chc(3, 3) = CMPLX(0.42_dp, 0.0_dp, KIND=dp)
-
-      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      dchc(1, 2) = CMPLX(0.21_dp, -0.13_dp, KIND=dp)
-      dchc(2, 1) = CONJG(dchc(1, 2))
-
-      occ_equal(:) = [0.74_dp, 0.74_dp, 0.18_dp]
-      occ_curv(:) = [0.37_dp, 0.37_dp, 0.0_dp]
-      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_equal, docc_mat, occ_curv)
-
-      expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      expected(1, 2) = -(occ_curv(1) + occ_curv(2))*dchc(1, 2)
-      expected(2, 1) = CONJG(expected(1, 2))
-      err = MAXVAL(ABS(docc_mat(:, :) - expected(:, :)))
-
-      IF (err > tol) THEN
-         nfail = nfail + 1
-         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
-      ELSE
-         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
-      END IF
-
-   END SUBROUTINE check_complex_occ_projector_active_degenerate_response
-
-! **************************************************************************************************
-!> \brief Cap noisy occupation-projector secants by the local Mermin curvature.
-! **************************************************************************************************
-   SUBROUTINE check_complex_occ_projector_slope_limit(label, tol, nfail)
-      CHARACTER(LEN=*), INTENT(IN)                       :: label
-      REAL(KIND=dp), INTENT(IN)                          :: tol
-      INTEGER, INTENT(INOUT)                             :: nfail
-
-      INTEGER, PARAMETER                                 :: n = 2
-      REAL(KIND=dp), PARAMETER                           :: gap = 1.0E-4_dp
-
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, expected
-      REAL(KIND=dp)                                      :: err, slope_limit
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
-
-      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      chc(2, 2) = CMPLX(gap, 0.0_dp, KIND=dp)
-
-      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      dchc(1, 2) = CMPLX(1.0E-3_dp, -2.0E-3_dp, KIND=dp)
-      dchc(2, 1) = CONJG(dchc(1, 2))
-
-      occ_scale(:) = [1.00_dp, 0.90_dp]
-      occ_curv(:) = [180.0_dp, 200.0_dp]
-      slope_limit = -2.0_dp*MAXVAL(occ_curv)
-
-      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
-
-      expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      expected(1, 2) = slope_limit*dchc(1, 2)
-      expected(2, 1) = CONJG(expected(1, 2))
-      err = MAXVAL(ABS(docc_mat(:, :) - expected(:, :)))
-
-      IF (err > tol) THEN
-         nfail = nfail + 1
-         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
-      ELSE
-         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
-      END IF
-
-   END SUBROUTINE check_complex_occ_projector_slope_limit
-
-! **************************************************************************************************
-!> \brief Split physical occupation response into energy and metric-supported rotation channels.
-! **************************************************************************************************
-   SUBROUTINE check_complex_occ_projector_physical_split(label, tol, nfail)
-      CHARACTER(LEN=*), INTENT(IN)                       :: label
-      REAL(KIND=dp), INTENT(IN)                          :: tol
-      INTEGER, INTENT(INOUT)                             :: nfail
-
-      INTEGER, PARAMETER                                 :: n = 3
-
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, diag_mat, docc_mat, split_mat, &
-                                                            tail_split_mat
-      INTEGER                                            :: i, j
-      REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
-                                                            min_split_weight = 0.45_dp, &
-                                                            tail_min_split_weight = 0.45_dp
-      REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm, split_weight, &
-                                                            tail_split_weight
-      REAL(KIND=dp), DIMENSION(n)                        :: energy_response, occ_curv, occ_scale
-
-      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      chc(1, 1) = CMPLX(-0.11_dp, 0.0_dp, KIND=dp)
-      chc(2, 2) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
-      chc(3, 3) = CMPLX(0.27_dp, 0.0_dp, KIND=dp)
-      chc(1, 2) = CMPLX(0.04_dp, -0.02_dp, KIND=dp)
-      chc(1, 3) = CMPLX(-0.03_dp, 0.01_dp, KIND=dp)
-      chc(2, 3) = CMPLX(0.02_dp, 0.05_dp, KIND=dp)
-      chc(2, 1) = CONJG(chc(1, 2))
-      chc(3, 1) = CONJG(chc(1, 3))
-      chc(3, 2) = CONJG(chc(2, 3))
-
-      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      dchc(1, 1) = CMPLX(0.08_dp, 0.0_dp, KIND=dp)
-      dchc(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
-      dchc(3, 3) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
-      dchc(1, 2) = CMPLX(0.12_dp, -0.07_dp, KIND=dp)
-      dchc(1, 3) = CMPLX(-0.05_dp, 0.09_dp, KIND=dp)
-      dchc(2, 3) = CMPLX(0.06_dp, 0.04_dp, KIND=dp)
-      dchc(2, 1) = CONJG(dchc(1, 2))
-      dchc(3, 1) = CONJG(dchc(1, 3))
-      dchc(3, 2) = CONJG(dchc(2, 3))
-
-      occ_scale(:) = [1.38_dp, 0.82_dp, 0.28_dp]
-      occ_curv(:) = [0.41_dp, 0.63_dp, 0.22_dp]
-
-      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
-      split_mat(:, :) = docc_mat(:, :)
-      tail_split_mat(:, :) = docc_mat(:, :)
-      CALL dense_apply_occ_projector_physical_split(split_mat, occ_curv, 2.0E-4_dp)
-      CALL dense_apply_occ_projector_physical_split(tail_split_mat, occ_curv, 0.0_dp)
-
-      DO i = 1, n
-         energy_response(i) = -0.5_dp*REAL(docc_mat(i, i), KIND=dp)/occ_curv(i)
-      END DO
-      diag_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      DO i = 1, n
-         diag_mat(i, i) = docc_mat(i, i)
-      END DO
-
-      diag_err = 0.0_dp
-      DO i = 1, n
-         diag_err = MAX(diag_err, ABS(REAL(docc_mat(i, i), KIND=dp) + &
-                                      2.0_dp*occ_curv(i)*energy_response(i)))
-      END DO
-      offdiag_norm = MAXVAL(ABS(docc_mat - diag_mat))
-      err = diag_err
-      DO j = 2, n
-         DO i = 1, j - 1
-            split_weight = dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, 2.0E-4_dp)
-            tail_split_weight = dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, 0.0_dp)
-            err = MAX(err, ABS(split_mat(i, j) - split_weight*docc_mat(i, j)))
-            err = MAX(err, ABS(split_mat(j, i) - CONJG(split_mat(i, j))))
-            err = MAX(err, ABS(tail_split_mat(i, j) - tail_split_weight*docc_mat(i, j)))
-            err = MAX(err, ABS(tail_split_mat(j, i) - CONJG(tail_split_mat(i, j))))
-            IF (split_weight < min_split_weight .OR. split_weight > max_split_weight .OR. &
-                tail_split_weight < tail_min_split_weight .OR. tail_split_weight > max_split_weight) &
-               err = MAX(err, 1.0_dp)
-         END DO
-      END DO
-
-      IF (err > tol .OR. offdiag_norm <= tol) THEN
-         nfail = nfail + 1
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/offdiag", &
-            err, offdiag_norm
-      ELSE
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/offdiag", &
-            err, offdiag_norm
-      END IF
-
-   END SUBROUTINE check_complex_occ_projector_physical_split
-
-! **************************************************************************************************
-!> \brief Dense mirror of the occupation-projector physical/gauge split metric.
-! **************************************************************************************************
-   SUBROUTINE dense_apply_occ_projector_physical_split(docc_mat, occ_curv, residual_delta)
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: docc_mat
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
-
-      INTEGER                                            :: i, j, n
-
-      n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv))
-      DO j = 2, n
-         DO i = 1, j - 1
-            docc_mat(i, j) = dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, &
-                                                                      residual_delta)*docc_mat(i, j)
-            docc_mat(j, i) = CONJG(docc_mat(i, j))
-         END DO
-      END DO
-
-   END SUBROUTINE dense_apply_occ_projector_physical_split
-
-! **************************************************************************************************
-!> \brief Dense mirror of one pairwise physical/gauge split weight.
-! **************************************************************************************************
-   FUNCTION dense_occ_projector_physical_pair_weight(docc_mat, occ_curv, i, j, residual_delta) RESULT(split_weight)
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: docc_mat
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
-      INTEGER, INTENT(IN)                                :: i, j
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
-      REAL(KIND=dp)                                      :: split_weight
-
-      REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
-                                                            metric_min_split_weight = 0.45_dp, &
-                                                            tail_delta = 1.0E-4_dp, &
-                                                            tail_min_split_weight = 0.45_dp
-      REAL(KIND=dp)                                      :: curvature_i, curvature_j, diag_response, gauge_metric, &
-                                                            min_split_weight, pair_curvature, &
-                                                            physical_metric, total_metric
-
-      physical_metric = 0.0_dp
-      curvature_i = MAX(0.0_dp, occ_curv(i))
-      curvature_j = MAX(0.0_dp, occ_curv(j))
-      IF (curvature_i > SQRT(EPSILON(1.0_dp))) THEN
-         diag_response = 0.5_dp*REAL(docc_mat(i, i), KIND=dp)/curvature_i
-         physical_metric = physical_metric + curvature_i*diag_response*diag_response
-      END IF
-      IF (curvature_j > SQRT(EPSILON(1.0_dp))) THEN
-         diag_response = 0.5_dp*REAL(docc_mat(j, j), KIND=dp)/curvature_j
-         physical_metric = physical_metric + curvature_j*diag_response*diag_response
-      END IF
-      pair_curvature = MAX(SQRT(EPSILON(1.0_dp)), 0.5_dp*(curvature_i + curvature_j))
-      gauge_metric = 0.5_dp*ABS(docc_mat(i, j))**2/pair_curvature
-
-      total_metric = physical_metric + gauge_metric
-      IF (total_metric > EPSILON(total_metric)) THEN
-         split_weight = 0.5_dp + 0.25_dp*(physical_metric - gauge_metric)/total_metric
-      ELSE
-         split_weight = 0.5_dp
-      END IF
-      min_split_weight = metric_min_split_weight
-      IF (residual_delta <= tail_delta) min_split_weight = tail_min_split_weight
-      split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
-
-   END FUNCTION dense_occ_projector_physical_pair_weight
-
-! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
 ! **************************************************************************************************
    SUBROUTINE check_monotone_occupation_slope_projection(label, tol, nfail)
@@ -2879,18 +2634,14 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
 ! **************************************************************************************************
-   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
+   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      LOGICAL                                            :: use_occ_curv
-      REAL(KIND=dp)                                      :: analytic_coeff, blend, coeff, denom, gap_tol, &
-                                                            max_occ_weighted, occ_curv_max, occ_tol, &
-                                                            response_gap_tol, scale, slope_limit
+      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
       n = SIZE(chc, 1)
@@ -2901,37 +2652,17 @@ CONTAINS
       scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
       gap_tol = SQRT(EPSILON(1.0_dp))*scale
       occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
-      response_gap_tol = gap_tol
-      use_occ_curv = .FALSE.
-      IF (PRESENT(occ_curv)) use_occ_curv = SIZE(occ_curv) >= n
-      IF (use_occ_curv) THEN
-         occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv(1:n)))
-         max_occ_weighted = 0.5_dp*MAXVAL(ABS(occ_scale(:)))
-         IF (occ_curv_max > EPSILON(occ_curv_max) .AND. max_occ_weighted > 0.0_dp) &
-            response_gap_tol = MAX(response_gap_tol, 0.10_dp*max_occ_weighted/(4.0_dp*occ_curv_max))
-      END IF
       kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO j = 1, n
          DO i = 1, n
             IF (i == j) CYCLE
             denom = evals(i) - evals(j)
-            analytic_coeff = 0.0_dp
-            IF (use_occ_curv) analytic_coeff = -MAX(0.0_dp, occ_curv(i)) - MAX(0.0_dp, occ_curv(j))
             IF (ABS(denom) > gap_tol) THEN
                coeff = (occ_scale(i) - occ_scale(j))/denom
             ELSE IF (ABS(occ_scale(i) - occ_scale(j)) <= occ_tol) THEN
-               coeff = analytic_coeff
+               coeff = 0.0_dp
             ELSE
                coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
-            END IF
-            IF (use_occ_curv .AND. analytic_coeff < 0.0_dp .AND. ABS(denom) < response_gap_tol) THEN
-               blend = 1.0_dp - ABS(denom)/MAX(response_gap_tol, EPSILON(response_gap_tol))
-               blend = MAX(0.0_dp, MIN(1.0_dp, blend))
-               coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
-            END IF
-            IF (use_occ_curv .AND. analytic_coeff < 0.0_dp) THEN
-               slope_limit = -2.0_dp*MAX(MAX(0.0_dp, occ_curv(i)), MAX(0.0_dp, occ_curv(j)))
-               coeff = MAX(coeff, slope_limit)
             END IF
             coeff = MIN(0.0_dp, coeff)
             kernel(i, j) = coeff*work(i, j)

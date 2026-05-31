@@ -3362,10 +3362,6 @@ CONTAINS
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
          physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
-         projector_physical_active_blend_avg, projector_physical_active_blend_count, &
-         projector_physical_active_blend_max, projector_physical_active_blend_sum, &
-         projector_physical_slope_limit_avg, projector_physical_slope_limit_count, &
-         projector_physical_slope_limit_max, projector_physical_slope_limit_sum, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_physical_abs_avg, projector_physical_delta_diag_avg, &
          projector_physical_delta_max, projector_physical_diag_avg, projector_gauge_abs_avg, &
@@ -3707,12 +3703,6 @@ CONTAINS
          projector_hessian_delta_max = 0.0_dp
          projector_hessian_diag_avg = 0.0_dp
          projector_physical_abs_avg = 0.0_dp
-         projector_physical_active_blend_count = 0.0_dp
-         projector_physical_active_blend_sum = 0.0_dp
-         projector_physical_active_blend_max = 0.0_dp
-         projector_physical_slope_limit_count = 0.0_dp
-         projector_physical_slope_limit_sum = 0.0_dp
-         projector_physical_slope_limit_max = 0.0_dp
          projector_physical_delta_diag_avg = 0.0_dp
          projector_physical_delta_max = 0.0_dp
          projector_physical_diag_avg = 0.0_dp
@@ -3992,13 +3982,7 @@ CONTAINS
                                                        projector_physical_shadow_enabled, &
                                                        rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                        rot_hessian_projector_physical, response, response_occ, &
-                                                       response_occ_physical, failed, &
-                                                       projector_physical_active_blend_count, &
-                                                       projector_physical_active_blend_sum, &
-                                                       projector_physical_active_blend_max, &
-                                                       projector_physical_slope_limit_count, &
-                                                       projector_physical_slope_limit_sum, &
-                                                       projector_physical_slope_limit_max)
+                                                       response_occ_physical, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -4075,10 +4059,6 @@ CONTAINS
          projector_physical_delta_diag_avg = projector_physical_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_abs_avg = projector_physical_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          projector_gauge_abs_avg = projector_gauge_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
-         projector_physical_slope_limit_avg = 0.0_dp
-         IF (projector_physical_slope_limit_count > EPSILON(projector_physical_slope_limit_count)) &
-            projector_physical_slope_limit_avg = &
-               projector_physical_slope_limit_sum/projector_physical_slope_limit_count
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
@@ -4868,16 +4848,6 @@ CONTAINS
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
                                              MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
-                                          ! The finite-complex physical response is now locally
-                                          ! capped by the Mermin occupation curvature.  Use the
-                                          ! removed over-steep secant curvature as a solve-trust
-                                          ! regularizer, so the accepted Direct model does not
-                                          ! become dominated by artificially soft Schur modes.
-                                          IF (projector_physical_slope_limit_avg > &
-                                              EPSILON(projector_physical_slope_limit_avg)) &
-                                             projector_physical_direct_diag_compensation = &
-                                                MAX(projector_physical_direct_diag_compensation, &
-                                                    projector_coupled_weight*projector_physical_slope_limit_avg)
                                           ! Also retain the diagonal trust implied by the finite
                                           ! Projector response that was removed when separating
                                           ! physical occupation curvature from projector-gauge
@@ -5927,18 +5897,6 @@ CONTAINS
                      projector_physical_diag_avg, projector_physical_delta_diag_avg, &
                      projector_physical_abs_avg, projector_physical_delta_max, &
                      projector_gauge_abs_avg, projector_gauge_delta_max
-                  projector_physical_active_blend_avg = 0.0_dp
-                  IF (projector_physical_active_blend_count > EPSILON(projector_physical_active_blend_count)) &
-                     projector_physical_active_blend_avg = &
-                        projector_physical_active_blend_sum/projector_physical_active_blend_count
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
-                     " OT Schur projector physical active-degenerate response n avg max:", &
-                     projector_physical_active_blend_count, projector_physical_active_blend_avg, &
-                     projector_physical_active_blend_max
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
-                     " OT Schur projector physical slope-limit applied n avg max:", &
-                     projector_physical_slope_limit_count, projector_physical_slope_limit_avg, &
-                     projector_physical_slope_limit_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
@@ -6740,9 +6698,7 @@ CONTAINS
                                                  occ_curv_channel, var_i, var_j, var_kind, compute_projector_shadow, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, response, response_occ, &
-                                                 response_occ_physical, failed, active_blend_count, &
-                                                 active_blend_sum, active_blend_max, slope_limit_count, &
-                                                 slope_limit_sum, slope_limit_max)
+                                                 response_occ_physical, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
@@ -6754,9 +6710,6 @@ CONTAINS
                                                             rot_hessian_projector, rot_hessian_projector_physical, &
                                                             response, response_occ, response_occ_physical
       LOGICAL, INTENT(INOUT)                             :: failed
-      REAL(KIND=dp), INTENT(INOUT)                       :: active_blend_count, active_blend_sum, active_blend_max
-      REAL(KIND=dp), INTENT(INOUT)                       :: slope_limit_count, slope_limit_sum, slope_limit_max
-
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: base, chc, chc_m, chc_p, dchc, docc_mat, &
@@ -6891,10 +6844,7 @@ CONTAINS
             IF (compute_projector_shadow) THEN
                dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                                local_ot_env(local_channel)%delta, docc_mat, &
-                                                                occ_curv_channel, active_blend_count, &
-                                                                active_blend_sum, active_blend_max, &
-                                                                slope_limit_count, slope_limit_sum, slope_limit_max)
+                                                                local_ot_env(local_channel)%delta, docc_mat)
                ! Keep the monotone off-diagonal Projector curvature in the
                ! rotation block.  The diagonal density response is consumed by
                ! the auxiliary-energy channel below before the REF rotation
@@ -7040,24 +6990,15 @@ CONTAINS
       END SUBROUTINE dense_history_safe_occ_projector
 
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                             delta, docc_mat, occ_curv_channel, active_blend_count, &
-                                                             active_blend_sum, active_blend_max, slope_limit_count, &
-                                                             slope_limit_sum, slope_limit_max)
+                                                             delta, docc_mat)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
-      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: active_blend_count, active_blend_sum, active_blend_max
-      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: slope_limit_count, slope_limit_sum, slope_limit_max
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      LOGICAL                                            :: track_active_blend, track_slope_limit, use_occ_curv
-      REAL(KIND=dp)                                      :: analytic_coeff, blend, coeff, denom, gap_tol, &
-                                                            max_occ_weighted, occ_curv_max, occ_tol, &
-                                                            projector_weight, response_gap_tol, scale, secant_coeff, &
-                                                            slope_limit
+      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -7075,66 +7016,18 @@ CONTAINS
          scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
          gap_tol = SQRT(EPSILON(1.0_dp))*scale
          occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
-         response_gap_tol = gap_tol
-         ! Do not use the occupation-curvature channel to re-shape the spectral
-         ! divided differences here.  The accepted k-point Al tail is stabilized
-         ! by the monotone sign projection below; injecting active-degenerate
-         ! slope blends into this intrinsic Projector derivative over-hardens the
-         ! Direct Schur model even though it looks cleaner in isolation.
-         use_occ_curv = .FALSE.
-         track_active_blend = PRESENT(active_blend_count) .AND. PRESENT(active_blend_sum) .AND. &
-                              PRESENT(active_blend_max)
-         track_slope_limit = PRESENT(slope_limit_count) .AND. PRESENT(slope_limit_sum) .AND. &
-                             PRESENT(slope_limit_max)
-         IF (use_occ_curv) THEN
-            occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv_channel(1:n)))
-            max_occ_weighted = 0.5_dp*MAXVAL(ABS(occ_scale(:)))
-            IF (occ_curv_max > EPSILON(occ_curv_max) .AND. max_occ_weighted > 0.0_dp) &
-               response_gap_tol = MAX(response_gap_tol, &
-                                      0.10_dp*max_occ_weighted/(4.0_dp*occ_curv_max))
-         END IF
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
                IF (i == j) CYCLE
                denom = evals(i) - evals(j)
-               analytic_coeff = 0.0_dp
-               secant_coeff = 0.0_dp
-               IF (use_occ_curv) &
-                  analytic_coeff = -MAX(0.0_dp, occ_curv_channel(i)) - &
-                                   MAX(0.0_dp, occ_curv_channel(j))
                IF (ABS(denom) > gap_tol) THEN
-                  secant_coeff = (occ_slope(i) - occ_slope(j))/denom
-                  coeff = secant_coeff
+                  coeff = (occ_slope(i) - occ_slope(j))/denom
                ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN
-                  coeff = analytic_coeff
+                  coeff = 0.0_dp
                ELSE
-                  secant_coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
-                  coeff = secant_coeff
-               END IF
-               IF (use_occ_curv .AND. analytic_coeff < 0.0_dp .AND. &
-                   ABS(denom) < response_gap_tol) THEN
-                  blend = 1.0_dp - ABS(denom)/MAX(response_gap_tol, EPSILON(response_gap_tol))
-                  blend = MAX(0.0_dp, MIN(1.0_dp, blend))
-                  coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
-                  IF (track_active_blend .AND. blend > 0.0_dp) THEN
-                     active_blend_count = active_blend_count + 1.0_dp
-                     active_blend_sum = active_blend_sum + &
-                                        projector_weight*ABS((coeff - secant_coeff)*work(i, j))
-                     active_blend_max = MAX(active_blend_max, &
-                                            projector_weight*ABS((coeff - secant_coeff)*work(i, j)))
-                  END IF
-               END IF
-               IF (use_occ_curv .AND. analytic_coeff < 0.0_dp) THEN
-                  slope_limit = -2.0_dp*MAX(MAX(0.0_dp, occ_curv_channel(i)), &
-                                            MAX(0.0_dp, occ_curv_channel(j)))
-                  IF (track_slope_limit .AND. coeff < slope_limit) THEN
-                     slope_limit_count = slope_limit_count + 1.0_dp
-                     slope_limit_sum = slope_limit_sum + projector_weight*ABS((coeff - slope_limit)*work(i, j))
-                     slope_limit_max = MAX(slope_limit_max, projector_weight*ABS((coeff - slope_limit)*work(i, j)))
-                  END IF
-                  coeff = MAX(coeff, slope_limit)
+                  coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
                END IF
                coeff = MIN(0.0_dp, coeff)
                kernel(i, j) = coeff*work(i, j)
@@ -7147,58 +7040,6 @@ CONTAINS
          DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
 
       END SUBROUTINE dense_history_safe_occ_projector_derivative
-
-! **************************************************************************************************
-!> \brief apply a pairwise physical/gauge split to the occupation-projector derivative
-! **************************************************************************************************
-      SUBROUTINE kpoint_ot_apply_projector_physical_split(docc_mat, occ_curv_channel, &
-                                                          curvature_floor, residual_delta)
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: docc_mat
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel
-      REAL(KIND=dp), INTENT(IN)                          :: curvature_floor, residual_delta
-
-      INTEGER                                            :: i, j, n
-      REAL(KIND=dp), PARAMETER                           :: max_split_weight = 0.65_dp, &
-                                                            metric_min_split_weight = 0.45_dp, &
-                                                            tail_min_split_weight = 0.45_dp
-      REAL(KIND=dp)                                      :: curvature_i, curvature_j, diag_i, diag_j, &
-                                                            gauge_metric, min_split_weight, pair_curvature, &
-                                                            physical_metric, split_weight, total_metric
-
-         n = MIN(SIZE(docc_mat, 1), SIZE(occ_curv_channel))
-
-         min_split_weight = metric_min_split_weight
-         IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
-            min_split_weight = tail_min_split_weight
-
-         DO j = 2, n
-            DO i = 1, j - 1
-               curvature_i = MAX(0.0_dp, occ_curv_channel(i))
-               curvature_j = MAX(0.0_dp, occ_curv_channel(j))
-               pair_curvature = MAX(curvature_floor, 0.5_dp*(curvature_i + curvature_j))
-               physical_metric = 0.0_dp
-               IF (curvature_i > curvature_floor) THEN
-                  diag_i = 0.5_dp*REAL(docc_mat(i, i), KIND=dp)/curvature_i
-                  physical_metric = physical_metric + curvature_i*diag_i*diag_i
-               END IF
-               IF (curvature_j > curvature_floor) THEN
-                  diag_j = 0.5_dp*REAL(docc_mat(j, j), KIND=dp)/curvature_j
-                  physical_metric = physical_metric + curvature_j*diag_j*diag_j
-               END IF
-               gauge_metric = 0.5_dp*ABS(docc_mat(i, j))**2/pair_curvature
-               total_metric = physical_metric + gauge_metric
-               IF (total_metric > EPSILON(total_metric)) THEN
-                  split_weight = 0.5_dp + 0.25_dp*(physical_metric - gauge_metric)/total_metric
-               ELSE
-                  split_weight = 0.5_dp
-               END IF
-               split_weight = MAX(min_split_weight, MIN(max_split_weight, split_weight))
-               docc_mat(i, j) = split_weight*docc_mat(i, j)
-               docc_mat(j, i) = CONJG(docc_mat(i, j))
-            END DO
-         END DO
-
-      END SUBROUTINE kpoint_ot_apply_projector_physical_split
 
       SUBROUTINE monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_scale
