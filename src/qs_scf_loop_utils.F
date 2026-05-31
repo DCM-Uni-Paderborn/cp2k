@@ -3379,7 +3379,9 @@ CONTAINS
             projector_physical_model_gap, projector_physical_model_gap_drop, projector_physical_model_gap_ratio, &
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
-            projector_physical_direct_diag_compensation, projector_physical_direct_diag_shift_avg, &
+            projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
+            projector_physical_direct_diag_compensation_local_fraction, &
+            projector_physical_direct_diag_compensation_local_max, projector_physical_direct_diag_shift_avg, &
             projector_physical_direct_diag_shift_max, projector_physical_direct_diag_shift_sum, &
             projector_physical_direct_direction_scale, &
             projector_physical_direct_delta_negative_fraction, &
@@ -3718,6 +3720,9 @@ CONTAINS
             projector_mode_history_response_negative = 0.0_dp
             projector_mode_history_response_ratio = 0.0_dp
             projector_physical_direct_diag_compensation = 0.0_dp
+            projector_physical_direct_diag_compensation_local_avg = 0.0_dp
+            projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
+            projector_physical_direct_diag_compensation_local_max = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -4343,6 +4348,9 @@ CONTAINS
                projector_physical_direct_candidate_selected = .FALSE.
                projector_physical_direct_candidate_used = .FALSE.
                projector_physical_direct_diag_compensation = 0.0_dp
+               projector_physical_direct_diag_compensation_local_avg = 0.0_dp
+               projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
+               projector_physical_direct_diag_compensation_local_max = 0.0_dp
                projector_physical_direct_diag_shift_avg = 0.0_dp
                projector_physical_direct_diag_shift_max = 0.0_dp
                projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -4849,6 +4857,9 @@ CONTAINS
                                           END DO
                                        END DO
                                        projector_physical_direct_diag_compensation = 0.0_dp
+                                       projector_physical_direct_diag_compensation_local_avg = 0.0_dp
+                                       projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
+                                       projector_physical_direct_diag_compensation_local_max = 0.0_dp
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
                                              MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
@@ -4865,6 +4876,27 @@ CONTAINS
                                                     projector_coupled_weight* &
                                                     (projector_physical_delta_diag_avg - &
                                                      projector_hessian_delta_diag_avg))
+                                          DO r = 1, nrot
+                                             diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
+                                                                     projector_physical_direct_delta(r, r))
+                                             projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
+                                             IF (projector_physical_direct_delta(r, r) > projected_term) &
+                                                diag_shift = MAX(diag_shift, projector_coupled_weight* &
+                                                                            (projector_physical_direct_delta(r, r) - &
+                                                                             projected_term))
+                                             projector_physical_direct_diag_compensation_local_avg = &
+                                                projector_physical_direct_diag_compensation_local_avg + diag_shift
+                                             projector_physical_direct_diag_compensation_local_max = &
+                                                MAX(projector_physical_direct_diag_compensation_local_max, diag_shift)
+                                             IF (diag_shift > 0.0_dp) &
+                                                projector_physical_direct_diag_compensation_local_fraction = &
+                                                   projector_physical_direct_diag_compensation_local_fraction + 1.0_dp
+                                          END DO
+                                          projector_physical_direct_diag_compensation_local_avg = &
+                                             projector_physical_direct_diag_compensation_local_avg/REAL(MAX(1, nrot), KIND=dp)
+                                          projector_physical_direct_diag_compensation_local_fraction = &
+                                             projector_physical_direct_diag_compensation_local_fraction/ &
+                                             REAL(MAX(1, nrot), KIND=dp)
                                        END IF
                                        projector_physical_direct_diag_shift_sum = 0.0_dp
                                        projector_physical_direct_diag_shift_max = 0.0_dp
@@ -5950,6 +5982,12 @@ CONTAINS
                         projector_physical_direct_response_abs_trust_ratio, &
                         projector_physical_direct_diag_compensation, &
                         projector_physical_direct_diag_shift_avg
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                        " OT Schur projector phys direct local comp avg max frac applied_avg:", &
+                        projector_physical_direct_diag_compensation_local_avg, &
+                        projector_physical_direct_diag_compensation_local_max, &
+                        projector_physical_direct_diag_compensation_local_fraction, &
+                        projector_physical_direct_diag_compensation
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,13(1X,ES16.8))') &
                         " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr mratio nratio tq sq:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
