@@ -4075,6 +4075,10 @@ CONTAINS
          projector_physical_delta_diag_avg = projector_physical_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_abs_avg = projector_physical_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          projector_gauge_abs_avg = projector_gauge_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_slope_limit_avg = 0.0_dp
+         IF (projector_physical_slope_limit_count > EPSILON(projector_physical_slope_limit_count)) &
+            projector_physical_slope_limit_avg = &
+               projector_physical_slope_limit_sum/projector_physical_slope_limit_count
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
@@ -4861,9 +4865,20 @@ CONTAINS
                                           END DO
                                        END DO
                                        projector_physical_direct_diag_compensation = 0.0_dp
-                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
                                              MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
+                                          ! The finite-complex physical response is now locally
+                                          ! capped by the Mermin occupation curvature.  Use the
+                                          ! removed over-steep secant curvature as a solve-trust
+                                          ! regularizer, so the accepted Direct model does not
+                                          ! become dominated by artificially soft Schur modes.
+                                          IF (projector_physical_slope_limit_avg > &
+                                              EPSILON(projector_physical_slope_limit_avg)) &
+                                             projector_physical_direct_diag_compensation = &
+                                                MAX(projector_physical_direct_diag_compensation, &
+                                                    projector_coupled_weight*projector_physical_slope_limit_avg)
+                                       END IF
                                        projector_physical_direct_diag_shift_sum = 0.0_dp
                                        projector_physical_direct_diag_shift_max = 0.0_dp
                                        projector_physical_direct_rot_floor_min = curvature_floor
@@ -5907,10 +5922,6 @@ CONTAINS
                      " OT Schur projector physical active-degenerate response n avg max:", &
                      projector_physical_active_blend_count, projector_physical_active_blend_avg, &
                      projector_physical_active_blend_max
-                  projector_physical_slope_limit_avg = 0.0_dp
-                  IF (projector_physical_slope_limit_count > EPSILON(projector_physical_slope_limit_count)) &
-                     projector_physical_slope_limit_avg = &
-                        projector_physical_slope_limit_sum/projector_physical_slope_limit_count
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
                      " OT Schur projector physical slope-limit applied n avg max:", &
                      projector_physical_slope_limit_count, projector_physical_slope_limit_avg, &
