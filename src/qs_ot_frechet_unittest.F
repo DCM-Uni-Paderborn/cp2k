@@ -73,6 +73,8 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-6_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
+   CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
+                                                            2.0E-8_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2472,6 +2474,96 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_occ_projector_gauge_separation
+
+! **************************************************************************************************
+!> \brief Check that diagonal projector-density response enters through the dense fixed-N projection.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_response_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4, nrot = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-7_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_mat, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i, s
+      REAL(KIND=dp)                                      :: active, corr_shift, err, occ_sum, raw_shift
+      REAL(KIND=dp), DIMENSION(n)                        :: density_diag, occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(n, nrot)                  :: b_current, b_reference, raw_response, response_current
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.31_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.18_dp, 0.0_dp, KIND=dp)
+      chc(4, 4) = CMPLX(0.43_dp, 0.0_dp, KIND=dp)
+      chc(1, 2) = CMPLX(0.045_dp, -0.025_dp, KIND=dp)
+      chc(1, 3) = CMPLX(-0.020_dp, 0.030_dp, KIND=dp)
+      chc(1, 4) = CMPLX(0.025_dp, 0.010_dp, KIND=dp)
+      chc(2, 3) = CMPLX(0.035_dp, 0.020_dp, KIND=dp)
+      chc(2, 4) = CMPLX(-0.030_dp, 0.015_dp, KIND=dp)
+      chc(3, 4) = CMPLX(0.020_dp, -0.035_dp, KIND=dp)
+      DO i = 2, n
+         chc(i, 1:i - 1) = CONJG(chc(1:i - 1, i))
+      END DO
+
+      occ_scale = [1.64_dp, 1.08_dp, 0.47_dp, 0.12_dp]
+      occ_curv = [0.38_dp, 0.71_dp, 0.29_dp, 0.16_dp]
+      raw_response(:, 1) = [0.12_dp, -0.05_dp, 0.19_dp, -0.08_dp]
+      raw_response(:, 2) = [-0.17_dp, 0.09_dp, 0.04_dp, 0.13_dp]
+      raw_response(:, 3) = [0.06_dp, 0.21_dp, -0.11_dp, -0.03_dp]
+
+      err = 0.0_dp
+      active = 0.0_dp
+      occ_sum = SUM(occ_curv)
+      DO s = 1, nrot
+         dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         SELECT CASE (s)
+         CASE (1)
+            dchc(1, 2) = CMPLX(0.27_dp, -0.19_dp, KIND=dp)
+            dchc(2, 4) = CMPLX(-0.08_dp, 0.11_dp, KIND=dp)
+         CASE (2)
+            dchc(1, 3) = CMPLX(-0.22_dp, 0.14_dp, KIND=dp)
+            dchc(3, 4) = CMPLX(0.09_dp, 0.16_dp, KIND=dp)
+         CASE (3)
+            dchc(1, 4) = CMPLX(0.18_dp, 0.07_dp, KIND=dp)
+            dchc(2, 3) = CMPLX(-0.13_dp, -0.10_dp, KIND=dp)
+         END SELECT
+         DO i = 2, n
+            dchc(i, 1:i - 1) = CONJG(dchc(1:i - 1, i))
+         END DO
+         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
+         CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, occ_mat_p)
+         CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, occ_mat_m)
+         docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+         density_diag(:) = 0.0_dp
+         DO i = 1, n
+            density_diag(i) = REAL(docc_mat(i, i), KIND=dp)
+         END DO
+
+         response_current(:, s) = raw_response(:, s) - 0.5_dp*density_diag(:)/occ_curv(:)
+         raw_shift = DOT_PRODUCT(occ_curv, response_current(:, s))/occ_sum
+         b_current(:, s) = occ_curv(:)*(response_current(:, s) - raw_shift)
+
+         raw_shift = DOT_PRODUCT(occ_curv, raw_response(:, s))/occ_sum
+         corr_shift = SUM(density_diag(:))/occ_sum
+         b_reference(:, s) = occ_curv(:)*(raw_response(:, s) - raw_shift) - &
+                             0.5_dp*(density_diag(:) - occ_curv(:)*corr_shift)
+
+         err = MAX(err, MAXVAL(ABS(docc_mat(:, :) - docc_fd(:, :))))
+         err = MAX(err, MAXVAL(ABS(b_current(:, s) - b_reference(:, s))))
+         active = MAX(active, MAXVAL(ABS(b_current(:, s) - &
+                                        occ_curv(:)*(raw_response(:, s) - raw_shift))))
+      END DO
+
+      IF (err > tol .OR. active < 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_response_projection
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
