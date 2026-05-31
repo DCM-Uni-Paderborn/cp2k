@@ -3397,6 +3397,8 @@ CONTAINS
             projector_physical_direct_delta_positive_norm, &
             projector_physical_direct_expected_drop, &
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
+            projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
+            projector_physical_direct_line_step_trust, &
             projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
             projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
             projector_physical_direct_curv_clip_max, projector_physical_direct_curv_clip_sum, &
@@ -3758,6 +3760,9 @@ CONTAINS
             projector_physical_direct_gdot_energy = 0.0_dp
             projector_physical_direct_gdot_rotation = 0.0_dp
             projector_physical_direct_gdotp = 0.0_dp
+            projector_physical_direct_line_step = 0.0_dp
+            projector_physical_direct_line_step_curvature = 0.0_dp
+            projector_physical_direct_line_step_trust = HUGE(1.0_dp)
             projector_physical_direct_curv_cap = 0.0_dp
             projector_physical_direct_curv_clip_avg = 0.0_dp
             projector_physical_direct_curv_clip_max = 0.0_dp
@@ -4455,6 +4460,9 @@ CONTAINS
                projector_physical_direct_model_gap_drop = 0.0_dp
                projector_physical_direct_model_gap_ratio = 0.0_dp
                projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
+               projector_physical_direct_line_step = 0.0_dp
+               projector_physical_direct_line_step_curvature = 0.0_dp
+               projector_physical_direct_line_step_trust = HUGE(1.0_dp)
                projector_physical_direct_metric_norm_ratio = 0.0_dp
                projector_physical_direct_metric_norm_rotation = 0.0_dp
                projector_physical_direct_soft_cut = 0.0_dp
@@ -4622,8 +4630,7 @@ CONTAINS
                IF (schur_attempt <= 3) THEN
                   row_floor = rot_floor(r)
                   IF (exact_attempt_response .AND. exact_physical_response_ready .AND. &
-                      residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-                      rot_floor(r) <= schur_frontier_curvature_floor + EPSILON(schur_frontier_curvature_floor)) &
+                      residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                      row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
                                                                    rot_hessian_projector_physical(r, r), &
                                                                    rot_floor(r))
@@ -5209,6 +5216,20 @@ CONTAINS
                                                    projector_physical_direct_response_weighted_trust_ratio, &
                                                    projector_physical_direct_response_abs_trust_ratio, &
                                                    projector_physical_direct_model_gap_ratio)
+                                             projector_physical_direct_line_step_curvature = &
+                                                1.0_dp/projector_physical_direct_direction_scale
+                                             rx_weight = MAX(projector_physical_direct_response_weighted_trust_ratio, &
+                                                             projector_physical_direct_response_abs_trust_ratio)
+                                             projector_physical_direct_line_step_trust = HUGE(1.0_dp)
+                                             IF (rx_weight > EPSILON(rx_weight)) &
+                                                projector_physical_direct_line_step_trust = 0.8_dp/rx_weight
+                                             projector_physical_direct_line_step = &
+                                                MIN(projector_physical_direct_line_step_curvature, &
+                                                    projector_physical_direct_line_step_trust)
+                                             projector_physical_direct_line_step = &
+                                                MIN(projector_physical_direct_line_step, &
+                                                    (MAX(local_ot_env(1)%ds_min, EPSILON(1.0_dp))**3* &
+                                                     projector_physical_direct_line_step)**0.25_dp)
                                              ! The physical-direct candidate is selected only after
                                              ! accepted-drop history proves it conservative.  Keep the
                                              ! z.z=g.z scale diagnostic, but do not double-discount
@@ -6098,6 +6119,10 @@ CONTAINS
                         projector_physical_direct_norm_rotation, projector_physical_direct_metric_norm_ratio, &
                         projector_physical_direct_norm_ratio, &
                         projector_physical_direct_trust_quality, projector_physical_direct_scale_quality
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                        " OT Schur projector phys direct line curv trust hint ds:", &
+                        projector_physical_direct_line_step_curvature, projector_physical_direct_line_step_trust, &
+                        projector_physical_direct_line_step, local_ot_env(1)%ds_min
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct curv pcap clipavg clipmax diagmax emin emax:", &
                         projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
