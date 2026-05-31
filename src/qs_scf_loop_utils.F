@@ -3183,6 +3183,8 @@ CONTAINS
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, projected_term, projector_coupled_weight, rayleigh_edge_gap, residual_delta, &
          physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
+         projector_physical_active_blend_avg, projector_physical_active_blend_count, &
+         projector_physical_active_blend_max, projector_physical_active_blend_sum, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_physical_abs_avg, projector_physical_delta_diag_avg, &
          projector_physical_delta_max, projector_physical_diag_avg, projector_gauge_abs_avg, &
@@ -3524,6 +3526,9 @@ CONTAINS
          projector_hessian_delta_max = 0.0_dp
          projector_hessian_diag_avg = 0.0_dp
          projector_physical_abs_avg = 0.0_dp
+         projector_physical_active_blend_count = 0.0_dp
+         projector_physical_active_blend_sum = 0.0_dp
+         projector_physical_active_blend_max = 0.0_dp
          projector_physical_delta_diag_avg = 0.0_dp
          projector_physical_delta_max = 0.0_dp
          projector_physical_diag_avg = 0.0_dp
@@ -3803,7 +3808,10 @@ CONTAINS
                                                        projector_physical_shadow_enabled, &
                                                        rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                        rot_hessian_projector_physical, response, response_occ, &
-                                                       response_occ_physical, failed)
+                                                       response_occ_physical, failed, &
+                                                       projector_physical_active_blend_count, &
+                                                       projector_physical_active_blend_sum, &
+                                                       projector_physical_active_blend_max)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -5691,6 +5699,14 @@ CONTAINS
                      projector_physical_diag_avg, projector_physical_delta_diag_avg, &
                      projector_physical_abs_avg, projector_physical_delta_max, &
                      projector_gauge_abs_avg, projector_gauge_delta_max
+                  projector_physical_active_blend_avg = 0.0_dp
+                  IF (projector_physical_active_blend_count > EPSILON(projector_physical_active_blend_count)) &
+                     projector_physical_active_blend_avg = &
+                        projector_physical_active_blend_sum/projector_physical_active_blend_count
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
+                     " OT Schur projector physical active-degenerate response n avg max:", &
+                     projector_physical_active_blend_count, projector_physical_active_blend_avg, &
+                     projector_physical_active_blend_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
@@ -6492,7 +6508,8 @@ CONTAINS
                                                  occ_curv_channel, var_i, var_j, var_kind, compute_projector_shadow, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, response, response_occ, &
-                                                 response_occ_physical, failed)
+                                                 response_occ_physical, failed, active_blend_count, &
+                                                 active_blend_sum, active_blend_max)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
@@ -6504,6 +6521,7 @@ CONTAINS
                                                             rot_hessian_projector, rot_hessian_projector_physical, &
                                                             response, response_occ, response_occ_physical
       LOGICAL, INTENT(INOUT)                             :: failed
+      REAL(KIND=dp), INTENT(INOUT)                       :: active_blend_count, active_blend_sum, active_blend_max
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
@@ -6640,7 +6658,8 @@ CONTAINS
                dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_mat, &
-                                                                occ_curv_channel)
+                                                                occ_curv_channel, active_blend_count, &
+                                                                active_blend_sum, active_blend_max)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -6782,19 +6801,21 @@ CONTAINS
       END SUBROUTINE dense_history_safe_occ_projector
 
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                             delta, docc_mat, occ_curv_channel)
+                                                             delta, docc_mat, occ_curv_channel, active_blend_count, &
+                                                             active_blend_sum, active_blend_max)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: active_blend_count, active_blend_sum, active_blend_max
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      LOGICAL                                            :: use_occ_curv
+      LOGICAL                                            :: track_active_blend, use_occ_curv
       REAL(KIND=dp)                                      :: analytic_coeff, blend, coeff, denom, gap_tol, &
                                                             max_occ_weighted, occ_curv_max, occ_tol, &
-                                                            projector_weight, response_gap_tol, scale
+                                                            projector_weight, response_gap_tol, scale, secant_coeff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -6815,6 +6836,8 @@ CONTAINS
          response_gap_tol = gap_tol
          use_occ_curv = .FALSE.
          IF (PRESENT(occ_curv_channel)) use_occ_curv = SIZE(occ_curv_channel) >= n
+         track_active_blend = PRESENT(active_blend_count) .AND. PRESENT(active_blend_sum) .AND. &
+                              PRESENT(active_blend_max)
          IF (use_occ_curv) THEN
             occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv_channel(1:n)))
             max_occ_weighted = 0.5_dp*MAXVAL(ABS(occ_scale(:)))
@@ -6829,21 +6852,29 @@ CONTAINS
                IF (i == j) CYCLE
                denom = evals(i) - evals(j)
                analytic_coeff = 0.0_dp
+               secant_coeff = 0.0_dp
                IF (use_occ_curv) &
                   analytic_coeff = -MAX(0.0_dp, occ_curv_channel(i)) - &
                                    MAX(0.0_dp, occ_curv_channel(j))
                IF (ABS(denom) > gap_tol) THEN
-                  coeff = (occ_slope(i) - occ_slope(j))/denom
+                  secant_coeff = (occ_slope(i) - occ_slope(j))/denom
+                  coeff = secant_coeff
                ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN
                   coeff = analytic_coeff
                ELSE
-                  coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
+                  secant_coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
+                  coeff = secant_coeff
                END IF
                IF (use_occ_curv .AND. analytic_coeff < 0.0_dp .AND. &
                    ABS(denom) < response_gap_tol) THEN
                   blend = 1.0_dp - ABS(denom)/MAX(response_gap_tol, EPSILON(response_gap_tol))
                   blend = MAX(0.0_dp, MIN(1.0_dp, blend))
                   coeff = (1.0_dp - blend)*coeff + blend*analytic_coeff
+                  IF (track_active_blend .AND. blend > 0.0_dp) THEN
+                     active_blend_count = active_blend_count + 1.0_dp
+                     active_blend_sum = active_blend_sum + ABS((coeff - secant_coeff)*work(i, j))
+                     active_blend_max = MAX(active_blend_max, ABS((coeff - secant_coeff)*work(i, j)))
+                  END IF
                END IF
                coeff = MIN(0.0_dp, coeff)
                kernel(i, j) = coeff*work(i, j)
