@@ -3221,8 +3221,11 @@ CONTAINS
             projector_physical_direct_norm_ratio, projector_physical_direct_response_abs_step, &
             projector_physical_direct_response_abs_trust_ratio, &
             projector_physical_direct_rot_floor_min, projector_physical_direct_schur_diag_min, &
+            projector_physical_direct_schur_eval_max, projector_physical_direct_schur_eval_min, &
             projector_physical_direct_response_weighted_step, &
             projector_physical_direct_response_weighted_trust_ratio, projector_physical_direct_scale_quality, &
+            projector_physical_direct_schur_negative_fraction, projector_physical_direct_spectral_floor, &
+            projector_physical_direct_spectral_shift_avg, projector_physical_direct_spectral_shift_max, &
             projector_physical_direct_step_negative_fraction, &
             projector_physical_direct_trust_quality, &
             projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
@@ -3275,6 +3278,7 @@ CONTAINS
                                                             projector_physical_direct_curv_eval, &
                                                             projector_physical_direct_model_e, &
                                                             projector_physical_direct_rx_e, &
+                                                            projector_physical_direct_schur_eval, &
                                                             projector_physical_direct_sol, &
                                                             projector_physical_direct_z_e, &
                                                             projector_physical_model_e, projector_physical_rx_e, &
@@ -3289,6 +3293,7 @@ CONTAINS
                                                             energy_hessian, response_coupled, response_exact, &
                                                             response_exact_physical, response_exact_raw, response_occ, &
                                                             projector_physical_direct_delta, response_occ_physical, &
+                                                            projector_physical_direct_schur_vec, &
                                                             response_split, rot_hessian, rot_hessian_coupled, &
                                                             rot_hessian_projector, rot_hessian_projector_physical, schur
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -3340,7 +3345,8 @@ CONTAINS
                       z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
                       constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                       projector_physical_direct_model_e(ne), &
-                      projector_physical_direct_rx_e(ne), projector_physical_direct_z_e(ne), &
+                      projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
+                      projector_physical_direct_z_e(ne), &
                       projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                       projector_physical_z_e(ne), projector_response_rx_e(ne), &
                       projector_response_z_e(ne), split_z_e(ne))
@@ -3356,6 +3362,7 @@ CONTAINS
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
+                   projector_physical_direct_schur_vec(nrot, nrot), &
                    rot_hessian_projector_physical(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
          ALLOCATE (ipiv_energy(ne))
 
@@ -3371,6 +3378,7 @@ CONTAINS
             rx_model(:) = 0.0_dp
             projector_physical_direct_model_e(:) = 0.0_dp
             projector_physical_direct_rx_e(:) = 0.0_dp
+            projector_physical_direct_schur_eval(:) = 0.0_dp
             projector_physical_direct_z_e(:) = 0.0_dp
             projector_physical_direct_curv_eval(:) = 0.0_dp
             projector_physical_model_e(:) = 0.0_dp
@@ -3402,6 +3410,7 @@ CONTAINS
          rot_hessian_projector(:, :) = 0.0_dp
          rot_hessian_projector_physical(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
+         projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
@@ -3557,11 +3566,17 @@ CONTAINS
             projector_physical_direct_norm_ratio = 0.0_dp
             projector_physical_direct_rot_floor_min = curvature_floor
             projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
+            projector_physical_direct_schur_eval_max = 0.0_dp
+            projector_physical_direct_schur_eval_min = 0.0_dp
             projector_physical_direct_response_abs_step = 0.0_dp
             projector_physical_direct_response_abs_trust_ratio = 0.0_dp
             projector_physical_direct_response_weighted_step = 0.0_dp
             projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
             projector_physical_direct_scale_quality = 0.0_dp
+            projector_physical_direct_schur_negative_fraction = 0.0_dp
+            projector_physical_direct_spectral_floor = curvature_floor
+            projector_physical_direct_spectral_shift_avg = 0.0_dp
+            projector_physical_direct_spectral_shift_max = 0.0_dp
             projector_physical_direct_trust_quality = 1.0_dp
             projector_physical_direction_scale = 0.0_dp
             projector_physical_expected_drop = 0.0_dp
@@ -3794,6 +3809,7 @@ CONTAINS
                            z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
                            projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                            projector_physical_direct_rx_e, &
+                           projector_physical_direct_schur_eval, &
                            projector_physical_direct_z_e, projector_physical_model_e, &
                            projector_physical_rx_e, projector_physical_z_e, &
                            projector_response_rx_e, projector_response_z_e, split_z_e)
@@ -3804,6 +3820,7 @@ CONTAINS
                         response, response_coupled, response_exact, response_exact_physical, &
                         response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
                         projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
+                        projector_physical_direct_schur_vec, &
                         rot_hessian_projector_physical, schur, ipiv, ipiv_energy, channel_nmo, e_offset)
             RETURN
          END IF
@@ -4167,10 +4184,16 @@ CONTAINS
                projector_physical_direct_curv_eval_min = 0.0_dp
                projector_physical_direct_rot_floor_min = curvature_floor
                projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
+               projector_physical_direct_schur_eval_max = 0.0_dp
+               projector_physical_direct_schur_eval_min = 0.0_dp
                projector_physical_direct_response_abs_step = 0.0_dp
                projector_physical_direct_response_abs_trust_ratio = 0.0_dp
                projector_physical_direct_response_weighted_step = 0.0_dp
                projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
+               projector_physical_direct_schur_negative_fraction = 0.0_dp
+               projector_physical_direct_spectral_floor = curvature_floor
+               projector_physical_direct_spectral_shift_avg = 0.0_dp
+               projector_physical_direct_spectral_shift_max = 0.0_dp
                projector_physical_direct_step_negative_fraction = 0.0_dp
                projector_physical_expected_drop = 0.0_dp
                projector_physical_model_calibrated_drop = 0.0_dp
@@ -4667,6 +4690,43 @@ CONTAINS
                                        END DO
                                        projector_physical_direct_diag_shift_avg = &
                                           projector_physical_direct_diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
+                                       IF (logger%iter_info%print_level >= high_print_level) THEN
+                                          projector_physical_direct_schur_vec(:, :) = &
+                                             0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                                          CALL diamat_all(projector_physical_direct_schur_vec, &
+                                                          projector_physical_direct_schur_eval)
+                                          projector_physical_direct_schur_eval_min = &
+                                             MINVAL(projector_physical_direct_schur_eval)
+                                          projector_physical_direct_schur_eval_max = &
+                                             MAXVAL(projector_physical_direct_schur_eval)
+                                          projector_physical_direct_spectral_floor = &
+                                             MAX(curvature_floor, projector_physical_direct_rot_floor_min)
+                                          IF (sigma > EPSILON(sigma)) &
+                                             projector_physical_direct_spectral_floor = &
+                                                MAX(projector_physical_direct_spectral_floor, &
+                                                    kpoint_ot_fermi_window_anchor(sigma))
+                                          projector_physical_direct_spectral_floor = &
+                                             MIN(schur_frontier_curvature_floor, &
+                                                 projector_physical_direct_spectral_floor)
+                                          projector_physical_direct_spectral_shift_avg = 0.0_dp
+                                          projector_physical_direct_spectral_shift_max = 0.0_dp
+                                          projector_physical_direct_schur_negative_fraction = 0.0_dp
+                                          DO r = 1, nrot
+                                             IF (projector_physical_direct_schur_eval(r) < 0.0_dp) &
+                                                projector_physical_direct_schur_negative_fraction = &
+                                                   projector_physical_direct_schur_negative_fraction + 1.0_dp
+                                             diag_shift = MAX(0.0_dp, projector_physical_direct_spectral_floor - &
+                                                                  ABS(projector_physical_direct_schur_eval(r)))
+                                             projector_physical_direct_spectral_shift_avg = &
+                                                projector_physical_direct_spectral_shift_avg + diag_shift
+                                             projector_physical_direct_spectral_shift_max = &
+                                                MAX(projector_physical_direct_spectral_shift_max, diag_shift)
+                                          END DO
+                                          projector_physical_direct_spectral_shift_avg = &
+                                             projector_physical_direct_spectral_shift_avg/REAL(MAX(1, nrot), KIND=dp)
+                                          projector_physical_direct_schur_negative_fraction = &
+                                             projector_physical_direct_schur_negative_fraction/REAL(MAX(1, nrot), KIND=dp)
+                                       END IF
                                        CALL dgesv(nrot, 1, schur, nrot, ipiv, projector_physical_direct_sol, nrot, info)
                                        IF (info == 0) THEN
                                           IF (logger%iter_info%print_level >= high_print_level) THEN
@@ -5655,6 +5715,12 @@ CONTAINS
                         projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
                         projector_physical_direct_curv_clip_max, projector_physical_direct_curv_diag_max, &
                         projector_physical_direct_curv_eval_min, projector_physical_direct_curv_eval_max
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                        " OT Schur projector phys direct schur sfloor savg smax sneg emin emax:", &
+                        projector_physical_direct_spectral_floor, projector_physical_direct_spectral_shift_avg, &
+                        projector_physical_direct_spectral_shift_max, &
+                        projector_physical_direct_schur_negative_fraction, &
+                        projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector phys direct modes sneg dneg dpos dfrac:", &
                         projector_physical_direct_step_negative_fraction, &
@@ -5699,6 +5765,7 @@ CONTAINS
                         z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_rx_e, &
+                        projector_physical_direct_schur_eval, &
                         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
                         projector_physical_z_e, &
                         projector_response_rx_e, projector_response_z_e, split_z_e)
@@ -5709,6 +5776,7 @@ CONTAINS
                      response, response_coupled, response_exact, response_exact_physical, response_exact_raw, &
                      response_occ, response_occ_physical, response_split, rot_hessian, &
                      projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
+                     projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, schur, ipiv, ipiv_energy, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
