@@ -3171,7 +3171,8 @@ CONTAINS
          coupled_scale_quality, curv_projection_sum, dense_direction_scale, dense_expected_drop, dense_term, &
          dense_gdot_energy, dense_gdot_rotation, dense_model_gap, dense_model_gap_drop, dense_model_gap_ratio, &
          dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
-         dense_residual_quality, dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, direction_scale, &
+         dense_residual_quality, dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, &
+         diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, diag_shift_fraction, direction_scale, &
          energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
          gdot_rotation, gnorm, &
          accepted_projector_coupled_weight, density_projector_fraction, dense_projector_coupled_weight, diag_shift_max, &
@@ -3251,7 +3252,7 @@ CONTAINS
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
-         response_mixed_diag_avg, &
+         response_mixed_diag_avg, row_floor_avg, row_floor_max, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, scale_quality, &
@@ -4238,6 +4239,12 @@ CONTAINS
             END DO
             diag_shift_sum = 0.0_dp
             diag_shift_max = 0.0_dp
+            diag_prefloor_avg = 0.0_dp
+            diag_prefloor_min = HUGE(1.0_dp)
+            diag_prefloor_max = -HUGE(1.0_dp)
+            diag_shift_fraction = 0.0_dp
+            row_floor_avg = 0.0_dp
+            row_floor_max = 0.0_dp
             response_abs_step = 0.0_dp
             response_abs_trust_ratio = 0.0_dp
             response_step_max = 0.0_dp
@@ -4314,6 +4321,11 @@ CONTAINS
                                                                    rot_floor(r))
                END IF
                rot_floor_min = MIN(rot_floor_min, row_floor)
+               diag_prefloor_avg = diag_prefloor_avg + schur(r, r)
+               diag_prefloor_min = MIN(diag_prefloor_min, schur(r, r))
+               diag_prefloor_max = MAX(diag_prefloor_max, schur(r, r))
+               row_floor_avg = row_floor_avg + row_floor
+               row_floor_max = MAX(row_floor_max, row_floor)
                IF (schur_attempt <= 3) THEN
                   ! First try the coupled finite-rotation Schur block itself.  The
                   ! line-search safeguards below reject non-descent or overlarge
@@ -4327,9 +4339,18 @@ CONTAINS
                   schur(r, r) = schur(r, r) + diag_shift
                   diag_shift_sum = diag_shift_sum + diag_shift
                   diag_shift_max = MAX(diag_shift_max, diag_shift)
+                  diag_shift_fraction = diag_shift_fraction + 1.0_dp
                END IF
                schur_diag_min = MIN(schur_diag_min, schur(r, r))
             END DO
+            diag_prefloor_avg = diag_prefloor_avg/REAL(MAX(1, nrot), KIND=dp)
+            row_floor_avg = row_floor_avg/REAL(MAX(1, nrot), KIND=dp)
+            diag_shift_fraction = diag_shift_fraction/REAL(MAX(1, nrot), KIND=dp)
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),8(1X,ES16.8))') &
+                  " OT Schur floor audit group ne nrot att preavg premin premax flooravg floormax sfrac dsum dmax:", &
+                  target_group, ne, nrot, schur_attempt, diag_prefloor_avg, diag_prefloor_min, diag_prefloor_max, &
+                  row_floor_avg, row_floor_max, diag_shift_fraction, diag_shift_sum, diag_shift_max
 
             sol(:) = rhs(:)
             CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
