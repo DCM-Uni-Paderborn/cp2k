@@ -6909,6 +6909,12 @@ CONTAINS
                      docc_mat(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                   END IF
                END DO
+               ! The physical occupation response is represented in the
+               ! energy channel above.  Keep only a damped off-diagonal
+               ! projector derivative in the REF rotation Hessian; the full
+               ! term contains canonical-basis gauge motion that over-hardens
+               ! the residual-tail physical Direct solve.
+               docc_mat(:, :) = 0.5_dp*docc_mat(:, :)
                CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, grad_p_re, grad_p_im, eps_p)
                DO r = first_var, last_var
                   imo = var_i(r)

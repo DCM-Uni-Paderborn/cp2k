@@ -77,6 +77,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex occupation-projector active degenerate response", 5.0E-14_dp, nfail)
    CALL check_complex_occ_projector_slope_limit("complex occupation-projector slope limit", &
                                                 5.0E-14_dp, nfail)
+   CALL check_complex_occ_projector_physical_split("complex occupation-projector physical split", &
+                                                   5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2559,6 +2561,80 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_occ_projector_slope_limit
+
+! **************************************************************************************************
+!> \brief Split physical occupation response into energy and damped offdiag rotation channels.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_physical_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, diag_mat, docc_mat, split_mat
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: diag_err, err, offdiag_norm
+      REAL(KIND=dp), DIMENSION(n)                        :: energy_response, occ_curv, occ_scale
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.11_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.27_dp, 0.0_dp, KIND=dp)
+      chc(1, 2) = CMPLX(0.04_dp, -0.02_dp, KIND=dp)
+      chc(1, 3) = CMPLX(-0.03_dp, 0.01_dp, KIND=dp)
+      chc(2, 3) = CMPLX(0.02_dp, 0.05_dp, KIND=dp)
+      chc(2, 1) = CONJG(chc(1, 2))
+      chc(3, 1) = CONJG(chc(1, 3))
+      chc(3, 2) = CONJG(chc(2, 3))
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 1) = CMPLX(0.08_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.12_dp, -0.07_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(-0.05_dp, 0.09_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(0.06_dp, 0.04_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+      dchc(3, 1) = CONJG(dchc(1, 3))
+      dchc(3, 2) = CONJG(dchc(2, 3))
+
+      occ_scale(:) = [1.38_dp, 0.82_dp, 0.28_dp]
+      occ_curv(:) = [0.41_dp, 0.63_dp, 0.22_dp]
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
+
+      DO i = 1, n
+         energy_response(i) = -0.5_dp*REAL(docc_mat(i, i), KIND=dp)/occ_curv(i)
+      END DO
+      diag_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         diag_mat(i, i) = docc_mat(i, i)
+      END DO
+      split_mat(:, :) = docc_mat(:, :)
+      DO i = 1, n
+         split_mat(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      END DO
+      split_mat(:, :) = 0.5_dp*split_mat(:, :)
+
+      diag_err = 0.0_dp
+      DO i = 1, n
+         diag_err = MAX(diag_err, ABS(REAL(docc_mat(i, i), KIND=dp) + &
+                                      2.0_dp*occ_curv(i)*energy_response(i)))
+      END DO
+      offdiag_norm = MAXVAL(ABS(docc_mat - diag_mat))
+      err = MAX(diag_err, MAXVAL(ABS(split_mat - 0.5_dp*(docc_mat - diag_mat))))
+
+      IF (err > tol .OR. offdiag_norm <= tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/offdiag", &
+            err, offdiag_norm
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/offdiag", &
+            err, offdiag_norm
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_physical_split
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
