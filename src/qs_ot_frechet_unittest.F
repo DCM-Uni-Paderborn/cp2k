@@ -75,6 +75,8 @@ PROGRAM qs_ot_frechet_unittest
                                                      1.0E-7_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
                                                             2.0E-8_dp, nfail)
+   CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
+                                                          5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2564,6 +2566,92 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_response_projection
+
+! **************************************************************************************************
+!> \brief Check the fixed-N low-rank curvature from diagonal projector-density response.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_curvature_addback(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
+
+      INTEGER                                            :: i, info, j, r, s
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      REAL(KIND=dp)                                      :: err, gauge_shift, occ_sum, qdrop, ref_drop, shift
+      REAL(KIND=dp), DIMENSION(ne)                       :: bq, occ_curv, tether_curv, xq
+      REAL(KIND=dp), DIMENSION(nrot)                     :: qvec
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, b_gauge, density_response, rhs
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: curv, curv_gauge
+
+      occ_curv(:) = [0.38_dp, 0.71_dp, 0.29_dp, 0.16_dp]
+      tether_curv(:) = [0.05_dp, 0.02_dp, 0.03_dp, 0.01_dp]
+      density_response(:, 1) = [0.09_dp, -0.04_dp, 0.16_dp, -0.08_dp]
+      density_response(:, 2) = [-0.11_dp, 0.07_dp, 0.03_dp, 0.10_dp]
+      density_response(:, 3) = [0.05_dp, 0.13_dp, -0.09_dp, -0.02_dp]
+      qvec(:) = [0.43_dp, -0.28_dp, 0.19_dp]
+
+      h(:, :) = 0.0_dp
+      DO i = 1, ne
+         h(i, i) = occ_curv(i) + tether_curv(i)
+      END DO
+      occ_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            h(i, j) = h(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+         END DO
+      END DO
+      h(:, :) = h(:, :) + MAXVAL(occ_curv(:) + tether_curv(:))/REAL(ne, KIND=dp)
+      b(:, :) = 0.0_dp
+      DO s = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, density_response(:, s))/occ_sum
+         b(:, s) = occ_curv(:)*(density_response(:, s) - shift)
+      END DO
+
+      rhs(:, :) = b(:, :)
+      h_ref(:, :) = h(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in dgesv", info
+         RETURN
+      END IF
+      curv(:, :) = MATMUL(TRANSPOSE(b), rhs)
+
+      gauge_shift = 0.37_dp
+      b_gauge(:, :) = 0.0_dp
+      DO s = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, density_response(:, s) + gauge_shift)/occ_sum
+         b_gauge(:, s) = occ_curv(:)*(density_response(:, s) + gauge_shift - shift)
+      END DO
+      h(:, :) = h_ref(:, :)
+      rhs(:, :) = b_gauge(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in gauge dgesv", info
+         RETURN
+      END IF
+      curv_gauge(:, :) = MATMUL(TRANSPOSE(b_gauge), rhs)
+
+      bq(:) = MATMUL(b, qvec)
+      xq(:) = MATMUL(rhs, qvec)
+      qdrop = 0.5_dp*DOT_PRODUCT(qvec, MATMUL(curv, qvec))
+      ref_drop = 0.5_dp*DOT_PRODUCT(bq, xq)
+      err = MAXVAL(ABS(curv(:, :) - TRANSPOSE(curv(:, :))))
+      err = MAX(err, MAXVAL(ABS(curv(:, :) - curv_gauge(:, :))))
+      err = MAX(err, ABS(qdrop - ref_drop))
+
+      IF (err > tol .OR. qdrop <= 1.0E-8_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/drop", err, qdrop
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/drop", err, qdrop
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_curvature_addback
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.

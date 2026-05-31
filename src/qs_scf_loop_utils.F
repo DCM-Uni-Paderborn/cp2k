@@ -3314,7 +3314,8 @@ CONTAINS
                                                             var_channel, var_ei, var_ej, var_i, &
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, exact_attempt_response, failed, &
-                                                            new_search_point, response_model_available, solved, &
+                                                            exact_density_response_ready, new_search_point, &
+                                                            response_model_available, solved, &
                                                             constrained_candidate_enabled, &
                                                             constrained_candidate_ready, constrained_candidate_selected, &
                                                                exact_energy_model_ready, exact_physical_response_ready, &
@@ -3373,6 +3374,8 @@ CONTAINS
             projector_mode_history_response_negative, projector_mode_history_response_ratio, &
             accepted_projector_response_drop, accepted_projector_response_negative, &
             accepted_projector_response_weight, &
+            projector_physical_density_abs_avg, projector_physical_density_delta_max, &
+            projector_physical_density_diag_avg, &
             projector_physical_direction_scale, projector_physical_expected_drop, &
             projector_physical_gdot_energy, projector_physical_gdot_rotation, projector_physical_gdotp, &
             projector_physical_model_calibrated_drop, projector_physical_model_drop, &
@@ -3458,7 +3461,7 @@ CONTAINS
          tether_strength, tether_weight, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
-                                                            projector_physical_direct_curv_eval, &
+                                                            projector_physical_direct_curv_eval, z_density_trial, &
                                                             projector_physical_direct_model_e, &
                                                             projector_physical_direct_rx_e, &
                                                             projector_physical_direct_schur_eval, &
@@ -3472,8 +3475,9 @@ CONTAINS
                                                             z_exact_raw_trial, z_exact_physical_trial, &
                                                             z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            energy_cross, energy_cross_physical, energy_cross_raw, &
-                                                            energy_hessian, response_coupled, response_exact, &
+                                                            energy_cross, energy_cross_density, energy_cross_physical, &
+                                                            energy_cross_raw, energy_hessian, response_coupled, response_exact, &
+                                                            response_density_exact, response_density_physical, &
                                                             response_exact_physical, response_exact_raw, response_occ, &
                                                             projector_physical_direct_delta, response_occ_physical, &
                                                             projector_physical_direct_schur_vec, &
@@ -3529,6 +3533,7 @@ CONTAINS
                       constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                       projector_physical_direct_model_e(ne), &
                       projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
+                      z_density_trial(ne), &
                       projector_physical_direct_z_e(ne), &
                       projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                       projector_physical_z_e(ne), projector_response_rx_e(ne), &
@@ -3538,8 +3543,10 @@ CONTAINS
                       projector_response_sol(nrot), split_sol(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot))
-         ALLOCATE (energy_cross(ne, nrot), energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
+         ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
+                   energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
                    energy_hessian(ne, ne), response(ne, nrot), response_coupled(ne, nrot), &
+                   response_density_exact(ne, nrot), response_density_physical(ne, nrot), &
                    response_exact(ne, nrot), response_exact_physical(ne, nrot), &
                    response_exact_raw(ne, nrot), response_occ(ne, nrot), response_occ_physical(ne, nrot), &
                    response_split(ne, nrot), &
@@ -3564,6 +3571,7 @@ CONTAINS
             projector_physical_direct_schur_eval(:) = 0.0_dp
             projector_physical_direct_z_e(:) = 0.0_dp
             projector_physical_direct_curv_eval(:) = 0.0_dp
+            z_density_trial(:) = 0.0_dp
             projector_physical_model_e(:) = 0.0_dp
             projector_physical_rx_e(:) = 0.0_dp
             projector_physical_z_e(:) = 0.0_dp
@@ -3577,11 +3585,14 @@ CONTAINS
             projector_physical_sol(:) = 0.0_dp
             projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
+         energy_cross_density(:, :) = 0.0_dp
          energy_cross_physical(:, :) = 0.0_dp
          energy_cross_raw(:, :) = 0.0_dp
          energy_hessian(:, :) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
+         response_density_exact(:, :) = 0.0_dp
+         response_density_physical(:, :) = 0.0_dp
          response_exact(:, :) = 0.0_dp
          response_exact_physical(:, :) = 0.0_dp
          response_exact_raw(:, :) = 0.0_dp
@@ -3608,6 +3619,9 @@ CONTAINS
          density_projector_fraction = 0.0_dp
          physical_response_gap_avg = 0.0_dp
          physical_response_gap_max = 0.0_dp
+         projector_physical_density_abs_avg = 0.0_dp
+         projector_physical_density_delta_max = 0.0_dp
+         projector_physical_density_diag_avg = 0.0_dp
          rot_floor_min = curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          constrained_diag_shift_avg = 0.0_dp
@@ -3880,6 +3894,7 @@ CONTAINS
          split_response_trust_factor = 1.0_dp
          split_rot_floor_min = curvature_floor
          split_schur_diag_min = HUGE(1.0_dp)
+            exact_density_response_ready = .FALSE.
             exact_physical_response_ready = .FALSE.
             failed = .FALSE.
             constrained_candidate_ready = .FALSE.
@@ -3987,14 +4002,15 @@ CONTAINS
                                                        projector_physical_shadow_enabled, &
                                                        rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                        rot_hessian_projector_physical, response, response_occ, &
-                                                       response_occ_physical, failed)
+                                                       response_occ_physical, response_density_physical, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
 
             CPASSERT(ivar == nrot)
             IF (failed) THEN
-               DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_physical_trial, z_exact_raw_trial, &
+               DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_density_trial, &
+                           z_exact_physical_trial, z_exact_raw_trial, &
                            z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
                            projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                            projector_physical_direct_rx_e, &
@@ -4005,8 +4021,9 @@ CONTAINS
                DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
                            projector_physical_sol, projector_response_sol, split_sol)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, energy_cross, energy_cross_physical, energy_cross_raw, energy_hessian, &
-                        response, response_coupled, response_exact, response_exact_physical, &
+            DEALLOCATE (rot_floor, energy_cross, energy_cross_density, energy_cross_physical, energy_cross_raw, &
+                        energy_hessian, response, response_coupled, response_density_exact, &
+                        response_density_physical, response_exact, response_exact_physical, &
                         response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
                         projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
                         projector_physical_direct_schur_vec, &
@@ -4035,6 +4052,35 @@ CONTAINS
                                                TRANSPOSE(rot_hessian_projector(:, :)))
          rot_hessian_projector_physical(:, :) = 0.5_dp*(rot_hessian_projector_physical(:, :) + &
                                                         TRANSPOSE(rot_hessian_projector_physical(:, :)))
+         exact_density_response_ready = .FALSE.
+         IF (projector_physical_shadow_enabled) THEN
+            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_physical, &
+                                                       0.0_dp*response_density_physical, 0.0_dp*grad_e, &
+                                                       channel_nmo, e_offset, energy_hessian, &
+                                                       energy_cross_density, response_density_exact, &
+                                                       z_density_trial, ipiv_energy, exact_density_response_ready, &
+                                                       energy_gauge_weight)
+            IF (exact_density_response_ready) THEN
+               DO s = 1, nrot
+                  DO r = 1, nrot
+                     projected_term = 0.5_dp* &
+                        (DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
+                         DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                     rot_hessian_projector_physical(r, s) = rot_hessian_projector_physical(r, s) + &
+                                                            projected_term
+                     projector_physical_density_abs_avg = projector_physical_density_abs_avg + ABS(projected_term)
+                     projector_physical_density_delta_max = MAX(projector_physical_density_delta_max, &
+                                                                ABS(projected_term))
+                     IF (r == s) projector_physical_density_diag_avg = &
+                        projector_physical_density_diag_avg + projected_term
+                  END DO
+               END DO
+               projector_physical_density_abs_avg = projector_physical_density_abs_avg/ &
+                                                    REAL(MAX(1, nrot*nrot), KIND=dp)
+               projector_physical_density_diag_avg = projector_physical_density_diag_avg/ &
+                                                     REAL(MAX(1, nrot), KIND=dp)
+            END IF
+         END IF
          DO r = 1, nrot
             projector_hessian_diag_avg = projector_hessian_diag_avg + rot_hessian_projector(r, r)
             projector_hessian_delta_diag_avg = projector_hessian_delta_diag_avg + &
@@ -5935,6 +5981,10 @@ CONTAINS
                      projector_physical_diag_avg, projector_physical_delta_diag_avg, &
                      projector_physical_abs_avg, projector_physical_delta_max, &
                      projector_gauge_abs_avg, projector_gauge_delta_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1(1X,L1),3(1X,ES16.8))') &
+                     " OT Schur projector physical density curv ready diag abs max:", &
+                     exact_density_response_ready, projector_physical_density_diag_avg, &
+                     projector_physical_density_abs_avg, projector_physical_density_delta_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
@@ -6055,7 +6105,8 @@ CONTAINS
             END IF
          END IF
 
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_exact_physical_trial, z_exact_raw_trial, &
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_density_trial, &
+                        z_exact_physical_trial, z_exact_raw_trial, &
                         z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_rx_e, &
@@ -6066,8 +6117,9 @@ CONTAINS
             DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
                         projector_physical_sol, projector_response_sol, split_sol)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, energy_cross, energy_cross_physical, energy_cross_raw, energy_hessian, &
-                     response, response_coupled, response_exact, response_exact_physical, response_exact_raw, &
+         DEALLOCATE (rot_floor, energy_cross, energy_cross_density, energy_cross_physical, energy_cross_raw, &
+                     energy_hessian, response, response_coupled, response_density_exact, &
+                     response_density_physical, response_exact, response_exact_physical, response_exact_raw, &
                      response_occ, response_occ_physical, response_split, rot_hessian, &
                      projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
                      projector_physical_direct_schur_vec, &
@@ -6742,7 +6794,7 @@ CONTAINS
                                                  occ_curv_channel, var_i, var_j, var_kind, compute_projector_shadow, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, response, response_occ, &
-                                                 response_occ_physical, failed)
+                                                 response_occ_physical, response_density_physical, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
@@ -6752,7 +6804,8 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: compute_projector_shadow
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, &
                                                             rot_hessian_projector, rot_hessian_projector_physical, &
-                                                            response, response_occ, response_occ_physical
+                                                            response, response_occ, response_density_physical, &
+                                                            response_occ_physical
       LOGICAL, INTENT(INOUT)                             :: failed
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
@@ -6760,7 +6813,8 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: projector_response, projector_weight, raw_response
+      REAL(KIND=dp)                                      :: density_response, projector_response, projector_weight, &
+                                                            raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
                                                             projector_evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -6897,9 +6951,12 @@ CONTAINS
                   IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
                      ! docc_mat is a doubled k-point density response, while
                      ! occ_curv_channel is w_k*g_i.
+                     density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)
+                     response_density_physical(first_energy + ie - 1, s) = &
+                        density_response/occ_curv_channel(ie)
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
-                        0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
+                        response_density_physical(first_energy + ie - 1, s)
                      ! The diagonal projector response is represented by the
                      ! energy-response channel above.  Keeping it in the
                      ! rotation Hessian as well double-counts the same density
