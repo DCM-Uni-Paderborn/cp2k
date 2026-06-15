@@ -3387,13 +3387,17 @@ CONTAINS
          occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, pair_projector_weight, projected_term, projector_coupled_weight, &
-         rayleigh_edge_gap, residual_delta, &
+         projector_diagref_weight, rayleigh_edge_gap, residual_delta, &
          physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_physical_abs_avg, projector_physical_delta_diag_avg, &
          projector_physical_delta_max, projector_physical_diag_avg, projector_gauge_abs_avg, &
          projector_gauge_delta_max, projector_diag_compensation, projector_mode_damped_abs_avg, &
          projector_mode_eval_max, projector_mode_eval_min, projector_mode_negative_fraction, projector_mode_quality, &
+         projector_physical_diagref_abs_avg, projector_physical_diagref_delta_diag_avg, &
+         projector_physical_diagref_delta_max, projector_physical_diagref_diag_avg, &
+         projector_physical_diagref_gap_abs_avg, projector_physical_diagref_gap_delta_max, &
+         projector_physical_diagref_gap_diag_avg, projector_physical_diagref_trace_balance, &
          accepted_projector_mode_drop, accepted_projector_mode_response_drop, &
          accepted_projector_mode_response_negative_fraction, accepted_projector_mode_step_negative_fraction, &
          accepted_projector_mode_trust_quality, projector_mode_history_quality, &
@@ -3532,7 +3536,8 @@ CONTAINS
                                                             response_split, rot_hessian, rot_hessian_coupled, &
                                                             rot_hessian_projector, &
                                                             rot_hessian_projector_physical, &
-                                                            rot_hessian_projector_physical_active, schur
+                                                            rot_hessian_projector_physical_active, &
+                                                            rot_hessian_projector_physical_diagref, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -3606,7 +3611,8 @@ CONTAINS
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
                    projector_physical_direct_schur_vec(nrot, nrot), &
                    rot_hessian_projector_physical(nrot, nrot), &
-                   rot_hessian_projector_physical_active(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
+                   rot_hessian_projector_physical_active(nrot, nrot), &
+                   rot_hessian_projector_physical_diagref(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
          ALLOCATE (ipiv_energy(ne))
 
          curv(:) = 0.0_dp
@@ -3660,6 +3666,7 @@ CONTAINS
          rot_hessian_projector(:, :) = 0.0_dp
          rot_hessian_projector_physical(:, :) = 0.0_dp
          rot_hessian_projector_physical_active(:, :) = 0.0_dp
+         rot_hessian_projector_physical_diagref(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
@@ -3793,6 +3800,14 @@ CONTAINS
          projector_physical_delta_diag_avg = 0.0_dp
          projector_physical_delta_max = 0.0_dp
          projector_physical_diag_avg = 0.0_dp
+         projector_physical_diagref_abs_avg = 0.0_dp
+         projector_physical_diagref_delta_diag_avg = 0.0_dp
+         projector_physical_diagref_delta_max = 0.0_dp
+         projector_physical_diagref_diag_avg = 0.0_dp
+         projector_physical_diagref_gap_abs_avg = 0.0_dp
+         projector_physical_diagref_gap_delta_max = 0.0_dp
+         projector_physical_diagref_gap_diag_avg = 0.0_dp
+         projector_physical_diagref_trace_balance = 0.0_dp
          projector_gauge_abs_avg = 0.0_dp
          projector_gauge_delta_max = 0.0_dp
          projector_diag_compensation = 0.0_dp
@@ -4116,7 +4131,8 @@ CONTAINS
                         projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
                         projector_physical_direct_schur_vec, &
                         rot_hessian_projector_physical, &
-                        rot_hessian_projector_physical_active, schur, ipiv, ipiv_energy, channel_nmo, e_offset)
+                        rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
+                        schur, ipiv, ipiv_energy, channel_nmo, e_offset)
             RETURN
          END IF
 
@@ -4141,6 +4157,18 @@ CONTAINS
                                                TRANSPOSE(rot_hessian_projector(:, :)))
          rot_hessian_projector_physical(:, :) = 0.5_dp*(rot_hessian_projector_physical(:, :) + &
                                                         TRANSPOSE(rot_hessian_projector_physical(:, :)))
+         rot_hessian_projector_physical_diagref(:, :) = 0.0_dp
+         DO s = 1, nrot
+            DO r = 1, nrot
+               IF (var_channel(r) /= var_channel(s)) CYCLE
+               projector_diagref_weight = 0.5_dp*(var_projector_weight(r) + var_projector_weight(s))
+               rot_hessian_projector_physical_diagref(r, s) = &
+                  (1.0_dp - projector_diagref_weight)*rot_hessian_coupled(r, s)
+            END DO
+         END DO
+         rot_hessian_projector_physical_diagref(:, :) = 0.5_dp* &
+            (rot_hessian_projector_physical_diagref(:, :) + &
+             TRANSPOSE(rot_hessian_projector_physical_diagref(:, :)))
          exact_density_response_ready = .FALSE.
          IF (projector_physical_shadow_enabled) THEN
             CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_physical, &
@@ -4157,6 +4185,8 @@ CONTAINS
                          DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
                      rot_hessian_projector_physical(r, s) = rot_hessian_projector_physical(r, s) + &
                                                             projected_term
+                     rot_hessian_projector_physical_diagref(r, s) = &
+                        rot_hessian_projector_physical_diagref(r, s) + projected_term
                      projector_physical_density_abs_avg = projector_physical_density_abs_avg + ABS(projected_term)
                      projector_physical_density_delta_max = MAX(projector_physical_density_delta_max, &
                                                                 ABS(projected_term))
@@ -4192,6 +4222,12 @@ CONTAINS
             projector_physical_diag_avg = projector_physical_diag_avg + rot_hessian_projector_physical(r, r)
             projector_physical_delta_diag_avg = projector_physical_delta_diag_avg + &
                                                 rot_hessian_projector_physical(r, r) - rot_hessian(r, r)
+            projector_physical_diagref_diag_avg = projector_physical_diagref_diag_avg + &
+                                                  rot_hessian_projector_physical_diagref(r, r)
+            projector_physical_diagref_delta_diag_avg = projector_physical_diagref_delta_diag_avg + &
+               rot_hessian_projector_physical_diagref(r, r) - rot_hessian(r, r)
+            projector_physical_diagref_gap_diag_avg = projector_physical_diagref_gap_diag_avg + &
+               rot_hessian_projector_physical_diagref(r, r) - rot_hessian_projector_physical(r, r)
             projector_physical_covariant_delta = -var_projector_weight(r)*rot_hessian(r, r)
             projector_physical_active_covariant_delta = -var_projector_active_weight(r)*rot_hessian(r, r)
             projector_physical_residual_delta = rot_hessian_projector_physical(r, r) - rot_hessian(r, r) - &
@@ -4226,6 +4262,14 @@ CONTAINS
                                             ABS(rot_hessian_projector_physical(r, s) - rot_hessian(r, s))
                projector_physical_delta_max = MAX(projector_physical_delta_max, &
                                                   ABS(rot_hessian_projector_physical(r, s) - rot_hessian(r, s)))
+               projector_physical_diagref_abs_avg = projector_physical_diagref_abs_avg + &
+                  ABS(rot_hessian_projector_physical_diagref(r, s) - rot_hessian(r, s))
+               projector_physical_diagref_delta_max = MAX(projector_physical_diagref_delta_max, &
+                  ABS(rot_hessian_projector_physical_diagref(r, s) - rot_hessian(r, s)))
+               projector_physical_diagref_gap_abs_avg = projector_physical_diagref_gap_abs_avg + &
+                  ABS(rot_hessian_projector_physical_diagref(r, s) - rot_hessian_projector_physical(r, s))
+               projector_physical_diagref_gap_delta_max = MAX(projector_physical_diagref_gap_delta_max, &
+                  ABS(rot_hessian_projector_physical_diagref(r, s) - rot_hessian_projector_physical(r, s)))
                projector_physical_covariant_abs_avg = projector_physical_covariant_abs_avg + &
                                                       ABS(projector_physical_covariant_delta)
                projector_physical_covariant_delta_max = MAX(projector_physical_covariant_delta_max, &
@@ -4251,6 +4295,17 @@ CONTAINS
          projector_physical_diag_avg = projector_physical_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_delta_diag_avg = projector_physical_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_abs_avg = projector_physical_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_diagref_diag_avg = &
+            projector_physical_diagref_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_diagref_delta_diag_avg = &
+            projector_physical_diagref_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_diagref_gap_diag_avg = &
+            projector_physical_diagref_gap_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_diagref_abs_avg = &
+            projector_physical_diagref_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_diagref_gap_abs_avg = &
+            projector_physical_diagref_gap_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_diagref_trace_balance = MAX(0.0_dp, -projector_physical_diagref_delta_diag_avg)
          projector_physical_covariant_diag_avg = &
             projector_physical_covariant_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_covariant_abs_avg = &
@@ -6235,6 +6290,13 @@ CONTAINS
                      projector_physical_diag_avg, projector_physical_delta_diag_avg, &
                      projector_physical_abs_avg, projector_physical_delta_max, &
                      projector_gauge_abs_avg, projector_gauge_delta_max, projector_physical_trace_balance
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT Schur projector physical diag-ref Hessian diag delta_diag abs_avg delta_max "// &
+                     "gap_diag gap_avg gap_max trace_balance:", &
+                     projector_physical_diagref_diag_avg, projector_physical_diagref_delta_diag_avg, &
+                     projector_physical_diagref_abs_avg, projector_physical_diagref_delta_max, &
+                     projector_physical_diagref_gap_diag_avg, projector_physical_diagref_gap_abs_avg, &
+                     projector_physical_diagref_gap_delta_max, projector_physical_diagref_trace_balance
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                      " OT Schur projector physical covariance diag abs max residual_diag residual_abs residual_max:", &
                      projector_physical_covariant_diag_avg, projector_physical_covariant_abs_avg, &
@@ -6408,7 +6470,8 @@ CONTAINS
                      projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
                      projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
-                     rot_hessian_projector_physical_active, schur, ipiv, ipiv_energy, channel_nmo, e_offset)
+                     rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
+                     schur, ipiv, ipiv_energy, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
