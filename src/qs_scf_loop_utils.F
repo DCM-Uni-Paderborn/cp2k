@@ -3437,6 +3437,15 @@ CONTAINS
             projector_physical_direct_response_correction_drop, &
             projector_physical_direct_response_correction_negative, &
             projector_physical_direct_response_cross_drop, &
+            projector_physical_direct_diagref_correction_drop, &
+            projector_physical_direct_diagref_correction_negative, &
+            projector_physical_direct_diagref_cross_drop, &
+            projector_physical_direct_diagref_negative_coeff, &
+            projector_physical_direct_diagref_negative_drop, &
+            projector_physical_direct_diagref_positive_coeff, &
+            projector_physical_direct_diagref_positive_drop, &
+            projector_physical_direct_diagref_raw_negative_fraction, &
+            projector_physical_direct_diagref_weight, &
             projector_physical_direct_response_negative_coeff, &
             projector_physical_direct_response_negative_drop, &
             projector_physical_direct_response_positive_coeff, &
@@ -3514,6 +3523,7 @@ CONTAINS
                                                             projector_physical_direct_curv_eval, z_density_trial, &
                                                             projector_physical_direct_model_e, &
                                                             projector_physical_direct_response_rx_e, &
+                                                            projector_physical_direct_diagref_rx_e, &
                                                             projector_physical_direct_rx_e, &
                                                             projector_physical_direct_schur_eval, &
                                                             projector_physical_direct_sol, &
@@ -3588,6 +3598,7 @@ CONTAINS
                       constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                       projector_physical_direct_model_e(ne), &
                       projector_physical_direct_response_rx_e(ne), &
+                      projector_physical_direct_diagref_rx_e(ne), &
                       projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
                       z_density_trial(ne), &
                       projector_physical_direct_z_e(ne), &
@@ -3627,6 +3638,7 @@ CONTAINS
             rx_model(:) = 0.0_dp
             projector_physical_direct_model_e(:) = 0.0_dp
             projector_physical_direct_response_rx_e(:) = 0.0_dp
+            projector_physical_direct_diagref_rx_e(:) = 0.0_dp
             projector_physical_direct_rx_e(:) = 0.0_dp
             projector_physical_direct_schur_eval(:) = 0.0_dp
             projector_physical_direct_z_e(:) = 0.0_dp
@@ -4115,6 +4127,7 @@ CONTAINS
                            z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
                            projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                            projector_physical_direct_response_rx_e, &
+                           projector_physical_direct_diagref_rx_e, &
                            projector_physical_direct_rx_e, &
                            projector_physical_direct_schur_eval, &
                            projector_physical_direct_z_e, projector_physical_model_e, &
@@ -4634,6 +4647,15 @@ CONTAINS
                projector_physical_direct_response_correction_drop = 0.0_dp
                projector_physical_direct_response_correction_negative = 0.0_dp
                projector_physical_direct_response_cross_drop = 0.0_dp
+               projector_physical_direct_diagref_correction_drop = 0.0_dp
+               projector_physical_direct_diagref_correction_negative = 0.0_dp
+               projector_physical_direct_diagref_cross_drop = 0.0_dp
+               projector_physical_direct_diagref_negative_coeff = 0.0_dp
+               projector_physical_direct_diagref_negative_drop = 0.0_dp
+               projector_physical_direct_diagref_positive_coeff = 0.0_dp
+               projector_physical_direct_diagref_positive_drop = 0.0_dp
+               projector_physical_direct_diagref_raw_negative_fraction = 0.0_dp
+               projector_physical_direct_diagref_weight = 0.0_dp
                projector_physical_direct_response_negative_coeff = 0.0_dp
                projector_physical_direct_response_negative_drop = 0.0_dp
                projector_physical_direct_response_positive_coeff = 0.0_dp
@@ -5316,6 +5338,26 @@ CONTAINS
                                                 projector_physical_direct_response_cross_drop, &
                                                 projector_physical_direct_response_positive_coeff, &
                                                 projector_physical_direct_response_negative_coeff)
+                                             IF (logger%iter_info%print_level >= high_print_level) &
+                                                CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
+                                                   rot_hessian_projector_physical_diagref, &
+                                                   projector_physical_direct_sol, response_exact_raw, &
+                                                   response_exact_physical, curv, projector_coupled_weight, &
+                                                   residual_delta, projector_mode_history_quality, &
+                                                   local_ot_env(1)%schur_projector_mode_trust_ema, &
+                                                   projector_mode_history_response_ratio, grad_e, &
+                                                   z_exact_physical_trial + projector_physical_direct_rx_e, &
+                                                   projector_physical_direct_rx_e, &
+                                                   projector_physical_direct_diagref_rx_e, &
+                                                   projector_physical_direct_diagref_weight, &
+                                                   projector_physical_direct_diagref_correction_drop, &
+                                                   projector_physical_direct_diagref_correction_negative, &
+                                                   projector_physical_direct_diagref_raw_negative_fraction, &
+                                                   projector_physical_direct_diagref_positive_drop, &
+                                                   projector_physical_direct_diagref_negative_drop, &
+                                                   projector_physical_direct_diagref_cross_drop, &
+                                                   projector_physical_direct_diagref_positive_coeff, &
+                                                   projector_physical_direct_diagref_negative_coeff)
                                              IF (projector_physical_direct_response_weight > &
                                                  EPSILON(projector_physical_direct_response_weight)) THEN
                                                 projector_physical_direct_rx_e(:) = &
@@ -6374,6 +6416,17 @@ CONTAINS
                         projector_physical_direct_response_cross_drop, &
                         projector_physical_direct_response_positive_coeff, &
                         projector_physical_direct_response_negative_coeff
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
+                        " OT Schur projector phys direct diag-ref-response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
+                        projector_physical_direct_diagref_weight, &
+                        projector_physical_direct_diagref_correction_drop, &
+                        projector_physical_direct_diagref_correction_negative, &
+                        projector_physical_direct_diagref_raw_negative_fraction, &
+                        projector_physical_direct_diagref_positive_drop, &
+                        projector_physical_direct_diagref_negative_drop, &
+                        projector_physical_direct_diagref_cross_drop, &
+                        projector_physical_direct_diagref_positive_coeff, &
+                        projector_physical_direct_diagref_negative_coeff
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector phys direct local comp avg max frac applied_avg:", &
                         projector_physical_direct_diag_compensation_local_avg, &
@@ -6454,6 +6507,7 @@ CONTAINS
                         z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_response_rx_e, &
+                        projector_physical_direct_diagref_rx_e, &
                         projector_physical_direct_rx_e, &
                         projector_physical_direct_schur_eval, &
                         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
