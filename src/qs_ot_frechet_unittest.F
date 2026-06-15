@@ -47,6 +47,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
    CALL check_fixed_n_preconditioner_gauge("fixed-N preconditioner gauge", 5.0E-15_dp, nfail)
+   CALL check_fixed_n_tether_preconditioner_gauge("fixed-N/tether preconditioner gauge", &
+                                                   5.0E-15_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
                                                      2.0E-7_dp, nfail)
    CALL check_complex_fixed_n_schur_hessian("complex fixed-N Schur Hessian", &
@@ -549,6 +551,59 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fixed_n_preconditioner_gauge
+
+! **************************************************************************************************
+!> \brief Check that the diagonal energy preconditioner removes the fixed-N gauge
+!>        in the combined occupation-plus-tether curvature metric.
+! **************************************************************************************************
+   SUBROUTINE check_fixed_n_tether_preconditioner_gauge(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 6
+      REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
+
+      REAL(KIND=dp)                                      :: err, inactive_err, shift, wrong_err
+      REAL(KIND=dp), DIMENSION(n)                        :: curv, grad, occ_curv, step, tether_curv, &
+                                                            wrong_step
+
+      occ_curv = [0.15_dp, 0.8_dp, 2.4_dp, 6.0_dp, 11.0_dp, 0.0_dp]
+      tether_curv = [0.0_dp, 0.35_dp, 0.7_dp, 0.0_dp, 1.6_dp, 0.0_dp]
+      grad = [0.32_dp, -0.71_dp, 0.14_dp, 0.55_dp, -0.28_dp, 0.62_dp]
+      curv(:) = occ_curv(:) + tether_curv(:)
+
+      step(:) = 0.0_dp
+      WHERE (curv(:) > EPSILON(curv(:)))
+         step(:) = grad(:)/MAX(curv(:), curvature_floor)
+      END WHERE
+      shift = SUM(curv(:)*step(:))/SUM(curv(:))
+      WHERE (curv(:) > EPSILON(curv(:)))
+         step(:) = step(:) - shift
+      END WHERE
+      err = ABS(SUM(curv(:)*step(:)))
+      inactive_err = ABS(step(n))
+
+      wrong_step(:) = 0.0_dp
+      WHERE (curv(:) > EPSILON(curv(:)))
+         wrong_step(:) = grad(:)/MAX(curv(:), curvature_floor)
+      END WHERE
+      shift = SUM(occ_curv(:)*wrong_step(:))/SUM(occ_curv(:))
+      WHERE (curv(:) > EPSILON(curv(:)))
+         wrong_step(:) = wrong_step(:) - shift
+      END WHERE
+      wrong_err = ABS(SUM(curv(:)*wrong_step(:)))
+
+      IF (err > tol .OR. inactive_err > tol .OR. wrong_err <= 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "failed with errors", &
+            err, inactive_err, wrong_err
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "OK with errors", &
+            err, inactive_err, wrong_err
+      END IF
+
+   END SUBROUTINE check_fixed_n_tether_preconditioner_gauge
 
 ! **************************************************************************************************
 !> \brief Dense weighted k-point Mermin free-energy model.
