@@ -2447,6 +2447,9 @@ CONTAINS
                                                                projector_physical_direct_quality, &
                                                                projector_physical_selected_quality, &
                                                                projector_physical_shift_quality, &
+                                                               projector_diagref_predicted_drop, &
+                                                               projector_diagref_correction_ratio, &
+                                                               projector_diagref_quality_ratio, &
                                                                projector_response_predicted_drop, &
                                                                projector_response_quality_ratio, &
                                                             residual_current_delta, residual_drop, &
@@ -2498,6 +2501,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_mode_pending = .FALSE.
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+               local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             RETURN
          END IF
@@ -2795,6 +2799,51 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_quality <= &
                2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
 
+            projector_diagref_predicted_drop = local_ot_env(1)%schur_projector_diagref_drop
+            projector_diagref_correction_ratio = 0.0_dp
+            projector_diagref_quality_ratio = 0.0_dp
+            IF (projector_diagref_predicted_drop > EPSILON(projector_diagref_predicted_drop)) &
+               projector_diagref_correction_ratio = &
+                  local_ot_env(1)%schur_projector_diagref_correction_drop/projector_diagref_predicted_drop
+            IF (mermin_search .AND. local_ot_env(1)%schur_projector_diagref_pending .AND. &
+                projector_diagref_predicted_drop > EPSILON(projector_diagref_predicted_drop) .AND. &
+                measured_drop > 0.0_dp) THEN
+               projector_diagref_quality_ratio = measured_drop/projector_diagref_predicted_drop
+               local_ot_env(1)%schur_projector_diagref_quality = projector_diagref_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_diagref_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_diagref_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_diagref_quality_ema = projector_diagref_quality_ratio
+                  local_ot_env(1)%schur_projector_diagref_weight_ema = &
+                     local_ot_env(1)%schur_projector_diagref_weight
+                  local_ot_env(1)%schur_projector_diagref_correction_ratio_ema = &
+                     projector_diagref_correction_ratio
+                  local_ot_env(1)%schur_projector_diagref_negative_ema = &
+                     local_ot_env(1)%schur_projector_diagref_negative
+               ELSE
+                  local_ot_env(1)%schur_projector_diagref_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_diagref_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_diagref_quality_ratio
+                  local_ot_env(1)%schur_projector_diagref_weight_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_diagref_weight_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_diagref_weight
+                  local_ot_env(1)%schur_projector_diagref_correction_ratio_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_diagref_correction_ratio_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_diagref_correction_ratio
+                  local_ot_env(1)%schur_projector_diagref_negative_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_diagref_negative_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_diagref_negative
+               END IF
+               local_ot_env(1)%schur_projector_diagref_drop_sum = &
+                  local_ot_env(1)%schur_projector_diagref_drop_sum + projector_diagref_predicted_drop
+               local_ot_env(1)%schur_projector_diagref_measured_sum = &
+                  local_ot_env(1)%schur_projector_diagref_measured_sum + measured_drop
+            END IF
+
             projector_physical_predicted_drop = local_ot_env(1)%schur_projector_physical_drop
             projector_physical_compensation_ratio = 0.0_dp
             projector_physical_correction_ratio = 0.0_dp
@@ -2977,6 +3026,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
             local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+            local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
 
          logger => cp_get_default_logger()
          projector_physical_weight_quality = 0.0_dp
@@ -3107,6 +3157,18 @@ CONTAINS
                   local_ot_env(1)%schur_projector_response_weight_ema, &
                   local_ot_env(1)%schur_projector_response_negative_ema, &
                   local_ot_env(1)%schur_projector_response_candidate_enabled
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
+                  " OT Schur LS projector diag-ref n ratio ema pred meas weight wema corr cema neg:", &
+                  local_ot_env(1)%schur_projector_diagref_quality_samples, &
+                  local_ot_env(1)%schur_projector_diagref_quality, &
+                  local_ot_env(1)%schur_projector_diagref_quality_ema, &
+                  local_ot_env(1)%schur_projector_diagref_drop_sum, &
+                  local_ot_env(1)%schur_projector_diagref_measured_sum, &
+                  local_ot_env(1)%schur_projector_diagref_weight, &
+                  local_ot_env(1)%schur_projector_diagref_weight_ema, &
+                  local_ot_env(1)%schur_projector_diagref_correction_drop, &
+                  local_ot_env(1)%schur_projector_diagref_correction_ratio_ema, &
+                  local_ot_env(1)%schur_projector_diagref_negative_ema
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
                   " OT Schur LS projector physical n ratio ema pred meas metric mema weight wema neg enabled:", &
                   local_ot_env(1)%schur_projector_physical_quality_samples, &
@@ -3271,6 +3333,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_mode_pending = .FALSE.
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+               local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
@@ -3294,6 +3357,10 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_weight = 0.0_dp
                local_ot_env(1)%schur_projector_response_correction_drop = 0.0_dp
                local_ot_env(1)%schur_projector_response_negative = 0.0_dp
+               local_ot_env(1)%schur_projector_diagref_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_diagref_weight = 0.0_dp
+               local_ot_env(1)%schur_projector_diagref_correction_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_diagref_negative = 0.0_dp
                local_ot_env(1)%schur_projector_physical_drop = 0.0_dp
                local_ot_env(1)%schur_projector_physical_metric = 0.0_dp
                local_ot_env(1)%schur_projector_physical_weight = 0.0_dp
@@ -3440,11 +3507,23 @@ CONTAINS
             projector_physical_direct_diagref_correction_drop, &
             projector_physical_direct_diagref_correction_negative, &
             projector_physical_direct_diagref_cross_drop, &
+            projector_physical_direct_diagref_direction_scale, &
+            projector_physical_direct_diagref_gdot_energy, &
+            projector_physical_direct_diagref_gdot_rotation, &
+            projector_physical_direct_diagref_gdotp, &
+            projector_physical_direct_diagref_model_calibrated_drop, &
+            projector_physical_direct_diagref_model_drop, &
             projector_physical_direct_diagref_negative_coeff, &
             projector_physical_direct_diagref_negative_drop, &
+            projector_physical_direct_diagref_norm_energy, &
+            projector_physical_direct_diagref_norm_rotation, &
+            projector_physical_direct_diagref_normp, &
             projector_physical_direct_diagref_positive_coeff, &
             projector_physical_direct_diagref_positive_drop, &
             projector_physical_direct_diagref_raw_negative_fraction, &
+            projector_physical_direct_diagref_response_abs_step, &
+            projector_physical_direct_diagref_response_weighted_step, &
+            projector_physical_direct_diagref_scale_quality, &
             projector_physical_direct_diagref_weight, &
             projector_physical_direct_response_negative_coeff, &
             projector_physical_direct_response_negative_drop, &
@@ -4650,11 +4729,23 @@ CONTAINS
                projector_physical_direct_diagref_correction_drop = 0.0_dp
                projector_physical_direct_diagref_correction_negative = 0.0_dp
                projector_physical_direct_diagref_cross_drop = 0.0_dp
+               projector_physical_direct_diagref_direction_scale = 0.0_dp
+               projector_physical_direct_diagref_gdot_energy = 0.0_dp
+               projector_physical_direct_diagref_gdot_rotation = 0.0_dp
+               projector_physical_direct_diagref_gdotp = 0.0_dp
+               projector_physical_direct_diagref_model_calibrated_drop = 0.0_dp
+               projector_physical_direct_diagref_model_drop = 0.0_dp
                projector_physical_direct_diagref_negative_coeff = 0.0_dp
                projector_physical_direct_diagref_negative_drop = 0.0_dp
+               projector_physical_direct_diagref_norm_energy = 0.0_dp
+               projector_physical_direct_diagref_norm_rotation = 0.0_dp
+               projector_physical_direct_diagref_normp = 0.0_dp
                projector_physical_direct_diagref_positive_coeff = 0.0_dp
                projector_physical_direct_diagref_positive_drop = 0.0_dp
                projector_physical_direct_diagref_raw_negative_fraction = 0.0_dp
+               projector_physical_direct_diagref_response_abs_step = 0.0_dp
+               projector_physical_direct_diagref_response_weighted_step = 0.0_dp
+               projector_physical_direct_diagref_scale_quality = 0.0_dp
                projector_physical_direct_diagref_weight = 0.0_dp
                projector_physical_direct_response_negative_coeff = 0.0_dp
                projector_physical_direct_response_negative_drop = 0.0_dp
@@ -5358,6 +5449,70 @@ CONTAINS
                                                    projector_physical_direct_diagref_cross_drop, &
                                                    projector_physical_direct_diagref_positive_coeff, &
                                                    projector_physical_direct_diagref_negative_coeff)
+                                             IF (projector_physical_direct_diagref_weight > &
+                                                 EPSILON(projector_physical_direct_diagref_weight)) THEN
+                                                rx_shift = DOT_PRODUCT(curv, projector_physical_direct_diagref_rx_e)
+                                                CALL para_env_inter_kp%sum(rx_shift)
+                                                IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                                                   projector_physical_direct_diagref_rx_e(:) = &
+                                                      projector_physical_direct_diagref_rx_e(:) - &
+                                                      rx_shift/curv_projection_sum
+                                                projector_physical_direct_diagref_gdot_energy = &
+                                                   DOT_PRODUCT(grad_e, z_exact_physical_trial + &
+                                                               projector_physical_direct_diagref_rx_e)
+                                                projector_physical_direct_diagref_gdot_rotation = &
+                                                   DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
+                                                projector_physical_direct_diagref_norm_energy = &
+                                                   DOT_PRODUCT(z_exact_physical_trial + &
+                                                               projector_physical_direct_diagref_rx_e, &
+                                                               z_exact_physical_trial + &
+                                                               projector_physical_direct_diagref_rx_e)
+                                                projector_physical_direct_diagref_norm_rotation = &
+                                                   DOT_PRODUCT(projector_physical_direct_sol, &
+                                                               projector_physical_direct_sol)
+                                                projector_physical_direct_diagref_gdotp = &
+                                                   projector_physical_direct_diagref_gdot_energy + &
+                                                   projector_physical_direct_diagref_gdot_rotation
+                                                projector_physical_direct_diagref_normp = &
+                                                   projector_physical_direct_diagref_norm_energy + &
+                                                   projector_physical_direct_diagref_norm_rotation
+                                                IF (projector_physical_direct_diagref_gdotp > 0.0_dp .AND. &
+                                                    projector_physical_direct_diagref_normp > &
+                                                    EPSILON(projector_physical_direct_diagref_normp)) THEN
+                                                   projector_physical_direct_diagref_direction_scale = &
+                                                      projector_physical_direct_diagref_gdotp/ &
+                                                      MAX(projector_physical_direct_diagref_normp, &
+                                                          EPSILON(projector_physical_direct_diagref_normp))
+                                                   projector_physical_direct_diagref_scale_quality = &
+                                                      kpoint_ot_schur_scale_quality( &
+                                                         projector_physical_direct_diagref_direction_scale, &
+                                                         schur_min_coupled_scale)
+                                                   projector_physical_direct_diagref_response_abs_step = &
+                                                      projector_physical_direct_diagref_direction_scale* &
+                                                      MAXVAL(ABS(projector_physical_direct_diagref_rx_e))
+                                                   CALL para_env_inter_kp%max(projector_physical_direct_diagref_response_abs_step)
+                                                   projector_physical_direct_diagref_response_weighted_step = &
+                                                      projector_physical_direct_diagref_direction_scale* &
+                                                      kpoint_ot_weighted_response_step( &
+                                                         projector_physical_direct_diagref_rx_e, curv, &
+                                                         curv_projection_sum)
+                                                   IF (projector_physical_direct_diagref_response_weighted_step <= &
+                                                       response_trust .AND. &
+                                                       projector_physical_direct_diagref_response_abs_step <= &
+                                                       response_abs_trust) THEN
+                                                      projector_physical_direct_diagref_model_drop = 0.5_dp* &
+                                                         projector_physical_direct_diagref_direction_scale* &
+                                                         projector_physical_direct_diagref_gdotp
+                                                      projector_physical_direct_diagref_model_calibrated_drop = &
+                                                         projector_physical_direct_diagref_model_drop
+                                                      IF (projector_physical_direct_diagref_direction_scale < &
+                                                          schur_min_coupled_scale) &
+                                                         projector_physical_direct_diagref_model_calibrated_drop = &
+                                                            projector_physical_direct_diagref_scale_quality* &
+                                                            projector_physical_direct_diagref_model_calibrated_drop
+                                                   END IF
+                                                END IF
+                                             END IF
                                              IF (projector_physical_direct_response_weight > &
                                                  EPSILON(projector_physical_direct_response_weight)) THEN
                                                 projector_physical_direct_rx_e(:) = &
@@ -6181,6 +6336,22 @@ CONTAINS
                   projector_mode_response_correction_drop
                   local_ot_env(1)%schur_projector_response_negative = &
                      MAX(local_ot_env(1)%schur_projector_response_negative, accepted_projector_response_negative)
+               END IF
+               IF (projector_physical_direct_diagref_model_calibrated_drop > &
+                   EPSILON(projector_physical_direct_diagref_model_calibrated_drop)) THEN
+                  local_ot_env(1)%schur_projector_diagref_pending = .TRUE.
+                  local_ot_env(1)%schur_projector_diagref_drop = &
+                     local_ot_env(1)%schur_projector_diagref_drop + &
+                     projector_physical_direct_diagref_model_calibrated_drop
+                  local_ot_env(1)%schur_projector_diagref_weight = &
+                     MAX(local_ot_env(1)%schur_projector_diagref_weight, &
+                         projector_physical_direct_diagref_weight)
+                  local_ot_env(1)%schur_projector_diagref_correction_drop = &
+                     local_ot_env(1)%schur_projector_diagref_correction_drop + &
+                     projector_physical_direct_diagref_correction_drop
+                  local_ot_env(1)%schur_projector_diagref_negative = &
+                     MAX(local_ot_env(1)%schur_projector_diagref_negative, &
+                         projector_physical_direct_diagref_correction_negative)
                END IF
                IF (projector_physical_candidate_ready .AND. &
                    projector_physical_model_calibrated_drop > EPSILON(projector_physical_model_calibrated_drop)) THEN
