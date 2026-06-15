@@ -85,6 +85,8 @@ PROGRAM qs_ot_frechet_unittest
                                                             2.0E-8_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
                                                           5.0E-12_dp, nfail)
+   CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
+                                                       5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -2984,6 +2986,121 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_curvature_addback
+
+! **************************************************************************************************
+!> \brief Check the algebra of promoting diagonal density response into the Schur block.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_coupled_schur(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
+
+      INTEGER                                            :: i, info, j, s
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      REAL(KIND=dp)                                      :: err, gauge_shift, norm_delta, occ_sum, shift
+      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, density_response, &
+                                                            phys_response, rhs_density, rhs_phys, rhs_total
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: combined_schur, curv_density, expected_combined, &
+                                                            rot_base, split_schur
+
+      occ_curv(:) = [0.44_dp, 0.67_dp, 0.31_dp, 0.18_dp]
+      tether_curv(:) = [0.03_dp, 0.04_dp, 0.02_dp, 0.01_dp]
+      phys_response(:, 1) = [0.18_dp, -0.07_dp, 0.04_dp, -0.02_dp]
+      phys_response(:, 2) = [-0.09_dp, 0.11_dp, -0.03_dp, 0.08_dp]
+      phys_response(:, 3) = [0.05_dp, 0.02_dp, -0.12_dp, 0.06_dp]
+      density_response(:, 1) = [0.07_dp, -0.03_dp, 0.10_dp, -0.06_dp]
+      density_response(:, 2) = [-0.04_dp, 0.09_dp, 0.02_dp, 0.05_dp]
+      density_response(:, 3) = [0.03_dp, 0.08_dp, -0.05_dp, -0.01_dp]
+      rot_base(:, :) = RESHAPE([0.63_dp, 0.04_dp, -0.02_dp, &
+                                0.04_dp, 0.51_dp, 0.03_dp, &
+                               -0.02_dp, 0.03_dp, 0.58_dp], [nrot, nrot])
+
+      h(:, :) = 0.0_dp
+      DO i = 1, ne
+         h(i, i) = occ_curv(i) + tether_curv(i)
+      END DO
+      occ_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            h(i, j) = h(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+         END DO
+      END DO
+      h(:, :) = h(:, :) + MAXVAL(occ_curv(:) + tether_curv(:))/REAL(ne, KIND=dp)
+      h_ref(:, :) = h(:, :)
+
+      DO s = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, phys_response(:, s))/occ_sum
+         b_phys(:, s) = occ_curv(:)*(phys_response(:, s) - shift)
+         shift = DOT_PRODUCT(occ_curv, density_response(:, s))/occ_sum
+         b_density(:, s) = occ_curv(:)*(density_response(:, s) - shift)
+      END DO
+      b_total(:, :) = b_phys(:, :) + b_density(:, :)
+
+      rhs_phys(:, :) = b_phys(:, :)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs_phys, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in phys dgesv", info
+         RETURN
+      END IF
+
+      rhs_density(:, :) = b_density(:, :)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs_density, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in density dgesv", info
+         RETURN
+      END IF
+
+      rhs_total(:, :) = b_total(:, :)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs_total, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in total dgesv", info
+         RETURN
+      END IF
+
+      curv_density(:, :) = MATMUL(TRANSPOSE(b_density), rhs_density)
+      split_schur(:, :) = rot_base(:, :) + curv_density(:, :) - MATMUL(TRANSPOSE(b_phys), rhs_phys)
+      combined_schur(:, :) = rot_base(:, :) + curv_density(:, :) - MATMUL(TRANSPOSE(b_total), rhs_total)
+      expected_combined(:, :) = split_schur(:, :) - MATMUL(TRANSPOSE(b_phys), rhs_density) - &
+                                MATMUL(TRANSPOSE(b_density), rhs_phys) - curv_density(:, :)
+      norm_delta = MAXVAL(ABS(combined_schur(:, :) - split_schur(:, :)))
+
+      gauge_shift = 0.41_dp
+      DO s = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, density_response(:, s) + gauge_shift)/occ_sum
+         b_total(:, s) = b_phys(:, s) + occ_curv(:)*(density_response(:, s) + gauge_shift - shift)
+      END DO
+      rhs_total(:, :) = b_total(:, :)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs_total, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in gauge dgesv", info
+         RETURN
+      END IF
+
+      err = MAXVAL(ABS(combined_schur(:, :) - expected_combined(:, :)))
+      err = MAX(err, MAXVAL(ABS(combined_schur(:, :) - &
+                                (rot_base(:, :) + curv_density(:, :) - &
+                                 MATMUL(TRANSPOSE(b_total), rhs_total)))))
+
+      IF (err > tol .OR. norm_delta <= 1.0E-6_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/delta", err, norm_delta
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/delta", err, norm_delta
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_coupled_schur
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
