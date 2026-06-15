@@ -79,6 +79,8 @@ PROGRAM qs_ot_frechet_unittest
                                                      1.0E-7_dp, nfail)
    CALL check_complex_occ_projector_curvature_cap("complex occupation-projector curvature cap", &
                                                   5.0E-10_dp, nfail)
+   CALL check_complex_occ_projector_gauge_plateau("complex occupation-projector gauge plateau", &
+                                                  5.0E-10_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
                                                             2.0E-8_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
@@ -2750,6 +2752,64 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_curvature_cap
 
 ! **************************************************************************************************
+!> \brief Plateau only anomalous near-degenerate projector-basis occupation jumps.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_gauge_plateau(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-8_dp, gap = 2.0E-5_dp, &
+                                                            gauge_gap = 3.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, fd_mat, occ_mat_m, &
+                                                            occ_mat_p
+      REAL(KIND=dp)                                      :: cap, err, plateau_coeff, raw_coeff
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal, occ_noisy, occ_smooth
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(0.00_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(gap, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.39_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.23_dp, -0.14_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_curv(:) = [0.031_dp, 0.027_dp, 0.004_dp]
+      cap = 2.0_dp*MAX(occ_curv(1), occ_curv(2))
+
+      occ_equal(:) = [0.75_dp, 0.75_dp, 0.12_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_equal, docc_mat, occ_curv, gauge_gap)
+      err = MAXVAL(ABS(docc_mat(:, :)))
+
+      occ_smooth(:) = [0.75_dp, 0.75_dp - 0.25_dp*cap*gap, 0.12_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_smooth, docc_mat, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_smooth, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_smooth, occ_mat_m)
+      fd_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      err = MAX(err, MAXVAL(ABS(docc_mat(:, :) - fd_mat(:, :))))
+
+      occ_noisy(:) = [0.75_dp, 0.21_dp, 0.12_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_mat, occ_curv, gauge_gap)
+      raw_coeff = (occ_noisy(1) - occ_noisy(2))/(REAL(chc(1, 1), KIND=dp) - &
+                                                 REAL(chc(2, 2), KIND=dp))
+      plateau_coeff = REAL(docc_mat(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
+      err = MAX(err, ABS(plateau_coeff))
+
+      IF (err > tol .OR. ABS(raw_coeff) < 10.0_dp*cap) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with error/raw/cap/plateau", &
+            err, raw_coeff, cap, plateau_coeff
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with error/raw/cap/plateau", &
+            err, raw_coeff, cap, plateau_coeff
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_gauge_plateau
+
+! **************************************************************************************************
 !> \brief Check that diagonal projector-density response enters through the dense fixed-N projection.
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_response_projection(label, tol, nfail)
@@ -3086,39 +3146,43 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
 ! **************************************************************************************************
-   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
+   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
       REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale, slope_cap
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       n = SIZE(chc, 1)
-      ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n))
+      ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n), occ_work(n))
 
       CALL diag_complex(chc, evec, evals)
       work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
       scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
       gap_tol = SQRT(EPSILON(1.0_dp))*scale
       occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      occ_work(:) = occ_scale(:)
+      IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) &
+         CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
       kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO j = 1, n
          DO i = 1, n
             IF (i == j) CYCLE
             denom = evals(i) - evals(j)
             IF (ABS(denom) > gap_tol) THEN
-               coeff = (occ_scale(i) - occ_scale(j))/denom
-            ELSE IF (ABS(occ_scale(i) - occ_scale(j)) <= occ_tol) THEN
+               coeff = (occ_work(i) - occ_work(j))/denom
+            ELSE IF (ABS(occ_work(i) - occ_work(j)) <= occ_tol) THEN
                coeff = 0.0_dp
             ELSE
-               coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
+               coeff = (occ_work(i) - occ_work(j))/SIGN(gap_tol, denom)
             END IF
             coeff = MIN(0.0_dp, coeff)
-            IF (PRESENT(occ_curv)) THEN
+            IF (PRESENT(occ_curv) .AND. .NOT. PRESENT(gauge_gap)) THEN
                slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
                IF (slope_cap > EPSILON(slope_cap)) THEN
                   coeff = MAX(coeff, -slope_cap)
@@ -3132,9 +3196,44 @@ CONTAINS
 
       docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
       docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
-      DEALLOCATE (evec, kernel, work, evals)
+      DEALLOCATE (evec, kernel, work, evals, occ_work)
 
    END SUBROUTINE dense_spectral_occ_projector_derivative_chc
+
+   SUBROUTINE dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_mono)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: evals, occ_curv
+      REAL(KIND=dp), INTENT(IN)                           :: gauge_gap, occ_tol
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: occ_mono
+
+      INTEGER                                             :: first, last, n
+      REAL(KIND=dp)                                      :: allowed_jump, gap, occ_jump, plateau, slope_cap
+
+      n = SIZE(evals)
+      IF (n <= 1) RETURN
+      IF (gauge_gap <= EPSILON(gauge_gap)) RETURN
+
+      first = 1
+      DO WHILE (first < n)
+         last = first
+         DO WHILE (last < n)
+            gap = ABS(evals(last + 1) - evals(last))
+            slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(last), occ_curv(last + 1)))
+            allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+            occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
+            IF (gap <= gauge_gap .AND. occ_jump > allowed_jump) THEN
+               last = last + 1
+            ELSE
+               EXIT
+            END IF
+         END DO
+         IF (last > first) THEN
+            plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
+            occ_mono(first:last) = plateau
+         END IF
+         first = last + 1
+      END DO
+
+   END SUBROUTINE dense_near_degenerate_occupation_plateau
 
 ! **************************************************************************************************
 !> \brief Gradient of the dense spectral occupation-projector value.
