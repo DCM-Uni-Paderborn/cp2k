@@ -77,6 +77,8 @@ PROGRAM qs_ot_frechet_unittest
                                                       5.0E-7_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
+   CALL check_complex_occ_projector_curvature_cap("complex occupation-projector curvature cap", &
+                                                  5.0E-10_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
                                                             2.0E-8_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
@@ -2691,6 +2693,63 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_gauge_separation
 
 ! **************************************************************************************************
+!> \brief Bound near-degenerate projector-basis response by the physical occupation curvature.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_curvature_cap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-8_dp, gap = 2.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, fd_mat, occ_mat_m, &
+                                                            occ_mat_p
+      REAL(KIND=dp)                                      :: cap, capped_coeff, err, raw_coeff
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal, occ_noisy, occ_smooth
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(0.00_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(gap, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.39_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.23_dp, -0.14_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_curv(:) = [0.031_dp, 0.027_dp, 0.004_dp]
+      cap = 2.0_dp*MAX(occ_curv(1), occ_curv(2))
+
+      occ_equal(:) = [0.75_dp, 0.75_dp, 0.12_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_equal, docc_mat, occ_curv)
+      err = MAXVAL(ABS(docc_mat(:, :)))
+
+      occ_smooth(:) = [0.75_dp, 0.75_dp - 0.25_dp*cap*gap, 0.12_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_smooth, docc_mat, occ_curv)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_smooth, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_smooth, occ_mat_m)
+      fd_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      err = MAX(err, MAXVAL(ABS(docc_mat(:, :) - fd_mat(:, :))))
+
+      occ_noisy(:) = [0.75_dp, 0.21_dp, 0.12_dp]
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_mat, occ_curv)
+      raw_coeff = (occ_noisy(1) - occ_noisy(2))/(REAL(chc(1, 1), KIND=dp) - &
+                                                 REAL(chc(2, 2), KIND=dp))
+      capped_coeff = REAL(docc_mat(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
+      err = MAX(err, ABS(capped_coeff + cap))
+
+      IF (err > tol .OR. ABS(raw_coeff) < 10.0_dp*cap) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with error/raw/cap/capped", &
+            err, raw_coeff, cap, capped_coeff
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with error/raw/cap/capped", &
+            err, raw_coeff, cap, capped_coeff
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_curvature_cap
+
+! **************************************************************************************************
 !> \brief Check that diagonal projector-density response enters through the dense fixed-N projection.
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_response_projection(label, tol, nfail)
@@ -3027,14 +3086,15 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
 ! **************************************************************************************************
-   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
+   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale
+      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
       n = SIZE(chc, 1)
@@ -3058,6 +3118,14 @@ CONTAINS
                coeff = (occ_scale(i) - occ_scale(j))/SIGN(gap_tol, denom)
             END IF
             coeff = MIN(0.0_dp, coeff)
+            IF (PRESENT(occ_curv)) THEN
+               slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
+               IF (slope_cap > EPSILON(slope_cap)) THEN
+                  coeff = MAX(coeff, -slope_cap)
+               ELSE
+                  coeff = 0.0_dp
+               END IF
+            END IF
             kernel(i, j) = coeff*work(i, j)
          END DO
       END DO
