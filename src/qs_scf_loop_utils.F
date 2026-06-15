@@ -2451,6 +2451,8 @@ CONTAINS
                                                                projector_diagref_correction_ratio, &
                                                                projector_diagref_quality_for_selection, &
                                                                projector_diagref_quality_ratio, &
+                                                               projector_density_predicted_drop, &
+                                                               projector_density_quality_ratio, &
                                                                projector_response_predicted_drop, &
                                                                projector_response_quality_ratio, &
                                                             residual_current_delta, residual_drop, &
@@ -2503,6 +2505,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
+               local_ot_env(1)%schur_projector_density_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             RETURN
          END IF
@@ -2852,6 +2855,29 @@ CONTAINS
                local_ot_env(1)%schur_projector_diagref_quality >= &
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
 
+            projector_density_predicted_drop = local_ot_env(1)%schur_projector_density_drop
+            projector_density_quality_ratio = 0.0_dp
+            IF (mermin_search .AND. local_ot_env(1)%schur_projector_density_pending .AND. &
+                projector_density_predicted_drop > EPSILON(projector_density_predicted_drop) .AND. &
+                measured_drop > 0.0_dp) THEN
+               projector_density_quality_ratio = measured_drop/projector_density_predicted_drop
+               local_ot_env(1)%schur_projector_density_quality = projector_density_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_density_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_density_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_density_quality_ema = projector_density_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_projector_density_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_density_quality_ratio
+               END IF
+               local_ot_env(1)%schur_projector_density_drop_sum = &
+                  local_ot_env(1)%schur_projector_density_drop_sum + projector_density_predicted_drop
+               local_ot_env(1)%schur_projector_density_measured_sum = &
+                  local_ot_env(1)%schur_projector_density_measured_sum + measured_drop
+            END IF
+
             projector_physical_predicted_drop = local_ot_env(1)%schur_projector_physical_drop
             projector_physical_compensation_ratio = 0.0_dp
             projector_physical_correction_ratio = 0.0_dp
@@ -3035,6 +3061,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
             local_ot_env(1)%schur_projector_physical_pending = .FALSE.
             local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
+            local_ot_env(1)%schur_projector_density_pending = .FALSE.
 
          logger => cp_get_default_logger()
          projector_physical_weight_quality = 0.0_dp
@@ -3178,6 +3205,14 @@ CONTAINS
                   local_ot_env(1)%schur_projector_diagref_correction_ratio_ema, &
                   local_ot_env(1)%schur_projector_diagref_negative_ema, &
                   local_ot_env(1)%schur_projector_diagref_candidate_enabled
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
+                  " OT Schur LS projector density n ratio ema pred meas latest:", &
+                  local_ot_env(1)%schur_projector_density_quality_samples, &
+                  local_ot_env(1)%schur_projector_density_quality, &
+                  local_ot_env(1)%schur_projector_density_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_drop_sum, &
+                  local_ot_env(1)%schur_projector_density_measured_sum, &
+                  projector_density_predicted_drop
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
                   " OT Schur LS projector physical n ratio ema pred meas metric mema weight wema neg enabled:", &
                   local_ot_env(1)%schur_projector_physical_quality_samples, &
@@ -3343,6 +3378,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
+               local_ot_env(1)%schur_projector_density_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
@@ -3370,6 +3406,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_diagref_weight = 0.0_dp
                local_ot_env(1)%schur_projector_diagref_correction_drop = 0.0_dp
                local_ot_env(1)%schur_projector_diagref_negative = 0.0_dp
+               local_ot_env(1)%schur_projector_density_drop = 0.0_dp
                local_ot_env(1)%schur_projector_physical_drop = 0.0_dp
                local_ot_env(1)%schur_projector_physical_metric = 0.0_dp
                local_ot_env(1)%schur_projector_physical_weight = 0.0_dp
@@ -3539,6 +3576,22 @@ CONTAINS
             projector_physical_direct_diagref_scale_quality, &
             projector_physical_direct_diagref_trust_quality, &
             projector_physical_direct_diagref_weight, &
+            projector_physical_direct_density_direction_scale, &
+            projector_physical_direct_density_expected_drop, &
+            projector_physical_direct_density_gdot_energy, &
+            projector_physical_direct_density_gdot_rotation, &
+            projector_physical_direct_density_gdotp, &
+            projector_physical_direct_density_model_calibrated_drop, &
+            projector_physical_direct_density_model_drop, &
+            projector_physical_direct_density_norm_energy, &
+            projector_physical_direct_density_norm_rotation, &
+            projector_physical_direct_density_normp, &
+            projector_physical_direct_density_response_abs_step, &
+            projector_physical_direct_density_response_abs_trust_ratio, &
+            projector_physical_direct_density_response_weighted_step, &
+            projector_physical_direct_density_response_weighted_trust_ratio, &
+            projector_physical_direct_density_scale_quality, &
+            projector_physical_direct_density_trust_quality, &
             projector_physical_direct_response_negative_coeff, &
             projector_physical_direct_response_negative_drop, &
             projector_physical_direct_response_positive_coeff, &
@@ -3617,6 +3670,8 @@ CONTAINS
                                                             projector_physical_direct_model_e, &
                                                             projector_physical_direct_response_rx_e, &
                                                             projector_physical_direct_diagref_rx_e, &
+                                                            projector_physical_direct_density_rx_e, &
+                                                            projector_physical_direct_density_z_e, &
                                                             projector_physical_direct_rx_e, &
                                                             projector_physical_direct_schur_eval, &
                                                             projector_physical_direct_sol, &
@@ -3692,6 +3747,8 @@ CONTAINS
                       projector_physical_direct_model_e(ne), &
                       projector_physical_direct_response_rx_e(ne), &
                       projector_physical_direct_diagref_rx_e(ne), &
+                      projector_physical_direct_density_rx_e(ne), &
+                      projector_physical_direct_density_z_e(ne), &
                       projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
                       z_density_trial(ne), &
                       projector_physical_direct_z_e(ne), &
@@ -3732,6 +3789,8 @@ CONTAINS
             projector_physical_direct_model_e(:) = 0.0_dp
             projector_physical_direct_response_rx_e(:) = 0.0_dp
             projector_physical_direct_diagref_rx_e(:) = 0.0_dp
+            projector_physical_direct_density_rx_e(:) = 0.0_dp
+            projector_physical_direct_density_z_e(:) = 0.0_dp
             projector_physical_direct_rx_e(:) = 0.0_dp
             projector_physical_direct_schur_eval(:) = 0.0_dp
             projector_physical_direct_z_e(:) = 0.0_dp
@@ -4222,6 +4281,8 @@ CONTAINS
                            projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                            projector_physical_direct_response_rx_e, &
                            projector_physical_direct_diagref_rx_e, &
+                           projector_physical_direct_density_rx_e, &
+                           projector_physical_direct_density_z_e, &
                            projector_physical_direct_rx_e, &
                            projector_physical_direct_schur_eval, &
                            projector_physical_direct_z_e, projector_physical_model_e, &
@@ -4776,6 +4837,22 @@ CONTAINS
                projector_physical_direct_diagref_scale_quality = 0.0_dp
                projector_physical_direct_diagref_trust_quality = 1.0_dp
                projector_physical_direct_diagref_weight = 0.0_dp
+               projector_physical_direct_density_direction_scale = 0.0_dp
+               projector_physical_direct_density_expected_drop = 0.0_dp
+               projector_physical_direct_density_gdot_energy = 0.0_dp
+               projector_physical_direct_density_gdot_rotation = 0.0_dp
+               projector_physical_direct_density_gdotp = 0.0_dp
+               projector_physical_direct_density_model_calibrated_drop = 0.0_dp
+               projector_physical_direct_density_model_drop = 0.0_dp
+               projector_physical_direct_density_norm_energy = 0.0_dp
+               projector_physical_direct_density_norm_rotation = 0.0_dp
+               projector_physical_direct_density_normp = 0.0_dp
+               projector_physical_direct_density_response_abs_step = 0.0_dp
+               projector_physical_direct_density_response_abs_trust_ratio = 0.0_dp
+               projector_physical_direct_density_response_weighted_step = 0.0_dp
+               projector_physical_direct_density_response_weighted_trust_ratio = 0.0_dp
+               projector_physical_direct_density_scale_quality = 0.0_dp
+               projector_physical_direct_density_trust_quality = 1.0_dp
                projector_physical_direct_response_negative_coeff = 0.0_dp
                projector_physical_direct_response_negative_drop = 0.0_dp
                projector_physical_direct_response_positive_coeff = 0.0_dp
@@ -5437,6 +5514,79 @@ CONTAINS
                                           IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                                              projector_physical_direct_model_e(:) = projector_physical_direct_model_e(:) - &
                                                                                     rx_shift/curv_projection_sum
+                                          IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                              exact_density_response_ready) THEN
+                                             projector_physical_direct_density_rx_e(:) = &
+                                                MATMUL(response_density_exact, projector_physical_direct_sol)
+                                             rx_shift = DOT_PRODUCT(curv, projector_physical_direct_density_rx_e)
+                                             CALL para_env_inter_kp%sum(rx_shift)
+                                             IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                                                projector_physical_direct_density_rx_e(:) = &
+                                                   projector_physical_direct_density_rx_e(:) - &
+                                                   rx_shift/curv_projection_sum
+                                             projector_physical_direct_density_z_e(:) = &
+                                                z_exact_physical_trial(:) + projector_physical_direct_density_rx_e(:)
+                                             projector_physical_direct_density_gdot_energy = &
+                                                DOT_PRODUCT(grad_e, projector_physical_direct_density_z_e)
+                                             projector_physical_direct_density_gdot_rotation = &
+                                                DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
+                                             projector_physical_direct_density_gdotp = &
+                                                projector_physical_direct_density_gdot_energy + &
+                                                projector_physical_direct_density_gdot_rotation
+                                             projector_physical_direct_density_norm_energy = &
+                                                DOT_PRODUCT(projector_physical_direct_density_z_e, &
+                                                            projector_physical_direct_density_z_e)
+                                             projector_physical_direct_density_norm_rotation = &
+                                                DOT_PRODUCT(projector_physical_direct_sol, projector_physical_direct_sol)
+                                             projector_physical_direct_density_normp = &
+                                                projector_physical_direct_density_norm_energy + &
+                                                projector_physical_direct_density_norm_rotation
+                                             IF (projector_physical_direct_density_gdotp > 0.0_dp .AND. &
+                                                 projector_physical_direct_density_normp > &
+                                                 EPSILON(projector_physical_direct_density_normp)) THEN
+                                                projector_physical_direct_density_direction_scale = &
+                                                   projector_physical_direct_density_gdotp/ &
+                                                   MAX(projector_physical_direct_density_normp, &
+                                                       EPSILON(projector_physical_direct_density_normp))
+                                                projector_physical_direct_density_scale_quality = &
+                                                   kpoint_ot_schur_scale_quality( &
+                                                      projector_physical_direct_density_direction_scale, &
+                                                      schur_min_coupled_scale)
+                                                projector_physical_direct_density_model_drop = 0.5_dp* &
+                                                   projector_physical_direct_density_direction_scale* &
+                                                   projector_physical_direct_density_gdotp
+                                                projector_physical_direct_density_model_calibrated_drop = &
+                                                   projector_physical_direct_density_model_drop
+                                                IF (projector_physical_direct_density_direction_scale < &
+                                                    schur_min_coupled_scale) &
+                                                   projector_physical_direct_density_model_calibrated_drop = &
+                                                      projector_physical_direct_density_scale_quality* &
+                                                      projector_physical_direct_density_model_calibrated_drop
+                                                projector_physical_direct_density_response_abs_step = &
+                                                   projector_physical_direct_density_direction_scale* &
+                                                   MAXVAL(ABS(projector_physical_direct_density_rx_e))
+                                                CALL para_env_inter_kp%max(projector_physical_direct_density_response_abs_step)
+                                                projector_physical_direct_density_response_weighted_step = &
+                                                   projector_physical_direct_density_direction_scale* &
+                                                   kpoint_ot_weighted_response_step( &
+                                                      projector_physical_direct_density_rx_e, curv, curv_projection_sum)
+                                                IF (response_trust > EPSILON(response_trust)) &
+                                                   projector_physical_direct_density_response_weighted_trust_ratio = &
+                                                      projector_physical_direct_density_response_weighted_step/response_trust
+                                                IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                                   projector_physical_direct_density_response_abs_trust_ratio = &
+                                                      projector_physical_direct_density_response_abs_step/response_abs_trust
+                                                projector_physical_direct_density_trust_quality = &
+                                                   kpoint_ot_schur_trust_quality( &
+                                                      projector_physical_direct_density_response_weighted_trust_ratio, &
+                                                      projector_physical_direct_density_response_abs_trust_ratio, 0.0_dp)
+                                                projector_physical_direct_density_expected_drop = &
+                                                   kpoint_ot_schur_expected_drop( &
+                                                      projector_physical_direct_density_model_calibrated_drop, &
+                                                      projector_physical_quality_for_selection, &
+                                                      projector_physical_direct_density_trust_quality)
+                                             END IF
+                                          END IF
                                           IF (local_ot_env(1)%schur_projector_mode_quality_samples >= &
                                               ot_kp_schur_calibration_min_samples) THEN
                                              CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
@@ -6405,6 +6555,15 @@ CONTAINS
                      MAX(local_ot_env(1)%schur_projector_diagref_negative, &
                          projector_physical_direct_diagref_correction_negative)
                END IF
+               IF (projector_physical_direct_density_model_calibrated_drop > &
+                   EPSILON(projector_physical_direct_density_model_calibrated_drop) .AND. &
+                   projector_physical_direct_density_response_weighted_step <= response_trust .AND. &
+                   projector_physical_direct_density_response_abs_step <= response_abs_trust) THEN
+                  local_ot_env(1)%schur_projector_density_pending = .TRUE.
+                  local_ot_env(1)%schur_projector_density_drop = &
+                     local_ot_env(1)%schur_projector_density_drop + &
+                     projector_physical_direct_density_model_calibrated_drop
+               END IF
                IF (projector_physical_candidate_ready .AND. &
                    projector_physical_model_calibrated_drop > EPSILON(projector_physical_model_calibrated_drop)) THEN
                   local_ot_env(1)%schur_projector_physical_pending = .TRUE.
@@ -6650,6 +6809,14 @@ CONTAINS
                         projector_physical_direct_diagref_cross_drop, &
                         projector_physical_direct_diagref_positive_coeff, &
                         projector_physical_direct_diagref_negative_coeff
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                        " OT Schur projector phys direct density shadow exp cdrop rratio aratio tq scale:", &
+                        projector_physical_direct_density_expected_drop, &
+                        projector_physical_direct_density_model_calibrated_drop, &
+                        projector_physical_direct_density_response_weighted_trust_ratio, &
+                        projector_physical_direct_density_response_abs_trust_ratio, &
+                        projector_physical_direct_density_trust_quality, &
+                        projector_physical_direct_density_direction_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector phys direct diag-ref audit ready enabled exp qsel cdrop rratio aratio weight trust:", &
                         projector_physical_direct_diagref_candidate_ready, &
@@ -6742,6 +6909,8 @@ CONTAINS
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_response_rx_e, &
                         projector_physical_direct_diagref_rx_e, &
+                        projector_physical_direct_density_rx_e, &
+                        projector_physical_direct_density_z_e, &
                         projector_physical_direct_rx_e, &
                         projector_physical_direct_schur_eval, &
                         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
