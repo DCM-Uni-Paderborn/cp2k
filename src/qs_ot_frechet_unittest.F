@@ -73,6 +73,8 @@ PROGRAM qs_ot_frechet_unittest
                                             2.0E-6_dp, nfail)
    CALL check_complex_projector_covariant_curvature("complex projector covariant curvature", &
                                                     5.0E-7_dp, nfail)
+   CALL check_complex_projector_covariant_gauge_split("complex projector covariant gauge split", &
+                                                      5.0E-7_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
@@ -2516,6 +2518,127 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_covariant_curvature
+
+! **************************************************************************************************
+!> \brief Check that the spectral projector covariance is removed in the diagonal REF gauge.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_covariant_gauge_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            fd_step = 2.0E-5_dp, &
+                                                            projector_weight = 0.35_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, occ_blend, occ_diag, occ_spectral
+      INTEGER                                            :: i, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: err, gauge_err
+      REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hblend_frozen, hdiag_frozen, hmoving
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.37_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(-0.06_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.24_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.045_dp, -0.030_dp, KIND=dp)
+      base(1, 3) = CMPLX(-0.035_dp, 0.025_dp, KIND=dp)
+      base(2, 3) = CMPLX(0.025_dp, 0.040_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(3, 1) = CONJG(base(1, 3))
+      base(3, 2) = CONJG(base(2, 3))
+      occ_scale(:) = [1.58_dp, 0.81_dp, 0.22_dp]
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.052_dp
+      x_re(1, 3) = -0.021_dp
+      x_re(2, 3) = 0.034_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+         END DO
+      END DO
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.018_dp
+      x_im(2, 2) = -0.026_dp
+      x_im(3, 3) = 0.013_dp
+      x_im(1, 2) = -0.019_dp
+      x_im(1, 3) = 0.023_dp
+      x_im(2, 3) = 0.016_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+
+      r = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            r = r + 1
+            var_i(r) = i
+            var_j(r) = j
+            var_kind(r) = 1
+            r = r + 1
+            var_i(r) = i
+            var_j(r) = j
+            var_kind(r) = 2
+         END DO
+      END DO
+
+      occ_diag(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         occ_diag(i, i) = CMPLX(occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+      CALL dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_spectral)
+      occ_blend(:, :) = projector_weight*occ_spectral(:, :) + (1.0_dp - projector_weight)*occ_diag(:, :)
+
+      DO s = 1, nrot
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_diag, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_diag, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hdiag_frozen(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_blend, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_blend, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hblend_frozen(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_blended_projector_rotation_gradient(x_p_re, x_p_im, base, occ_scale, &
+                                                        projector_weight, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_blended_projector_rotation_gradient(x_m_re, x_m_im, base, occ_scale, &
+                                                        projector_weight, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hmoving(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+      END DO
+
+      err = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hdiag_frozen(:, :)))
+      gauge_err = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hblend_frozen(:, :)))
+
+      IF (err > tol .OR. gauge_err < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/gauge", &
+            err, gauge_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/gauge", err, gauge_err
+      END IF
+
+   END SUBROUTINE check_complex_projector_covariant_gauge_split
 
 ! **************************************************************************************************
 !> \brief Separate projector-basis gauge noise from physical occupation response.
