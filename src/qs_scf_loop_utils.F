@@ -2449,6 +2449,7 @@ CONTAINS
                                                                projector_physical_shift_quality, &
                                                                projector_diagref_predicted_drop, &
                                                                projector_diagref_correction_ratio, &
+                                                               projector_diagref_quality_for_selection, &
                                                                projector_diagref_quality_ratio, &
                                                                projector_response_predicted_drop, &
                                                                projector_response_quality_ratio, &
@@ -2843,6 +2844,13 @@ CONTAINS
                local_ot_env(1)%schur_projector_diagref_measured_sum = &
                   local_ot_env(1)%schur_projector_diagref_measured_sum + measured_drop
             END IF
+            local_ot_env(1)%schur_projector_diagref_candidate_enabled = &
+               local_ot_env(1)%schur_projector_diagref_quality_samples >= &
+               ot_kp_schur_projector_response_min_samples .AND. &
+               local_ot_env(1)%schur_projector_diagref_quality_ema >= &
+               ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               local_ot_env(1)%schur_projector_diagref_quality >= &
+               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
 
             projector_physical_predicted_drop = local_ot_env(1)%schur_projector_physical_drop
             projector_physical_compensation_ratio = 0.0_dp
@@ -3157,8 +3165,8 @@ CONTAINS
                   local_ot_env(1)%schur_projector_response_weight_ema, &
                   local_ot_env(1)%schur_projector_response_negative_ema, &
                   local_ot_env(1)%schur_projector_response_candidate_enabled
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
-                  " OT Schur LS projector diag-ref n ratio ema pred meas weight wema corr cema neg:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
+                  " OT Schur LS projector diag-ref n ratio ema pred meas weight wema corr cema neg enabled:", &
                   local_ot_env(1)%schur_projector_diagref_quality_samples, &
                   local_ot_env(1)%schur_projector_diagref_quality, &
                   local_ot_env(1)%schur_projector_diagref_quality_ema, &
@@ -3168,7 +3176,8 @@ CONTAINS
                   local_ot_env(1)%schur_projector_diagref_weight_ema, &
                   local_ot_env(1)%schur_projector_diagref_correction_drop, &
                   local_ot_env(1)%schur_projector_diagref_correction_ratio_ema, &
-                  local_ot_env(1)%schur_projector_diagref_negative_ema
+                  local_ot_env(1)%schur_projector_diagref_negative_ema, &
+                  local_ot_env(1)%schur_projector_diagref_candidate_enabled
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
                   " OT Schur LS projector physical n ratio ema pred meas metric mema weight wema neg enabled:", &
                   local_ot_env(1)%schur_projector_physical_quality_samples, &
@@ -3411,6 +3420,7 @@ CONTAINS
                                                                exact_energy_model_ready, exact_physical_response_ready, &
                                                                projector_physical_candidate_ready, &
                                                                projector_physical_candidate_selected, &
+                                                               projector_physical_direct_diagref_candidate_ready, &
                                                                projector_physical_direct_candidate_ready, &
                                                                projector_physical_direct_candidate_selected, &
                                                                projector_physical_direct_candidate_used, &
@@ -3454,7 +3464,7 @@ CONTAINS
          occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, pair_projector_weight, projected_term, projector_coupled_weight, &
-         projector_diagref_weight, rayleigh_edge_gap, residual_delta, &
+         projector_diagref_quality_for_selection, projector_diagref_weight, rayleigh_edge_gap, residual_delta, &
          physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_physical_abs_avg, projector_physical_delta_diag_avg, &
@@ -3508,6 +3518,7 @@ CONTAINS
             projector_physical_direct_diagref_correction_negative, &
             projector_physical_direct_diagref_cross_drop, &
             projector_physical_direct_diagref_direction_scale, &
+            projector_physical_direct_diagref_expected_drop, &
             projector_physical_direct_diagref_gdot_energy, &
             projector_physical_direct_diagref_gdot_rotation, &
             projector_physical_direct_diagref_gdotp, &
@@ -3522,8 +3533,11 @@ CONTAINS
             projector_physical_direct_diagref_positive_drop, &
             projector_physical_direct_diagref_raw_negative_fraction, &
             projector_physical_direct_diagref_response_abs_step, &
+            projector_physical_direct_diagref_response_abs_trust_ratio, &
             projector_physical_direct_diagref_response_weighted_step, &
+            projector_physical_direct_diagref_response_weighted_trust_ratio, &
             projector_physical_direct_diagref_scale_quality, &
+            projector_physical_direct_diagref_trust_quality, &
             projector_physical_direct_diagref_weight, &
             projector_physical_direct_response_negative_coeff, &
             projector_physical_direct_response_negative_drop, &
@@ -3976,6 +3990,7 @@ CONTAINS
             projector_physical_norm_rotation = 0.0_dp
             projector_physical_normp = 0.0_dp
             projector_physical_norm_ratio = 0.0_dp
+            projector_diagref_quality_for_selection = 0.0_dp
             projector_physical_quality_for_selection = 0.0_dp
             projector_physical_response_abs_step = 0.0_dp
             projector_physical_response_abs_trust_ratio = 0.0_dp
@@ -4603,6 +4618,15 @@ CONTAINS
                                                0.0_dp, &
                                                ot_kp_schur_projector_response_quality_min_ratio, &
                                                ot_kp_schur_projector_response_quality_max_ratio)
+            projector_diagref_quality_for_selection = &
+               kpoint_ot_schur_history_quality(local_ot_env(1)%schur_projector_diagref_drop_sum, &
+                                               local_ot_env(1)%schur_projector_diagref_measured_sum, &
+                                               local_ot_env(1)%schur_projector_diagref_quality_ema, &
+                                               local_ot_env(1)%schur_projector_diagref_quality_samples, &
+                                               ot_kp_schur_projector_response_min_samples, &
+                                               0.0_dp, &
+                                               ot_kp_schur_projector_response_quality_min_ratio, &
+                                               ot_kp_schur_projector_response_quality_max_ratio)
             projector_physical_quality_for_selection = &
                kpoint_ot_schur_history_quality(local_ot_env(1)%schur_projector_physical_drop_sum, &
                                                local_ot_env(1)%schur_projector_physical_measured_sum, &
@@ -4697,6 +4721,7 @@ CONTAINS
                projector_mode_response_weight = 0.0_dp
                projector_physical_candidate_ready = .FALSE.
                projector_physical_candidate_selected = .FALSE.
+               projector_physical_direct_diagref_candidate_ready = .FALSE.
                projector_physical_direct_candidate_ready = .FALSE.
                projector_physical_direct_candidate_selected = .FALSE.
                projector_physical_direct_candidate_used = .FALSE.
@@ -4730,6 +4755,7 @@ CONTAINS
                projector_physical_direct_diagref_correction_negative = 0.0_dp
                projector_physical_direct_diagref_cross_drop = 0.0_dp
                projector_physical_direct_diagref_direction_scale = 0.0_dp
+               projector_physical_direct_diagref_expected_drop = 0.0_dp
                projector_physical_direct_diagref_gdot_energy = 0.0_dp
                projector_physical_direct_diagref_gdot_rotation = 0.0_dp
                projector_physical_direct_diagref_gdotp = 0.0_dp
@@ -4744,8 +4770,11 @@ CONTAINS
                projector_physical_direct_diagref_positive_drop = 0.0_dp
                projector_physical_direct_diagref_raw_negative_fraction = 0.0_dp
                projector_physical_direct_diagref_response_abs_step = 0.0_dp
+               projector_physical_direct_diagref_response_abs_trust_ratio = 0.0_dp
                projector_physical_direct_diagref_response_weighted_step = 0.0_dp
+               projector_physical_direct_diagref_response_weighted_trust_ratio = 0.0_dp
                projector_physical_direct_diagref_scale_quality = 0.0_dp
+               projector_physical_direct_diagref_trust_quality = 1.0_dp
                projector_physical_direct_diagref_weight = 0.0_dp
                projector_physical_direct_response_negative_coeff = 0.0_dp
                projector_physical_direct_response_negative_drop = 0.0_dp
@@ -5496,6 +5525,21 @@ CONTAINS
                                                       kpoint_ot_weighted_response_step( &
                                                          projector_physical_direct_diagref_rx_e, curv, &
                                                          curv_projection_sum)
+                                                   projector_physical_direct_diagref_response_weighted_trust_ratio = 0.0_dp
+                                                   IF (response_trust > EPSILON(response_trust)) &
+                                                      projector_physical_direct_diagref_response_weighted_trust_ratio = &
+                                                         projector_physical_direct_diagref_response_weighted_step/ &
+                                                         response_trust
+                                                   projector_physical_direct_diagref_response_abs_trust_ratio = 0.0_dp
+                                                   IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                                      projector_physical_direct_diagref_response_abs_trust_ratio = &
+                                                         projector_physical_direct_diagref_response_abs_step/ &
+                                                         response_abs_trust
+                                                   projector_physical_direct_diagref_trust_quality = &
+                                                      kpoint_ot_schur_trust_quality( &
+                                                         projector_physical_direct_diagref_response_weighted_trust_ratio, &
+                                                         projector_physical_direct_diagref_response_abs_trust_ratio, &
+                                                         0.0_dp)
                                                    IF (projector_physical_direct_diagref_response_weighted_step <= &
                                                        response_trust .AND. &
                                                        projector_physical_direct_diagref_response_abs_step <= &
@@ -5510,6 +5554,14 @@ CONTAINS
                                                          projector_physical_direct_diagref_model_calibrated_drop = &
                                                             projector_physical_direct_diagref_scale_quality* &
                                                             projector_physical_direct_diagref_model_calibrated_drop
+                                                      projector_physical_direct_diagref_expected_drop = &
+                                                         kpoint_ot_schur_expected_drop( &
+                                                            projector_physical_direct_diagref_model_calibrated_drop, &
+                                                            projector_diagref_quality_for_selection, &
+                                                            projector_physical_direct_diagref_trust_quality)
+                                                      projector_physical_direct_diagref_candidate_ready = &
+                                                         projector_physical_direct_diagref_model_calibrated_drop > &
+                                                         EPSILON(projector_physical_direct_diagref_model_drop)
                                                    END IF
                                                 END IF
                                              END IF
@@ -6598,6 +6650,17 @@ CONTAINS
                         projector_physical_direct_diagref_cross_drop, &
                         projector_physical_direct_diagref_positive_coeff, &
                         projector_physical_direct_diagref_negative_coeff
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
+                        " OT Schur projector phys direct diag-ref audit ready enabled exp qsel cdrop rratio aratio weight trust:", &
+                        projector_physical_direct_diagref_candidate_ready, &
+                        local_ot_env(1)%schur_projector_diagref_candidate_enabled, &
+                        projector_physical_direct_diagref_expected_drop, &
+                        projector_diagref_quality_for_selection, &
+                        projector_physical_direct_diagref_model_calibrated_drop, &
+                        projector_physical_direct_diagref_response_weighted_trust_ratio, &
+                        projector_physical_direct_diagref_response_abs_trust_ratio, &
+                        projector_physical_direct_diagref_weight, &
+                        projector_physical_direct_diagref_trust_quality
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector phys direct local comp avg max frac applied_avg:", &
                         projector_physical_direct_diag_compensation_local_avg, &
