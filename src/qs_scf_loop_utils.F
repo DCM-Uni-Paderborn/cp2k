@@ -4081,6 +4081,7 @@ CONTAINS
                                                                        projector_physical_direct_candidate_ready, &
                                                                        projector_physical_direct_candidate_selected, &
                                                                        projector_physical_direct_candidate_used, &
+                                                                       projector_physical_direct_spectral_ready, &
                                                                        projector_plateau_gap_model_enabled, &
                                                                        projector_offdiag_candidate_ready, &
                                                                        projector_offdiag_candidate_selected, &
@@ -4356,6 +4357,15 @@ CONTAINS
          projector_physical_density_rhs_abs_avg, projector_physical_density_rhs_abs_max
       REAL(KIND=dp) :: projector_physical_direct_spectral_dot, projector_physical_direct_spectral_drop, &
          projector_physical_direct_spectral_norm
+      REAL(KIND=dp) :: projector_physical_direct_spectral_direction_scale, &
+         projector_physical_direct_spectral_gdot_energy, projector_physical_direct_spectral_gdot_rotation, &
+         projector_physical_direct_spectral_gdotp, projector_physical_direct_spectral_metric_norm_energy, &
+         projector_physical_direct_spectral_metric_norm_rotation, projector_physical_direct_spectral_metric_normp, &
+         projector_physical_direct_spectral_model_calibrated_drop, projector_physical_direct_spectral_model_drop, &
+         projector_physical_direct_spectral_model_gap_drop, projector_physical_direct_spectral_response_abs_step, &
+         projector_physical_direct_spectral_response_weighted_step, projector_physical_direct_spectral_trust_scale, &
+         projector_physical_direct_spectral_unit_abs_step, projector_physical_direct_spectral_unit_model_gap_drop, &
+         projector_physical_direct_spectral_unit_weighted_step
       REAL(KIND=dp) :: plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, plateau_gap_mode_eval_min, &
          plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
          plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
@@ -4379,8 +4389,12 @@ CONTAINS
                                                             density_plateau_rx_e, density_plateau_z_e, &
                                                             projector_physical_direct_rx_e, &
                                                             projector_physical_direct_schur_eval, &
+                                                            projector_physical_direct_spectral_model_e, &
+                                                            projector_physical_direct_spectral_rx_e, &
                                                             projector_physical_direct_sol, &
+                                                            projector_physical_direct_spectral_sol, &
                                                                      projector_physical_direct_z_e, &
+                                                                     projector_physical_direct_spectral_z_e, &
                                                                      projector_offdiag_rx_e, projector_offdiag_sol, &
                                                                      projector_offdiag_z_e, &
                                                                      projector_physical_model_e, projector_physical_rx_e, &
@@ -4463,14 +4477,18 @@ CONTAINS
                       projector_physical_direct_density_z_e(ne), &
                                density_plateau_rx_e(ne), density_plateau_z_e(ne), &
                                projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
+                               projector_physical_direct_spectral_model_e(ne), &
+                               projector_physical_direct_spectral_rx_e(ne), &
                                z_density_plateau_trial(ne), z_density_trial(ne), &
                                projector_physical_direct_z_e(ne), &
+                               projector_physical_direct_spectral_z_e(ne), &
                                projector_offdiag_rx_e(ne), projector_offdiag_z_e(ne), &
                                projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                                projector_physical_z_e(ne), projector_response_rx_e(ne), &
                                projector_response_z_e(ne), split_z_e(ne))
             ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot), &
                                projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
+                               projector_physical_direct_spectral_sol(nrot), &
                                projector_offdiag_sol(nrot), projector_response_sol(nrot), split_sol(nrot), &
                                var_projector_active_weight(nrot), &
                                var_projector_weight(nrot))
@@ -4513,9 +4531,12 @@ CONTAINS
             projector_physical_direct_density_z_e(:) = 0.0_dp
             density_plateau_rx_e(:) = 0.0_dp
             density_plateau_z_e(:) = 0.0_dp
-                     projector_physical_direct_rx_e(:) = 0.0_dp
-                     projector_physical_direct_schur_eval(:) = 0.0_dp
-                     projector_physical_direct_z_e(:) = 0.0_dp
+                              projector_physical_direct_rx_e(:) = 0.0_dp
+                              projector_physical_direct_schur_eval(:) = 0.0_dp
+                              projector_physical_direct_spectral_model_e(:) = 0.0_dp
+                              projector_physical_direct_spectral_rx_e(:) = 0.0_dp
+                              projector_physical_direct_z_e(:) = 0.0_dp
+                              projector_physical_direct_spectral_z_e(:) = 0.0_dp
                      projector_offdiag_rx_e(:) = 0.0_dp
                      projector_offdiag_z_e(:) = 0.0_dp
                      projector_physical_direct_curv_eval(:) = 0.0_dp
@@ -4531,9 +4552,10 @@ CONTAINS
          grad_rot(:) = 0.0_dp
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
-                     sol(:) = 0.0_dp
-                     projector_physical_direct_sol(:) = 0.0_dp
-                     projector_physical_sol(:) = 0.0_dp
+                              sol(:) = 0.0_dp
+                              projector_physical_direct_sol(:) = 0.0_dp
+                              projector_physical_direct_spectral_sol(:) = 0.0_dp
+                              projector_physical_sol(:) = 0.0_dp
                      projector_offdiag_sol(:) = 0.0_dp
                      projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
@@ -4870,6 +4892,23 @@ CONTAINS
             projector_physical_direct_spectral_dot = 0.0_dp
             projector_physical_direct_spectral_drop = 0.0_dp
             projector_physical_direct_spectral_norm = 0.0_dp
+            projector_physical_direct_spectral_direction_scale = 0.0_dp
+            projector_physical_direct_spectral_gdot_energy = 0.0_dp
+            projector_physical_direct_spectral_gdot_rotation = 0.0_dp
+            projector_physical_direct_spectral_gdotp = 0.0_dp
+            projector_physical_direct_spectral_metric_norm_energy = 0.0_dp
+            projector_physical_direct_spectral_metric_norm_rotation = 0.0_dp
+            projector_physical_direct_spectral_metric_normp = 0.0_dp
+            projector_physical_direct_spectral_model_calibrated_drop = 0.0_dp
+            projector_physical_direct_spectral_model_drop = 0.0_dp
+            projector_physical_direct_spectral_model_gap_drop = 0.0_dp
+            projector_physical_direct_spectral_response_abs_step = 0.0_dp
+            projector_physical_direct_spectral_response_weighted_step = 0.0_dp
+            projector_physical_direct_spectral_trust_scale = 1.0_dp
+            projector_physical_direct_spectral_unit_abs_step = 0.0_dp
+            projector_physical_direct_spectral_unit_model_gap_drop = 0.0_dp
+            projector_physical_direct_spectral_unit_weighted_step = 0.0_dp
+            projector_physical_direct_spectral_ready = .FALSE.
             projector_physical_direct_trust_scale = HUGE(1.0_dp)
             projector_physical_direct_unit_abs_step = 0.0_dp
             projector_physical_direct_unit_model_gap = 0.0_dp
@@ -6754,6 +6793,11 @@ CONTAINS
                                           projector_physical_direct_schur_negative_fraction = &
                                              projector_physical_direct_schur_negative_fraction/REAL(MAX(1, nrot), KIND=dp)
                                        END IF
+                                       projector_physical_direct_spectral_ready = .FALSE.
+                                       projector_physical_direct_spectral_dot = 0.0_dp
+                                       projector_physical_direct_spectral_drop = 0.0_dp
+                                       projector_physical_direct_spectral_norm = 0.0_dp
+                                       projector_physical_direct_spectral_sol(:) = 0.0_dp
                                        CALL dgesv(nrot, 1, schur, nrot, ipiv, projector_physical_direct_sol, nrot, info)
                                        IF (info == 0) THEN
                                           IF (logger%iter_info%print_level >= high_print_level) THEN
@@ -6773,35 +6817,13 @@ CONTAINS
                                                 END DO
                                                 projector_physical_direct_spectral_dot = DOT_PRODUCT(rtd, rhs)
                                                 projector_physical_direct_spectral_norm = DOT_PRODUCT(rhs, rhs)
-                                                projector_physical_direct_spectral_drop = &
-                                                   0.5_dp*MAX(0.0_dp, projector_physical_direct_spectral_dot)
-                                                IF (new_search_point .AND. &
-                                                    projector_physical_direct_spectral_drop > &
-                                                    EPSILON(projector_physical_direct_spectral_drop) .AND. &
-                                                    projector_physical_direct_spectral_norm > &
-                                                    EPSILON(projector_physical_direct_spectral_norm)) THEN
-                                                   IF (.NOT. local_ot_env(1)%schur_projector_spectral_pending) THEN
-                                                      local_ot_env(1)%schur_projector_spectral_floor = row_floor
-                                                      local_ot_env(1)%schur_projector_spectral_emin = &
-                                                         projector_physical_direct_schur_eval_min
-                                                   ELSE
-                                                      local_ot_env(1)%schur_projector_spectral_floor = &
-                                                         MAX(local_ot_env(1)%schur_projector_spectral_floor, row_floor)
-                                                      local_ot_env(1)%schur_projector_spectral_emin = &
-                                                         MIN(local_ot_env(1)%schur_projector_spectral_emin, &
-                                                             projector_physical_direct_schur_eval_min)
-                                                   END IF
-                                                   local_ot_env(1)%schur_projector_spectral_pending = .TRUE.
-                                                   local_ot_env(1)%schur_projector_spectral_drop = &
-                                                      local_ot_env(1)%schur_projector_spectral_drop + &
-                                                      projector_physical_direct_spectral_drop
-                                                   local_ot_env(1)%schur_projector_spectral_dot = &
-                                                      local_ot_env(1)%schur_projector_spectral_dot + &
-                                                      projector_physical_direct_spectral_dot
-                                                   local_ot_env(1)%schur_projector_spectral_norm = &
-                                                      local_ot_env(1)%schur_projector_spectral_norm + &
-                                                      projector_physical_direct_spectral_norm
-                                                END IF
+                                                projector_physical_direct_spectral_ready = &
+                                                   projector_physical_direct_spectral_dot > &
+                                                   EPSILON(projector_physical_direct_spectral_dot) .AND. &
+                                                   projector_physical_direct_spectral_norm > &
+                                                   EPSILON(projector_physical_direct_spectral_norm)
+                                                IF (projector_physical_direct_spectral_ready) &
+                                                   projector_physical_direct_spectral_sol(:) = rhs(:)
                                                 WRITE (cp_logger_get_default_unit_nr(logger), &
                                                        '(A,5(1X,ES16.8))') &
                                                    " OT Schur projector phys direct spectral rescue dot fdot norm floor emin:", &
@@ -6988,6 +7010,130 @@ CONTAINS
                                              occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                           CALL project_kpoint_ot_schur_response(projector_physical_direct_model_e, &
                                              occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                          IF (projector_physical_direct_spectral_ready) THEN
+                                             projector_physical_direct_spectral_rx_e(:) = &
+                                                MATMUL(response_exact_raw, projector_physical_direct_spectral_sol)
+                                             projector_physical_direct_spectral_model_e(:) = &
+                                                MATMUL(response_exact_physical, projector_physical_direct_spectral_sol)
+                                             IF (exact_density_response_ready) &
+                                                projector_physical_direct_spectral_model_e(:) = &
+                                                   projector_physical_direct_spectral_model_e(:) + &
+                                                   MATMUL(response_density_exact, &
+                                                          projector_physical_direct_spectral_sol)
+                                             CALL project_kpoint_ot_schur_response(projector_physical_direct_spectral_rx_e, &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                             CALL project_kpoint_ot_schur_response( &
+                                                projector_physical_direct_spectral_model_e, &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                             projector_physical_direct_spectral_z_e(:) = &
+                                                z_exact_physical_trial(:) + projector_physical_direct_spectral_rx_e(:)
+                                             projector_physical_direct_spectral_gdot_energy = &
+                                                DOT_PRODUCT(grad_e, projector_physical_direct_spectral_z_e)
+                                             projector_physical_direct_spectral_gdot_rotation = &
+                                                DOT_PRODUCT(grad_rot, projector_physical_direct_spectral_sol)
+                                             projector_physical_direct_spectral_gdotp = &
+                                                projector_physical_direct_spectral_gdot_energy + &
+                                                projector_physical_direct_spectral_gdot_rotation
+                                             CALL kpoint_ot_mixed_projected_term( &
+                                                projector_physical_direct_spectral_z_e, &
+                                                projector_physical_direct_spectral_z_e, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                projector_physical_direct_spectral_metric_norm_energy)
+                                             projector_physical_direct_spectral_metric_norm_energy = &
+                                                MAX(0.0_dp, projector_physical_direct_spectral_metric_norm_energy)
+                                             projector_physical_direct_spectral_metric_norm_rotation = &
+                                                MAX(0.0_dp, projector_physical_direct_spectral_dot)
+                                             projector_physical_direct_spectral_metric_normp = &
+                                                projector_physical_direct_spectral_metric_norm_energy + &
+                                                projector_physical_direct_spectral_metric_norm_rotation
+                                             IF (projector_physical_direct_spectral_gdotp > 0.0_dp .AND. &
+                                                 projector_physical_direct_spectral_metric_normp > &
+                                                 EPSILON(projector_physical_direct_spectral_metric_normp)) THEN
+                                                projector_physical_direct_spectral_unit_abs_step = &
+                                                   MAXVAL(ABS(projector_physical_direct_spectral_rx_e))
+                                                CALL para_env_inter_kp%max(projector_physical_direct_spectral_unit_abs_step)
+                                                projector_physical_direct_spectral_unit_weighted_step = &
+                                                   kpoint_ot_weighted_response_step( &
+                                                      projector_physical_direct_spectral_rx_e, curv, curv_projection_sum)
+                                                projector_physical_direct_spectral_unit_model_gap_drop = &
+                                                   kpoint_ot_response_mismatch_drop( &
+                                                      projector_physical_direct_spectral_rx_e, &
+                                                      projector_physical_direct_spectral_model_e, curv, 1.0_dp)
+                                                projector_physical_direct_spectral_trust_scale = &
+                                                   MIN(1.0_dp, projector_physical_direct_spectral_gdotp/ &
+                                                       MAX(projector_physical_direct_spectral_metric_normp, &
+                                                           EPSILON(projector_physical_direct_spectral_metric_normp)))
+                                                IF (response_trust > EPSILON(response_trust) .AND. &
+                                                    projector_physical_direct_spectral_unit_weighted_step > &
+                                                    EPSILON(projector_physical_direct_spectral_unit_weighted_step)) &
+                                                   projector_physical_direct_spectral_trust_scale = &
+                                                      MIN(projector_physical_direct_spectral_trust_scale, &
+                                                          0.8_dp*response_trust/ &
+                                                          projector_physical_direct_spectral_unit_weighted_step)
+                                                IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                    projector_physical_direct_spectral_unit_abs_step > &
+                                                    EPSILON(projector_physical_direct_spectral_unit_abs_step)) &
+                                                   projector_physical_direct_spectral_trust_scale = &
+                                                      MIN(projector_physical_direct_spectral_trust_scale, &
+                                                          0.8_dp*response_abs_trust/ &
+                                                          projector_physical_direct_spectral_unit_abs_step)
+                                                projector_physical_direct_spectral_direction_scale = &
+                                                   MAX(0.0_dp, projector_physical_direct_spectral_trust_scale)
+                                                projector_physical_direct_spectral_response_abs_step = &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_unit_abs_step
+                                                projector_physical_direct_spectral_response_weighted_step = &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_unit_weighted_step
+                                                projector_physical_direct_spectral_model_drop = &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_gdotp - &
+                                                   0.5_dp*projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_metric_normp
+                                                projector_physical_direct_spectral_model_drop = &
+                                                   MAX(0.0_dp, projector_physical_direct_spectral_model_drop)
+                                                projector_physical_direct_spectral_model_gap_drop = &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_unit_model_gap_drop
+                                                projector_physical_direct_spectral_model_calibrated_drop = &
+                                                   MAX(0.0_dp, projector_physical_direct_spectral_model_drop - &
+                                                               projector_physical_direct_spectral_model_gap_drop)
+                                                IF (new_search_point .AND. &
+                                                    projector_physical_direct_spectral_model_calibrated_drop > &
+                                                    EPSILON(projector_physical_direct_spectral_model_calibrated_drop) .AND. &
+                                                    projector_physical_direct_spectral_response_weighted_step <= &
+                                                    response_trust .AND. &
+                                                    projector_physical_direct_spectral_response_abs_step <= &
+                                                    response_abs_trust) THEN
+                                                   IF (.NOT. local_ot_env(1)%schur_projector_spectral_pending) THEN
+                                                      local_ot_env(1)%schur_projector_spectral_floor = row_floor
+                                                      local_ot_env(1)%schur_projector_spectral_emin = &
+                                                         projector_physical_direct_schur_eval_min
+                                                   ELSE
+                                                      local_ot_env(1)%schur_projector_spectral_floor = &
+                                                         MAX(local_ot_env(1)%schur_projector_spectral_floor, row_floor)
+                                                      local_ot_env(1)%schur_projector_spectral_emin = &
+                                                         MIN(local_ot_env(1)%schur_projector_spectral_emin, &
+                                                             projector_physical_direct_schur_eval_min)
+                                                   END IF
+                                                   local_ot_env(1)%schur_projector_spectral_pending = .TRUE.
+                                                   local_ot_env(1)%schur_projector_spectral_drop = &
+                                                      local_ot_env(1)%schur_projector_spectral_drop + &
+                                                      projector_physical_direct_spectral_model_calibrated_drop
+                                                   local_ot_env(1)%schur_projector_spectral_dot = &
+                                                      local_ot_env(1)%schur_projector_spectral_dot + &
+                                                      projector_physical_direct_spectral_direction_scale* &
+                                                      projector_physical_direct_spectral_gdotp
+                                                   local_ot_env(1)%schur_projector_spectral_norm = &
+                                                      local_ot_env(1)%schur_projector_spectral_norm + &
+                                                      projector_physical_direct_spectral_direction_scale* &
+                                                      projector_physical_direct_spectral_direction_scale* &
+                                                      projector_physical_direct_spectral_metric_normp
+                                                END IF
+                                             END IF
+                                          END IF
                                           ! Feed the low-rank density-response shadow in normal
                                           ! runs as well; only its printed diagnostics stay HIGH-only.
                                           IF (exact_density_response_ready) THEN
@@ -8792,6 +8938,16 @@ CONTAINS
                         projector_physical_direct_spectral_shift_max, &
                         projector_physical_direct_schur_negative_fraction, &
                         projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,7(1X,ES16.8))') &
+                        " OT Schur projector phys direct spectral response ready drop mdot mnorm gap rstep astep scale:", &
+                        projector_physical_direct_spectral_ready, &
+                        projector_physical_direct_spectral_model_calibrated_drop, &
+                        projector_physical_direct_spectral_gdotp, &
+                        projector_physical_direct_spectral_metric_normp, &
+                        projector_physical_direct_spectral_model_gap_drop, &
+                        projector_physical_direct_spectral_response_weighted_step, &
+                        projector_physical_direct_spectral_response_abs_step, &
+                        projector_physical_direct_spectral_direction_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
                         " OT Schur projector phys direct soft cut nfrac mfrac:", &
                         projector_physical_direct_soft_cut, &
@@ -8943,17 +9099,22 @@ CONTAINS
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_response_rx_e, &
                         projector_physical_direct_diagref_rx_e, &
-                        projector_physical_direct_density_rx_e, &
-                        projector_physical_direct_density_z_e, &
-                                 density_plateau_rx_e, density_plateau_z_e, &
-                                 projector_physical_direct_rx_e, &
-                                 projector_physical_direct_schur_eval, &
-                                 projector_physical_direct_z_e, projector_offdiag_rx_e, projector_offdiag_z_e, &
+                                 projector_physical_direct_density_rx_e, &
+                                 projector_physical_direct_density_z_e, &
+                                          density_plateau_rx_e, density_plateau_z_e, &
+                                          projector_physical_direct_rx_e, &
+                                          projector_physical_direct_schur_eval, &
+                                          projector_physical_direct_spectral_model_e, &
+                                          projector_physical_direct_spectral_rx_e, &
+                                          projector_physical_direct_z_e, &
+                                          projector_physical_direct_spectral_z_e, &
+                                          projector_offdiag_rx_e, projector_offdiag_z_e, &
                                  projector_physical_model_e, projector_physical_rx_e, &
                                  projector_physical_z_e, &
                                  projector_response_rx_e, projector_response_z_e, split_z_e)
-                     DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
-                                 projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
+                              DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
+                                          projector_physical_direct_spectral_sol, &
+                                          projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
                                  var_projector_active_weight, var_projector_weight)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, energy_cross, energy_cross_density, energy_cross_physical, energy_cross_raw, &
