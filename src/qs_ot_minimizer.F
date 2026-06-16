@@ -82,6 +82,8 @@ CONTAINS
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
 
+      CALL recover_collapsed_mermin_search(qs_ot_env)
+
       qs_ot_env(1)%OT_METHOD_FULL = ""
 
       ! compute the gradient for the variables x
@@ -305,6 +307,44 @@ CONTAINS
       END DO
 
    END FUNCTION use_three_point_mermin_search
+
+! **************************************************************************************************
+!> \brief restart a k-point Mermin line search that has collapsed to a numerically zero step
+!> \param qs_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE recover_collapsed_mermin_search(qs_ot_env)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+
+      REAL(KIND=dp)                                      :: step_floor
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
+      IF (qs_ot_env(1)%line_search_count <= 0) RETURN
+
+      step_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
+                       qs_ot_env(1)%settings%eps_taylor)* &
+                   MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+      IF (ABS(qs_ot_env(1)%ds_min) > step_floor) RETURN
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8),1X,I5)') &
+            " OT Mermin LS recovery ds floor count:", &
+            qs_ot_env(1)%ds_min, step_floor, qs_ot_env(1)%line_search_count
+      END IF
+
+      qs_ot_env(1)%ot_pos(:) = 0.0_dp
+      qs_ot_env(1)%ot_energy(:) = 0.0_dp
+      qs_ot_env(1)%ot_grad(:) = 0.0_dp
+      qs_ot_env(1)%line_search_left = -1
+      qs_ot_env(1)%line_search_right = -1
+      qs_ot_env(1)%line_search_mid = -1
+      qs_ot_env(1)%line_search_count = 0
+      qs_ot_env(1)%line_search_might_be_done = .FALSE.
+      qs_ot_env(1)%energy_only = .FALSE.
+      qs_ot_env(1)%ds_min = qs_ot_env(1)%settings%ds_min
+
+   END SUBROUTINE recover_collapsed_mermin_search
 
 ! **************************************************************************************************
 !> \brief moves x adding the right amount (ds) of the gradient or search direction
