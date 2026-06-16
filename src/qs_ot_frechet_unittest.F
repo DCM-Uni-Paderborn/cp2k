@@ -89,6 +89,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-10_dp, nfail)
    CALL check_complex_occ_projector_gauge_plateau("complex occupation-projector gauge plateau", &
                                                   5.0E-10_dp, nfail)
+   CALL check_complex_occ_projector_gauge_covariance("complex occupation-projector gauge covariance", &
+                                                     5.0E-10_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
                                                             2.0E-8_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
@@ -3237,6 +3239,103 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_occ_projector_gauge_plateau
+
+! **************************************************************************************************
+!> \brief Keep the physical dP response covariant while removing near-degenerate gauge noise.
+! **************************************************************************************************
+   SUBROUTINE check_complex_occ_projector_gauge_covariance(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 3.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_q, dchc, dchc_q, dchc_shift, &
+                                                            docc_mat, docc_q, docc_raw, docc_ref, q
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, cov_err, err, gauge_err, trace_err
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(-0.009982_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.21_dp, 0.0_dp, KIND=dp)
+      chc(4, 4) = CMPLX(0.43_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.24_dp, -0.18_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(-0.06_dp, 0.04_dp, KIND=dp)
+      dchc(2, 4) = CMPLX(0.05_dp, 0.03_dp, KIND=dp)
+      dchc(3, 4) = CMPLX(-0.07_dp, 0.02_dp, KIND=dp)
+      DO i = 2, n
+         dchc(i, 1:i - 1) = CONJG(dchc(1:i - 1, i))
+      END DO
+
+      occ_scale(:) = [1.52_dp, 0.83_dp, 0.31_dp, 0.08_dp]
+      occ_curv(:) = [0.033_dp, 0.030_dp, 0.011_dp, 0.002_dp]
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, &
+                                                       occ_curv, gauge_gap)
+
+      dchc_shift(:, :) = dchc(:, :)
+      DO i = 1, n
+         dchc_shift(i, i) = dchc_shift(i, i) + CMPLX(0.37_dp, 0.0_dp, KIND=dp)
+      END DO
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc_shift, occ_scale, docc_ref, &
+                                                       occ_curv, gauge_gap)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.11_dp
+      x_re(1, 3) = -0.07_dp
+      x_re(2, 4) = 0.05_dp
+      x_re(3, 4) = -0.04_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.03_dp
+      x_im(2, 2) = -0.02_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(4, 4) = -0.04_dp
+      x_im(1, 2) = -0.05_dp
+      x_im(1, 4) = 0.04_dp
+      x_im(2, 3) = 0.02_dp
+      x_im(3, 4) = -0.03_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc_q(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(chc, q))
+      dchc_q(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(dchc, q))
+      CALL dense_spectral_occ_projector_derivative_chc(chc_q, dchc_q, occ_scale, docc_q, &
+                                                       occ_curv, gauge_gap)
+      docc_ref(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc_mat, q))
+
+      active = MAXVAL(ABS(docc_raw(:, :) - docc_mat(:, :)))
+      gauge_err = MAXVAL(ABS(docc_ref(:, :) - docc_q(:, :)))
+      cov_err = gauge_err
+      trace_err = ABS(REAL(SUM([(docc_mat(i, i), i=1, n)]), KIND=dp))
+      err = MAX(gauge_err, trace_err)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc_shift, occ_scale, docc_ref, &
+                                                       occ_curv, gauge_gap)
+      err = MAX(err, MAXVAL(ABS(docc_mat(:, :) - docc_ref(:, :))))
+
+      IF (err > tol .OR. active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/cov/trace", err, active, cov_err, trace_err
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/cov/trace", err, active, cov_err, trace_err
+      END IF
+
+   END SUBROUTINE check_complex_occ_projector_gauge_covariance
 
 ! **************************************************************************************************
 !> \brief Check that diagonal projector-density response enters through the dense fixed-N projection.
