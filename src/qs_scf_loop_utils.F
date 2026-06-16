@@ -9397,7 +9397,12 @@ CONTAINS
          IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
             left_shift = DOT_PRODUCT(occ_curv, response_left)
             right_shift = DOT_PRODUCT(occ_curv, response_right)
+            CALL para_env_inter_kp%sum(left_shift)
+            CALL para_env_inter_kp%sum(right_shift)
+            CALL para_env_inter_kp%sum(occ_term)
             occ_term = occ_term - left_shift*right_shift/occ_curv_sum
+         ELSE
+            CALL para_env_inter_kp%sum(occ_term)
          END IF
          tether_term = DOT_PRODUCT(tether_curv(:)*response_left(:), response_right(:))
          DO local_channel = 1, SIZE(channel_nmo)
@@ -9409,9 +9414,10 @@ CONTAINS
             left_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
                                      response_left(first_energy:first_energy + nmo - 1))
             right_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
-                                      response_right(first_energy:first_energy + nmo - 1))
+                                     response_right(first_energy:first_energy + nmo - 1))
             tether_term = tether_term - left_shift*right_shift/weight_sum
          END DO
+         CALL para_env_inter_kp%sum(tether_term)
          projected_term = occ_term + tether_term
          IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
          IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
@@ -9438,7 +9444,12 @@ CONTAINS
          IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
             left_shift = DOT_PRODUCT(occ_curv, response_occ_left)
             right_shift = DOT_PRODUCT(occ_curv, response_occ_right)
+            CALL para_env_inter_kp%sum(left_shift)
+            CALL para_env_inter_kp%sum(right_shift)
+            CALL para_env_inter_kp%sum(occ_term)
             occ_term = occ_term - left_shift*right_shift/occ_curv_sum
+         ELSE
+            CALL para_env_inter_kp%sum(occ_term)
          END IF
          tether_term = DOT_PRODUCT(tether_curv(:)*response_tether_left(:), response_tether_right(:))
          DO local_channel = 1, SIZE(channel_nmo)
@@ -9453,6 +9464,7 @@ CONTAINS
                                       response_tether_right(first_energy:first_energy + nmo - 1))
             tether_term = tether_term - left_shift*right_shift/weight_sum
          END DO
+         CALL para_env_inter_kp%sum(tether_term)
          projected_term = occ_term + tether_term
          IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
          IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
