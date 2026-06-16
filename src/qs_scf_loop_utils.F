@@ -3644,7 +3644,13 @@ CONTAINS
             projector_physical_density_abs_avg, projector_physical_density_delta_max, &
             projector_physical_density_diag_avg, projector_physical_offdiag_abs_avg, &
             projector_physical_offdiag_abs_ratio, projector_physical_offdiag_delta_max, &
-            projector_physical_offdiag_diag_avg, projector_physical_residual_abs_avg, &
+            projector_physical_offdiag_diag_avg, projector_physical_offdiag_mode_abs_quad, &
+            projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
+            projector_physical_offdiag_mode_negative_fraction, &
+            projector_physical_offdiag_mode_negative_quad, projector_physical_offdiag_mode_positive_quad, &
+            projector_physical_offdiag_mode_quad, projector_physical_offdiag_mode_quad_abs_ratio, &
+            projector_physical_offdiag_mode_quad_signed_ratio, &
+            projector_physical_offdiag_mode_step_negative_fraction, projector_physical_residual_abs_avg, &
             projector_physical_residual_delta, projector_physical_residual_delta_max, &
             projector_physical_residual_diag_avg, projector_physical_trace_balance, &
             projector_physical_direction_scale, projector_physical_expected_drop, &
@@ -4011,6 +4017,16 @@ CONTAINS
          projector_physical_offdiag_abs_ratio = 0.0_dp
          projector_physical_offdiag_delta_max = 0.0_dp
          projector_physical_offdiag_diag_avg = 0.0_dp
+         projector_physical_offdiag_mode_abs_quad = 0.0_dp
+         projector_physical_offdiag_mode_eval_max = 0.0_dp
+         projector_physical_offdiag_mode_eval_min = 0.0_dp
+         projector_physical_offdiag_mode_negative_fraction = 0.0_dp
+         projector_physical_offdiag_mode_negative_quad = 0.0_dp
+         projector_physical_offdiag_mode_positive_quad = 0.0_dp
+         projector_physical_offdiag_mode_quad = 0.0_dp
+         projector_physical_offdiag_mode_quad_abs_ratio = 0.0_dp
+         projector_physical_offdiag_mode_quad_signed_ratio = 0.0_dp
+         projector_physical_offdiag_mode_step_negative_fraction = 0.0_dp
          projector_physical_residual_abs_avg = 0.0_dp
          projector_physical_residual_delta_max = 0.0_dp
          projector_physical_residual_diag_avg = 0.0_dp
@@ -6851,6 +6867,19 @@ CONTAINS
                accepted_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                accepted_projector_coupled_weight = projector_coupled_weight
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
+               IF (logger%iter_info%print_level >= high_print_level) &
+                  CALL audit_kpoint_ot_hessian_delta_modes(rot_hessian_projector_physical_offdiag, sol, &
+                                                           model_calibrated_drop, &
+                                                           projector_physical_offdiag_mode_negative_fraction, &
+                                                           projector_physical_offdiag_mode_eval_min, &
+                                                           projector_physical_offdiag_mode_eval_max, &
+                                                           projector_physical_offdiag_mode_step_negative_fraction, &
+                                                           projector_physical_offdiag_mode_quad, &
+                                                           projector_physical_offdiag_mode_abs_quad, &
+                                                           projector_physical_offdiag_mode_positive_quad, &
+                                                           projector_physical_offdiag_mode_negative_quad, &
+                                                           projector_physical_offdiag_mode_quad_signed_ratio, &
+                                                           projector_physical_offdiag_mode_quad_abs_ratio)
                IF (selected_attempt == 3 .AND. projector_coupled_weight > 0.0_dp .AND. &
                    (projector_mode_response_drop > 0.0_dp .OR. &
                     projector_mode_response_drop_ratio > 0.0_dp)) THEN
@@ -7113,6 +7142,17 @@ CONTAINS
                      " OT Schur projector physical offdiag-dP shadow diag abs max ratio:", &
                      projector_physical_offdiag_diag_avg, projector_physical_offdiag_abs_avg, &
                      projector_physical_offdiag_delta_max, projector_physical_offdiag_abs_ratio
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
+                     " OT Schur projector physical offdiag-dP modes neg stepneg emin emax quad absq "// &
+                     "qratio aratio pquad nquad:", &
+                     projector_physical_offdiag_mode_negative_fraction, &
+                     projector_physical_offdiag_mode_step_negative_fraction, &
+                     projector_physical_offdiag_mode_eval_min, projector_physical_offdiag_mode_eval_max, &
+                     projector_physical_offdiag_mode_quad, projector_physical_offdiag_mode_abs_quad, &
+                     projector_physical_offdiag_mode_quad_signed_ratio, &
+                     projector_physical_offdiag_mode_quad_abs_ratio, &
+                     projector_physical_offdiag_mode_positive_quad, &
+                     projector_physical_offdiag_mode_negative_quad
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                      " OT Schur projector physical diag-ref Hessian diag delta_diag abs_avg delta_max "// &
                      "gap_diag gap_avg gap_max trace_balance:", &
@@ -8003,6 +8043,87 @@ CONTAINS
          DEALLOCATE (mode_coeff, mode_eval, mode_rx, mode_vec)
 
       END SUBROUTINE audit_kpoint_ot_projector_modes
+
+!> \brief audit an accepted Schur step in a shadow Hessian-delta eigenbasis
+!> \param hessian_delta symmetric shadow Hessian contribution
+!> \param step_rot accepted, line-search-normalized rotation step
+!> \param candidate_drop calibrated Mermin drop predicted for the accepted step
+!> \param mode_negative_fraction fraction of negative shadow-Hessian eigenmodes
+!> \param mode_eval_min minimum shadow-Hessian eigenvalue
+!> \param mode_eval_max maximum shadow-Hessian eigenvalue
+!> \param mode_step_negative_fraction fraction of the accepted step in negative modes
+!> \param mode_quad signed quadratic shadow-Hessian contribution along the step
+!> \param mode_abs_quad absolute quadratic shadow-Hessian contribution along the step
+!> \param mode_positive_quad positive-mode quadratic contribution
+!> \param mode_negative_quad absolute negative-mode quadratic contribution
+!> \param mode_quad_signed_ratio signed half-quadratic over candidate_drop
+!> \param mode_quad_abs_ratio absolute half-quadratic over candidate_drop
+      SUBROUTINE audit_kpoint_ot_hessian_delta_modes(hessian_delta, step_rot, candidate_drop, &
+                                                     mode_negative_fraction, mode_eval_min, mode_eval_max, &
+                                                     mode_step_negative_fraction, mode_quad, mode_abs_quad, &
+                                                     mode_positive_quad, mode_negative_quad, &
+                                                     mode_quad_signed_ratio, mode_quad_abs_ratio)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian_delta
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_rot
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop
+      REAL(KIND=dp), INTENT(OUT)                         :: mode_abs_quad, mode_eval_max, mode_eval_min, &
+                                                            mode_negative_fraction, mode_negative_quad, &
+                                                            mode_positive_quad, mode_quad, mode_quad_abs_ratio, &
+                                                            mode_quad_signed_ratio, mode_step_negative_fraction
+
+      INTEGER                                            :: imode, nrot_local
+      REAL(KIND=dp)                                      :: coeff2, negative_count, step_negative_sum, &
+                                                            step_total_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
+
+         mode_abs_quad = 0.0_dp
+         mode_eval_max = 0.0_dp
+         mode_eval_min = 0.0_dp
+         mode_negative_fraction = 0.0_dp
+         mode_negative_quad = 0.0_dp
+         mode_positive_quad = 0.0_dp
+         mode_quad = 0.0_dp
+         mode_quad_abs_ratio = 0.0_dp
+         mode_quad_signed_ratio = 0.0_dp
+         mode_step_negative_fraction = 0.0_dp
+
+         nrot_local = SIZE(hessian_delta, 1)
+         IF (nrot_local <= 0) RETURN
+         IF (SIZE(hessian_delta, 2) /= nrot_local) RETURN
+         IF (SIZE(step_rot) /= nrot_local) RETURN
+
+         ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_vec(nrot_local, nrot_local))
+         mode_vec(:, :) = 0.5_dp*(hessian_delta(:, :) + TRANSPOSE(hessian_delta(:, :)))
+         CALL diamat_all(mode_vec, mode_eval)
+         mode_eval_min = MINVAL(mode_eval)
+         mode_eval_max = MAXVAL(mode_eval)
+         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+         step_total_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
+         step_negative_sum = 0.0_dp
+         negative_count = 0.0_dp
+         DO imode = 1, nrot_local
+            coeff2 = mode_coeff(imode)*mode_coeff(imode)
+            IF (mode_eval(imode) < 0.0_dp) THEN
+               negative_count = negative_count + 1.0_dp
+               step_negative_sum = step_negative_sum + coeff2
+               mode_negative_quad = mode_negative_quad - mode_eval(imode)*coeff2
+            ELSE
+               mode_positive_quad = mode_positive_quad + mode_eval(imode)*coeff2
+            END IF
+         END DO
+         mode_quad = mode_positive_quad - mode_negative_quad
+         mode_abs_quad = mode_positive_quad + mode_negative_quad
+         mode_negative_fraction = negative_count/REAL(MAX(1, nrot_local), KIND=dp)
+         IF (step_total_sum > EPSILON(step_total_sum)) &
+            mode_step_negative_fraction = step_negative_sum/step_total_sum
+         IF (candidate_drop > EPSILON(candidate_drop)) THEN
+            mode_quad_signed_ratio = 0.5_dp*mode_quad/candidate_drop
+            mode_quad_abs_ratio = 0.5_dp*mode_abs_quad/candidate_drop
+         END IF
+         DEALLOCATE (mode_coeff, mode_eval, mode_vec)
+
+      END SUBROUTINE audit_kpoint_ot_hessian_delta_modes
 
       FUNCTION kpoint_ot_response_mismatch_drop(response_actual, response_model, curv, scale) RESULT(drop)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_actual, response_model, curv
