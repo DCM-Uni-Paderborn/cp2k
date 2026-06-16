@@ -3801,17 +3801,23 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3, ntot = ne + nrot
 
       INTEGER                                            :: i, info, j, s
+      INTEGER, DIMENSION(ntot)                           :: ipiv_aug
       INTEGER, DIMENSION(ne)                             :: ipiv
-      REAL(KIND=dp)                                      :: err, gauge_shift, norm_delta, occ_sum, shift
+      REAL(KIND=dp)                                      :: aug_err, err, gauge_shift, norm_delta, occ_sum, shift
       REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, tether_curv
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, z_aug, z_red
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_red
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, density_response, &
                                                             phys_response, rhs_density, rhs_phys, rhs_total
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: combined_schur, curv_density, expected_combined, &
                                                             rot_base, split_schur
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: a, schur_solve
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
+      REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
 
       occ_curv(:) = [0.44_dp, 0.67_dp, 0.31_dp, 0.18_dp]
       tether_curv(:) = [0.03_dp, 0.04_dp, 0.02_dp, 0.01_dp]
@@ -3821,6 +3827,8 @@ CONTAINS
       density_response(:, 1) = [0.07_dp, -0.03_dp, 0.10_dp, -0.06_dp]
       density_response(:, 2) = [-0.04_dp, 0.09_dp, 0.02_dp, 0.05_dp]
       density_response(:, 3) = [0.03_dp, 0.08_dp, -0.05_dp, -0.01_dp]
+      grad_e(:) = [0.14_dp, -0.06_dp, 0.03_dp, -0.10_dp]
+      grad_rot(:) = [0.18_dp, -0.13_dp, 0.09_dp]
       rot_base(:, :) = RESHAPE([0.63_dp, 0.04_dp, -0.02_dp, &
                                 0.04_dp, 0.51_dp, 0.03_dp, &
                                -0.02_dp, 0.03_dp, 0.58_dp], [nrot, nrot])
@@ -3880,6 +3888,42 @@ CONTAINS
                                 MATMUL(TRANSPOSE(b_density), rhs_phys) - curv_density(:, :)
       norm_delta = MAXVAL(ABS(combined_schur(:, :) - split_schur(:, :)))
 
+      a(:, :) = rot_base(:, :) + curv_density(:, :)
+      z_red(:) = grad_e(:)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, 1, h, ne, ipiv, z_red, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in gradient dgesv", info
+         RETURN
+      END IF
+      q_red(:) = grad_rot(:) + MATMUL(TRANSPOSE(rhs_total), grad_e)
+      schur_solve(:, :) = combined_schur(:, :)
+      CALL dgesv(nrot, 1, schur_solve, nrot, ipiv(1:nrot), q_red, nrot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in coupled Schur dgesv", info
+         RETURN
+      END IF
+      z_red(:) = z_red(:) + MATMUL(rhs_total, q_red)
+
+      aug(:, :) = 0.0_dp
+      aug(1:ne, 1:ne) = h_ref(:, :)
+      aug(1:ne, ne + 1:ntot) = -b_total(:, :)
+      aug(ne + 1:ntot, 1:ne) = -TRANSPOSE(b_total(:, :))
+      aug(ne + 1:ntot, ne + 1:ntot) = a(:, :)
+      rhs_aug(1:ne) = grad_e(:)
+      rhs_aug(ne + 1:ntot) = grad_rot(:)
+      CALL dgesv(ntot, 1, aug, ntot, ipiv_aug, rhs_aug, ntot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in coupled augmented dgesv", info
+         RETURN
+      END IF
+      z_aug(:) = rhs_aug(1:ne)
+      q_aug(:) = rhs_aug(ne + 1:ntot)
+      aug_err = MAX(MAXVAL(ABS(z_red - z_aug)), MAXVAL(ABS(q_red - q_aug)))
+
       gauge_shift = 0.41_dp
       DO s = 1, nrot
          shift = DOT_PRODUCT(occ_curv, density_response(:, s) + gauge_shift)/occ_sum
@@ -3895,6 +3939,7 @@ CONTAINS
       END IF
 
       err = MAXVAL(ABS(combined_schur(:, :) - expected_combined(:, :)))
+      err = MAX(err, aug_err)
       err = MAX(err, MAXVAL(ABS(combined_schur(:, :) - &
                                 (rot_base(:, :) + curv_density(:, :) - &
                                  MATMUL(TRANSPOSE(b_total), rhs_total)))))
