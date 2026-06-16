@@ -753,8 +753,9 @@ CONTAINS
                                                   wkp, scf_control%smear, &
                                                   trial_eigenvalues, trial_occupation, trial_mu)
 
-      CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im)
-      scf_env%iter_delta = local_ot_env(1)%delta
+      CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im, &
+                   para_env_inter_kp=para_env_inter_kp)
+      CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta)
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -867,6 +868,24 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_loop_do_ot_kp
+
+! **************************************************************************************************
+!> \brief synchronize k-point OT residual over distributed k-point groups
+!> \param local_ot_env ...
+!> \param para_env_inter_kp ...
+!> \param residual_delta ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_delta)
+
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      REAL(KIND=dp), INTENT(OUT)                         :: residual_delta
+
+      residual_delta = MAX(0.0_dp, local_ot_env(1)%delta)
+      CALL para_env_inter_kp%max(residual_delta)
+      local_ot_env(1)%delta = residual_delta
+
+   END SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta
 
 ! **************************************************************************************************
 !> \brief request ADDED_MOS AUTO growth for a stalled metallic k-point OT tail
@@ -2570,7 +2589,8 @@ CONTAINS
             calibrated_predicted_drop = predicted_drop
          measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
          local_ot_env(1)%schur_model_measured_drop = measured_drop
-         residual_current_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
+         CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_current_delta)
+         residual_current_delta = MAX(residual_current_delta, 0.0_dp)
          residual_drop = MAX(0.0_dp, local_ot_env(1)%schur_model_delta - residual_current_delta)
          local_ot_env(1)%schur_model_residual_drop = residual_drop
          residual_quality_ratio = 0.0_dp
@@ -4619,7 +4639,8 @@ CONTAINS
          response_trust = HUGE(1.0_dp)
          response_trust_base = HUGE(1.0_dp)
          response_trust_factor = 1.0_dp
-         residual_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
+         CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_delta)
+         residual_delta = MAX(residual_delta, 0.0_dp)
          projector_plateau_gap_model_enabled = projector_physical_shadow_enabled .AND. &
                                                residual_delta <= ot_kp_schur_projector_response_full_delta
          projector_physical_direct_spectral_enabled = .FALSE.
