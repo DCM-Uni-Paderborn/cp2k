@@ -3867,9 +3867,15 @@ CONTAINS
             projector_physical_direct_spectral_shift_avg, projector_physical_direct_spectral_shift_max, &
             projector_physical_direct_step_negative_fraction, &
             projector_physical_direct_trace_active_actual_ratio, &
+            projector_physical_direct_trace_active_diag_quad, &
+            projector_physical_direct_trace_active_free_quad, &
             projector_physical_direct_trace_active_norm, projector_physical_direct_trace_active_quad, &
+            projector_physical_direct_trace_actual_diag_quad, &
+            projector_physical_direct_trace_actual_free_quad, &
             projector_physical_direct_trace_actual_norm, projector_physical_direct_trace_actual_quad, &
             projector_physical_direct_trace_excess_quad, projector_physical_direct_trace_full_norm, &
+            projector_physical_direct_trace_full_diag_quad, &
+            projector_physical_direct_trace_full_free_quad, &
             projector_physical_direct_trace_full_quad, projector_physical_direct_trace_ratio, &
             projector_physical_direct_trust_quality, &
             projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
@@ -4373,11 +4379,17 @@ CONTAINS
             projector_physical_direct_spectral_shift_avg = 0.0_dp
             projector_physical_direct_spectral_shift_max = 0.0_dp
             projector_physical_direct_trace_active_actual_ratio = 0.0_dp
+            projector_physical_direct_trace_active_diag_quad = 0.0_dp
+            projector_physical_direct_trace_active_free_quad = 0.0_dp
             projector_physical_direct_trace_active_norm = 0.0_dp
             projector_physical_direct_trace_active_quad = 0.0_dp
+            projector_physical_direct_trace_actual_diag_quad = 0.0_dp
+            projector_physical_direct_trace_actual_free_quad = 0.0_dp
             projector_physical_direct_trace_actual_norm = 0.0_dp
             projector_physical_direct_trace_actual_quad = 0.0_dp
             projector_physical_direct_trace_excess_quad = 0.0_dp
+            projector_physical_direct_trace_full_diag_quad = 0.0_dp
+            projector_physical_direct_trace_full_free_quad = 0.0_dp
             projector_physical_direct_trace_full_norm = 0.0_dp
             projector_physical_direct_trace_full_quad = 0.0_dp
             projector_physical_direct_trace_ratio = 0.0_dp
@@ -5399,15 +5411,21 @@ CONTAINS
                projector_physical_direct_spectral_shift_max = 0.0_dp
                projector_physical_direct_step_negative_fraction = 0.0_dp
                projector_physical_direct_trace_active_actual_ratio = 0.0_dp
+               projector_physical_direct_trace_active_diag_quad = 0.0_dp
+               projector_physical_direct_trace_active_free_quad = 0.0_dp
                projector_physical_direct_trace_active_norm = 0.0_dp
                projector_physical_direct_trace_active_quad = 0.0_dp
+               projector_physical_direct_trace_actual_diag_quad = 0.0_dp
+               projector_physical_direct_trace_actual_free_quad = 0.0_dp
                projector_physical_direct_trace_actual_norm = 0.0_dp
-                        projector_physical_direct_trace_actual_quad = 0.0_dp
-                        projector_physical_direct_trace_excess_quad = 0.0_dp
-                        projector_physical_direct_trace_full_norm = 0.0_dp
-                        projector_physical_direct_trace_full_quad = 0.0_dp
-                        projector_physical_direct_trace_ratio = 0.0_dp
-                        projector_offdiag_candidate_ready = .FALSE.
+               projector_physical_direct_trace_actual_quad = 0.0_dp
+               projector_physical_direct_trace_excess_quad = 0.0_dp
+               projector_physical_direct_trace_full_diag_quad = 0.0_dp
+               projector_physical_direct_trace_full_free_quad = 0.0_dp
+               projector_physical_direct_trace_full_norm = 0.0_dp
+               projector_physical_direct_trace_full_quad = 0.0_dp
+               projector_physical_direct_trace_ratio = 0.0_dp
+               projector_offdiag_candidate_ready = .FALSE.
                         projector_offdiag_direction_scale = 0.0_dp
                         projector_offdiag_expected_drop = 0.0_dp
                         projector_offdiag_gdot_energy = 0.0_dp
@@ -6185,6 +6203,23 @@ CONTAINS
                                              rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
                                                                      projector_physical_direct_sol)
                                              IF (rx_weight > EPSILON(rx_weight)) THEN
+                                                projector_physical_direct_trace_actual_diag_quad = &
+                                                   projector_physical_direct_delta_diag_avg*rx_weight
+                                                projector_physical_direct_trace_full_diag_quad = &
+                                                   projector_physical_delta_diag_avg*rx_weight
+                                                projector_physical_direct_trace_active_diag_quad = &
+                                                   (projector_physical_delta_diag_avg - &
+                                                    projector_physical_covariant_diag_avg + &
+                                                    projector_physical_active_covariant_diag_avg)*rx_weight
+                                                projector_physical_direct_trace_actual_free_quad = &
+                                                   projector_physical_direct_trace_actual_quad - &
+                                                   projector_physical_direct_trace_actual_diag_quad
+                                                projector_physical_direct_trace_full_free_quad = &
+                                                   projector_physical_direct_trace_full_quad - &
+                                                   projector_physical_direct_trace_full_diag_quad
+                                                projector_physical_direct_trace_active_free_quad = &
+                                                   projector_physical_direct_trace_active_quad - &
+                                                   projector_physical_direct_trace_active_diag_quad
                                                 projector_physical_direct_trace_actual_norm = &
                                                    projector_physical_direct_trace_actual_quad/rx_weight
                                                 projector_physical_direct_trace_full_norm = &
@@ -7834,6 +7869,15 @@ CONTAINS
                         projector_physical_direct_trace_ratio, projector_physical_direct_trace_active_actual_ratio, &
                         projector_physical_direct_trace_actual_norm, projector_physical_direct_trace_full_norm, &
                         projector_physical_direct_trace_active_norm
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                        " OT Schur projector phys direct trace split actual_diag actual_free raw_diag raw_free "// &
+                        "active_diag active_free:", &
+                        projector_physical_direct_trace_actual_diag_quad, &
+                        projector_physical_direct_trace_actual_free_quad, &
+                        projector_physical_direct_trace_full_diag_quad, &
+                        projector_physical_direct_trace_full_free_quad, &
+                        projector_physical_direct_trace_active_diag_quad, &
+                        projector_physical_direct_trace_active_free_quad
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector phys direct line curv trust hint ds:", &
                         projector_physical_direct_line_step_curvature, projector_physical_direct_line_step_trust, &
