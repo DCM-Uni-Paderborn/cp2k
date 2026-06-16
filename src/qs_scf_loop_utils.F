@@ -1252,6 +1252,23 @@ CONTAINS
    END FUNCTION kpoint_ot_pair_projector_weight
 
 ! **************************************************************************************************
+!> \brief active Fermi-window weight for the diagonal projector-density response
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_active_density_response_weight(occ_curv, occ_curv_max) RESULT(response_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv, occ_curv_max
+      REAL(KIND=dp)                                      :: response_weight
+
+      response_weight = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      response_weight = MIN(1.0_dp, MAX(0.0_dp, occ_curv/occ_curv_max))
+
+   END FUNCTION kpoint_ot_active_density_response_weight
+
+! **************************************************************************************************
 !> \brief project k-point OT auxiliary energies onto the exact fixed-N Mermin subproblem
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
@@ -10468,22 +10485,21 @@ CONTAINS
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! docc_mat is a doubled k-point density response, while
-                     ! occ_curv_channel is w_k*g_i.  Weight the auxiliary
-                     ! density-response channel by the local Fermi-window
-                     ! curvature before dividing by g_i; otherwise inert
-                     ! low-curvature levels create large gauge-like response
-                     ! amplitudes that are not part of the physical fixed-N
-                     ! occupation response.
-                     active_density_weight = 0.0_dp
-                     IF (channel_occ_curv_max > EPSILON(channel_occ_curv_max)) &
-                        active_density_weight = MIN(1.0_dp, MAX(0.0_dp, occ_curv_channel(ie)/ &
-                                                                        channel_occ_curv_max))
-                     density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)
+                     ! occ_curv_channel is w_k*g_i.  Keep the full finite
+                     ! projector derivative explicit, then restrict the
+                     ! production energy-response channel to active
+                     ! Fermi-window levels.  This separates the physical
+                     ! occupation response from the trust filter that keeps
+                     ! inert levels from amplifying gauge-like motion.
+                     active_density_weight = kpoint_ot_active_density_response_weight( &
+                        occ_curv_channel(ie), channel_occ_curv_max)
+                     density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
                      response_density_physical(first_energy + ie - 1, s) = &
-                        active_density_weight*density_response/occ_curv_channel(ie)
-                     density_plateau_response = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)
+                        active_density_weight*density_response
+                     density_plateau_response = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
+                                                occ_curv_channel(ie)
                      response_density_plateau(first_energy + ie - 1, s) = &
-                        active_density_weight*density_plateau_response/occ_curv_channel(ie)
+                        active_density_weight*density_plateau_response
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
                         response_density_physical(first_energy + ie - 1, s)

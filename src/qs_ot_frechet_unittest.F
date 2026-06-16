@@ -100,6 +100,8 @@ PROGRAM qs_ot_frechet_unittest
                                                             2.0E-8_dp, nfail)
    CALL check_complex_projector_density_gauge_plateau_projection( &
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
+   CALL check_complex_projector_active_density_response_filter( &
+      "complex projector active density-response filter", 5.0E-8_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
       "complex projector offdiag gauge-plateau Hessian", 5.0E-10_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
@@ -3654,6 +3656,107 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_gauge_plateau_projection
+
+! **************************************************************************************************
+!> \brief Check that the production density-response filter is separate from finite dP physics.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_active_density_response_filter(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
+                                                            docc_safe, occ_mat_m, occ_mat_p, q
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active_bound_err, active_norm, active_weight, &
+                                                            full_err, full_norm, low_ratio_err, low_weight, &
+                                                            occ_curv_max
+      REAL(KIND=dp), DIMENSION(n)                        :: active_response, full_response, occ_curv, &
+                                                            occ_plateau, occ_scale, reference_response
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.009982_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.23_dp, 0.0_dp, KIND=dp)
+      chc_eig(4, 4) = CMPLX(0.51_dp, 0.0_dp, KIND=dp)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.13_dp
+      x_re(1, 3) = -0.06_dp
+      x_re(2, 4) = 0.04_dp
+      x_re(3, 4) = -0.05_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.03_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(4, 4) = -0.01_dp
+      x_im(1, 2) = -0.04_dp
+      x_im(1, 4) = 0.03_dp
+      x_im(2, 3) = 0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+
+      occ_scale(:) = [1.70_dp, 0.52_dp, 0.24_dp, 0.2316_dp]
+      occ_plateau(:) = occ_scale(:)
+      occ_plateau(1:2) = SUM(occ_scale(1:2))/2.0_dp
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.0019_dp]
+      occ_curv_max = MAXVAL(occ_curv(:))
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(3, 4) = CMPLX(-0.16_dp, 0.11_dp, KIND=dp)
+      dchc_eig(4, 3) = CONJG(dchc_eig(3, 4))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_plateau, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_plateau, occ_mat_m)
+      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+
+      active_response(:) = 0.0_dp
+      full_response(:) = 0.0_dp
+      reference_response(:) = 0.0_dp
+      DO i = 1, n
+         full_response(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
+         reference_response(i) = 0.5_dp*REAL(docc_fd(i, i), KIND=dp)/occ_curv(i)
+         active_weight = 0.0_dp
+         IF (occ_curv(i) > EPSILON(occ_curv(i)) .AND. occ_curv_max > EPSILON(occ_curv_max)) &
+            active_weight = MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max))
+         active_response(i) = active_weight*full_response(i)
+      END DO
+
+      full_err = MAXVAL(ABS(full_response(:) - reference_response(:)))
+      active_bound_err = MAXVAL(MAX(0.0_dp, ABS(active_response(:)) - ABS(full_response(:))))
+      full_norm = MAXVAL(ABS(full_response(:)))
+      active_norm = MAXVAL(ABS(active_response(:)))
+      low_weight = occ_curv(n)/occ_curv_max
+      low_ratio_err = ABS(active_response(n)/full_response(n) - low_weight)
+
+      IF (full_err > tol .OR. active_bound_err > tol .OR. low_ratio_err > tol .OR. &
+          full_norm < active_tol .OR. active_norm >= full_norm) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/bound/low/full/active", full_err, active_bound_err, low_ratio_err, &
+            full_norm, active_norm
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/bound/low/full/active", full_err, active_bound_err, low_ratio_err, &
+            full_norm, active_norm
+      END IF
+
+   END SUBROUTINE check_complex_projector_active_density_response_filter
 
 ! **************************************************************************************************
 !> \brief Remove near-degenerate gauge noise from the off-diagonal Projector-Hessian channel.
