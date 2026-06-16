@@ -2491,6 +2491,8 @@ CONTAINS
                                                                projector_offdiag_quality_ratio, &
                                                                projector_offdiag_signed_ratio, &
                                                                projector_offdiag_step_negative, &
+                                                               projector_plateau_gap_predicted_drop, &
+                                                               projector_plateau_gap_quality_ratio, &
                                                                projector_physical_predicted_drop, &
                                                                projector_physical_compensation_ratio, &
                                                                projector_physical_correction_ratio, &
@@ -2587,6 +2589,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_mode_pending = .FALSE.
                local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
+               local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_pending = .FALSE.
@@ -2944,6 +2947,47 @@ CONTAINS
             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
                local_ot_env(1)%schur_projector_response_quality <= &
                2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
+
+            projector_plateau_gap_predicted_drop = local_ot_env(1)%schur_projector_plateau_gap_drop
+            projector_plateau_gap_quality_ratio = 0.0_dp
+            IF (mermin_search .AND. local_ot_env(1)%schur_projector_plateau_gap_pending .AND. &
+                projector_plateau_gap_predicted_drop > EPSILON(projector_plateau_gap_predicted_drop) .AND. &
+                measured_drop > 0.0_dp) THEN
+               projector_plateau_gap_quality_ratio = measured_drop/projector_plateau_gap_predicted_drop
+               local_ot_env(1)%schur_projector_plateau_gap_quality = projector_plateau_gap_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_plateau_gap_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_plateau_gap_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_plateau_gap_quality_ema = projector_plateau_gap_quality_ratio
+                  local_ot_env(1)%schur_projector_plateau_gap_weight_ema = &
+                     local_ot_env(1)%schur_projector_plateau_gap_weight
+                  local_ot_env(1)%schur_projector_plateau_gap_negative_ema = &
+                     local_ot_env(1)%schur_projector_plateau_gap_negative
+                  local_ot_env(1)%schur_projector_plateau_gap_step_ema = &
+                     local_ot_env(1)%schur_projector_plateau_gap_step
+               ELSE
+                  local_ot_env(1)%schur_projector_plateau_gap_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_plateau_gap_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_plateau_gap_quality_ratio
+                  local_ot_env(1)%schur_projector_plateau_gap_weight_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_plateau_gap_weight_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_plateau_gap_weight
+                  local_ot_env(1)%schur_projector_plateau_gap_negative_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_plateau_gap_negative_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_plateau_gap_negative
+                  local_ot_env(1)%schur_projector_plateau_gap_step_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_plateau_gap_step_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_plateau_gap_step
+               END IF
+               local_ot_env(1)%schur_projector_plateau_gap_drop_sum = &
+                  local_ot_env(1)%schur_projector_plateau_gap_drop_sum + projector_plateau_gap_predicted_drop
+               local_ot_env(1)%schur_projector_plateau_gap_measured_sum = &
+                  local_ot_env(1)%schur_projector_plateau_gap_measured_sum + measured_drop
+            END IF
 
             projector_diagref_predicted_drop = local_ot_env(1)%schur_projector_diagref_drop
             projector_diagref_correction_ratio = 0.0_dp
@@ -3427,6 +3471,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
+            local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
             local_ot_env(1)%schur_projector_physical_pending = .FALSE.
             local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_pending = .FALSE.
@@ -3573,9 +3618,23 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_drop_sum, &
                local_ot_env(1)%schur_projector_response_measured_sum, &
                local_ot_env(1)%schur_projector_response_weight, &
-                  local_ot_env(1)%schur_projector_response_weight_ema, &
-                  local_ot_env(1)%schur_projector_response_negative_ema, &
-                  local_ot_env(1)%schur_projector_response_candidate_enabled
+               local_ot_env(1)%schur_projector_response_weight_ema, &
+               local_ot_env(1)%schur_projector_response_negative_ema, &
+               local_ot_env(1)%schur_projector_response_candidate_enabled
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,11(1X,ES16.8))') &
+               " OT Schur LS projector plateau-gap n ratio ema pred meas latest weight wema neg nema step sema:", &
+               local_ot_env(1)%schur_projector_plateau_gap_quality_samples, &
+               local_ot_env(1)%schur_projector_plateau_gap_quality, &
+               local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
+               local_ot_env(1)%schur_projector_plateau_gap_drop_sum, &
+               local_ot_env(1)%schur_projector_plateau_gap_measured_sum, &
+               projector_plateau_gap_predicted_drop, &
+               local_ot_env(1)%schur_projector_plateau_gap_weight, &
+               local_ot_env(1)%schur_projector_plateau_gap_weight_ema, &
+               local_ot_env(1)%schur_projector_plateau_gap_negative, &
+               local_ot_env(1)%schur_projector_plateau_gap_negative_ema, &
+               local_ot_env(1)%schur_projector_plateau_gap_step, &
+               local_ot_env(1)%schur_projector_plateau_gap_step_ema
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
                   " OT Schur LS projector diag-ref n ratio ema pred meas weight wema corr cema neg enabled:", &
                   local_ot_env(1)%schur_projector_diagref_quality_samples, &
@@ -3841,6 +3900,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
+            local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_pending = .FALSE.
@@ -3873,6 +3933,10 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_weight = 0.0_dp
                local_ot_env(1)%schur_projector_response_correction_drop = 0.0_dp
                local_ot_env(1)%schur_projector_response_negative = 0.0_dp
+               local_ot_env(1)%schur_projector_plateau_gap_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_plateau_gap_weight = 0.0_dp
+               local_ot_env(1)%schur_projector_plateau_gap_negative = 0.0_dp
+               local_ot_env(1)%schur_projector_plateau_gap_step = 0.0_dp
                local_ot_env(1)%schur_projector_diagref_drop = 0.0_dp
                local_ot_env(1)%schur_projector_diagref_weight = 0.0_dp
                local_ot_env(1)%schur_projector_diagref_correction_drop = 0.0_dp
@@ -4225,6 +4289,8 @@ CONTAINS
          direct_pg_negative_coeff, direct_pg_negative_drop, direct_pg_positive_coeff, direct_pg_positive_drop, &
          direct_pg_metric_drop, direct_pg_metric_ratio, direct_pg_metric_step, direct_pg_raw_negative_fraction, &
          direct_pg_response_weight
+      REAL(KIND=dp) :: accepted_projector_plateau_gap_drop, accepted_projector_plateau_gap_negative, &
+         accepted_projector_plateau_gap_step, accepted_projector_plateau_gap_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4591,6 +4657,10 @@ CONTAINS
          accepted_projector_response_drop = 0.0_dp
          accepted_projector_response_negative = 0.0_dp
          accepted_projector_response_weight = 0.0_dp
+         accepted_projector_plateau_gap_drop = 0.0_dp
+         accepted_projector_plateau_gap_negative = 0.0_dp
+         accepted_projector_plateau_gap_step = 0.0_dp
+         accepted_projector_plateau_gap_weight = 0.0_dp
          coupled_direction_scale = 0.0_dp
          coupled_gdot_energy = 0.0_dp
          coupled_gdot_rotation = 0.0_dp
@@ -5774,6 +5844,18 @@ CONTAINS
                projector_physical_direct_response_positive_drop = 0.0_dp
                projector_physical_direct_response_raw_negative_fraction = 0.0_dp
                projector_physical_direct_response_weight = 0.0_dp
+               direct_pg_correction_drop = 0.0_dp
+               direct_pg_correction_negative = 0.0_dp
+               direct_pg_cross_drop = 0.0_dp
+               direct_pg_negative_coeff = 0.0_dp
+               direct_pg_negative_drop = 0.0_dp
+               direct_pg_metric_drop = 0.0_dp
+               direct_pg_metric_ratio = 0.0_dp
+               direct_pg_metric_step = 0.0_dp
+               direct_pg_positive_coeff = 0.0_dp
+               direct_pg_positive_drop = 0.0_dp
+               direct_pg_raw_negative_fraction = 0.0_dp
+               direct_pg_response_weight = 0.0_dp
                projector_physical_direct_soft_cut = 0.0_dp
                projector_physical_direct_soft_metric_fraction = 0.0_dp
                projector_physical_direct_soft_norm_fraction = 0.0_dp
@@ -7964,10 +8046,17 @@ CONTAINS
                       .NOT. projector_physical_candidate_selected .AND. &
                       .NOT. projector_offdiag_candidate_selected .AND. &
                       projector_response_model_calibrated_drop > EPSILON(projector_response_model_calibrated_drop)) THEN
-                     accepted_projector_response_drop = projector_response_model_calibrated_drop
-                     accepted_projector_response_weight = projector_mode_response_weight
-                     accepted_projector_response_negative = projector_mode_response_correction_negative
-                  END IF
+                  accepted_projector_response_drop = projector_response_model_calibrated_drop
+                  accepted_projector_response_weight = projector_mode_response_weight
+                  accepted_projector_response_negative = projector_mode_response_correction_negative
+               END IF
+               IF (logger%iter_info%print_level >= high_print_level .AND. &
+                   direct_pg_metric_drop > EPSILON(direct_pg_metric_drop)) THEN
+                  accepted_projector_plateau_gap_drop = direct_pg_metric_drop
+                  accepted_projector_plateau_gap_weight = direct_pg_response_weight
+                  accepted_projector_plateau_gap_negative = direct_pg_raw_negative_fraction
+                  accepted_projector_plateau_gap_step = direct_pg_metric_step
+               END IF
                   EXIT
             END IF
          END DO
@@ -8035,9 +8124,20 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_correction_drop = &
                   local_ot_env(1)%schur_projector_response_correction_drop + &
                   projector_mode_response_correction_drop
-                  local_ot_env(1)%schur_projector_response_negative = &
-                     MAX(local_ot_env(1)%schur_projector_response_negative, accepted_projector_response_negative)
-               END IF
+               local_ot_env(1)%schur_projector_response_negative = &
+                  MAX(local_ot_env(1)%schur_projector_response_negative, accepted_projector_response_negative)
+            END IF
+            IF (accepted_projector_plateau_gap_drop > EPSILON(accepted_projector_plateau_gap_drop)) THEN
+               local_ot_env(1)%schur_projector_plateau_gap_pending = .TRUE.
+               local_ot_env(1)%schur_projector_plateau_gap_drop = &
+                  local_ot_env(1)%schur_projector_plateau_gap_drop + accepted_projector_plateau_gap_drop
+               local_ot_env(1)%schur_projector_plateau_gap_weight = &
+                  MAX(local_ot_env(1)%schur_projector_plateau_gap_weight, accepted_projector_plateau_gap_weight)
+               local_ot_env(1)%schur_projector_plateau_gap_negative = &
+                  MAX(local_ot_env(1)%schur_projector_plateau_gap_negative, accepted_projector_plateau_gap_negative)
+               local_ot_env(1)%schur_projector_plateau_gap_step = &
+                  MAX(local_ot_env(1)%schur_projector_plateau_gap_step, accepted_projector_plateau_gap_step)
+            END IF
                IF (projector_physical_direct_diagref_model_calibrated_drop > &
                    EPSILON(projector_physical_direct_diagref_model_calibrated_drop)) THEN
                   local_ot_env(1)%schur_projector_diagref_pending = .TRUE.

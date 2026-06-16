@@ -241,6 +241,7 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_offdiag_pending = .FALSE.
       LOGICAL :: schur_projector_response_pending = .FALSE.
       LOGICAL :: schur_projector_response_candidate_enabled = .FALSE.
+      LOGICAL :: schur_projector_plateau_gap_pending = .FALSE.
       LOGICAL :: schur_projector_physical_pending = .FALSE.
       LOGICAL :: schur_projector_physical_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_diagref_pending = .FALSE.
@@ -255,6 +256,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
       INTEGER :: schur_projector_response_quality_samples = 0
+      INTEGER :: schur_projector_plateau_gap_quality_samples = 0
       INTEGER :: schur_projector_physical_quality_samples = 0
       INTEGER :: schur_projector_diagref_quality_samples = 0
       INTEGER :: schur_projector_density_quality_samples = 0
@@ -331,6 +333,17 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_response_correction_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_negative = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_weight = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_weight_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_negative = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_step = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_plateau_gap_step_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_diagref_quality_ema = 0.0_dp
@@ -653,6 +666,7 @@ CONTAINS
       qs_ot_env%schur_projector_offdiag_pending = .FALSE.
       qs_ot_env%schur_projector_response_pending = .FALSE.
       qs_ot_env%schur_projector_response_candidate_enabled = .FALSE.
+      qs_ot_env%schur_projector_plateau_gap_pending = .FALSE.
       qs_ot_env%schur_projector_physical_pending = .FALSE.
       qs_ot_env%schur_projector_physical_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_diagref_pending = .FALSE.
@@ -672,6 +686,7 @@ CONTAINS
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
       qs_ot_env%schur_projector_response_quality_samples = 0
+      qs_ot_env%schur_projector_plateau_gap_quality_samples = 0
       qs_ot_env%schur_projector_physical_quality_samples = 0
       qs_ot_env%schur_projector_diagref_quality_samples = 0
       qs_ot_env%schur_projector_density_quality_samples = 0
@@ -762,6 +777,17 @@ CONTAINS
       qs_ot_env%schur_projector_response_correction_drop = 0.0_dp
       qs_ot_env%schur_projector_response_negative = 0.0_dp
       qs_ot_env%schur_projector_response_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_drop = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_quality = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_weight = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_weight_ema = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_negative = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_step = 0.0_dp
+      qs_ot_env%schur_projector_plateau_gap_step_ema = 0.0_dp
       qs_ot_env%schur_projector_diagref_drop = 0.0_dp
       qs_ot_env%schur_projector_diagref_quality = 0.0_dp
       qs_ot_env%schur_projector_diagref_quality_ema = 0.0_dp
