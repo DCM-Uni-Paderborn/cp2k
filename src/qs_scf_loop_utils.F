@@ -4221,10 +4221,14 @@ CONTAINS
          plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
          plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
          plateau_gap_mode_step_negative_fraction
+      REAL(KIND=dp) :: direct_pg_correction_drop, direct_pg_correction_negative, direct_pg_cross_drop, &
+         direct_pg_negative_coeff, direct_pg_negative_drop, direct_pg_positive_coeff, direct_pg_positive_drop, &
+         direct_pg_raw_negative_fraction, direct_pg_response_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
                                                             projector_physical_direct_model_e, &
+                                                            direct_pg_base_e, direct_pg_rx_e, &
                                                             projector_physical_direct_response_rx_e, &
                                                             projector_physical_direct_diagref_rx_e, &
                                                             projector_physical_direct_density_rx_e, &
@@ -4309,6 +4313,7 @@ CONTAINS
                       z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
                       constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                       projector_physical_direct_model_e(ne), &
+                      direct_pg_base_e(ne), direct_pg_rx_e(ne), &
                       projector_physical_direct_response_rx_e(ne), &
                       projector_physical_direct_diagref_rx_e(ne), &
                       projector_physical_direct_density_rx_e(ne), &
@@ -4356,6 +4361,8 @@ CONTAINS
          z_exact_trial(:) = 0.0_dp
             rx_e(:) = 0.0_dp
             rx_model(:) = 0.0_dp
+            direct_pg_base_e(:) = 0.0_dp
+            direct_pg_rx_e(:) = 0.0_dp
             projector_physical_direct_model_e(:) = 0.0_dp
             projector_physical_direct_response_rx_e(:) = 0.0_dp
             projector_physical_direct_diagref_rx_e(:) = 0.0_dp
@@ -4467,6 +4474,15 @@ CONTAINS
          plateau_gap_mode_quad_abs_ratio = 0.0_dp
          plateau_gap_mode_quad_signed_ratio = 0.0_dp
          plateau_gap_mode_step_negative_fraction = 0.0_dp
+         direct_pg_correction_drop = 0.0_dp
+         direct_pg_correction_negative = 0.0_dp
+         direct_pg_cross_drop = 0.0_dp
+         direct_pg_negative_coeff = 0.0_dp
+         direct_pg_negative_drop = 0.0_dp
+         direct_pg_positive_coeff = 0.0_dp
+         direct_pg_positive_drop = 0.0_dp
+         direct_pg_raw_negative_fraction = 0.0_dp
+         direct_pg_response_weight = 0.0_dp
          projector_physical_offdiag_mode_abs_quad = 0.0_dp
          projector_physical_offdiag_mode_eval_max = 0.0_dp
          projector_physical_offdiag_mode_eval_min = 0.0_dp
@@ -6978,6 +6994,24 @@ CONTAINS
                                                 projector_physical_direct_model_e(:) = &
                                                    projector_physical_direct_rx_e(:)
                                              END IF
+                                             IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                                 exact_density_plateau_response_ready) THEN
+                                                direct_pg_base_e(:) = projector_physical_direct_rx_e(:)
+                                                CALL audit_kpoint_ot_projector_response_modes( &
+                                                   rot_hessian_projector_physical_offdiag, &
+                                                   rot_hessian_projector_physical_offdiag_plateau, &
+                                                   projector_physical_direct_sol, response_exact_physical, &
+                                                   response_density_plateau_exact, curv, projector_coupled_weight, &
+                                                   residual_delta, projector_mode_history_quality, &
+                                                   local_ot_env(1)%schur_projector_mode_trust_ema, &
+                                                   projector_mode_history_response_ratio, grad_e, &
+                                                   z_exact_physical_trial + direct_pg_base_e, direct_pg_base_e, &
+                                                   direct_pg_rx_e, direct_pg_response_weight, &
+                                                   direct_pg_correction_drop, direct_pg_correction_negative, &
+                                                   direct_pg_raw_negative_fraction, direct_pg_positive_drop, &
+                                                   direct_pg_negative_drop, direct_pg_cross_drop, &
+                                                   direct_pg_positive_coeff, direct_pg_negative_coeff)
+                                             END IF
                                           END IF
                                           projector_physical_direct_z_e(:) = z_exact_physical_trial(:) + &
                                                                              projector_physical_direct_rx_e(:)
@@ -8361,6 +8395,12 @@ CONTAINS
                         projector_physical_direct_response_positive_coeff, &
                         projector_physical_direct_response_negative_coeff
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
+                        " OT Schur projector phys direct plateau-gap response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
+                        direct_pg_response_weight, direct_pg_correction_drop, &
+                        direct_pg_correction_negative, direct_pg_raw_negative_fraction, &
+                        direct_pg_positive_drop, direct_pg_negative_drop, direct_pg_cross_drop, &
+                        direct_pg_positive_coeff, direct_pg_negative_coeff
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                         " OT Schur projector phys direct diag-ref-response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
                         projector_physical_direct_diagref_weight, &
                         projector_physical_direct_diagref_correction_drop, &
@@ -8598,6 +8638,7 @@ CONTAINS
                         z_density_trial, &
                         z_exact_physical_trial, z_exact_raw_trial, &
                         z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
+                        direct_pg_base_e, direct_pg_rx_e, &
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_response_rx_e, &
                         projector_physical_direct_diagref_rx_e, &
