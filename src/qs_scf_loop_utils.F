@@ -11561,6 +11561,11 @@ CONTAINS
                coeff = MIN(0.0_dp, coeff)
                IF (PRESENT(occ_curv_channel)) THEN
                   slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(i), occ_curv_channel(j)))
+                  IF (PRESENT(gauge_gap)) THEN
+                     IF (ABS(denom) <= 4.0_dp*gauge_gap) &
+                        slope_cap = MIN(slope_cap, &
+                                        kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(j)))
+                  END IF
                   IF (slope_cap > EPSILON(slope_cap)) THEN
                      coeff = MAX(coeff, -slope_cap)
                   ELSE
