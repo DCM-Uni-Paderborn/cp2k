@@ -7092,7 +7092,7 @@ CONTAINS
                      END IF
                      dense_expected_drop = projector_physical_expected_drop
                   END IF
-                  IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+                  IF (.NOT. attempt_failed .AND. &
                       projector_offdiag_candidate_ready .AND. &
                       projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop)) THEN
                      projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
@@ -7268,7 +7268,7 @@ CONTAINS
                      END IF
                      dense_expected_drop = projector_physical_expected_drop
                   END IF
-                  IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+                  IF (.NOT. attempt_failed .AND. &
                       projector_offdiag_candidate_ready .AND. &
                       projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop)) THEN
                      projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
@@ -7645,11 +7645,12 @@ CONTAINS
                               projector_physical_offdiag_mode_quad_abs_ratio, &
                               projector_physical_offdiag_mode_positive_quad, &
                               projector_physical_offdiag_mode_negative_quad
-                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),17(1X,ES16.8))') &
-                              " OT Schur projector offdiag-dP response ready selected exp refdrop eratio qsel "// &
+                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),17(1X,ES16.8))') &
+                              " OT Schur projector offdiag-dP response ready selected direct exp refdrop eratio qsel "// &
                               "hq htrust hrratio cdrop mgap "// &
                               "rratio aratio weight sneg rneg pdrop ndrop xdrop:", &
                               projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
+                              projector_physical_direct_candidate_selected, &
                               projector_offdiag_expected_drop, projector_offdiag_reference_drop, &
                               projector_offdiag_expected_drop_ratio, &
                               projector_offdiag_quality_for_selection, projector_offdiag_history_quality, &
