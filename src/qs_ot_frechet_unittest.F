@@ -104,6 +104,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
+   CALL check_projector_density_active_filter_descent_recovery( &
+      "complex projector density active-filter descent recovery", 5.0E-14_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
       "complex projector offdiag gauge-plateau Hessian", 5.0E-10_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
@@ -3802,6 +3804,65 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_descent_gap_projection
+
+! **************************************************************************************************
+!> \brief Check that the active density filter can leave a recoverable Mermin-descent gap.
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_active_filter_descent_recovery(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 5
+      REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.31_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, gap_weighted, &
+                                                            projected_weighted, recoverable_fraction
+      REAL(KIND=dp), DIMENSION(ne)                       :: active_response, active_weight, descent, &
+                                                            full_response, gap, gap_null, grad, occ_curv, &
+                                                            projected
+
+      occ_curv(:) = [0.040_dp, 0.020_dp, 0.010_dp, 0.005_dp, 0.002_dp]
+      active_weight(:) = occ_curv(:)/MAXVAL(occ_curv(:))
+      grad(:) = [0.0_dp, 0.40_dp, -0.20_dp, 0.10_dp, -0.05_dp]
+      descent(:) = [0.0_dp, 0.20_dp, -0.10_dp, 0.04_dp, -0.02_dp]
+
+      gap_null(:) = [0.0_dp, 0.10_dp, 0.20_dp, -0.10_dp, 0.05_dp]
+      gap_null(:) = gap_null(:) - DOT_PRODUCT(grad, gap_null)/DOT_PRODUCT(grad, grad)*grad(:)
+      gap(:) = gap_null(:) + expected_coeff*descent(:)
+
+      full_response(:) = 0.0_dp
+      DO i = 1, ne
+         IF (1.0_dp - active_weight(i) > EPSILON(active_weight(i))) &
+            full_response(i) = gap(i)/(1.0_dp - active_weight(i))
+      END DO
+      active_response(:) = active_weight(:)*full_response(:)
+      gap(:) = full_response(:) - active_response(:)
+
+      CALL dense_project_descent_response(gap, descent, grad, projected, coeff, gdot, denom)
+      gap_weighted = SQRT(MAX(0.0_dp, DOT_PRODUCT(occ_curv(:)*gap(:), gap(:))/SUM(occ_curv(:))))
+      projected_weighted = SQRT(MAX(0.0_dp, DOT_PRODUCT(occ_curv(:)*projected(:), projected(:))/SUM(occ_curv(:))))
+      recoverable_fraction = 0.0_dp
+      IF (gap_weighted > EPSILON(gap_weighted)) recoverable_fraction = projected_weighted/gap_weighted
+
+      err = MAXVAL(ABS(projected(:) - expected_coeff*descent(:)))
+      err = MAX(err, ABS(coeff - expected_coeff))
+      err = MAX(err, ABS(gdot - expected_coeff*denom))
+
+      IF (err > tol .OR. projected_weighted <= 0.0_dp .OR. &
+          recoverable_fraction <= 0.0_dp .OR. recoverable_fraction >= 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/gap/projected/recover", err, gap_weighted, projected_weighted, &
+            recoverable_fraction
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/gap/projected/recover", err, gap_weighted, projected_weighted, &
+            recoverable_fraction
+      END IF
+
+   END SUBROUTINE check_projector_density_active_filter_descent_recovery
 
 ! **************************************************************************************************
 !> \brief Remove near-degenerate gauge noise from the off-diagonal Projector-Hessian channel.

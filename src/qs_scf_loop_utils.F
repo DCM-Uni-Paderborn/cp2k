@@ -4389,6 +4389,9 @@ CONTAINS
             density_descent_expected_drop, &
             density_descent_gap_coeff, &
             density_descent_gap_denom, &
+            density_descent_gap_projected_abs, &
+            density_descent_gap_projected_weighted, &
+            density_descent_gap_recoverable_fraction, &
             density_descent_gdot_energy, &
             density_descent_gdot_rotation, &
             density_descent_gdotp, &
@@ -6262,6 +6265,9 @@ CONTAINS
                density_descent_expected_drop = 0.0_dp
                density_descent_gap_coeff = 0.0_dp
                density_descent_gap_denom = 0.0_dp
+               density_descent_gap_projected_abs = 0.0_dp
+               density_descent_gap_projected_weighted = 0.0_dp
+               density_descent_gap_recoverable_fraction = 0.0_dp
                density_descent_gdot_energy = 0.0_dp
                density_descent_gdot_rotation = 0.0_dp
                density_descent_gdotp = 0.0_dp
@@ -7697,6 +7703,14 @@ CONTAINS
                                                 density_gap_rx_e, z_exact_physical_trial, grad_e, &
                                                 density_gap_projected_e, density_descent_gap_coeff, &
                                                 density_gap_gdot, density_descent_gap_denom)
+                                             density_descent_gap_projected_abs = MAXVAL(ABS(density_gap_projected_e))
+                                             CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
+                                             density_descent_gap_projected_weighted = &
+                                                kpoint_ot_weighted_response_step(density_gap_projected_e, curv, &
+                                                                                curv_projection_sum)
+                                             IF (density_gap_raw_weighted > EPSILON(density_gap_raw_weighted)) &
+                                                density_descent_gap_recoverable_fraction = &
+                                                   density_descent_gap_projected_weighted/density_gap_raw_weighted
                                              density_descent_rx_e(:) = projector_physical_direct_density_rx_e(:) + &
                                                                        density_gap_projected_e(:)
                                              CALL project_kpoint_ot_schur_response(density_descent_rx_e, &
@@ -9560,8 +9574,8 @@ CONTAINS
                         density_gap_response_abs_trust_ratio, &
                         density_gap_trust_quality, &
                         density_gap_direction_scale
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
-                        " OT Schur projector phys direct density-descent shadow exp cdrop rratio aratio tq scale coeff denom:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,11(1X,ES16.8))') &
+                        " OT Schur projector density-descent exp cdrop rratio aratio tq scale coeff denom pabs pwgt rec:", &
                         density_descent_expected_drop, &
                         density_descent_model_calibrated_drop, &
                         density_descent_response_weighted_trust_ratio, &
@@ -9569,7 +9583,10 @@ CONTAINS
                         density_descent_trust_quality, &
                         density_descent_direction_scale, &
                         density_descent_gap_coeff, &
-                        density_descent_gap_denom
+                        density_descent_gap_denom, &
+                        density_descent_gap_projected_abs, &
+                        density_descent_gap_projected_weighted, &
+                        density_descent_gap_recoverable_fraction
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector density-gap raw raw_abs raw_weighted gdot norm:", &
                         density_gap_raw_abs, density_gap_raw_weighted, density_gap_gdot, density_gap_norm
