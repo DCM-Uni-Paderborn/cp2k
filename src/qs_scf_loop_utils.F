@@ -4009,6 +4009,7 @@ CONTAINS
                                                                         projector_physical_direct_candidate_ready, &
                                                                         projector_physical_direct_candidate_selected, &
                                                                         projector_physical_direct_candidate_used, &
+                                                                        projector_plateau_gap_model_enabled, &
                                                                         projector_offdiag_candidate_ready, &
                                                                         projector_offdiag_candidate_selected, &
                                                                         projector_physical_shadow_enabled, &
@@ -4291,6 +4292,7 @@ CONTAINS
          direct_pg_response_weight
       REAL(KIND=dp) :: accepted_projector_plateau_gap_drop, accepted_projector_plateau_gap_negative, &
          accepted_projector_plateau_gap_step, accepted_projector_plateau_gap_weight
+      REAL(KIND=dp) :: projector_plateau_gap_quality_for_selection
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4497,6 +4499,9 @@ CONTAINS
          response_trust_base = HUGE(1.0_dp)
          response_trust_factor = 1.0_dp
          residual_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
+         projector_plateau_gap_model_enabled = logger%iter_info%print_level >= high_print_level .OR. &
+                                               (projector_physical_shadow_enabled .AND. &
+                                                residual_delta <= ot_kp_schur_projector_response_full_delta)
          residual_reference_quality = 0.0_dp
          density_projector_fraction = 0.0_dp
          physical_response_gap_avg = 0.0_dp
@@ -5047,7 +5052,7 @@ CONTAINS
                                                        occ_curv(e_offset(local_channel):e_offset(local_channel) + nmo - 1), &
                                                        var_i, var_j, var_kind, &
                                                        projector_physical_shadow_enabled, &
-                                                       logger%iter_info%print_level >= high_print_level, &
+                                                       projector_plateau_gap_model_enabled, &
                                                        rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                        rot_hessian_projector_physical, &
                                                        rot_hessian_projector_physical_offdiag, &
@@ -5210,7 +5215,7 @@ CONTAINS
                      projector_physical_density_low_curv_sum/projector_physical_density_diag_abs_sum
             END IF
             exact_density_plateau_response_ready = .FALSE.
-            IF (logger%iter_info%print_level >= high_print_level) &
+            IF (projector_plateau_gap_model_enabled) &
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_plateau, &
                                                           0.0_dp*response_density_plateau, 0.0_dp*grad_e, &
                                                           channel_nmo, e_offset, energy_hessian, &
@@ -5624,6 +5629,19 @@ CONTAINS
                            local_ot_env(1)%schur_projector_physical_trace_actual_free_quality_ema, &
                            local_ot_env(1)%schur_projector_physical_quality_samples, &
                            projector_physical_quality_for_selection)
+                     projector_plateau_gap_quality_for_selection = 1.0_dp
+                     IF (local_ot_env(1)%schur_projector_plateau_gap_quality_samples >= &
+                         ot_kp_schur_projector_response_min_samples) &
+                        projector_plateau_gap_quality_for_selection = &
+                           kpoint_ot_schur_history_quality( &
+                              local_ot_env(1)%schur_projector_plateau_gap_drop_sum, &
+                              local_ot_env(1)%schur_projector_plateau_gap_measured_sum, &
+                              local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
+                              local_ot_env(1)%schur_projector_plateau_gap_quality_samples, &
+                              ot_kp_schur_projector_response_min_samples, &
+                              1.0_dp, &
+                              ot_kp_schur_projector_response_quality_min_ratio, &
+                              ot_kp_schur_projector_response_quality_max_ratio)
                      projector_physical_direct_quality_for_selection = projector_physical_trace_split_quality
                      projector_physical_direct_density_audit_quality = &
                         kpoint_ot_density_audit_trust_quality( &
@@ -6892,7 +6910,7 @@ CONTAINS
                                                       projector_physical_direct_density_trust_quality)
                                              END IF
                                           END IF
-                                          IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                          IF (projector_plateau_gap_model_enabled .AND. &
                                               exact_density_plateau_response_ready) THEN
                                              density_plateau_rx_e(:) = &
                                                 MATMUL(response_density_plateau_exact, projector_physical_direct_sol)
@@ -7090,7 +7108,7 @@ CONTAINS
                                                 projector_physical_direct_model_e(:) = &
                                                    projector_physical_direct_rx_e(:)
                                              END IF
-                                             IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                             IF (projector_plateau_gap_model_enabled .AND. &
                                                  exact_density_plateau_response_ready) THEN
                                                 direct_pg_base_e(:) = projector_physical_direct_rx_e(:)
                                                 CALL audit_kpoint_ot_projector_response_modes( &
@@ -7292,7 +7310,8 @@ CONTAINS
                                              ! Mermin-metric curvature/trust scale used above.
                                              projector_physical_direct_expected_drop = &
                                                 kpoint_ot_schur_expected_drop(projector_physical_direct_model_calibrated_drop, &
-                                                                              projector_physical_direct_quality_for_selection, &
+                                                                              projector_physical_direct_quality_for_selection* &
+                                                                              projector_plateau_gap_quality_for_selection, &
                                                                               projector_physical_direct_trust_quality* &
                                                                               projector_physical_direct_density_audit_quality)
                                              projector_physical_direct_candidate_ready = &
@@ -8501,12 +8520,13 @@ CONTAINS
                         projector_physical_response_cross_drop, projector_physical_response_positive_coeff, &
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),10(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected exp qsel qsplit dq cdrop "// &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),11(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected exp qsel qsplit pgq dq cdrop "// &
                         "mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                         projector_physical_direct_expected_drop, projector_physical_direct_quality_for_selection, &
                         projector_physical_trace_split_quality, &
+                        projector_plateau_gap_quality_for_selection, &
                         projector_physical_direct_density_audit_quality, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
                         projector_physical_direct_response_weighted_trust_ratio, &
