@@ -9978,6 +9978,126 @@ CONTAINS
                         diag_shift_sum, diag_shift_max, schur_diag_min, &
                         projector_physical_direct_active_diag_compensation, &
                         projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
+                     DO ivar = 1, 3
+                        z_weight = REAL(ivar, KIND=dp)/4.0_dp
+                        projector_physical_direct_schur_vec(:, :) = &
+                           (1.0_dp - z_weight)*projector_physical_direct_delta(:, :) + &
+                           z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
+                                            TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
+                                                      rot_hessian(:, :)))
+                        IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                            projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
+                           diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
+                                        projector_coupled_weight
+                           DO r = 1, nrot
+                              projector_physical_direct_schur_vec(r, r) = &
+                                 projector_physical_direct_schur_vec(r, r) + diag_shift
+                           END DO
+                        END IF
+                        schur(:, :) = rot_hessian_coupled(:, :) + &
+                                      projector_coupled_weight*projector_physical_direct_schur_vec(:, :)
+                        DO s = 1, nrot
+                           DO r = 1, nrot
+                              projected_term = 0.5_dp* &
+                                 (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
+                              IF (exact_density_response_ready) &
+                                 projected_term = projected_term + 0.5_dp* &
+                                    (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
+                                     DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
+                                     DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
+                                     DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
+                                     DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
+                                     DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                              schur(r, s) = schur(r, s) - projected_term
+                           END DO
+                        END DO
+                        diag_shift_sum = 0.0_dp
+                        diag_shift_max = 0.0_dp
+                        schur_diag_min = HUGE(1.0_dp)
+                        DO r = 1, nrot
+                           row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
+                              rot_hessian(r, r) + projector_physical_direct_schur_vec(r, r), rot_floor(r))
+                           diag_shift = MAX(0.0_dp, row_floor - schur(r, r))
+                           IF (diag_shift > 0.0_dp) THEN
+                              schur(r, r) = schur(r, r) + diag_shift
+                              diag_shift_sum = diag_shift_sum + diag_shift
+                              diag_shift_max = MAX(diag_shift_max, diag_shift)
+                           END IF
+                           schur_diag_min = MIN(schur_diag_min, schur(r, r))
+                        END DO
+                        projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                        CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
+                        projector_physical_direct_schur_eval_min = MINVAL(projector_physical_direct_schur_eval)
+                        projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
+                        DO r = 1, nrot
+                           rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                           IF (exact_density_response_ready) &
+                              rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
+                        END DO
+                        sol(:) = rhs(:)
+                        CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
+                        solved = info == 0
+                        dense_expected_drop = 0.0_dp
+                        direction_scale = 0.0_dp
+                        model_calibrated_drop = 0.0_dp
+                        model_gap = 0.0_dp
+                        response_weighted_trust_ratio = 0.0_dp
+                        response_abs_trust_ratio = 0.0_dp
+                        dense_trust_quality = 1.0_dp
+                        IF (solved) THEN
+                           rx_e(:) = MATMUL(response_exact_raw, sol)
+                           rx_model(:) = MATMUL(response_exact_physical, sol)
+                           IF (exact_density_response_ready) rx_model(:) = rx_model(:) + MATMUL(response_density_exact, sol)
+                           CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
+                                                                 occ_curv_projection_sum, channel_nmo, e_offset)
+                           CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
+                                                                 occ_curv_projection_sum, channel_nmo, e_offset)
+                           z_e(:) = z_exact_physical_trial(:) + rx_e(:)
+                           gdot_energy = DOT_PRODUCT(grad_e, z_e)
+                           gdot_rotation = DOT_PRODUCT(grad_rot, sol)
+                           norm_energy = DOT_PRODUCT(z_e, z_e)
+                           norm_rotation = DOT_PRODUCT(sol, sol)
+                           gdotp = gdot_energy + gdot_rotation
+                           normp = norm_energy + norm_rotation
+                           IF (gdotp > 0.0_dp .AND. normp > EPSILON(normp)) THEN
+                              direction_scale = gdotp/MAX(normp, EPSILON(normp))
+                              scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
+                              model_drop = 0.5_dp*direction_scale*gdotp
+                              response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
+                              CALL para_env_inter_kp%max(response_abs_step)
+                              response_weighted_step = direction_scale* &
+                                 kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                              model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
+                              model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
+                              model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+                              IF (direction_scale < schur_min_coupled_scale) &
+                                 model_calibrated_drop = scale_quality*model_calibrated_drop
+                              model_gap_trust = schur_model_gap_factor*response_trust
+                              model_gap_ratio = 0.0_dp
+                              IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
+                              IF (response_trust > EPSILON(response_trust)) &
+                                 response_weighted_trust_ratio = response_weighted_step/response_trust
+                              IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                 response_abs_trust_ratio = response_abs_step/response_abs_trust
+                              dense_trust_quality = kpoint_ot_schur_trust_quality(response_weighted_trust_ratio, &
+                                                                                  response_abs_trust_ratio, &
+                                                                                  model_gap_ratio)
+                              dense_expected_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
+                                 projector_physical_direct_quality_for_selection* &
+                                 projector_plateau_gap_quality_for_selection, &
+                                 dense_trust_quality*projector_physical_direct_density_audit_quality)
+                           END IF
+                        END IF
+                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,1(1X,L1),13(1X,ES16.8))') &
+                           " OT Schur projector mixed direct shadow solved wactive exp cdrop mgap rratio aratio "// &
+                           "scale dsum dmax dmin wactive_comp emin emax:", &
+                           solved, z_weight, dense_expected_drop, model_calibrated_drop, model_gap, &
+                           response_weighted_trust_ratio, response_abs_trust_ratio, direction_scale, &
+                           diag_shift_sum, diag_shift_max, schur_diag_min, &
+                           z_weight*projector_physical_direct_active_diag_compensation, &
+                           projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
+                     END DO
                   END IF
                END IF
             END IF
