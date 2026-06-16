@@ -4244,28 +4244,30 @@ CONTAINS
                                                             coupled_weight = 0.20_dp, &
                                                             full_delta = -0.181_dp, reference_delta = 0.0_dp
 
-      REAL(KIND=dp)                                      :: active_comp, active_diag_after, err, full_comp, &
-                                                            old_active_diag_after, positive_comp
+      REAL(KIND=dp)                                      :: active_comp, active_diag_after, active_negative_ref_comp, &
+                                                            err, full_comp, old_active_diag_after, positive_comp
 
       full_comp = dense_direct_trace_compensation(coupled_weight, full_delta, reference_delta)
       active_comp = dense_direct_trace_compensation(coupled_weight, active_delta, reference_delta)
       active_diag_after = active_delta + active_comp/coupled_weight
       old_active_diag_after = active_delta + full_comp/coupled_weight
+      active_negative_ref_comp = dense_direct_trace_compensation(coupled_weight, active_delta, full_delta)
       positive_comp = dense_direct_trace_compensation(coupled_weight, 0.05_dp, 0.01_dp)
 
       err = ABS(active_diag_after)
       err = MAX(err, ABS(full_delta + full_comp/coupled_weight))
+      err = MAX(err, ABS(active_negative_ref_comp - active_comp))
       err = MAX(err, ABS(positive_comp - coupled_weight*(0.05_dp - 0.01_dp)))
 
       IF (err > tol .OR. old_active_diag_after < 0.1_dp .OR. active_comp >= full_comp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/full/active/old/positive", err, full_comp, active_comp, &
-            old_active_diag_after, positive_comp
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/active/negref/old/positive", err, full_comp, active_comp, &
+            active_negative_ref_comp, old_active_diag_after, positive_comp
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/full/active/old/positive", err, full_comp, active_comp, &
-            old_active_diag_after, positive_comp
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/active/negref/old/positive", err, full_comp, active_comp, &
+            active_negative_ref_comp, old_active_diag_after, positive_comp
       END IF
 
    END SUBROUTINE check_projector_direct_trace_compensation
@@ -4563,11 +4565,12 @@ CONTAINS
       RESULT(compensation)
       REAL(KIND=dp), INTENT(IN)                          :: coupled_weight, direct_delta_diag_avg, &
                                                             reference_delta_diag_avg
-      REAL(KIND=dp)                                      :: compensation
+      REAL(KIND=dp)                                      :: compensation, positive_reference
 
+      positive_reference = MAX(0.0_dp, reference_delta_diag_avg)
       compensation = MAX(0.0_dp, -coupled_weight*direct_delta_diag_avg)
-      IF (direct_delta_diag_avg > reference_delta_diag_avg) &
-         compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - reference_delta_diag_avg))
+      IF (direct_delta_diag_avg > positive_reference) &
+         compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - positive_reference))
 
    END FUNCTION dense_direct_trace_compensation
 

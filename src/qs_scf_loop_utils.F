@@ -1291,11 +1291,12 @@ CONTAINS
                                                 reference_delta_diag_avg) RESULT(compensation)
       REAL(KIND=dp), INTENT(IN)                          :: coupled_weight, direct_delta_diag_avg, &
                                                             reference_delta_diag_avg
-      REAL(KIND=dp)                                      :: compensation
+      REAL(KIND=dp)                                      :: compensation, positive_reference
 
+      positive_reference = MAX(0.0_dp, reference_delta_diag_avg)
       compensation = MAX(0.0_dp, -coupled_weight*direct_delta_diag_avg)
-      IF (direct_delta_diag_avg > reference_delta_diag_avg) &
-         compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - reference_delta_diag_avg))
+      IF (direct_delta_diag_avg > positive_reference) &
+         compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - positive_reference))
 
    END FUNCTION kpoint_ot_direct_trace_compensation
 
@@ -4350,6 +4351,8 @@ CONTAINS
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_quality_for_selection, projector_physical_trace_split_quality, &
             projector_physical_direct_density_audit_quality, &
+            projector_physical_direct_active_delta_diag_avg, &
+            projector_physical_direct_active_diag_compensation, &
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
@@ -6208,6 +6211,8 @@ CONTAINS
                projector_physical_direct_candidate_used = .FALSE.
                projector_physical_direct_spectral_candidate_ready = .FALSE.
                projector_physical_direct_spectral_candidate_selected = .FALSE.
+               projector_physical_direct_active_delta_diag_avg = 0.0_dp
+               projector_physical_direct_active_diag_compensation = 0.0_dp
                projector_physical_direct_diag_compensation = 0.0_dp
                projector_physical_direct_diag_compensation_local_avg = 0.0_dp
                projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
@@ -6959,7 +6964,11 @@ CONTAINS
                                        END DO
                                        projector_physical_direct_delta_diag_avg = &
                                           projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       projector_physical_direct_active_delta_diag_avg = &
+                                          projector_physical_delta_diag_avg - projector_physical_covariant_diag_avg + &
+                                          projector_physical_active_covariant_diag_avg
                                        projector_physical_direct_diag_compensation = 0.0_dp
+                                       projector_physical_direct_active_diag_compensation = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_avg = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_max = 0.0_dp
@@ -6967,6 +6976,10 @@ CONTAINS
                                           projector_physical_direct_diag_compensation = &
                                              kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
                                                 projector_physical_direct_delta_diag_avg, &
+                                                projector_hessian_delta_diag_avg)
+                                          projector_physical_direct_active_diag_compensation = &
+                                             kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
+                                                projector_physical_direct_active_delta_diag_avg, &
                                                 projector_hessian_delta_diag_avg)
                                           ! Retain the trace curvature implied by the finite
                                           ! Projector response inside the Direct curvature matrix.
@@ -9491,16 +9504,18 @@ CONTAINS
                      projector_physical_density_full_abs_avg, projector_physical_density_active_abs_avg, &
                      projector_physical_density_gap_abs_avg, projector_physical_density_gap_abs_max, &
                      projector_physical_density_active_fraction
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
-                     " OT Schur projector phys direct diag parts pdelta ddelta hdelta cov acov residual density "// &
-                     "diagref_gap offdiag_gap balance comp applied:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,14(1X,ES16.8))') &
+                     " OT Schur projector phys direct diag parts pdelta ddelta active_ddelta hdelta cov acov "// &
+                     "residual density diagref_gap offdiag_gap balance comp active_comp applied:", &
                      projector_physical_delta_diag_avg, projector_physical_direct_delta_diag_avg, &
+                     projector_physical_direct_active_delta_diag_avg, &
                      projector_hessian_delta_diag_avg, &
                      projector_physical_covariant_diag_avg, projector_physical_active_covariant_diag_avg, &
                      projector_physical_residual_diag_avg, projector_physical_density_diag_avg, &
                      projector_physical_diagref_gap_diag_avg, &
                      projector_physical_offdiag_plateau_gap_diag_avg, projector_physical_direct_diag_balance, &
-                     projector_physical_direct_diag_compensation, projector_physical_direct_diag_shift_avg
+                     projector_physical_direct_diag_compensation, &
+                     projector_physical_direct_active_diag_compensation, projector_physical_direct_diag_shift_avg
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
