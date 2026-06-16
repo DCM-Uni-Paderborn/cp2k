@@ -10298,7 +10298,8 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: density_plateau_response, density_response, &
+      REAL(KIND=dp)                                      :: active_density_weight, channel_occ_curv_max, &
+                                                            density_plateau_response, density_response, &
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
                                                             projector_evals_p
@@ -10333,6 +10334,7 @@ CONTAINS
          DO imo = 1, nmo
             occ_mat_coupled(imo, imo) = CMPLX(2.0_dp*kpoint_weight*occupation_numbers(imo), 0.0_dp, KIND=dp)
          END DO
+         channel_occ_curv_max = MAXVAL(occ_curv_channel)
          projector_weight = kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
                                                                  ot_kp_canonical_projector_max_weight)
          IF (projector_weight > 0.0_dp) THEN
@@ -10439,18 +10441,24 @@ CONTAINS
                ! use the analytic curvature shift instead of another finite
                ! off-diagonal dP application.
                DO ie = 1, nmo
-                  ! This is only a division guard.  The OT curvature floor is a
-                  ! preconditioner scale and must not suppress physical
-                  ! low-curvature density response.
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! docc_mat is a doubled k-point density response, while
-                     ! occ_curv_channel is w_k*g_i.
+                     ! occ_curv_channel is w_k*g_i.  Weight the auxiliary
+                     ! density-response channel by the local Fermi-window
+                     ! curvature before dividing by g_i; otherwise inert
+                     ! low-curvature levels create large gauge-like response
+                     ! amplitudes that are not part of the physical fixed-N
+                     ! occupation response.
+                     active_density_weight = 0.0_dp
+                     IF (channel_occ_curv_max > EPSILON(channel_occ_curv_max)) &
+                        active_density_weight = MIN(1.0_dp, MAX(0.0_dp, occ_curv_channel(ie)/ &
+                                                                        channel_occ_curv_max))
                      density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)
                      response_density_physical(first_energy + ie - 1, s) = &
-                        density_response/occ_curv_channel(ie)
+                        active_density_weight*density_response/occ_curv_channel(ie)
                      density_plateau_response = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)
                      response_density_plateau(first_energy + ie - 1, s) = &
-                        density_plateau_response/occ_curv_channel(ie)
+                        active_density_weight*density_plateau_response/occ_curv_channel(ie)
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
                         response_density_physical(first_energy + ie - 1, s)
