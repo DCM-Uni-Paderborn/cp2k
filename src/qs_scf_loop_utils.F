@@ -3665,6 +3665,7 @@ CONTAINS
                                                                         projector_physical_direct_candidate_selected, &
                                                                         projector_physical_direct_candidate_used, &
                                                                         projector_offdiag_candidate_ready, &
+                                                                        projector_offdiag_candidate_selected, &
                                                                         projector_physical_shadow_enabled, &
                                                                         projector_response_candidate_ready, &
                                                                         projector_response_candidate_selected, &
@@ -4488,6 +4489,7 @@ CONTAINS
                      projector_physical_direct_candidate_selected = .FALSE.
                      projector_physical_direct_candidate_used = .FALSE.
                      projector_offdiag_candidate_ready = .FALSE.
+                     projector_offdiag_candidate_selected = .FALSE.
                      projector_response_candidate_ready = .FALSE.
             projector_response_candidate_selected = .FALSE.
          split_candidate_ready = .FALSE.
@@ -7040,6 +7042,38 @@ CONTAINS
                      END IF
                      dense_expected_drop = projector_physical_expected_drop
                   END IF
+                  IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+                      projector_offdiag_candidate_ready .AND. &
+                      projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
+                      projector_offdiag_expected_drop >= &
+                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                     projector_offdiag_candidate_selected = .TRUE.
+                     projector_physical_candidate_selected = .FALSE.
+                     projector_physical_direct_candidate_selected = .FALSE.
+                     projector_response_candidate_selected = .FALSE.
+                     z_e(:) = projector_offdiag_z_e(:)
+                     sol(:) = projector_offdiag_sol(:)
+                     direction_scale = projector_offdiag_direction_scale
+                     gdotp = projector_offdiag_gdotp
+                     gdot_energy = projector_offdiag_gdot_energy
+                     gdot_rotation = projector_offdiag_gdot_rotation
+                     norm_energy = projector_offdiag_norm_energy
+                     norm_rotation = projector_offdiag_norm_rotation
+                     normp = projector_offdiag_normp
+                     norm_ratio = projector_offdiag_norm_ratio
+                     scale_quality = projector_offdiag_scale_quality
+                     model_drop = projector_offdiag_model_drop
+                     model_calibrated_drop = projector_offdiag_model_calibrated_drop
+                     model_gap = projector_offdiag_model_gap
+                     model_gap_drop = projector_offdiag_model_gap_drop
+                     model_gap_ratio = projector_offdiag_model_gap_ratio
+                     model_gap_trust = projector_offdiag_model_gap_trust
+                     response_abs_step = projector_offdiag_response_abs_step
+                     response_abs_trust_ratio = projector_offdiag_response_abs_trust_ratio
+                     response_weighted_step = projector_offdiag_response_weighted_step
+                     response_weighted_trust_ratio = projector_offdiag_response_weighted_trust_ratio
+                     dense_expected_drop = projector_offdiag_expected_drop
+                  END IF
                   split_dense_expected_ratio = 0.0_dp
                IF (dense_expected_drop > EPSILON(dense_expected_drop)) &
                   split_dense_expected_ratio = split_expected_drop/dense_expected_drop
@@ -7056,6 +7090,7 @@ CONTAINS
                      attempt_failed = .FALSE.
                      projector_physical_candidate_selected = .FALSE.
                      projector_physical_direct_candidate_selected = .FALSE.
+                     projector_offdiag_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = split_z_e(:)
                   sol(:) = split_sol(:)
@@ -7176,6 +7211,38 @@ CONTAINS
                      END IF
                      dense_expected_drop = projector_physical_expected_drop
                   END IF
+                  IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+                      projector_offdiag_candidate_ready .AND. &
+                      projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
+                      projector_offdiag_expected_drop >= &
+                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                     projector_offdiag_candidate_selected = .TRUE.
+                     projector_physical_candidate_selected = .FALSE.
+                     projector_physical_direct_candidate_selected = .FALSE.
+                     projector_response_candidate_selected = .FALSE.
+                     z_e(:) = projector_offdiag_z_e(:)
+                     sol(:) = projector_offdiag_sol(:)
+                     direction_scale = projector_offdiag_direction_scale
+                     gdotp = projector_offdiag_gdotp
+                     gdot_energy = projector_offdiag_gdot_energy
+                     gdot_rotation = projector_offdiag_gdot_rotation
+                     norm_energy = projector_offdiag_norm_energy
+                     norm_rotation = projector_offdiag_norm_rotation
+                     normp = projector_offdiag_normp
+                     norm_ratio = projector_offdiag_norm_ratio
+                     scale_quality = projector_offdiag_scale_quality
+                     model_drop = projector_offdiag_model_drop
+                     model_calibrated_drop = projector_offdiag_model_calibrated_drop
+                     model_gap = projector_offdiag_model_gap
+                     model_gap_drop = projector_offdiag_model_gap_drop
+                     model_gap_ratio = projector_offdiag_model_gap_ratio
+                     model_gap_trust = projector_offdiag_model_gap_trust
+                     response_abs_step = projector_offdiag_response_abs_step
+                     response_abs_trust_ratio = projector_offdiag_response_abs_trust_ratio
+                     response_weighted_step = projector_offdiag_response_weighted_step
+                     response_weighted_trust_ratio = projector_offdiag_response_weighted_trust_ratio
+                     dense_expected_drop = projector_offdiag_expected_drop
+                  END IF
                END IF
 
             IF (.NOT. attempt_failed) THEN
@@ -7227,6 +7294,7 @@ CONTAINS
                END IF
                   IF (selected_attempt == 3 .AND. projector_response_candidate_ready .AND. &
                       .NOT. projector_physical_candidate_selected .AND. &
+                      .NOT. projector_offdiag_candidate_selected .AND. &
                       projector_response_model_calibrated_drop > EPSILON(projector_response_model_calibrated_drop)) THEN
                      accepted_projector_response_drop = projector_response_model_calibrated_drop
                      accepted_projector_response_weight = projector_mode_response_weight
@@ -7506,10 +7574,11 @@ CONTAINS
                               projector_physical_offdiag_mode_quad_abs_ratio, &
                               projector_physical_offdiag_mode_positive_quad, &
                               projector_physical_offdiag_mode_negative_quad
-                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,1(1X,L1),15(1X,ES16.8))') &
-                              " OT Schur projector offdiag-dP response ready exp qsel hq htrust hrratio cdrop mgap "// &
+                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),15(1X,ES16.8))') &
+                              " OT Schur projector offdiag-dP response ready selected exp qsel hq htrust hrratio cdrop mgap "// &
                               "rratio aratio weight sneg rneg pdrop ndrop xdrop:", &
-                              projector_offdiag_candidate_ready, projector_offdiag_expected_drop, &
+                              projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
+                              projector_offdiag_expected_drop, &
                               projector_offdiag_quality_for_selection, projector_offdiag_history_quality, &
                               projector_offdiag_history_trust, projector_offdiag_history_response_ratio, &
                               projector_offdiag_model_calibrated_drop, projector_offdiag_model_gap, &
