@@ -4901,6 +4901,10 @@ CONTAINS
 
          z_shift = 0.0_dp
          z_weight = 0.0_dp
+         curv_projection_sum = SUM(curv)
+         CALL para_env_inter_kp%sum(curv_projection_sum)
+         occ_curv_projection_sum = SUM(occ_curv)
+         CALL para_env_inter_kp%sum(occ_curv_projection_sum)
          DO ie = 1, ne
             IF (curv(ie) > EPSILON(curv(ie))) THEN
                z_e(ie) = grad_e(ie)/MAX(curv(ie), energy_curvature_floor)
@@ -4911,6 +4915,8 @@ CONTAINS
          CALL para_env_inter_kp%sum(z_shift)
          CALL para_env_inter_kp%sum(z_weight)
          IF (z_weight > EPSILON(z_weight)) z_e(:) = z_e(:) - z_shift/z_weight
+         CALL project_kpoint_ot_schur_response(z_e, occ_curv, tether_curv, &
+                                               occ_curv_projection_sum, channel_nmo, e_offset)
 
          z_trial(:) = z_e(:)
          rot_hessian(:, :) = 0.5_dp*(rot_hessian(:, :) + TRANSPOSE(rot_hessian(:, :)))
@@ -5239,22 +5245,19 @@ CONTAINS
                                                        energy_cross_physical, response_exact_physical, &
                                                        z_exact_physical_trial, ipiv_energy, &
                                                        exact_physical_response_ready, energy_gauge_weight)
-         IF (exact_physical_response_ready) THEN
-            z_shift = DOT_PRODUCT(curv, z_exact_physical_trial)
-            CALL para_env_inter_kp%sum(z_shift)
-            IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-               z_exact_physical_trial(:) = z_exact_physical_trial(:) - z_shift/curv_projection_sum
-         END IF
+         IF (exact_physical_response_ready) &
+            CALL project_kpoint_ot_schur_response(z_exact_physical_trial, occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
          IF (exact_energy_model_ready) &
             CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response, response, grad_e, &
                                                        channel_nmo, e_offset, energy_hessian, energy_cross_raw, &
                                                        response_exact_raw, z_exact_raw_trial, ipiv_energy, &
                                                        exact_energy_model_ready, energy_gauge_weight)
          IF (exact_energy_model_ready) THEN
-            z_shift = DOT_PRODUCT(curv, z_exact_trial)
-            CALL para_env_inter_kp%sum(z_shift)
-            IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-               z_exact_trial(:) = z_exact_trial(:) - z_shift/curv_projection_sum
+            CALL project_kpoint_ot_schur_response(z_exact_trial, occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
+            CALL project_kpoint_ot_schur_response(z_exact_raw_trial, occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
             DO r = 1, nrot
                exact_response_diag_avg = exact_response_diag_avg + &
                                          DOT_PRODUCT(energy_cross(:, r), response_exact(:, r))
@@ -5876,25 +5879,11 @@ CONTAINS
                   rx_e(:) = MATMUL(response, sol)
                   rx_model(:) = rx_e(:)
                END IF
-               rx_shift = 0.0_dp
-               rx_weight = 0.0_dp
-               DO ie = 1, ne
-                  rx_shift = rx_shift + curv(ie)*rx_e(ie)
-                  rx_weight = rx_weight + curv(ie)
-               END DO
-               CALL para_env_inter_kp%sum(rx_shift)
-               CALL para_env_inter_kp%sum(rx_weight)
-               IF (rx_weight > EPSILON(rx_weight)) rx_e(:) = rx_e(:) - rx_shift/rx_weight
+               CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
+                                                     occ_curv_projection_sum, channel_nmo, e_offset)
                IF (response_model_available) THEN
-                  rx_shift = 0.0_dp
-                  rx_weight = 0.0_dp
-                  DO ie = 1, ne
-                     rx_shift = rx_shift + curv(ie)*rx_model(ie)
-                     rx_weight = rx_weight + curv(ie)
-                  END DO
-                  CALL para_env_inter_kp%sum(rx_shift)
-                  CALL para_env_inter_kp%sum(rx_weight)
-                  IF (rx_weight > EPSILON(rx_weight)) rx_model(:) = rx_model(:) - rx_shift/rx_weight
+                  CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
                END IF
                gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
                IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
@@ -5984,12 +5973,10 @@ CONTAINS
                       projector_physical_shadow_enabled .AND. &
                       projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                       local_ot_env(1)%schur_projector_mode_quality_samples >= &
-                      ot_kp_schur_calibration_min_samples) THEN
+                     ot_kp_schur_calibration_min_samples) THEN
                      projector_physical_model_e(:) = MATMUL(response_exact_physical, sol)
-                     rx_shift = DOT_PRODUCT(curv, projector_physical_model_e)
-                     CALL para_env_inter_kp%sum(rx_shift)
-                     IF (rx_weight > EPSILON(rx_weight)) &
-                        projector_physical_model_e(:) = projector_physical_model_e(:) - rx_shift/rx_weight
+                     CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
+                                                           occ_curv_projection_sum, channel_nmo, e_offset)
                      ! The physical shadow must see the active occupation-response
                      ! curvature, not only the tiny projector-basis gauge remainder.
                      CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
@@ -6077,18 +6064,15 @@ CONTAINS
                                              IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
                                                  exact_physical_response_ready .AND. &
                                                  projector_physical_shadow_enabled .AND. &
-                                                 projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                                projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                                                  projector_offdiag_history_quality >= &
                                                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                                  projector_offdiag_history_trust > EPSILON(projector_offdiag_history_trust)) THEN
                                                 projector_physical_direct_delta(:, :) = &
                                                    rot_hessian(:, :) + rot_hessian_projector_physical_offdiag(:, :)
                                                 projector_physical_model_e(:) = MATMUL(response_exact_physical, sol)
-                                                rx_shift = DOT_PRODUCT(curv, projector_physical_model_e)
-                                                CALL para_env_inter_kp%sum(rx_shift)
-                                                IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                                   projector_physical_model_e(:) = projector_physical_model_e(:) - &
-                                                                                  rx_shift/curv_projection_sum
+                                                CALL project_kpoint_ot_schur_response(projector_physical_model_e, &
+                                                   occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                               projector_physical_direct_delta, sol, &
                                                                               response_exact_raw, response_exact_physical, curv, &
@@ -6574,27 +6558,17 @@ CONTAINS
                                              MATMUL(response_exact_raw, projector_physical_direct_sol)
                                           projector_physical_direct_model_e(:) = MATMUL(response_exact_physical, &
                                                                                          projector_physical_direct_sol)
-                                          rx_shift = DOT_PRODUCT(curv, projector_physical_direct_rx_e)
-                                          CALL para_env_inter_kp%sum(rx_shift)
-                                          IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                             projector_physical_direct_rx_e(:) = projector_physical_direct_rx_e(:) - &
-                                                                                 rx_shift/curv_projection_sum
-                                          rx_shift = DOT_PRODUCT(curv, projector_physical_direct_model_e)
-                                          CALL para_env_inter_kp%sum(rx_shift)
-                                          IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                             projector_physical_direct_model_e(:) = projector_physical_direct_model_e(:) - &
-                                                                                    rx_shift/curv_projection_sum
+                                          CALL project_kpoint_ot_schur_response(projector_physical_direct_rx_e, &
+                                             occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                          CALL project_kpoint_ot_schur_response(projector_physical_direct_model_e, &
+                                             occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                           ! Feed the low-rank density-response shadow in normal
                                           ! runs as well; only its printed diagnostics stay HIGH-only.
                                           IF (exact_density_response_ready) THEN
                                              projector_physical_direct_density_rx_e(:) = &
                                                 MATMUL(response_density_exact, projector_physical_direct_sol)
-                                             rx_shift = DOT_PRODUCT(curv, projector_physical_direct_density_rx_e)
-                                             CALL para_env_inter_kp%sum(rx_shift)
-                                             IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                                projector_physical_direct_density_rx_e(:) = &
-                                                   projector_physical_direct_density_rx_e(:) - &
-                                                   rx_shift/curv_projection_sum
+                                             CALL project_kpoint_ot_schur_response(projector_physical_direct_density_rx_e, &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                              projector_physical_direct_density_z_e(:) = &
                                                 z_exact_physical_trial(:) + projector_physical_direct_density_rx_e(:)
                                              projector_physical_direct_density_gdot_energy = &
@@ -6662,11 +6636,8 @@ CONTAINS
                                               exact_density_plateau_response_ready) THEN
                                              density_plateau_rx_e(:) = &
                                                 MATMUL(response_density_plateau_exact, projector_physical_direct_sol)
-                                             rx_shift = DOT_PRODUCT(curv, density_plateau_rx_e)
-                                             CALL para_env_inter_kp%sum(rx_shift)
-                                             IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                                density_plateau_rx_e(:) = density_plateau_rx_e(:) - &
-                                                                          rx_shift/curv_projection_sum
+                                             CALL project_kpoint_ot_schur_response(density_plateau_rx_e, &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                              density_plateau_z_e(:) = z_exact_physical_trial(:) + density_plateau_rx_e(:)
                                              density_plateau_gdot_energy = DOT_PRODUCT(grad_e, density_plateau_z_e)
                                              density_plateau_gdot_rotation = DOT_PRODUCT(grad_rot, &
@@ -6764,12 +6735,9 @@ CONTAINS
                                                    projector_physical_direct_diagref_negative_coeff)
                                              IF (projector_physical_direct_diagref_weight > &
                                                  EPSILON(projector_physical_direct_diagref_weight)) THEN
-                                                rx_shift = DOT_PRODUCT(curv, projector_physical_direct_diagref_rx_e)
-                                                CALL para_env_inter_kp%sum(rx_shift)
-                                                IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                                   projector_physical_direct_diagref_rx_e(:) = &
-                                                      projector_physical_direct_diagref_rx_e(:) - &
-                                                      rx_shift/curv_projection_sum
+                                                CALL project_kpoint_ot_schur_response( &
+                                                   projector_physical_direct_diagref_rx_e, occ_curv, tether_curv, &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset)
                                                 projector_physical_direct_diagref_gdot_energy = &
                                                    DOT_PRODUCT(grad_e, z_exact_physical_trial + &
                                                                projector_physical_direct_diagref_rx_e)
@@ -6853,11 +6821,8 @@ CONTAINS
                                                  EPSILON(projector_physical_direct_response_weight)) THEN
                                                 projector_physical_direct_rx_e(:) = &
                                                    projector_physical_direct_response_rx_e(:)
-                                                rx_shift = DOT_PRODUCT(curv, projector_physical_direct_rx_e)
-                                                CALL para_env_inter_kp%sum(rx_shift)
-                                                IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                                                   projector_physical_direct_rx_e(:) = &
-                                                      projector_physical_direct_rx_e(:) - rx_shift/curv_projection_sum
+                                                CALL project_kpoint_ot_schur_response(projector_physical_direct_rx_e, &
+                                                   occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                                 projector_physical_direct_model_e(:) = &
                                                    projector_physical_direct_rx_e(:)
                                              END IF
@@ -8330,14 +8295,10 @@ CONTAINS
                      IF (solved) THEN
                         rx_e(:) = MATMUL(response_exact_raw, sol)
                         rx_model(:) = MATMUL(response_exact_physical, sol)
-                        rx_shift = DOT_PRODUCT(curv, rx_e)
-                        CALL para_env_inter_kp%sum(rx_shift)
-                        IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                           rx_e(:) = rx_e(:) - rx_shift/curv_projection_sum
-                        rx_shift = DOT_PRODUCT(curv, rx_model)
-                        CALL para_env_inter_kp%sum(rx_shift)
-                        IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
-                           rx_model(:) = rx_model(:) - rx_shift/curv_projection_sum
+                        CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
+                                                              occ_curv_projection_sum, channel_nmo, e_offset)
+                        CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
+                                                              occ_curv_projection_sum, channel_nmo, e_offset)
                         z_e(:) = z_exact_physical_trial(:) + rx_e(:)
                         gdot_energy = DOT_PRODUCT(grad_e, z_e)
                         gdot_rotation = DOT_PRODUCT(grad_rot, sol)
