@@ -2438,6 +2438,9 @@ CONTAINS
                                                                projector_physical_metric_ratio, &
                                                                projector_physical_selected_ratio, &
                                                                projector_physical_shift_ratio, &
+                                                               projector_physical_trace_actual_avg, &
+                                                               projector_physical_trace_raw_avg, &
+                                                               projector_physical_trace_active_avg, &
                                                                projector_physical_quality_ratio, &
                                                                projector_physical_weight_quality, &
                                                                projector_physical_metric_quality, &
@@ -2447,6 +2450,9 @@ CONTAINS
                                                                projector_physical_direct_quality, &
                                                                projector_physical_selected_quality, &
                                                                projector_physical_shift_quality, &
+                                                               projector_physical_trace_actual_quality, &
+                                                               projector_physical_trace_raw_quality, &
+                                                               projector_physical_trace_active_quality, &
                                                                projector_diagref_predicted_drop, &
                                                                projector_diagref_correction_ratio, &
                                                                projector_diagref_quality_for_selection, &
@@ -2885,7 +2891,13 @@ CONTAINS
             projector_physical_metric_ratio = 0.0_dp
             projector_physical_selected_ratio = 0.0_dp
             projector_physical_shift_ratio = 0.0_dp
+            projector_physical_trace_actual_avg = 0.0_dp
+            projector_physical_trace_raw_avg = 0.0_dp
+            projector_physical_trace_active_avg = 0.0_dp
             projector_physical_quality_ratio = 0.0_dp
+            projector_physical_trace_actual_quality = 0.0_dp
+            projector_physical_trace_raw_quality = 0.0_dp
+            projector_physical_trace_active_quality = 0.0_dp
             IF (projector_physical_predicted_drop > EPSILON(projector_physical_predicted_drop)) THEN
                projector_physical_metric_ratio = &
                   local_ot_env(1)%schur_projector_physical_metric/projector_physical_predicted_drop
@@ -2899,11 +2911,22 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_selected/projector_physical_predicted_drop
                projector_physical_shift_ratio = &
                   local_ot_env(1)%schur_projector_physical_shift/projector_physical_predicted_drop
+               projector_physical_trace_actual_avg = &
+                  local_ot_env(1)%schur_projector_physical_trace_actual/projector_physical_predicted_drop
+               projector_physical_trace_raw_avg = &
+                  local_ot_env(1)%schur_projector_physical_trace_raw/projector_physical_predicted_drop
+               projector_physical_trace_active_avg = &
+                  local_ot_env(1)%schur_projector_physical_trace_active/projector_physical_predicted_drop
             END IF
             IF (mermin_search .AND. local_ot_env(1)%schur_projector_physical_pending .AND. &
                 projector_physical_predicted_drop > EPSILON(projector_physical_predicted_drop) .AND. &
-                measured_drop > 0.0_dp) THEN
+               measured_drop > 0.0_dp) THEN
                projector_physical_quality_ratio = measured_drop/projector_physical_predicted_drop
+               projector_physical_trace_actual_quality = &
+                  projector_physical_trace_actual_avg*projector_physical_quality_ratio
+               projector_physical_trace_raw_quality = projector_physical_trace_raw_avg*projector_physical_quality_ratio
+               projector_physical_trace_active_quality = &
+                  projector_physical_trace_active_avg*projector_physical_quality_ratio
                local_ot_env(1)%schur_projector_physical_quality = projector_physical_quality_ratio
                samples = MIN(local_ot_env(1)%schur_projector_physical_quality_samples + 1, HUGE(samples) - 1)
                local_ot_env(1)%schur_projector_physical_quality_samples = samples
@@ -2924,6 +2947,12 @@ CONTAINS
                      projector_physical_selected_ratio
                   local_ot_env(1)%schur_projector_physical_shift_ema = &
                      projector_physical_shift_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_actual_ema = &
+                     projector_physical_trace_actual_avg
+                  local_ot_env(1)%schur_projector_physical_trace_raw_ema = &
+                     projector_physical_trace_raw_avg
+                  local_ot_env(1)%schur_projector_physical_trace_active_ema = &
+                     projector_physical_trace_active_avg
                   local_ot_env(1)%schur_projector_physical_weight_quality_ema = &
                      local_ot_env(1)%schur_projector_physical_weight*projector_physical_quality_ratio
                   local_ot_env(1)%schur_projector_physical_metric_quality_ema = &
@@ -2940,6 +2969,12 @@ CONTAINS
                      projector_physical_selected_ratio*projector_physical_quality_ratio
                   local_ot_env(1)%schur_projector_physical_shift_quality_ema = &
                      projector_physical_shift_ratio*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_actual_quality_ema = &
+                     projector_physical_trace_actual_avg*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_raw_quality_ema = &
+                     projector_physical_trace_raw_avg*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_active_quality_ema = &
+                     projector_physical_trace_active_avg*projector_physical_quality_ratio
                ELSE
                   local_ot_env(1)%schur_projector_physical_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
@@ -2977,6 +3012,18 @@ CONTAINS
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_shift_ema + &
                      ot_kp_schur_quality_ema_alpha*projector_physical_shift_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_actual_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_trace_actual_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_physical_trace_actual_avg
+                  local_ot_env(1)%schur_projector_physical_trace_raw_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_trace_raw_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_physical_trace_raw_avg
+                  local_ot_env(1)%schur_projector_physical_trace_active_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_trace_active_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_physical_trace_active_avg
                   local_ot_env(1)%schur_projector_physical_weight_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_weight_quality_ema + &
@@ -3013,6 +3060,21 @@ CONTAINS
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_shift_quality_ema + &
                      ot_kp_schur_quality_ema_alpha*projector_physical_shift_ratio*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_actual_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_trace_actual_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     projector_physical_trace_actual_avg*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_raw_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_trace_raw_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     projector_physical_trace_raw_avg*projector_physical_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_trace_active_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_trace_active_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     projector_physical_trace_active_avg*projector_physical_quality_ratio
                END IF
                local_ot_env(1)%schur_projector_physical_drop_sum = &
                   local_ot_env(1)%schur_projector_physical_drop_sum + projector_physical_predicted_drop
@@ -3242,6 +3304,17 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_direct_ema, &
                   local_ot_env(1)%schur_projector_physical_selected_ema, &
                   local_ot_env(1)%schur_projector_physical_shift_ema
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
+                  " OT Schur LS projector physical trace quality actual raw active aq rq hq aema rema hema aqema rqema hqema:", &
+                  projector_physical_trace_actual_avg, projector_physical_trace_raw_avg, &
+                  projector_physical_trace_active_avg, projector_physical_trace_actual_quality, &
+                  projector_physical_trace_raw_quality, projector_physical_trace_active_quality, &
+                  local_ot_env(1)%schur_projector_physical_trace_actual_ema, &
+                  local_ot_env(1)%schur_projector_physical_trace_raw_ema, &
+                  local_ot_env(1)%schur_projector_physical_trace_active_ema, &
+                  local_ot_env(1)%schur_projector_physical_trace_actual_quality_ema, &
+                  local_ot_env(1)%schur_projector_physical_trace_raw_quality_ema, &
+                  local_ot_env(1)%schur_projector_physical_trace_active_quality_ema
             END IF
 
       END SUBROUTINE update_kpoint_ot_schur_line_search_quality
@@ -3455,6 +3528,9 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_direct = 0.0_dp
                local_ot_env(1)%schur_projector_physical_selected = 0.0_dp
                local_ot_env(1)%schur_projector_physical_shift = 0.0_dp
+               local_ot_env(1)%schur_projector_physical_trace_actual = 0.0_dp
+               local_ot_env(1)%schur_projector_physical_trace_raw = 0.0_dp
+               local_ot_env(1)%schur_projector_physical_trace_active = 0.0_dp
             END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
@@ -6713,6 +6789,20 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_compensation = &
                         local_ot_env(1)%schur_projector_physical_compensation + &
                         projector_physical_model_calibrated_drop*projector_physical_direct_diag_compensation
+                     IF (logger%iter_info%print_level >= high_print_level) THEN
+                        local_ot_env(1)%schur_projector_physical_trace_actual = &
+                           local_ot_env(1)%schur_projector_physical_trace_actual + &
+                           projector_physical_model_calibrated_drop* &
+                           projector_physical_direct_trace_actual_norm
+                        local_ot_env(1)%schur_projector_physical_trace_raw = &
+                           local_ot_env(1)%schur_projector_physical_trace_raw + &
+                           projector_physical_model_calibrated_drop* &
+                           projector_physical_direct_trace_full_norm
+                        local_ot_env(1)%schur_projector_physical_trace_active = &
+                           local_ot_env(1)%schur_projector_physical_trace_active + &
+                           projector_physical_model_calibrated_drop* &
+                           projector_physical_direct_trace_active_norm
+                     END IF
                   END IF
                   IF (projector_physical_direct_candidate_used .AND. &
                       projector_physical_direct_metric_norm_ratio > EPSILON(projector_physical_direct_metric_norm_ratio)) &
