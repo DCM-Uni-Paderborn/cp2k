@@ -5386,7 +5386,7 @@ CONTAINS
                            local_ot_env(1)%schur_projector_physical_trace_actual_free_quality_ema, &
                            local_ot_env(1)%schur_projector_physical_quality_samples, &
                            projector_physical_quality_for_selection)
-                     projector_physical_direct_quality_for_selection = projector_physical_quality_for_selection
+                     projector_physical_direct_quality_for_selection = projector_physical_trace_split_quality
                      IF (local_ot_env(1)%schur_projector_offdiag_quality_samples >= &
                          ot_kp_schur_projector_response_min_samples) THEN
                         projector_offdiag_history_quality = &
@@ -6259,6 +6259,28 @@ CONTAINS
                                              local_ot_env(1)%schur_projector_physical_trace_actual_free_quality_ema, &
                                              local_ot_env(1)%schur_projector_physical_quality_samples)
                                        projector_physical_direct_trace_free_scale = 1.0_dp
+                                       IF (ABS(projector_physical_direct_trace_diag_scale - 1.0_dp) > &
+                                           EPSILON(1.0_dp) .OR. &
+                                           ABS(projector_physical_direct_trace_free_scale - 1.0_dp) > &
+                                           EPSILON(1.0_dp)) THEN
+                                          projector_physical_direct_delta(:, :) = &
+                                             projector_physical_direct_trace_free_scale*projector_physical_direct_delta(:, :)
+                                          diag_shift = (projector_physical_direct_trace_diag_scale - &
+                                                        projector_physical_direct_trace_free_scale)* &
+                                                       projector_physical_direct_delta_diag_avg
+                                          DO r = 1, nrot
+                                             projector_physical_direct_delta(r, r) = &
+                                                projector_physical_direct_delta(r, r) + diag_shift
+                                          END DO
+                                          projector_physical_direct_delta_diag_avg = 0.0_dp
+                                          DO r = 1, nrot
+                                             projector_physical_direct_delta_diag_avg = &
+                                                projector_physical_direct_delta_diag_avg + &
+                                                projector_physical_direct_delta(r, r)
+                                          END DO
+                                          projector_physical_direct_delta_diag_avg = &
+                                             projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       END IF
                                        schur(:, :) = rot_hessian_coupled(:, :) + &
                                                      projector_coupled_weight* &
                                                      projector_physical_direct_delta(:, :)
