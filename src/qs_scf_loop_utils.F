@@ -3251,15 +3251,26 @@ CONTAINS
 
       INTEGER                                            :: group, ikpoint, imo, ispin, &
                                                             local_channel, local_kpoint, nmo
-      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, precond_weight, &
-                                                            rayleigh_edge_gap, tether_response, &
+      REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, occ_curvature, &
+                                                            precond_weight, rayleigh_edge_gap, tether_response, &
                                                             tether_strength, tether_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag, occ_curv_max, occ_curv_sum, &
+                                                            tether_curv_max, tether_curv_sum, &
+                                                            total_curv_max, total_curv_sum
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
          precond_count(:) = 0.0_dp
          precond_shift(:) = 0.0_dp
          precond_sum(:) = 0.0_dp
+         ALLOCATE (occ_curv_max(ngroups), occ_curv_sum(ngroups), tether_curv_max(ngroups), &
+                   tether_curv_sum(ngroups), total_curv_max(ngroups), total_curv_sum(ngroups))
+         occ_curv_max(:) = 0.0_dp
+         occ_curv_sum(:) = 0.0_dp
+         tether_curv_max(:) = 0.0_dp
+         tether_curv_sum(:) = 0.0_dp
+         total_curv_max(:) = 0.0_dp
+         total_curv_sum(:) = 0.0_dp
 
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -3295,7 +3306,14 @@ CONTAINS
                                                                      trial_eigenvalues(imo, ikpoint, ispin), &
                                                                      mu, sigma, &
                                                                      maxocc, wkp(ikpoint), tether_strength)
-                  curvature = wkp(ikpoint)*gvalue + tether_weight
+                  occ_curvature = wkp(ikpoint)*gvalue
+                  curvature = occ_curvature + tether_weight
+                  occ_curv_sum(group) = occ_curv_sum(group) + occ_curvature
+                  occ_curv_max(group) = MAX(occ_curv_max(group), occ_curvature)
+                  tether_curv_sum(group) = tether_curv_sum(group) + tether_weight
+                  tether_curv_max(group) = MAX(tether_curv_max(group), tether_weight)
+                  total_curv_sum(group) = total_curv_sum(group) + curvature
+                  total_curv_max(group) = MAX(total_curv_max(group), curvature)
                   IF (curvature > EPSILON(curvature)) THEN
                      precond_weight = MAX(curvature, curvature_floor)
                      local_ot_env(local_channel)%ener_gx(imo) = &
@@ -3312,10 +3330,29 @@ CONTAINS
 
          CALL para_env_inter_kp%sum(precond_sum)
          CALL para_env_inter_kp%sum(precond_count)
+         CALL para_env_inter_kp%sum(occ_curv_sum)
+         CALL para_env_inter_kp%sum(tether_curv_sum)
+         CALL para_env_inter_kp%sum(total_curv_sum)
+         DO group = 1, ngroups
+            CALL para_env_inter_kp%max(occ_curv_max(group))
+            CALL para_env_inter_kp%max(tether_curv_max(group))
+            CALL para_env_inter_kp%max(total_curv_max(group))
+         END DO
          DO group = 1, ngroups
             IF (skip_group(group)) CYCLE
             IF (precond_count(group) > 0.0_dp) precond_shift(group) = precond_sum(group)/precond_count(group)
          END DO
+
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            DO group = 1, ngroups
+               IF (skip_group(group)) CYCLE
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
+                  " OT k-point occupation preconditioner group occ_sum occ_max tether_sum tether_max total_sum total_max:", &
+                  group, occ_curv_sum(group), occ_curv_max(group), tether_curv_sum(group), &
+                  tether_curv_max(group), total_curv_sum(group), total_curv_max(group)
+            END DO
+         END IF
 
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -3358,6 +3395,8 @@ CONTAINS
                END DO
             END DO
          END DO
+         DEALLOCATE (occ_curv_max, occ_curv_sum, tether_curv_max, tether_curv_sum, &
+                     total_curv_max, total_curv_sum)
       END SUBROUTINE precondition_kpoint_ot_energy_diagonal
 
       SUBROUTINE precondition_kpoint_ot_schur(group_done)
@@ -3663,7 +3702,8 @@ CONTAINS
          residual_reference_quality, constrained_quality_for_selection, &
          constrained_gdot_energy, constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
          constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
-         tether_strength, tether_weight, z_shift, z_weight
+         tether_strength, tether_weight, occ_curv_diag_max, occ_curv_diag_sum, tether_curv_diag_max, &
+         tether_curv_diag_sum, total_curv_diag_max, total_curv_diag_sum, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4302,6 +4342,25 @@ CONTAINS
                         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
                         schur, ipiv, ipiv_energy, channel_nmo, e_offset)
             RETURN
+         END IF
+
+         occ_curv_diag_sum = SUM(occ_curv(:))
+         tether_curv_diag_sum = SUM(tether_curv(:))
+         total_curv_diag_sum = SUM(curv(:))
+         occ_curv_diag_max = MAXVAL(occ_curv(:))
+         tether_curv_diag_max = MAXVAL(tether_curv(:))
+         total_curv_diag_max = MAXVAL(curv(:))
+         CALL para_env_inter_kp%sum(occ_curv_diag_sum)
+         CALL para_env_inter_kp%sum(tether_curv_diag_sum)
+         CALL para_env_inter_kp%sum(total_curv_diag_sum)
+         CALL para_env_inter_kp%max(occ_curv_diag_max)
+         CALL para_env_inter_kp%max(tether_curv_diag_max)
+         CALL para_env_inter_kp%max(total_curv_diag_max)
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
+               " OT Schur occupation preconditioner group occ_sum occ_max tether_sum tether_max total_sum total_max:", &
+               target_group, occ_curv_diag_sum, occ_curv_diag_max, tether_curv_diag_sum, &
+               tether_curv_diag_max, total_curv_diag_sum, total_curv_diag_max
          END IF
 
          z_shift = 0.0_dp
