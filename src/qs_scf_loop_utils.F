@@ -4313,6 +4313,24 @@ CONTAINS
             density_full_response_weighted_trust_ratio, &
             density_full_scale_quality, &
             density_full_trust_quality, &
+            density_descent_direction_scale, &
+            density_descent_expected_drop, &
+            density_descent_gap_coeff, &
+            density_descent_gap_denom, &
+            density_descent_gdot_energy, &
+            density_descent_gdot_rotation, &
+            density_descent_gdotp, &
+            density_descent_model_calibrated_drop, &
+            density_descent_model_drop, &
+            density_descent_norm_energy, &
+            density_descent_norm_rotation, &
+            density_descent_normp, &
+            density_descent_response_abs_step, &
+            density_descent_response_abs_trust_ratio, &
+            density_descent_response_weighted_step, &
+            density_descent_response_weighted_trust_ratio, &
+            density_descent_scale_quality, &
+            density_descent_trust_quality, &
             density_gap_direction_scale, &
             density_gap_expected_drop, &
             density_gap_gdot, &
@@ -4483,8 +4501,11 @@ CONTAINS
                                                             projector_physical_direct_diagref_rx_e, &
                                                             projector_physical_direct_density_rx_e, &
                                                             projector_physical_direct_density_z_e, &
+                                                            density_descent_rx_e, &
+                                                            density_descent_z_e, &
                                                             density_full_rx_e, &
                                                             density_full_z_e, &
+                                                            density_gap_projected_e, &
                                                             density_gap_rx_e, &
                                                             density_plateau_rx_e, density_plateau_z_e, &
                                                             projector_physical_direct_rx_e, &
@@ -4577,8 +4598,11 @@ CONTAINS
                       projector_physical_direct_diagref_rx_e(ne), &
                       projector_physical_direct_density_rx_e(ne), &
                       projector_physical_direct_density_z_e(ne), &
+                      density_descent_rx_e(ne), &
+                      density_descent_z_e(ne), &
                       density_full_rx_e(ne), &
                       density_full_z_e(ne), &
+                      density_gap_projected_e(ne), &
                       density_gap_rx_e(ne), &
                                density_plateau_rx_e(ne), density_plateau_z_e(ne), &
                                projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
@@ -4636,8 +4660,11 @@ CONTAINS
             projector_physical_direct_diagref_rx_e(:) = 0.0_dp
             projector_physical_direct_density_rx_e(:) = 0.0_dp
             projector_physical_direct_density_z_e(:) = 0.0_dp
+            density_descent_rx_e(:) = 0.0_dp
+            density_descent_z_e(:) = 0.0_dp
             density_full_rx_e(:) = 0.0_dp
             density_full_z_e(:) = 0.0_dp
+            density_gap_projected_e(:) = 0.0_dp
             density_gap_rx_e(:) = 0.0_dp
             density_plateau_rx_e(:) = 0.0_dp
             density_plateau_z_e(:) = 0.0_dp
@@ -5336,8 +5363,11 @@ CONTAINS
                            projector_physical_direct_diagref_rx_e, &
                            projector_physical_direct_density_rx_e, &
                            projector_physical_direct_density_z_e, &
+                           density_descent_rx_e, &
+                           density_descent_z_e, &
                            density_full_rx_e, &
                            density_full_z_e, &
+                           density_gap_projected_e, &
                            density_gap_rx_e, &
                            density_plateau_rx_e, density_plateau_z_e, &
                                     projector_physical_direct_rx_e, &
@@ -6156,6 +6186,24 @@ CONTAINS
                density_full_response_weighted_trust_ratio = 0.0_dp
                density_full_scale_quality = 0.0_dp
                density_full_trust_quality = 1.0_dp
+               density_descent_direction_scale = 0.0_dp
+               density_descent_expected_drop = 0.0_dp
+               density_descent_gap_coeff = 0.0_dp
+               density_descent_gap_denom = 0.0_dp
+               density_descent_gdot_energy = 0.0_dp
+               density_descent_gdot_rotation = 0.0_dp
+               density_descent_gdotp = 0.0_dp
+               density_descent_model_calibrated_drop = 0.0_dp
+               density_descent_model_drop = 0.0_dp
+               density_descent_norm_energy = 0.0_dp
+               density_descent_norm_rotation = 0.0_dp
+               density_descent_normp = 0.0_dp
+               density_descent_response_abs_step = 0.0_dp
+               density_descent_response_abs_trust_ratio = 0.0_dp
+               density_descent_response_weighted_step = 0.0_dp
+               density_descent_response_weighted_trust_ratio = 0.0_dp
+               density_descent_scale_quality = 0.0_dp
+               density_descent_trust_quality = 1.0_dp
                density_gap_direction_scale = 0.0_dp
                density_gap_expected_drop = 0.0_dp
                density_gap_gdot = 0.0_dp
@@ -7573,6 +7621,62 @@ CONTAINS
                                              density_gap_raw_weighted = &
                                                 kpoint_ot_weighted_response_step(density_gap_rx_e, curv, &
                                                                                 curv_projection_sum)
+                                             CALL project_kpoint_ot_descent_response( &
+                                                density_gap_rx_e, z_exact_physical_trial, grad_e, &
+                                                density_gap_projected_e, density_descent_gap_coeff, &
+                                                density_gap_gdot, density_descent_gap_denom)
+                                             density_descent_rx_e(:) = projector_physical_direct_density_rx_e(:) + &
+                                                                       density_gap_projected_e(:)
+                                             CALL project_kpoint_ot_schur_response(density_descent_rx_e, &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                             density_descent_z_e(:) = z_exact_physical_trial(:) + density_descent_rx_e(:)
+                                             density_descent_gdot_energy = DOT_PRODUCT(grad_e, density_descent_z_e)
+                                             density_descent_gdot_rotation = &
+                                                DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
+                                             density_descent_gdotp = density_descent_gdot_energy + &
+                                                                     density_descent_gdot_rotation
+                                             density_descent_norm_energy = &
+                                                DOT_PRODUCT(density_descent_z_e, density_descent_z_e)
+                                             density_descent_norm_rotation = &
+                                                DOT_PRODUCT(projector_physical_direct_sol, &
+                                                            projector_physical_direct_sol)
+                                             density_descent_normp = density_descent_norm_energy + &
+                                                                     density_descent_norm_rotation
+                                             IF (density_descent_gdotp > 0.0_dp .AND. &
+                                                 density_descent_normp > EPSILON(density_descent_normp)) THEN
+                                                density_descent_direction_scale = density_descent_gdotp/ &
+                                                   MAX(density_descent_normp, EPSILON(density_descent_normp))
+                                                density_descent_scale_quality = &
+                                                   kpoint_ot_schur_scale_quality(density_descent_direction_scale, &
+                                                                                 schur_min_coupled_scale)
+                                                density_descent_model_drop = 0.5_dp*density_descent_direction_scale* &
+                                                                             density_descent_gdotp
+                                                density_descent_model_calibrated_drop = density_descent_model_drop
+                                                IF (density_descent_direction_scale < schur_min_coupled_scale) &
+                                                   density_descent_model_calibrated_drop = &
+                                                      density_descent_scale_quality*density_descent_model_calibrated_drop
+                                                density_descent_response_abs_step = density_descent_direction_scale* &
+                                                   MAXVAL(ABS(density_descent_rx_e))
+                                                CALL para_env_inter_kp%max(density_descent_response_abs_step)
+                                                density_descent_response_weighted_step = density_descent_direction_scale* &
+                                                   kpoint_ot_weighted_response_step(density_descent_rx_e, curv, &
+                                                                                   curv_projection_sum)
+                                                IF (response_trust > EPSILON(response_trust)) &
+                                                   density_descent_response_weighted_trust_ratio = &
+                                                      density_descent_response_weighted_step/response_trust
+                                                IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                                   density_descent_response_abs_trust_ratio = &
+                                                      density_descent_response_abs_step/response_abs_trust
+                                                density_descent_trust_quality = &
+                                                   kpoint_ot_schur_trust_quality( &
+                                                      density_descent_response_weighted_trust_ratio, &
+                                                      density_descent_response_abs_trust_ratio, 0.0_dp)
+                                                density_descent_expected_drop = &
+                                                   kpoint_ot_schur_expected_drop( &
+                                                      density_descent_model_calibrated_drop, &
+                                                      projector_physical_quality_for_selection, &
+                                                      density_descent_trust_quality)
+                                             END IF
                                              IF (density_gap_gdot > 0.0_dp .AND. &
                                                  density_gap_norm > EPSILON(density_gap_norm)) THEN
                                                 density_gap_direction_scale = density_gap_gdot/ &
@@ -9373,6 +9477,16 @@ CONTAINS
                         density_gap_response_abs_trust_ratio, &
                         density_gap_trust_quality, &
                         density_gap_direction_scale
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                        " OT Schur projector phys direct density-descent shadow exp cdrop rratio aratio tq scale coeff denom:", &
+                        density_descent_expected_drop, &
+                        density_descent_model_calibrated_drop, &
+                        density_descent_response_weighted_trust_ratio, &
+                        density_descent_response_abs_trust_ratio, &
+                        density_descent_trust_quality, &
+                        density_descent_direction_scale, &
+                        density_descent_gap_coeff, &
+                        density_descent_gap_denom
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector density-gap raw raw_abs raw_weighted gdot norm:", &
                         density_gap_raw_abs, density_gap_raw_weighted, density_gap_gdot, density_gap_norm
@@ -9616,8 +9730,11 @@ CONTAINS
                         projector_physical_direct_diagref_rx_e, &
                                  projector_physical_direct_density_rx_e, &
                                  projector_physical_direct_density_z_e, &
+                                 density_descent_rx_e, &
+                                 density_descent_z_e, &
                                  density_full_rx_e, &
                                  density_full_z_e, &
+                                 density_gap_projected_e, &
                                  density_gap_rx_e, &
                                           density_plateau_rx_e, density_plateau_z_e, &
                                           projector_physical_direct_rx_e, &
@@ -9687,6 +9804,25 @@ CONTAINS
                response_vec(ie) = 0.0_dp
          END DO
       END SUBROUTINE project_kpoint_ot_schur_response
+
+      SUBROUTINE project_kpoint_ot_descent_response(response_vec, descent_vec, grad_e, projected_vec, &
+                                                    coeff, gdot, denom)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_vec, descent_vec, grad_e
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)          :: projected_vec
+      REAL(KIND=dp), INTENT(OUT)                        :: coeff, denom, gdot
+
+         projected_vec(:) = 0.0_dp
+         coeff = 0.0_dp
+         gdot = DOT_PRODUCT(grad_e, response_vec)
+         denom = DOT_PRODUCT(grad_e, descent_vec)
+         CALL para_env_inter_kp%sum(gdot)
+         CALL para_env_inter_kp%sum(denom)
+         IF (gdot <= 0.0_dp .OR. denom <= EPSILON(denom)) RETURN
+
+         coeff = gdot/denom
+         projected_vec(:) = coeff*descent_vec(:)
+
+      END SUBROUTINE project_kpoint_ot_descent_response
 
       SUBROUTINE kpoint_ot_mixed_projected_term(response_left, response_right, occ_curv, tether_curv, &
                                                 occ_curv_sum, channel_nmo, e_offset, projected_term, &

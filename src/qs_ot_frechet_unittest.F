@@ -102,6 +102,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
    CALL check_complex_projector_active_density_response_filter( &
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
+   CALL check_projector_density_descent_gap_projection( &
+      "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
       "complex projector offdiag gauge-plateau Hessian", 5.0E-10_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
@@ -3759,6 +3761,49 @@ CONTAINS
    END SUBROUTINE check_complex_projector_active_density_response_filter
 
 ! **************************************************************************************************
+!> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_descent_gap_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 5
+
+      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, null_norm, phys_norm, raw_norm
+      REAL(KIND=dp), DIMENSION(ne)                       :: descent, gap_null, gap_phys, grad, projected
+
+      grad(:) = [0.31_dp, -0.24_dp, 0.17_dp, -0.09_dp, 0.05_dp]
+      descent(:) = [0.42_dp, -0.18_dp, 0.11_dp, -0.04_dp, 0.02_dp]
+      gap_null(:) = [0.80_dp, -0.10_dp, -0.30_dp, 0.45_dp, -0.20_dp]
+      gap_null(:) = gap_null(:) - DOT_PRODUCT(grad, gap_null)/DOT_PRODUCT(grad, grad)*grad(:)
+
+      CALL dense_project_descent_response(gap_null, descent, grad, projected, coeff, gdot, denom)
+      null_norm = MAXVAL(ABS(gap_null(:)))
+      err = MAXVAL(ABS(projected(:)))
+      err = MAX(err, ABS(gdot))
+      err = MAX(err, ABS(coeff))
+
+      gap_phys(:) = gap_null(:) + 0.23_dp*descent(:)
+      CALL dense_project_descent_response(gap_phys, descent, grad, projected, coeff, gdot, denom)
+      raw_norm = MAXVAL(ABS(gap_phys(:)))
+      phys_norm = MAXVAL(ABS(projected(:)))
+      err = MAX(err, MAXVAL(ABS(projected(:) - 0.23_dp*descent(:))))
+      err = MAX(err, ABS(coeff - 0.23_dp))
+      err = MAX(err, ABS(gdot - 0.23_dp*denom))
+
+      IF (err > tol .OR. null_norm < 1.0E-1_dp .OR. phys_norm >= raw_norm) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/null/raw/phys", err, null_norm, raw_norm, phys_norm
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/null/raw/phys", err, null_norm, raw_norm, phys_norm
+      END IF
+
+   END SUBROUTINE check_projector_density_descent_gap_projection
+
+! **************************************************************************************************
 !> \brief Remove near-degenerate gauge noise from the off-diagonal Projector-Hessian channel.
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_offdiag_gauge_plateau_hessian(label, tol, nfail)
@@ -4409,6 +4454,25 @@ CONTAINS
       DEALLOCATE (mode_coeff, mode_eval, mode_rx, response_corr, response_neg, response_pos, mode_vec)
 
    END SUBROUTINE dense_projector_modal_response_candidate
+
+! **************************************************************************************************
+!> \brief Project a density response onto the fixed-N Mermin descent direction.
+! **************************************************************************************************
+   SUBROUTINE dense_project_descent_response(response_vec, descent_vec, grad_vec, projected_vec, coeff, gdot, denom)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, descent_vec, grad_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: projected_vec
+      REAL(KIND=dp), INTENT(OUT)                          :: coeff, denom, gdot
+
+      projected_vec(:) = 0.0_dp
+      coeff = 0.0_dp
+      gdot = DOT_PRODUCT(grad_vec, response_vec)
+      denom = DOT_PRODUCT(grad_vec, descent_vec)
+      IF (gdot <= 0.0_dp .OR. denom <= EPSILON(denom)) RETURN
+
+      coeff = gdot/denom
+      projected_vec(:) = coeff*descent_vec(:)
+
+   END SUBROUTINE dense_project_descent_response
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
