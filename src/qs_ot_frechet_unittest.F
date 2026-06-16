@@ -74,6 +74,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-12_dp, nfail)
    CALL check_mixed_fixed_n_tether_exact_schur("mixed fixed-N/tether exact Schur", &
                                                5.0E-11_dp, nfail)
+   CALL check_indefinite_schur_spectral_fallback("indefinite Schur spectral fallback", &
+                                                 5.0E-12_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -2193,6 +2195,72 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_mixed_fixed_n_tether_exact_schur
+
+! **************************************************************************************************
+!> \brief Check positive-subspace rescue for an indefinite Schur rotation block.
+! **************************************************************************************************
+   SUBROUTINE check_indefinite_schur_spectral_fallback(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      INTEGER                                            :: i, info
+      INTEGER, DIMENSION(n)                              :: ipiv
+      REAL(KIND=dp)                                      :: direct_dot, err, fallback_dot, floor, mode_rhs, &
+                                                            negative_projection, quad
+      REAL(KIND=dp), DIMENSION(n)                        :: eval, rhs, sol_direct, sol_spectral
+      REAL(KIND=dp), DIMENSION(n, n)                     :: schur, schur_fact, schur_modes
+
+      schur(:, :) = 0.0_dp
+      schur(1, 1) = 2.0_dp
+      schur(2, 2) = -0.5_dp
+      schur(3, 3) = 1.0_dp
+      rhs(:) = [1.0_dp, 1.0_dp, 0.5_dp]
+
+      schur_fact(:, :) = schur(:, :)
+      sol_direct(:) = rhs(:)
+      CALL dgesv(n, 1, schur_fact, n, ipiv, sol_direct, n, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed direct dgesv", info
+         RETURN
+      END IF
+      direct_dot = DOT_PRODUCT(rhs, sol_direct)
+
+      schur_modes(:, :) = schur(:, :)
+      CALL diamat_all(schur_modes, eval)
+      floor = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(eval)))
+      sol_spectral(:) = 0.0_dp
+      negative_projection = 0.0_dp
+      DO i = 1, n
+         mode_rhs = DOT_PRODUCT(schur_modes(:, i), rhs)
+         IF (eval(i) > floor) THEN
+            sol_spectral(:) = sol_spectral(:) + (mode_rhs/eval(i))*schur_modes(:, i)
+         ELSE IF (eval(i) < 0.0_dp) THEN
+            negative_projection = negative_projection + mode_rhs*mode_rhs
+         END IF
+      END DO
+      fallback_dot = DOT_PRODUCT(rhs, sol_spectral)
+      quad = DOT_PRODUCT(sol_spectral, MATMUL(schur, sol_spectral))
+      negative_projection = 0.0_dp
+      DO i = 1, n
+         IF (eval(i) < 0.0_dp) &
+            negative_projection = negative_projection + DOT_PRODUCT(schur_modes(:, i), sol_spectral)**2
+      END DO
+
+      err = MAX(ABS(fallback_dot - quad), negative_projection)
+      IF (err > tol .OR. direct_dot >= -tol .OR. fallback_dot <= tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/direct/fallback/neg", err, direct_dot, fallback_dot, negative_projection
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/direct/fallback/neg", err, direct_dot, fallback_dot, negative_projection
+      END IF
+
+   END SUBROUTINE check_indefinite_schur_spectral_fallback
 
 ! **************************************************************************************************
 !> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.

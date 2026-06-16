@@ -4006,12 +4006,12 @@ CONTAINS
                                                                projector_physical_candidate_ready, &
                                                                projector_physical_candidate_selected, &
                                                                projector_physical_direct_diagref_candidate_ready, &
-                                                                        projector_physical_direct_candidate_ready, &
-                                                                        projector_physical_direct_candidate_selected, &
-                                                                        projector_physical_direct_candidate_used, &
-                                                                        projector_plateau_gap_model_enabled, &
-                                                                        projector_offdiag_candidate_ready, &
-                                                                        projector_offdiag_candidate_selected, &
+                                                                       projector_physical_direct_candidate_ready, &
+                                                                       projector_physical_direct_candidate_selected, &
+                                                                       projector_physical_direct_candidate_used, &
+                                                                       projector_plateau_gap_model_enabled, &
+                                                                       projector_offdiag_candidate_ready, &
+                                                                       projector_offdiag_candidate_selected, &
                                                                         projector_physical_shadow_enabled, &
                                                                         projector_response_candidate_ready, &
                                                                         projector_response_candidate_selected, &
@@ -6680,6 +6680,26 @@ CONTAINS
                                        CALL dgesv(nrot, 1, schur, nrot, ipiv, projector_physical_direct_sol, nrot, info)
                                        IF (info == 0) THEN
                                           IF (logger%iter_info%print_level >= high_print_level) THEN
+                                             projected_term = DOT_PRODUCT(rtd, projector_physical_direct_sol)
+                                             IF (projected_term <= 0.0_dp .OR. projected_term /= projected_term) THEN
+                                                row_floor = MAX(0.0_dp, projector_physical_direct_rot_floor_min)
+                                                row_floor = MAX(row_floor, SQRT(EPSILON(1.0_dp))* &
+                                                                 MAX(1.0_dp, &
+                                                                     MAXVAL(ABS(projector_physical_direct_schur_eval))))
+                                                rhs(:) = 0.0_dp
+                                                DO r = 1, nrot
+                                                   IF (projector_physical_direct_schur_eval(r) <= row_floor) CYCLE
+                                                   rx_shift = DOT_PRODUCT(projector_physical_direct_schur_vec(:, r), rtd)
+                                                   rhs(:) = rhs(:) + &
+                                                      (rx_shift/projector_physical_direct_schur_eval(r))* &
+                                                      projector_physical_direct_schur_vec(:, r)
+                                                END DO
+                                                WRITE (cp_logger_get_default_unit_nr(logger), &
+                                                       '(A,5(1X,ES16.8))') &
+                                                   " OT Schur projector phys direct spectral rescue dot fdot norm floor emin:", &
+                                                   projected_term, DOT_PRODUCT(rtd, rhs), DOT_PRODUCT(rhs, rhs), row_floor, &
+                                                   projector_physical_direct_schur_eval_min
+                                             END IF
                                              projector_physical_direct_trace_active_quad = 0.0_dp
                                              projector_physical_direct_trace_actual_quad = 0.0_dp
                                              projector_physical_direct_trace_full_quad = 0.0_dp
