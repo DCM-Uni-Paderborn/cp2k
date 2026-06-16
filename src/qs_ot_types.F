@@ -250,6 +250,7 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_diagref_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_density_pending = .FALSE.
       LOGICAL :: schur_projector_density_audit_pending = .FALSE.
+      LOGICAL :: schur_projector_density_descent_pending = .FALSE.
       LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
       INTEGER :: schur_model_attempt = 0, schur_cg_attempt = 0, schur_model_quality_samples = 0
       INTEGER :: schur_constrained_quality_samples = 0
@@ -264,6 +265,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_diagref_quality_samples = 0
       INTEGER :: schur_projector_density_quality_samples = 0
       INTEGER :: schur_projector_density_audit_samples = 0
+      INTEGER :: schur_projector_density_descent_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
@@ -372,6 +374,13 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_density_audit_lowcurv = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_audit_lowcurv_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_audit_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_coeff = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_coeff_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_quality_ema = 0.0_dp
@@ -691,6 +700,7 @@ CONTAINS
       qs_ot_env%schur_projector_diagref_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_density_pending = .FALSE.
       qs_ot_env%schur_projector_density_audit_pending = .FALSE.
+      qs_ot_env%schur_projector_density_descent_pending = .FALSE.
       qs_ot_env%schur_history_mixed = .FALSE.
       qs_ot_env%schur_split_candidate_enabled = .FALSE.
       qs_ot_env%schur_model_attempt = 0
@@ -710,6 +720,7 @@ CONTAINS
       qs_ot_env%schur_projector_diagref_quality_samples = 0
       qs_ot_env%schur_projector_density_quality_samples = 0
       qs_ot_env%schur_projector_density_audit_samples = 0
+      qs_ot_env%schur_projector_density_descent_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_calibrated_drop = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
@@ -832,6 +843,13 @@ CONTAINS
       qs_ot_env%schur_projector_density_audit_lowcurv = 0.0_dp
       qs_ot_env%schur_projector_density_audit_lowcurv_ema = 0.0_dp
       qs_ot_env%schur_projector_density_audit_lowcurv_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_drop = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_quality = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_coeff = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_coeff_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_drop = 0.0_dp
       qs_ot_env%schur_projector_physical_quality = 0.0_dp
       qs_ot_env%schur_projector_physical_quality_ema = 0.0_dp
