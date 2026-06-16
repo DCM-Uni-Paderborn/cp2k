@@ -1269,6 +1269,19 @@ CONTAINS
    END FUNCTION kpoint_ot_active_density_response_weight
 
 ! **************************************************************************************************
+!> \brief shared pair slope for near-degenerate occupation-gauge filtering
+!> \param occ_curv_i ...
+!> \param occ_curv_j ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_shared_occ_slope(occ_curv_i, occ_curv_j) RESULT(slope)
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv_i, occ_curv_j
+      REAL(KIND=dp)                                      :: slope
+
+      slope = 2.0_dp*SQRT(MAX(0.0_dp, occ_curv_i)*MAX(0.0_dp, occ_curv_j))
+
+   END FUNCTION kpoint_ot_shared_occ_slope
+
+! **************************************************************************************************
 !> \brief project k-point OT auxiliary energies onto the exact fixed-N Mermin subproblem
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
@@ -11210,7 +11223,7 @@ CONTAINS
                physical_slope = 0.0_dp
                IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
                   IF (ABS(denom) <= gauge_gap) THEN
-                     physical_slope = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(i), occ_curv_channel(j)))
+                     physical_slope = kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(j))
                      allowed_jump = 4.0_dp*physical_slope*MAX(ABS(denom), EPSILON(1.0_dp)) + occ_tol
                      occ_jump = ABS(occ_slope(i) - occ_slope(j))
                      IF (occ_jump > allowed_jump) CYCLE
@@ -11260,7 +11273,7 @@ CONTAINS
             last = first
             DO WHILE (last < n)
                gap = ABS(evals(last + 1) - evals(last))
-               slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(last), occ_curv_channel(last + 1)))
+               slope_cap = kpoint_ot_shared_occ_slope(occ_curv_channel(last), occ_curv_channel(last + 1))
                allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
                IF (gap <= gauge_gap .AND. occ_jump > allowed_jump) THEN

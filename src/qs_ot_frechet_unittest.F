@@ -4650,10 +4650,11 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
                                                             docc_raw, docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, physical_active, physical_err, physical_near_err, &
-                                                            raw_gauge, raw_transitive, safe_gauge, transitive_err
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_cluster, occ_curv, occ_near_physical, occ_plateau, &
-                                                            occ_scale
+      REAL(KIND=dp)                                      :: err, mixed_safe, physical_active, physical_err, &
+                                                            physical_near_err, raw_gauge, raw_mixed, &
+                                                            raw_transitive, safe_gauge, transitive_err
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_cluster, occ_curv, occ_curv_mixed, occ_mixed, &
+                                                            occ_near_physical, occ_plateau, occ_scale
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -4698,6 +4699,17 @@ CONTAINS
                                                            docc_safe, occ_curv, gauge_gap)
       raw_gauge = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
       safe_gauge = MAXVAL(ABS(docc_safe(:, :)))
+
+      occ_curv_mixed(:) = occ_curv(:)
+      occ_curv_mixed(2) = 1.0E-5_dp
+      occ_mixed(:) = occ_scale(:)
+      occ_mixed(1) = 1.10_dp
+      occ_mixed(2) = occ_mixed(1) - 1.0E-6_dp
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_mixed, projector_weight, &
+                                                           docc_safe, occ_curv_mixed, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_mixed, docc_raw)
+      mixed_safe = MAXVAL(ABS(docc_safe(:, :)))
+      raw_mixed = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
 
       dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       dchc_eig(3, 4) = CMPLX(-0.16_dp, 0.11_dp, KIND=dp)
@@ -4747,16 +4759,20 @@ CONTAINS
       transitive_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
 
       err = MAX(safe_gauge, physical_err, physical_near_err, transitive_err)
-      IF (err > tol .OR. raw_gauge < active_tol .OR. raw_transitive < active_tol .OR. &
+      err = MAX(err, mixed_safe)
+      IF (err > tol .OR. raw_gauge < active_tol .OR. raw_mixed < active_tol .OR. &
+          raw_transitive < active_tol .OR. &
           physical_active < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/raw_gauge/safe_gauge/physical/near/transitive", err, raw_gauge, &
-            safe_gauge, physical_active, physical_near_err, raw_transitive, transitive_err
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw_gauge/safe_gauge/raw_mixed/mixed/physical/near/transitive", &
+            err, raw_gauge, safe_gauge, raw_mixed, mixed_safe, physical_active, physical_near_err, &
+            raw_transitive, transitive_err
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/raw_gauge/safe_gauge/physical/near/transitive", err, raw_gauge, safe_gauge, &
-            physical_active, physical_near_err, raw_transitive, transitive_err
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw_gauge/safe_gauge/raw_mixed/mixed/physical/near/transitive", &
+            err, raw_gauge, safe_gauge, raw_mixed, mixed_safe, physical_active, physical_near_err, &
+            raw_transitive, transitive_err
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_gauge_physical_split
@@ -4874,6 +4890,17 @@ CONTAINS
    END SUBROUTINE dense_spectral_occ_projector_from_chc
 
 ! **************************************************************************************************
+!> \brief Shared pair slope for near-degenerate occupation-gauge filtering.
+! **************************************************************************************************
+   FUNCTION dense_shared_occ_slope(occ_curv_i, occ_curv_j) RESULT(slope)
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv_i, occ_curv_j
+      REAL(KIND=dp)                                      :: slope
+
+      slope = 2.0_dp*SQRT(MAX(0.0_dp, occ_curv_i)*MAX(0.0_dp, occ_curv_j))
+
+   END FUNCTION dense_shared_occ_slope
+
+! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap)
@@ -4906,7 +4933,7 @@ CONTAINS
             physical_slope = 0.0_dp
             IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
                IF (ABS(denom) <= gauge_gap) THEN
-                  physical_slope = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
+                  physical_slope = dense_shared_occ_slope(occ_curv(i), occ_curv(j))
                   allowed_jump = 4.0_dp*physical_slope*MAX(ABS(denom), EPSILON(1.0_dp)) + occ_tol
                   occ_jump = ABS(occ_work(i) - occ_work(j))
                   IF (occ_jump > allowed_jump) CYCLE
@@ -4993,7 +5020,7 @@ CONTAINS
          last = first
          DO WHILE (last < n)
             gap = ABS(evals(last + 1) - evals(last))
-            slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(last), occ_curv(last + 1)))
+            slope_cap = dense_shared_occ_slope(occ_curv(last), occ_curv(last + 1))
             allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
             occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
             IF (gap <= gauge_gap .AND. occ_jump > allowed_jump) THEN
