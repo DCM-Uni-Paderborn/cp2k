@@ -93,6 +93,8 @@ PROGRAM qs_ot_frechet_unittest
                                                      5.0E-10_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
                                                             2.0E-8_dp, nfail)
+   CALL check_complex_projector_density_gauge_plateau_projection( &
+      "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
                                                           5.0E-12_dp, nfail)
    CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
@@ -3426,6 +3428,103 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_response_projection
+
+! **************************************************************************************************
+!> \brief Check that near-degenerate projector gauge motion is removed before fixed-N density response.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_gauge_plateau_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, gauge_gap = 5.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_plateau, &
+                                                            docc_raw, q
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: err, occ_sum, physical_active, physical_err, &
+                                                            plateau_norm, raw_norm, shift
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale, projected_response
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.009982_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.23_dp, 0.0_dp, KIND=dp)
+      chc_eig(4, 4) = CMPLX(0.51_dp, 0.0_dp, KIND=dp)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.13_dp
+      x_re(1, 3) = -0.06_dp
+      x_re(2, 4) = 0.04_dp
+      x_re(3, 4) = -0.05_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.03_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(4, 4) = -0.01_dp
+      x_im(1, 2) = -0.04_dp
+      x_im(1, 4) = 0.03_dp
+      x_im(2, 3) = 0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+
+      occ_scale(:) = [1.70_dp, 0.52_dp, 0.23_dp, 0.07_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+      occ_sum = SUM(occ_curv(:))
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.21_dp, -0.17_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_plateau, &
+                                                       occ_curv, gauge_gap)
+
+      DO i = 1, n
+         projected_response(i) = 0.5_dp*REAL(docc_raw(i, i), KIND=dp)/occ_curv(i)
+      END DO
+      shift = DOT_PRODUCT(occ_curv(:), projected_response(:))/occ_sum
+      raw_norm = MAXVAL(ABS(occ_curv(:)*(projected_response(:) - shift)))
+      DO i = 1, n
+         projected_response(i) = 0.5_dp*REAL(docc_plateau(i, i), KIND=dp)/occ_curv(i)
+      END DO
+      shift = DOT_PRODUCT(occ_curv(:), projected_response(:))/occ_sum
+      plateau_norm = MAXVAL(ABS(occ_curv(:)*(projected_response(:) - shift)))
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(3, 4) = CMPLX(-0.16_dp, 0.11_dp, KIND=dp)
+      dchc_eig(4, 3) = CONJG(dchc_eig(3, 4))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_plateau, &
+                                                       occ_curv, gauge_gap)
+      physical_err = MAXVAL(ABS(docc_raw(:, :) - docc_plateau(:, :)))
+      physical_active = 0.0_dp
+      DO i = 1, n
+         projected_response(i) = 0.5_dp*REAL(docc_plateau(i, i), KIND=dp)/occ_curv(i)
+      END DO
+      shift = DOT_PRODUCT(occ_curv(:), projected_response(:))/occ_sum
+      physical_active = MAXVAL(ABS(occ_curv(:)*(projected_response(:) - shift)))
+
+      err = MAX(plateau_norm, physical_err)
+      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_gauge_plateau_projection
 
 ! **************************************************************************************************
 !> \brief Check the fixed-N low-rank curvature from diagonal projector-density response.
