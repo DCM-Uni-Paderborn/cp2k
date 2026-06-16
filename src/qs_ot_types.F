@@ -243,6 +243,7 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_response_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_plateau_gap_pending = .FALSE.
       LOGICAL :: schur_projector_physical_pending = .FALSE.
+      LOGICAL :: schur_projector_mixed_direct_pending = .FALSE.
       LOGICAL :: schur_projector_spectral_pending = .FALSE.
       LOGICAL :: schur_projector_physical_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_spectral_candidate_enabled = .FALSE.
@@ -262,6 +263,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_response_quality_samples = 0
       INTEGER :: schur_projector_plateau_gap_quality_samples = 0
       INTEGER :: schur_projector_physical_quality_samples = 0
+      INTEGER :: schur_projector_mixed_direct_quality_samples = 0
       INTEGER :: schur_projector_spectral_quality_samples = 0
       INTEGER :: schur_projector_diagref_quality_samples = 0
       INTEGER :: schur_projector_density_quality_samples = 0
@@ -440,6 +442,13 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_trace_raw_free_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_active_diag_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_active_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_weight = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_mixed_direct_weight_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_quality_ema = 0.0_dp
@@ -696,6 +705,7 @@ CONTAINS
       qs_ot_env%schur_projector_response_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_plateau_gap_pending = .FALSE.
       qs_ot_env%schur_projector_physical_pending = .FALSE.
+      qs_ot_env%schur_projector_mixed_direct_pending = .FALSE.
       qs_ot_env%schur_projector_spectral_pending = .FALSE.
       qs_ot_env%schur_projector_physical_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_spectral_candidate_enabled = .FALSE.
@@ -720,6 +730,7 @@ CONTAINS
       qs_ot_env%schur_projector_response_quality_samples = 0
       qs_ot_env%schur_projector_plateau_gap_quality_samples = 0
       qs_ot_env%schur_projector_physical_quality_samples = 0
+      qs_ot_env%schur_projector_mixed_direct_quality_samples = 0
       qs_ot_env%schur_projector_spectral_quality_samples = 0
       qs_ot_env%schur_projector_diagref_quality_samples = 0
       qs_ot_env%schur_projector_density_quality_samples = 0
@@ -912,6 +923,13 @@ CONTAINS
       qs_ot_env%schur_projector_physical_trace_raw_free_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_active_diag_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_active_free_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_drop = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_quality = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_weight = 0.0_dp
+      qs_ot_env%schur_projector_mixed_direct_weight_ema = 0.0_dp
       qs_ot_env%schur_projector_spectral_drop = 0.0_dp
       qs_ot_env%schur_projector_spectral_quality = 0.0_dp
       qs_ot_env%schur_projector_spectral_quality_ema = 0.0_dp
