@@ -4336,10 +4336,10 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 6, nchannels = 2
 
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
-      LOGICAL                                            :: metric_projected, single_projected
-      REAL(KIND=dp)                                      :: err, legacy_residual, single_err, tether_residual
+      LOGICAL                                            :: metric_projected, reference_projected, single_projected
+      REAL(KIND=dp)                                      :: err, legacy_residual, reference_err, single_err, tether_residual
       REAL(KIND=dp), DIMENSION(ne)                       :: legacy, legacy_occ_only, metric, metric_occ_only, &
-                                                            occ_curv, response, tether_curv, tether_zero
+                                                            metric_reference, occ_curv, response, tether_curv, tether_zero
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -4350,28 +4350,36 @@ CONTAINS
 
       legacy(:) = response(:)
       metric(:) = response(:)
+      metric_reference(:) = response(:)
       CALL dense_project_response_two_pass(legacy, occ_curv, tether_curv, channel_nmo, e_offset)
-      CALL dense_project_response_metric(metric, occ_curv, tether_curv, channel_nmo, e_offset, metric_projected)
+      CALL dense_project_response_metric_distributed(metric, occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                     metric_projected)
+      CALL dense_project_response_metric(metric_reference, occ_curv, tether_curv, channel_nmo, e_offset, &
+                                         reference_projected)
       err = ABS(DOT_PRODUCT(occ_curv(:), metric(:)))
       tether_residual = dense_response_tether_residual(metric, tether_curv, channel_nmo, e_offset)
       err = MAX(err, tether_residual)
+      reference_err = MAXVAL(ABS(metric(:) - metric_reference(:)))
       legacy_residual = ABS(DOT_PRODUCT(occ_curv(:), legacy(:)))
 
       legacy_occ_only(:) = response(:)
       metric_occ_only(:) = response(:)
       CALL dense_project_response_two_pass(legacy_occ_only, occ_curv, tether_zero, channel_nmo, e_offset)
-      CALL dense_project_response_metric(metric_occ_only, occ_curv, tether_zero, channel_nmo, e_offset, single_projected)
+      CALL dense_project_response_metric_distributed(metric_occ_only, occ_curv, tether_zero, channel_nmo, e_offset, &
+                                                     single_projected)
       single_err = MAXVAL(ABS(metric_occ_only(:) - legacy_occ_only(:)))
       single_err = MAX(single_err, ABS(DOT_PRODUCT(occ_curv(:), metric_occ_only(:))))
 
-      IF (.NOT. metric_projected .OR. .NOT. single_projected .OR. err > tol .OR. single_err > tol .OR. &
-          legacy_residual < 1.0E-2_dp) THEN
+      IF (.NOT. metric_projected .OR. .NOT. reference_projected .OR. .NOT. single_projected .OR. &
+          err > tol .OR. reference_err > tol .OR. single_err > tol .OR. legacy_residual < 1.0E-2_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/tether/legacy/single", err, tether_residual, legacy_residual, single_err
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/tether/legacy/single/reference", err, tether_residual, legacy_residual, &
+            single_err, reference_err
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/tether/legacy/single", err, tether_residual, legacy_residual, single_err
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/tether/legacy/single/reference", err, tether_residual, legacy_residual, &
+            single_err, reference_err
       END IF
 
    END SUBROUTINE check_projector_metric_response_projection
@@ -4768,6 +4776,108 @@ CONTAINS
       END DO
 
    END SUBROUTINE dense_project_response_two_pass
+
+! **************************************************************************************************
+!> \brief Dense mirror of the distributed curvature-metric response-gauge projection.
+! **************************************************************************************************
+   SUBROUTINE dense_project_response_metric_distributed(response_vec, occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                        projected)
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+      LOGICAL, INTENT(OUT)                                :: projected
+
+      INTEGER                                             :: first_energy, ie, local_channel, nmo
+      REAL(KIND=dp)                                       :: channel_alpha, channel_beta, channel_rhs, curv_max, &
+                                                             denom, global_alpha2_over_beta, &
+                                                             global_alpha_rhs_over_beta, lambda_occ, max_lambda, &
+                                                             occ_metric, occ_rhs, occ_sum, total_curv
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: channel_lambda, inv_curv
+
+      projected = .FALSE.
+      curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
+      IF (curv_max <= EPSILON(curv_max)) RETURN
+
+      ALLOCATE (channel_lambda(SIZE(channel_nmo)), inv_curv(SIZE(response_vec)))
+      channel_lambda(:) = 0.0_dp
+      DO ie = 1, SIZE(response_vec)
+         total_curv = occ_curv(ie) + tether_curv(ie)
+         IF (total_curv > EPSILON(curv_max)) THEN
+            inv_curv(ie) = 1.0_dp/total_curv
+         ELSE
+            inv_curv(ie) = 0.0_dp
+         END IF
+      END DO
+
+      occ_metric = DOT_PRODUCT(occ_curv(:)*inv_curv(:), occ_curv(:))
+      occ_rhs = DOT_PRODUCT(occ_curv(:), response_vec(:))
+      global_alpha2_over_beta = 0.0_dp
+      global_alpha_rhs_over_beta = 0.0_dp
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         channel_alpha = DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1)* &
+                                     inv_curv(first_energy:first_energy + nmo - 1), &
+                                     tether_curv(first_energy:first_energy + nmo - 1))
+         channel_beta = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1)* &
+                                    inv_curv(first_energy:first_energy + nmo - 1), &
+                                    tether_curv(first_energy:first_energy + nmo - 1))
+         channel_rhs = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                   response_vec(first_energy:first_energy + nmo - 1))
+         IF (channel_beta > EPSILON(curv_max)) THEN
+            global_alpha2_over_beta = global_alpha2_over_beta + channel_alpha*channel_alpha/channel_beta
+            global_alpha_rhs_over_beta = global_alpha_rhs_over_beta + channel_alpha*channel_rhs/channel_beta
+         END IF
+      END DO
+
+      occ_sum = SUM(occ_curv(:))
+      lambda_occ = 0.0_dp
+      IF (occ_sum > EPSILON(occ_sum)) THEN
+         denom = occ_metric - global_alpha2_over_beta
+         IF (denom <= SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, occ_metric)) THEN
+            DEALLOCATE (channel_lambda, inv_curv)
+            RETURN
+         END IF
+         lambda_occ = (occ_rhs - global_alpha_rhs_over_beta)/denom
+      END IF
+
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         channel_alpha = DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1)* &
+                                     inv_curv(first_energy:first_energy + nmo - 1), &
+                                     tether_curv(first_energy:first_energy + nmo - 1))
+         channel_beta = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1)* &
+                                    inv_curv(first_energy:first_energy + nmo - 1), &
+                                    tether_curv(first_energy:first_energy + nmo - 1))
+         channel_rhs = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                   response_vec(first_energy:first_energy + nmo - 1))
+         IF (channel_beta > EPSILON(curv_max)) &
+            channel_lambda(local_channel) = (channel_rhs - channel_alpha*lambda_occ)/channel_beta
+      END DO
+
+      max_lambda = 0.0_dp
+      DO local_channel = 1, SIZE(channel_nmo)
+         max_lambda = MAX(max_lambda, ABS(channel_lambda(local_channel)))
+      END DO
+      IF (ABS(lambda_occ) > EPSILON(lambda_occ) .OR. max_lambda > EPSILON(curv_max)) THEN
+         response_vec(:) = response_vec(:) - lambda_occ*inv_curv(:)*occ_curv(:)
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            response_vec(first_energy:first_energy + nmo - 1) = &
+               response_vec(first_energy:first_energy + nmo - 1) - &
+               channel_lambda(local_channel)*inv_curv(first_energy:first_energy + nmo - 1)* &
+               tether_curv(first_energy:first_energy + nmo - 1)
+         END DO
+      END IF
+      projected = .TRUE.
+      DEALLOCATE (channel_lambda, inv_curv)
+
+   END SUBROUTINE dense_project_response_metric_distributed
 
 ! **************************************************************************************************
 !> \brief Dense curvature-metric response-gauge projection.
