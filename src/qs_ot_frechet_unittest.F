@@ -96,6 +96,8 @@ PROGRAM qs_ot_frechet_unittest
                                                             2.0E-8_dp, nfail)
    CALL check_complex_projector_density_gauge_plateau_projection( &
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
+   CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
+      "complex projector offdiag gauge-plateau Hessian", 5.0E-10_dp, nfail)
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
                                                           5.0E-12_dp, nfail)
    CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
@@ -3528,6 +3530,123 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_gauge_plateau_projection
+
+! **************************************************************************************************
+!> \brief Remove near-degenerate gauge noise from the off-diagonal Projector-Hessian channel.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_offdiag_gauge_plateau_hessian(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 3.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_plateau, &
+                                                            docc_raw, q
+      INTEGER                                            :: i, ivar, j
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: err, physical_active, physical_err, plateau_norm, &
+                                                            raw_norm
+      REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_physical_vec, grad_plateau_vec, grad_raw_vec
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_re
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.009982_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.24_dp, 0.0_dp, KIND=dp)
+      chc_eig(4, 4) = CMPLX(0.52_dp, 0.0_dp, KIND=dp)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.12_dp
+      x_re(1, 3) = -0.06_dp
+      x_re(2, 4) = 0.05_dp
+      x_re(3, 4) = -0.04_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.03_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(4, 4) = -0.02_dp
+      x_im(1, 2) = -0.04_dp
+      x_im(1, 4) = 0.03_dp
+      x_im(2, 3) = 0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+
+      ivar = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 2
+         END DO
+      END DO
+
+      occ_scale(:) = [1.70_dp, 0.46_dp, 0.24_dp, 0.08_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.25_dp, -0.18_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_plateau, &
+                                                       occ_curv, gauge_gap)
+      DO i = 1, n
+         docc_raw(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         docc_plateau(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      END DO
+      x_re(:, :) = 0.0_dp
+      x_im(:, :) = 0.0_dp
+      CALL dense_projector_rotation_gradient(x_re, x_im, chc, docc_raw, grad_re, grad_im, eps_diag)
+      CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_raw_vec)
+      CALL dense_projector_rotation_gradient(x_re, x_im, chc, docc_plateau, grad_re, grad_im, eps_diag)
+      CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_plateau_vec)
+      raw_norm = MAXVAL(ABS(grad_raw_vec(:)))
+      plateau_norm = MAXVAL(ABS(grad_plateau_vec(:)))
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(3, 4) = CMPLX(-0.17_dp, 0.12_dp, KIND=dp)
+      dchc_eig(4, 3) = CONJG(dchc_eig(3, 4))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_plateau, &
+                                                       occ_curv, gauge_gap)
+      DO i = 1, n
+         docc_raw(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         docc_plateau(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      END DO
+      CALL dense_projector_rotation_gradient(x_re, x_im, chc, docc_raw, grad_re, grad_im, eps_diag)
+      CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_physical_vec)
+      CALL dense_projector_rotation_gradient(x_re, x_im, chc, docc_plateau, grad_re, grad_im, eps_diag)
+      CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_plateau_vec)
+      physical_err = MAXVAL(ABS(grad_physical_vec(:) - grad_plateau_vec(:)))
+      physical_active = MAXVAL(ABS(grad_plateau_vec(:)))
+
+      err = MAX(plateau_norm, physical_err)
+      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
+      END IF
+
+   END SUBROUTINE check_complex_projector_offdiag_gauge_plateau_hessian
 
 ! **************************************************************************************************
 !> \brief Check the fixed-N low-rank curvature from diagonal projector-density response.
