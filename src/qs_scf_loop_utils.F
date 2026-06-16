@@ -8827,9 +8827,10 @@ CONTAINS
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp)                                      :: base_weight, coeff_det, coeff_negative, coeff_positive, &
                                                             eval_abs_avg, h12, h11, h22, g1, g2, mode_norm, mode_sign, &
-                                                            mode_weight, negative_norm, negative_weight_sum, &
-                                                            positive_weight_sum, raw_negative_sum, response_total_sum, &
-                                                            residual_weight, spectral_weight, step_weight, step_weight_sum
+                                                            mode_weight, negative_balance, negative_norm, &
+                                                            negative_weight_sum, positive_sum, positive_weight_sum, &
+                                                            raw_negative_sum, response_total_sum, residual_weight, &
+                                                            spectral_weight, step_weight, step_weight_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, mode_rx, &
                                                             response_corr, response_neg, response_pos
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
@@ -8892,6 +8893,12 @@ CONTAINS
          END DO
          IF (response_total_sum > EPSILON(response_total_sum)) &
             raw_negative_fraction = raw_negative_sum/response_total_sum
+         positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
+         negative_balance = 0.0_dp
+         IF (raw_negative_sum > EPSILON(raw_negative_sum)) &
+            negative_balance = SQRT(positive_sum/raw_negative_sum)
+         negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
+
          step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
          negative_weight_sum = 0.0_dp
          positive_weight_sum = 0.0_dp
@@ -8901,12 +8908,9 @@ CONTAINS
             mode_sign = 1.0_dp
             IF (mode_eval(imode) < 0.0_dp) THEN
                mode_sign = -1.0_dp
-               ! Keep the indefinite response channel active.  The 2x2
-               ! positive/negative subspace solve below chooses the sign-aware
-               ! coefficient; balancing negative modes away here hid the
-               ! physical off-diagonal projector response in metallic tails.
                spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(mode_eval(imode))/ &
                                             MAX(eval_abs_avg, EPSILON(eval_abs_avg)))
+               spectral_weight = spectral_weight*negative_balance
             END IF
             mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
             IF (mode_weight <= EPSILON(mode_weight)) CYCLE
