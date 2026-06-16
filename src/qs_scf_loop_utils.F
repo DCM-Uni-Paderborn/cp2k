@@ -3916,7 +3916,8 @@ CONTAINS
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_quality_for_selection, projector_physical_trace_split_quality, &
-            projector_physical_direct_delta_diag_avg, &
+            projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
+            projector_physical_direct_trace_free_scale, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
             projector_physical_direct_diag_compensation_local_max, &
@@ -4477,6 +4478,8 @@ CONTAINS
             projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
             projector_physical_direct_diag_compensation_local_max = 0.0_dp
             projector_physical_direct_delta_diag_avg = 0.0_dp
+            projector_physical_direct_trace_diag_scale = 1.0_dp
+            projector_physical_direct_trace_free_scale = 1.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -6195,6 +6198,14 @@ CONTAINS
                                        END DO
                                        projector_physical_direct_delta_diag_avg = &
                                           projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       projector_physical_direct_trace_diag_scale = &
+                                          kpoint_ot_trace_diag_component_scale( &
+                                             local_ot_env(1)%schur_projector_physical_trace_actual_diag_ema, &
+                                             local_ot_env(1)%schur_projector_physical_trace_actual_free_ema, &
+                                             local_ot_env(1)%schur_projector_physical_trace_actual_diag_quality_ema, &
+                                             local_ot_env(1)%schur_projector_physical_trace_actual_free_quality_ema, &
+                                             local_ot_env(1)%schur_projector_physical_quality_samples)
+                                       projector_physical_direct_trace_free_scale = 1.0_dp
                                        schur(:, :) = rot_hessian_coupled(:, :) + &
                                                      projector_coupled_weight* &
                                                      projector_physical_direct_delta(:, :)
@@ -8132,6 +8143,10 @@ CONTAINS
                         projector_physical_direct_trace_full_free_quad, &
                         projector_physical_direct_trace_active_diag_quad, &
                         projector_physical_direct_trace_active_free_quad
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8))') &
+                        " OT Schur projector phys direct trace component scale diag free:", &
+                        projector_physical_direct_trace_diag_scale, &
+                        projector_physical_direct_trace_free_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                         " OT Schur projector phys direct line curv trust hint ds:", &
                         projector_physical_direct_line_step_curvature, projector_physical_direct_line_step_trust, &
@@ -8692,6 +8707,40 @@ CONTAINS
                                MAX(ot_kp_schur_projector_response_quality_min_ratio, history_quality))
 
       END FUNCTION kpoint_ot_trace_split_history_quality
+
+!> \brief conservative trace-bearing Direct curvature scale from accepted drops
+!> \param trace_diag_ema accepted Direct diagonal trace-bearing curvature average
+!> \param trace_free_ema accepted Direct trace-free curvature average
+!> \param trace_diag_quality_ema measured-drop weighted diagonal trace quality
+!> \param trace_free_quality_ema measured-drop weighted trace-free quality
+!> \param samples number of accepted physical Direct quality samples
+!> \return scale for the diagonal trace-bearing Direct curvature component
+      FUNCTION kpoint_ot_trace_diag_component_scale(trace_diag_ema, trace_free_ema, &
+                                                    trace_diag_quality_ema, trace_free_quality_ema, &
+                                                    samples) RESULT(component_scale)
+      REAL(KIND=dp), INTENT(IN)                         :: trace_diag_ema, trace_free_ema, &
+                                                            trace_diag_quality_ema, trace_free_quality_ema
+      INTEGER, INTENT(IN)                               :: samples
+      REAL(KIND=dp)                                     :: component_scale, diag_abs, diag_quality, &
+                                                            free_abs, free_quality, quality_ratio
+
+         component_scale = 1.0_dp
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+
+         diag_abs = ABS(trace_diag_ema)
+         free_abs = ABS(trace_free_ema)
+         IF (diag_abs <= EPSILON(diag_abs) .OR. free_abs <= EPSILON(free_abs)) RETURN
+
+         diag_quality = ABS(trace_diag_quality_ema)/diag_abs
+         free_quality = ABS(trace_free_quality_ema)/free_abs
+         IF (free_quality <= EPSILON(free_quality)) RETURN
+         IF (diag_quality >= free_quality) RETURN
+
+         quality_ratio = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                             diag_quality/free_quality)
+         component_scale = SQRT(MIN(1.0_dp, quality_ratio))
+
+      END FUNCTION kpoint_ot_trace_diag_component_scale
 
 !> \brief accepted-drop calibrated finite Projector-Hessian weight for the low residual tail
 !> \param residual_delta current OT residual
