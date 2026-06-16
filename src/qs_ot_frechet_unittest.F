@@ -90,6 +90,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-10_dp, nfail)
    CALL check_complex_occ_projector_gauge_plateau("complex occupation-projector gauge plateau", &
                                                   5.0E-10_dp, nfail)
+   CALL check_occ_projector_plateau_keeps_far_slope( &
+      "complex occupation-projector plateau preserves nondegenerate slope", 5.0E-10_dp, nfail)
    CALL check_complex_occ_projector_gauge_covariance("complex occupation-projector gauge covariance", &
                                                      5.0E-10_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
@@ -3246,6 +3248,52 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_occ_projector_gauge_plateau
+
+! **************************************************************************************************
+!> \brief Keep the gauge plateau local; non-degenerate slopes are handled by the coupled model.
+! **************************************************************************************************
+   SUBROUTINE check_occ_projector_plateau_keeps_far_slope(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: gap = 1.2E-4_dp, gauge_gap = 3.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_plateau, docc_raw
+      REAL(KIND=dp)                                      :: cap, err, plateau_coeff, raw_coeff
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_noisy
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(0.00_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(gap, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.39_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.23_dp, -0.14_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_curv(:) = [0.031_dp, 0.027_dp, 0.004_dp]
+      occ_noisy(:) = [0.75_dp, 0.21_dp, 0.12_dp]
+      cap = 2.0_dp*MAX(occ_curv(1), occ_curv(2))
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_raw)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_plateau, &
+                                                       occ_curv, gauge_gap)
+      raw_coeff = REAL(docc_raw(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
+      plateau_coeff = REAL(docc_plateau(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
+      err = ABS(raw_coeff - plateau_coeff)
+
+      IF (err > tol .OR. gap <= gauge_gap .OR. ABS(raw_coeff) < 10.0_dp*cap) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "failed with error/raw/plateau/cap/gap", &
+            err, raw_coeff, plateau_coeff, cap, gap
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "OK with error/raw/plateau/cap/gap", &
+            err, raw_coeff, plateau_coeff, cap, gap
+      END IF
+
+   END SUBROUTINE check_occ_projector_plateau_keeps_far_slope
 
 ! **************************************************************************************************
 !> \brief Keep the physical dP response covariant while removing near-degenerate gauge noise.
