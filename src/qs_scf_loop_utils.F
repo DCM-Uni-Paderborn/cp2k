@@ -4020,7 +4020,8 @@ CONTAINS
             projector_physical_offdiag_plateau_delta_max, projector_physical_offdiag_plateau_diag_avg, &
             projector_physical_offdiag_plateau_gap_abs_avg, &
             projector_physical_offdiag_plateau_gap_delta_max, &
-            projector_physical_offdiag_plateau_gap_diag_avg, projector_physical_offdiag_mode_abs_quad, &
+            projector_physical_offdiag_plateau_gap_diag_avg, &
+            projector_physical_offdiag_mode_abs_quad, &
             projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
             projector_physical_offdiag_mode_negative_fraction, &
             projector_physical_offdiag_mode_negative_quad, projector_physical_offdiag_mode_positive_quad, &
@@ -4216,6 +4217,10 @@ CONTAINS
          projector_physical_density_low_curv_fraction, projector_physical_density_low_curv_sum, &
          projector_physical_density_response_abs_avg, projector_physical_density_response_abs_max, &
          projector_physical_density_rhs_abs_avg, projector_physical_density_rhs_abs_max
+      REAL(KIND=dp) :: plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, plateau_gap_mode_eval_min, &
+         plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
+         plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
+         plateau_gap_mode_step_negative_fraction
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4452,6 +4457,16 @@ CONTAINS
          projector_physical_offdiag_plateau_gap_abs_avg = 0.0_dp
          projector_physical_offdiag_plateau_gap_delta_max = 0.0_dp
          projector_physical_offdiag_plateau_gap_diag_avg = 0.0_dp
+         plateau_gap_mode_abs_quad = 0.0_dp
+         plateau_gap_mode_eval_max = 0.0_dp
+         plateau_gap_mode_eval_min = 0.0_dp
+         plateau_gap_mode_negative_fraction = 0.0_dp
+         plateau_gap_mode_negative_quad = 0.0_dp
+         plateau_gap_mode_positive_quad = 0.0_dp
+         plateau_gap_mode_quad = 0.0_dp
+         plateau_gap_mode_quad_abs_ratio = 0.0_dp
+         plateau_gap_mode_quad_signed_ratio = 0.0_dp
+         plateau_gap_mode_step_negative_fraction = 0.0_dp
          projector_physical_offdiag_mode_abs_quad = 0.0_dp
          projector_physical_offdiag_mode_eval_max = 0.0_dp
          projector_physical_offdiag_mode_eval_min = 0.0_dp
@@ -7832,7 +7847,7 @@ CONTAINS
                accepted_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                accepted_projector_coupled_weight = projector_coupled_weight
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
-               IF (logger%iter_info%print_level >= high_print_level) &
+               IF (logger%iter_info%print_level >= high_print_level) THEN
                   CALL audit_kpoint_ot_hessian_delta_modes(rot_hessian_projector_physical_offdiag, sol, &
                                                            model_calibrated_drop, &
                                                            projector_physical_offdiag_mode_negative_fraction, &
@@ -7845,6 +7860,20 @@ CONTAINS
                                                            projector_physical_offdiag_mode_negative_quad, &
                                                            projector_physical_offdiag_mode_quad_signed_ratio, &
                                                            projector_physical_offdiag_mode_quad_abs_ratio)
+                  CALL audit_kpoint_ot_hessian_delta_modes( &
+                     rot_hessian_projector_physical_offdiag_plateau - &
+                     rot_hessian_projector_physical_offdiag, sol, model_calibrated_drop, &
+                     plateau_gap_mode_negative_fraction, &
+                     plateau_gap_mode_eval_min, &
+                     plateau_gap_mode_eval_max, &
+                     plateau_gap_mode_step_negative_fraction, &
+                     plateau_gap_mode_quad, &
+                     plateau_gap_mode_abs_quad, &
+                     plateau_gap_mode_positive_quad, &
+                     plateau_gap_mode_negative_quad, &
+                     plateau_gap_mode_quad_signed_ratio, &
+                     plateau_gap_mode_quad_abs_ratio)
+               END IF
                IF (logger%iter_info%print_level >= high_print_level .AND. &
                    projector_physical_offdiag_mode_abs_quad > &
                    EPSILON(projector_physical_offdiag_mode_abs_quad)) THEN
@@ -8200,6 +8229,19 @@ CONTAINS
                               projector_physical_offdiag_mode_quad_abs_ratio, &
                               projector_physical_offdiag_mode_positive_quad, &
                               projector_physical_offdiag_mode_negative_quad
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
+                     " OT Schur projector physical offdiag-dP plateau-gap modes neg stepneg emin emax quad absq "// &
+                     "qratio aratio pquad nquad:", &
+                     plateau_gap_mode_negative_fraction, &
+                     plateau_gap_mode_step_negative_fraction, &
+                     plateau_gap_mode_eval_min, &
+                     plateau_gap_mode_eval_max, &
+                     plateau_gap_mode_quad, &
+                     plateau_gap_mode_abs_quad, &
+                     plateau_gap_mode_quad_signed_ratio, &
+                     plateau_gap_mode_quad_abs_ratio, &
+                     plateau_gap_mode_positive_quad, &
+                     plateau_gap_mode_negative_quad
                            WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),17(1X,ES16.8))') &
                               " OT Schur projector offdiag-dP response ready selected direct exp refdrop eratio qsel "// &
                               "hq htrust hrratio cdrop mgap "// &
