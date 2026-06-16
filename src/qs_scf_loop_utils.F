@@ -7000,7 +7000,7 @@ CONTAINS
                                                 CALL audit_kpoint_ot_projector_response_modes( &
                                                    rot_hessian_projector_physical_offdiag, &
                                                    rot_hessian_projector_physical_offdiag_plateau, &
-                                                   projector_physical_direct_sol, response_exact_physical, &
+                                                   projector_physical_direct_sol, response_density_exact, &
                                                    response_density_plateau_exact, curv, projector_coupled_weight, &
                                                    residual_delta, projector_mode_history_quality, &
                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
