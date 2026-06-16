@@ -1245,7 +1245,7 @@ CONTAINS
       IF (projector_weight <= 0.0_dp) RETURN
       IF (curv_max <= EPSILON(curv_max)) RETURN
 
-      active_fraction = MAX(0.0_dp, curv_i, curv_j)/curv_max
+      active_fraction = kpoint_ot_shared_occ_slope(curv_i, curv_j)/(2.0_dp*curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       pair_weight = projector_weight*active_fraction
 

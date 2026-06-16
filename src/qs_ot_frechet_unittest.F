@@ -104,6 +104,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
    CALL check_complex_projector_active_density_response_filter( &
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
+   CALL check_projector_active_rotation_pair_weight( &
+      "complex projector active rotation pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_active_filter_descent_recovery( &
@@ -3813,6 +3815,47 @@ CONTAINS
    END SUBROUTINE check_complex_projector_active_density_response_filter
 
 ! **************************************************************************************************
+!> \brief Check that active rotation weights require both bands to be in the Fermi window.
+! **************************************************************************************************
+   SUBROUTINE check_projector_active_rotation_pair_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: curv_max = 0.040_dp, &
+                                                            projector_weight = 0.60_dp
+
+      REAL(KIND=dp)                                      :: active_inert, err, full_active, half_active, &
+                                                            old_active_inert, reversed, zero_weight
+
+      full_active = dense_pair_projector_weight(projector_weight, curv_max, curv_max, curv_max)
+      half_active = dense_pair_projector_weight(projector_weight, 0.25_dp*curv_max, &
+                                                0.25_dp*curv_max, curv_max)
+      active_inert = dense_pair_projector_weight(projector_weight, curv_max, &
+                                                 1.0E-4_dp*curv_max, curv_max)
+      reversed = dense_pair_projector_weight(projector_weight, 1.0E-4_dp*curv_max, &
+                                             curv_max, curv_max)
+      zero_weight = dense_pair_projector_weight(projector_weight, curv_max, 0.0_dp, curv_max)
+      old_active_inert = projector_weight
+
+      err = ABS(full_active - projector_weight)
+      err = MAX(err, ABS(half_active - 0.25_dp*projector_weight))
+      err = MAX(err, ABS(active_inert - reversed), ABS(zero_weight))
+
+      IF (err > tol .OR. active_inert >= 0.05_dp*old_active_inert) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/half/active-inert/zero", err, full_active, half_active, &
+            active_inert, zero_weight
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/half/active-inert/zero", err, full_active, half_active, &
+            active_inert, zero_weight
+      END IF
+
+   END SUBROUTINE check_projector_active_rotation_pair_weight
+
+! **************************************************************************************************
 !> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
 ! **************************************************************************************************
    SUBROUTINE check_projector_density_descent_gap_projection(label, tol, nfail)
@@ -5005,6 +5048,25 @@ CONTAINS
       slope = 2.0_dp*SQRT(MAX(0.0_dp, occ_curv_i)*MAX(0.0_dp, occ_curv_j))
 
    END FUNCTION dense_shared_occ_slope
+
+! **************************************************************************************************
+!> \brief occupation-window projector weight for one dense rotation-pair fixture
+! **************************************************************************************************
+   FUNCTION dense_pair_projector_weight(projector_weight, curv_i, curv_j, curv_max) RESULT(pair_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, curv_i, curv_j, curv_max
+      REAL(KIND=dp)                                      :: pair_weight
+
+      REAL(KIND=dp)                                      :: active_fraction
+
+      pair_weight = 0.0_dp
+      IF (projector_weight <= 0.0_dp) RETURN
+      IF (curv_max <= EPSILON(curv_max)) RETURN
+
+      active_fraction = dense_shared_occ_slope(curv_i, curv_j)/(2.0_dp*curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      pair_weight = projector_weight*active_fraction
+
+   END FUNCTION dense_pair_projector_weight
 
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
