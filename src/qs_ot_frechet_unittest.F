@@ -3911,7 +3911,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: active, applied_weight_diag, applied_weight_ref, &
                                                             applied_weight_rot, base_weight, c, cross_drop_diag, &
                                                             cross_drop_rot, drop_diag, drop_ref, drop_rot, err, &
-                                                            eval_abs_avg, mode_norm, mode_weight, neg_balance, &
+                                                            eval_abs_avg, mode_norm, mode_weight, &
                                                             neg_coeff_diag, neg_coeff_rot, neg_drop_diag, &
                                                             neg_drop_rot, neg_fraction_diag, neg_fraction_ref, &
                                                             neg_fraction_rot, neg_norm_diag, &
@@ -3935,7 +3935,7 @@ CONTAINS
       response_base(:) = [0.08_dp, -0.04_dp, 0.03_dp]
       energy_base(:) = [0.03_dp, -0.02_dp, 0.01_dp]
       eval_diag(:) = [0.20_dp, -0.32_dp, 0.07_dp, -0.18_dp]
-      step_diag(:) = [0.40_dp, -0.25_dp, 0.30_dp, 0.18_dp]
+      step_diag(:) = [0.30_dp, -0.65_dp, 0.20_dp, 0.48_dp]
 
       response_delta_diag(:, 1) = [0.20_dp, -0.10_dp, 0.06_dp]
       response_delta_diag(:, 2) = [-0.12_dp, 0.04_dp, 0.15_dp]
@@ -3956,8 +3956,6 @@ CONTAINS
          IF (eval_diag(imode) < 0.0_dp) raw_neg_sum = raw_neg_sum + mode_norm
       END DO
       raw_neg_fraction_ref = raw_neg_sum/response_total_sum
-      neg_balance = SQRT((response_total_sum - raw_neg_sum)/raw_neg_sum)
-      neg_balance = MIN(1.0_dp, MAX(0.0_dp, neg_balance))
 
       step_weight_sum = DOT_PRODUCT(step_diag(:), step_diag(:))
       pos_weight_sum = 0.0_dp
@@ -3967,7 +3965,6 @@ CONTAINS
          spectral_weight = 1.0_dp
          IF (eval_diag(imode) < 0.0_dp) THEN
             spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(eval_diag(imode))/eval_abs_avg)
-            spectral_weight = spectral_weight*neg_balance
          END IF
          mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
          IF (eval_diag(imode) < 0.0_dp) THEN
@@ -4042,7 +4039,7 @@ CONTAINS
       err = MAX(err, ABS(neg_coeff_diag - target_neg), ABS(neg_coeff_rot - target_neg))
 
       active = MAXVAL(ABS(cand_ref(:) - response_base(:)))
-      IF (err > tol .OR. active < 1.0E-4_dp .OR. raw_neg_fraction_ref < 0.1_dp .OR. &
+      IF (err > tol .OR. active < 1.0E-4_dp .OR. raw_neg_fraction_ref < 0.6_dp .OR. &
           raw_neg_fraction_ref > 0.9_dp .OR. neg_fraction_ref <= 0.0_dp) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
@@ -4076,10 +4073,9 @@ CONTAINS
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp)                                      :: coeff_det, coeff_negative, coeff_positive, eval_abs_avg, &
                                                             g1, g2, h11, h12, h22, mode_norm, mode_sign, mode_weight, &
-                                                            negative_balance, negative_norm, negative_weight_sum, &
-                                                            positive_sum, positive_weight_sum, raw_negative_sum, &
-                                                            response_total_sum, spectral_weight, step_weight, &
-                                                            step_weight_sum
+                                                            negative_norm, negative_weight_sum, positive_weight_sum, &
+                                                            raw_negative_sum, response_total_sum, spectral_weight, &
+                                                            step_weight, step_weight_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_rx, response_corr, &
                                                             response_neg, response_pos
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
@@ -4120,10 +4116,6 @@ CONTAINS
       END DO
       IF (response_total_sum > EPSILON(response_total_sum)) &
          raw_negative_fraction = raw_negative_sum/response_total_sum
-      positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
-      negative_balance = 0.0_dp
-      IF (raw_negative_sum > EPSILON(raw_negative_sum)) negative_balance = SQRT(positive_sum/raw_negative_sum)
-      negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
 
       step_weight_sum = DOT_PRODUCT(mode_coeff(:), mode_coeff(:))
       negative_weight_sum = 0.0_dp
@@ -4136,7 +4128,6 @@ CONTAINS
             mode_sign = -1.0_dp
             spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(mode_eval(imode))/ &
                                          MAX(eval_abs_avg, EPSILON(eval_abs_avg)))
-            spectral_weight = spectral_weight*negative_balance
          END IF
          mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
          IF (mode_weight <= EPSILON(mode_weight)) CYCLE
