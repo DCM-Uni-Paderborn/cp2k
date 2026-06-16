@@ -126,7 +126,9 @@ MODULE qs_scf_loop_utils
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
-   INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_quality_min_samples = 3
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 40, &
+                                  ot_kp_schur_quality_min_samples = 3
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
                                         ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
@@ -810,6 +812,9 @@ CONTAINS
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
                                     added_mos_auto_grow=added_mos_auto_grow)
+      IF (.NOT. added_mos_auto_grow) &
+         added_mos_auto_grow = qs_scf_loop_ot_kp_added_mos_auto_tail_grow(kpoints, scf_env, &
+                                                                          scf_control, nspin_ot)
       IF (.NOT. added_mos_auto_grow) THEN
          CALL qs_scf_loop_guard_ot_kp_fermi_window(kpoints, local_ot_env, first_channel, &
                                                    nspin_ot, kp_range, wkp, para_env_inter_kp, &
@@ -862,6 +867,50 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_loop_do_ot_kp
+
+! **************************************************************************************************
+!> \brief request ADDED_MOS AUTO growth for a stalled metallic k-point OT tail
+!> \param kpoints ...
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param nspin_ot ...
+!> \return true if the existing AUTO grow/rebuild path should be used
+! **************************************************************************************************
+   FUNCTION qs_scf_loop_ot_kp_added_mos_auto_tail_grow(kpoints, scf_env, scf_control, nspin_ot) &
+      RESULT(grow)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      INTEGER, INTENT(IN)                                :: nspin_ot
+      LOGICAL                                            :: grow
+
+      INTEGER                                            :: ispin, local_kpoint, trigger_step
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      grow = .FALSE.
+      IF (.NOT. ANY(scf_control%added_mos_auto)) RETURN
+      IF (.NOT. scf_control%smear%do_smear) RETURN
+      IF (scf_control%eps_scf <= 0.0_dp) RETURN
+      IF (scf_env%iter_delta <= scf_control%eps_scf) RETURN
+      IF (scf_env%iter_delta > ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf) RETURN
+
+      trigger_step = MAX(ot_kp_added_mos_auto_tail_min_steps, &
+                         MIN(200, scf_control%max_scf/4))
+      IF (scf_env%iter_count < trigger_step) RETURN
+
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         DO ispin = 1, MIN(nspin_ot, SIZE(scf_control%added_mos_auto))
+            IF (.NOT. scf_control%added_mos_auto(ispin)) CYCLE
+            IF (kp%mos(1, ispin)%nmo < kp%mos(1, ispin)%nao) THEN
+               grow = .TRUE.
+               RETURN
+            END IF
+         END DO
+      END DO
+
+   END FUNCTION qs_scf_loop_ot_kp_added_mos_auto_tail_grow
 
 ! **************************************************************************************************
 !> \brief collect the fixed-N trial occupations used by k-point OT

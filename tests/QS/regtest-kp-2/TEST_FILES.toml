@@ -14,6 +14,10 @@
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+# Slow/manual ADDED_MOS AUTO tail companion: run
+# Al_kp_ot_added_auto_converge.inp by hand. It is intentionally not listed
+# here, so the default regtest stays cheap while the adaptive AUTO grow path
+# can still be checked against the 1E-6 Mermin path.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.56558234972226},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.56558234972226},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
