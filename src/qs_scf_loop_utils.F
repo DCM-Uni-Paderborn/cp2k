@@ -2527,6 +2527,8 @@ CONTAINS
                                                                projector_physical_trace_raw_free_quality, &
                                                                projector_physical_trace_active_diag_quality, &
                                                                projector_physical_trace_active_free_quality, &
+                                                               projector_spectral_predicted_drop, &
+                                                               projector_spectral_quality_ratio, &
                                                                projector_diagref_predicted_drop, &
                                                                projector_diagref_correction_ratio, &
                                                                projector_diagref_quality_for_selection, &
@@ -2591,6 +2593,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
                local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+               local_ot_env(1)%schur_projector_spectral_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
@@ -3430,6 +3433,52 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_measured_sum = &
                   local_ot_env(1)%schur_projector_physical_measured_sum + measured_drop
             END IF
+            projector_spectral_predicted_drop = local_ot_env(1)%schur_projector_spectral_drop
+            projector_spectral_quality_ratio = 0.0_dp
+            IF (mermin_search .AND. local_ot_env(1)%schur_projector_spectral_pending .AND. &
+                projector_spectral_predicted_drop > EPSILON(projector_spectral_predicted_drop) .AND. &
+                measured_drop > 0.0_dp) THEN
+               projector_spectral_quality_ratio = measured_drop/projector_spectral_predicted_drop
+               local_ot_env(1)%schur_projector_spectral_quality = projector_spectral_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_spectral_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_spectral_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_spectral_quality_ema = projector_spectral_quality_ratio
+                  local_ot_env(1)%schur_projector_spectral_dot_ema = &
+                     local_ot_env(1)%schur_projector_spectral_dot
+                  local_ot_env(1)%schur_projector_spectral_norm_ema = &
+                     local_ot_env(1)%schur_projector_spectral_norm
+                  local_ot_env(1)%schur_projector_spectral_floor_ema = &
+                     local_ot_env(1)%schur_projector_spectral_floor
+                  local_ot_env(1)%schur_projector_spectral_emin_ema = &
+                     local_ot_env(1)%schur_projector_spectral_emin
+               ELSE
+                  local_ot_env(1)%schur_projector_spectral_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_spectral_quality_ratio
+                  local_ot_env(1)%schur_projector_spectral_dot_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_dot_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_spectral_dot
+                  local_ot_env(1)%schur_projector_spectral_norm_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_norm_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_spectral_norm
+                  local_ot_env(1)%schur_projector_spectral_floor_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_floor_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_spectral_floor
+                  local_ot_env(1)%schur_projector_spectral_emin_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_emin_ema + &
+                     ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_projector_spectral_emin
+               END IF
+               local_ot_env(1)%schur_projector_spectral_drop_sum = &
+                  local_ot_env(1)%schur_projector_spectral_drop_sum + projector_spectral_predicted_drop
+               local_ot_env(1)%schur_projector_spectral_measured_sum = &
+                  local_ot_env(1)%schur_projector_spectral_measured_sum + measured_drop
+            END IF
             ! A too-large physical quality ratio means the shadow model is
             ! conservative, not unstable; selection still uses the clamped
             ! expected-drop quality below.
@@ -3473,6 +3522,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
             local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
             local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+            local_ot_env(1)%schur_projector_spectral_pending = .FALSE.
             local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
@@ -3697,6 +3747,22 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_direct_ema, &
                   local_ot_env(1)%schur_projector_physical_selected_ema, &
                   local_ot_env(1)%schur_projector_physical_shift_ema
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,13(1X,ES16.8))') &
+                  " OT Schur LS projector spectral shadow n ratio ema pred meas latest dot dotema "// &
+                  "norm normema floor floorema emin eminema:", &
+                  local_ot_env(1)%schur_projector_spectral_quality_samples, &
+                  local_ot_env(1)%schur_projector_spectral_quality, &
+                  local_ot_env(1)%schur_projector_spectral_quality_ema, &
+                  local_ot_env(1)%schur_projector_spectral_drop_sum, &
+                  local_ot_env(1)%schur_projector_spectral_measured_sum, &
+                  projector_spectral_predicted_drop, local_ot_env(1)%schur_projector_spectral_dot, &
+                  local_ot_env(1)%schur_projector_spectral_dot_ema, &
+                  local_ot_env(1)%schur_projector_spectral_norm, &
+                  local_ot_env(1)%schur_projector_spectral_norm_ema, &
+                  local_ot_env(1)%schur_projector_spectral_floor, &
+                  local_ot_env(1)%schur_projector_spectral_floor_ema, &
+                  local_ot_env(1)%schur_projector_spectral_emin, &
+                  local_ot_env(1)%schur_projector_spectral_emin_ema
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
                   " OT Schur LS projector physical trace quality actual raw active aq rq hq aema rema hema aqema rqema hqema:", &
                   projector_physical_trace_actual_avg, projector_physical_trace_raw_avg, &
@@ -3902,6 +3968,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
             local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+               local_ot_env(1)%schur_projector_spectral_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
@@ -3963,6 +4030,11 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_trace_raw_free = 0.0_dp
                local_ot_env(1)%schur_projector_physical_trace_active_diag = 0.0_dp
                local_ot_env(1)%schur_projector_physical_trace_active_free = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_dot = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_norm = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_floor = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_emin = 0.0_dp
             END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group))
@@ -4282,6 +4354,8 @@ CONTAINS
          projector_physical_density_low_curv_fraction, projector_physical_density_low_curv_sum, &
          projector_physical_density_response_abs_avg, projector_physical_density_response_abs_max, &
          projector_physical_density_rhs_abs_avg, projector_physical_density_rhs_abs_max
+      REAL(KIND=dp) :: projector_physical_direct_spectral_dot, projector_physical_direct_spectral_drop, &
+         projector_physical_direct_spectral_norm
       REAL(KIND=dp) :: plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, plateau_gap_mode_eval_min, &
          plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
          plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
@@ -4793,6 +4867,9 @@ CONTAINS
             projector_physical_direct_spectral_floor = 0.0_dp
             projector_physical_direct_spectral_shift_avg = 0.0_dp
             projector_physical_direct_spectral_shift_max = 0.0_dp
+            projector_physical_direct_spectral_dot = 0.0_dp
+            projector_physical_direct_spectral_drop = 0.0_dp
+            projector_physical_direct_spectral_norm = 0.0_dp
             projector_physical_direct_trust_scale = HUGE(1.0_dp)
             projector_physical_direct_unit_abs_step = 0.0_dp
             projector_physical_direct_unit_model_gap = 0.0_dp
@@ -6694,10 +6771,42 @@ CONTAINS
                                                       (rx_shift/projector_physical_direct_schur_eval(r))* &
                                                       projector_physical_direct_schur_vec(:, r)
                                                 END DO
+                                                projector_physical_direct_spectral_dot = DOT_PRODUCT(rtd, rhs)
+                                                projector_physical_direct_spectral_norm = DOT_PRODUCT(rhs, rhs)
+                                                projector_physical_direct_spectral_drop = &
+                                                   0.5_dp*MAX(0.0_dp, projector_physical_direct_spectral_dot)
+                                                IF (new_search_point .AND. &
+                                                    projector_physical_direct_spectral_drop > &
+                                                    EPSILON(projector_physical_direct_spectral_drop) .AND. &
+                                                    projector_physical_direct_spectral_norm > &
+                                                    EPSILON(projector_physical_direct_spectral_norm)) THEN
+                                                   IF (.NOT. local_ot_env(1)%schur_projector_spectral_pending) THEN
+                                                      local_ot_env(1)%schur_projector_spectral_floor = row_floor
+                                                      local_ot_env(1)%schur_projector_spectral_emin = &
+                                                         projector_physical_direct_schur_eval_min
+                                                   ELSE
+                                                      local_ot_env(1)%schur_projector_spectral_floor = &
+                                                         MAX(local_ot_env(1)%schur_projector_spectral_floor, row_floor)
+                                                      local_ot_env(1)%schur_projector_spectral_emin = &
+                                                         MIN(local_ot_env(1)%schur_projector_spectral_emin, &
+                                                             projector_physical_direct_schur_eval_min)
+                                                   END IF
+                                                   local_ot_env(1)%schur_projector_spectral_pending = .TRUE.
+                                                   local_ot_env(1)%schur_projector_spectral_drop = &
+                                                      local_ot_env(1)%schur_projector_spectral_drop + &
+                                                      projector_physical_direct_spectral_drop
+                                                   local_ot_env(1)%schur_projector_spectral_dot = &
+                                                      local_ot_env(1)%schur_projector_spectral_dot + &
+                                                      projector_physical_direct_spectral_dot
+                                                   local_ot_env(1)%schur_projector_spectral_norm = &
+                                                      local_ot_env(1)%schur_projector_spectral_norm + &
+                                                      projector_physical_direct_spectral_norm
+                                                END IF
                                                 WRITE (cp_logger_get_default_unit_nr(logger), &
                                                        '(A,5(1X,ES16.8))') &
                                                    " OT Schur projector phys direct spectral rescue dot fdot norm floor emin:", &
-                                                   projected_term, DOT_PRODUCT(rtd, rhs), DOT_PRODUCT(rhs, rhs), row_floor, &
+                                                   projected_term, projector_physical_direct_spectral_dot, &
+                                                   projector_physical_direct_spectral_norm, row_floor, &
                                                    projector_physical_direct_schur_eval_min
                                              END IF
                                              projector_physical_direct_trace_active_quad = 0.0_dp
