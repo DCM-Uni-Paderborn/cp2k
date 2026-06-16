@@ -3735,7 +3735,11 @@ CONTAINS
             projector_physical_density_abs_avg, projector_physical_density_delta_max, &
             projector_physical_density_diag_avg, projector_physical_offdiag_abs_avg, &
             projector_physical_offdiag_abs_ratio, projector_physical_offdiag_delta_max, &
-            projector_physical_offdiag_diag_avg, projector_physical_offdiag_mode_abs_quad, &
+            projector_physical_offdiag_diag_avg, projector_physical_offdiag_plateau_abs_avg, &
+            projector_physical_offdiag_plateau_delta_max, projector_physical_offdiag_plateau_diag_avg, &
+            projector_physical_offdiag_plateau_gap_abs_avg, &
+            projector_physical_offdiag_plateau_gap_delta_max, &
+            projector_physical_offdiag_plateau_gap_diag_avg, projector_physical_offdiag_mode_abs_quad, &
             projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
             projector_physical_offdiag_mode_negative_fraction, &
             projector_physical_offdiag_mode_negative_quad, projector_physical_offdiag_mode_positive_quad, &
@@ -3948,7 +3952,8 @@ CONTAINS
                                                             rot_hessian_projector_physical, &
                                                             rot_hessian_projector_physical_active, &
                                                             rot_hessian_projector_physical_diagref, &
-                                                            rot_hessian_projector_physical_offdiag, schur
+                                                            rot_hessian_projector_physical_offdiag, &
+                                                            rot_hessian_projector_physical_offdiag_plateau, schur
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -4031,7 +4036,8 @@ CONTAINS
                    rot_hessian_projector_physical(nrot, nrot), &
                    rot_hessian_projector_physical_active(nrot, nrot), &
                    rot_hessian_projector_physical_diagref(nrot, nrot), &
-                   rot_hessian_projector_physical_offdiag(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
+                   rot_hessian_projector_physical_offdiag(nrot, nrot), &
+                   rot_hessian_projector_physical_offdiag_plateau(nrot, nrot), schur(nrot, nrot), ipiv(nrot))
          ALLOCATE (ipiv_energy(ne))
 
          curv(:) = 0.0_dp
@@ -4098,6 +4104,7 @@ CONTAINS
          rot_hessian_projector_physical_active(:, :) = 0.0_dp
          rot_hessian_projector_physical_diagref(:, :) = 0.0_dp
          rot_hessian_projector_physical_offdiag(:, :) = 0.0_dp
+         rot_hessian_projector_physical_offdiag_plateau(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = curvature_floor
@@ -4131,6 +4138,12 @@ CONTAINS
          projector_physical_offdiag_abs_ratio = 0.0_dp
          projector_physical_offdiag_delta_max = 0.0_dp
          projector_physical_offdiag_diag_avg = 0.0_dp
+         projector_physical_offdiag_plateau_abs_avg = 0.0_dp
+         projector_physical_offdiag_plateau_delta_max = 0.0_dp
+         projector_physical_offdiag_plateau_diag_avg = 0.0_dp
+         projector_physical_offdiag_plateau_gap_abs_avg = 0.0_dp
+         projector_physical_offdiag_plateau_gap_delta_max = 0.0_dp
+         projector_physical_offdiag_plateau_gap_diag_avg = 0.0_dp
          projector_physical_offdiag_mode_abs_quad = 0.0_dp
          projector_physical_offdiag_mode_eval_max = 0.0_dp
          projector_physical_offdiag_mode_eval_min = 0.0_dp
@@ -4598,9 +4611,11 @@ CONTAINS
                                                        occ_curv(e_offset(local_channel):e_offset(local_channel) + nmo - 1), &
                                                        var_i, var_j, var_kind, &
                                                        projector_physical_shadow_enabled, &
+                                                       logger%iter_info%print_level >= high_print_level, &
                                                        rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                        rot_hessian_projector_physical, &
-                                                       rot_hessian_projector_physical_offdiag, response, &
+                                                       rot_hessian_projector_physical_offdiag, &
+                                                       rot_hessian_projector_physical_offdiag_plateau, response, &
                                                        response_occ, response_occ_physical, response_density_physical, &
                                                        response_density_plateau, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
@@ -4639,6 +4654,7 @@ CONTAINS
                         rot_hessian_projector_physical, &
                         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
                         rot_hessian_projector_physical_offdiag, &
+                        rot_hessian_projector_physical_offdiag_plateau, &
                         schur, ipiv, ipiv_energy, channel_nmo, e_offset)
             RETURN
          END IF
@@ -4686,6 +4702,9 @@ CONTAINS
          rot_hessian_projector_physical_offdiag(:, :) = 0.5_dp* &
             (rot_hessian_projector_physical_offdiag(:, :) + &
              TRANSPOSE(rot_hessian_projector_physical_offdiag(:, :)))
+         rot_hessian_projector_physical_offdiag_plateau(:, :) = 0.5_dp* &
+            (rot_hessian_projector_physical_offdiag_plateau(:, :) + &
+             TRANSPOSE(rot_hessian_projector_physical_offdiag_plateau(:, :)))
          rot_hessian_projector_physical_diagref(:, :) = 0.0_dp
          DO s = 1, nrot
             DO r = 1, nrot
@@ -4761,6 +4780,12 @@ CONTAINS
                                                 rot_hessian_projector_physical(r, r) - rot_hessian(r, r)
             projector_physical_offdiag_diag_avg = projector_physical_offdiag_diag_avg + &
                                                   rot_hessian_projector_physical_offdiag(r, r)
+            projector_physical_offdiag_plateau_diag_avg = projector_physical_offdiag_plateau_diag_avg + &
+                                                          rot_hessian_projector_physical_offdiag_plateau(r, r)
+            projector_physical_offdiag_plateau_gap_diag_avg = &
+               projector_physical_offdiag_plateau_gap_diag_avg + &
+               rot_hessian_projector_physical_offdiag_plateau(r, r) - &
+               rot_hessian_projector_physical_offdiag(r, r)
             projector_physical_diagref_diag_avg = projector_physical_diagref_diag_avg + &
                                                   rot_hessian_projector_physical_diagref(r, r)
             projector_physical_diagref_delta_diag_avg = projector_physical_diagref_delta_diag_avg + &
@@ -4805,6 +4830,20 @@ CONTAINS
                                                     ABS(rot_hessian_projector_physical_offdiag(r, s))
                projector_physical_offdiag_delta_max = MAX(projector_physical_offdiag_delta_max, &
                                                           ABS(rot_hessian_projector_physical_offdiag(r, s)))
+               projector_physical_offdiag_plateau_abs_avg = &
+                  projector_physical_offdiag_plateau_abs_avg + &
+                  ABS(rot_hessian_projector_physical_offdiag_plateau(r, s))
+               projector_physical_offdiag_plateau_delta_max = &
+                  MAX(projector_physical_offdiag_plateau_delta_max, &
+                      ABS(rot_hessian_projector_physical_offdiag_plateau(r, s)))
+               projector_physical_offdiag_plateau_gap_abs_avg = &
+                  projector_physical_offdiag_plateau_gap_abs_avg + &
+                  ABS(rot_hessian_projector_physical_offdiag_plateau(r, s) - &
+                      rot_hessian_projector_physical_offdiag(r, s))
+               projector_physical_offdiag_plateau_gap_delta_max = &
+                  MAX(projector_physical_offdiag_plateau_gap_delta_max, &
+                      ABS(rot_hessian_projector_physical_offdiag_plateau(r, s) - &
+                          rot_hessian_projector_physical_offdiag(r, s)))
                projector_physical_diagref_abs_avg = projector_physical_diagref_abs_avg + &
                   ABS(rot_hessian_projector_physical_diagref(r, s) - rot_hessian(r, s))
                projector_physical_diagref_delta_max = MAX(projector_physical_diagref_delta_max, &
@@ -4842,6 +4881,14 @@ CONTAINS
             projector_physical_offdiag_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_offdiag_abs_avg = &
             projector_physical_offdiag_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_offdiag_plateau_diag_avg = &
+            projector_physical_offdiag_plateau_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_offdiag_plateau_abs_avg = &
+            projector_physical_offdiag_plateau_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_offdiag_plateau_gap_diag_avg = &
+            projector_physical_offdiag_plateau_gap_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+         projector_physical_offdiag_plateau_gap_abs_avg = &
+            projector_physical_offdiag_plateau_gap_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          IF (projector_physical_abs_avg > EPSILON(projector_physical_abs_avg)) &
             projector_physical_offdiag_abs_ratio = &
                projector_physical_offdiag_abs_avg/projector_physical_abs_avg
@@ -7563,6 +7610,13 @@ CONTAINS
                      " OT Schur projector physical offdiag-dP shadow diag abs max ratio:", &
                      projector_physical_offdiag_diag_avg, projector_physical_offdiag_abs_avg, &
                      projector_physical_offdiag_delta_max, projector_physical_offdiag_abs_ratio
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                     " OT Schur projector physical offdiag-dP plateau audit diag abs max gap_diag gap_avg gap_max:", &
+                     projector_physical_offdiag_plateau_diag_avg, projector_physical_offdiag_plateau_abs_avg, &
+                     projector_physical_offdiag_plateau_delta_max, &
+                     projector_physical_offdiag_plateau_gap_diag_avg, &
+                     projector_physical_offdiag_plateau_gap_abs_avg, &
+                     projector_physical_offdiag_plateau_gap_delta_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
                      " OT Schur projector physical offdiag-dP modes neg stepneg emin emax quad absq "// &
                      "qratio aratio pquad nquad:", &
@@ -7927,6 +7981,7 @@ CONTAINS
                      rot_hessian_projector_physical, &
                      rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
                      rot_hessian_projector_physical_offdiag, &
+                     rot_hessian_projector_physical_offdiag_plateau, &
                      schur, ipiv, ipiv_energy, channel_nmo, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
@@ -8677,10 +8732,12 @@ CONTAINS
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
                                                  occ_curv_channel, var_i, var_j, var_kind, compute_projector_shadow, &
+                                                 compute_projector_plateau_audit, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, &
-                                                 rot_hessian_projector_physical_offdiag, response, response_occ, &
-                                                 response_occ_physical, response_density_physical, &
+                                                 rot_hessian_projector_physical_offdiag, &
+                                                 rot_hessian_projector_physical_offdiag_plateau, response, &
+                                                 response_occ, response_occ_physical, response_density_physical, &
                                                  response_density_plateau, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
@@ -8688,10 +8745,12 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers, occ_curv_channel
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
-      LOGICAL, INTENT(IN)                                :: compute_projector_shadow
+      LOGICAL, INTENT(IN)                                :: compute_projector_plateau_audit, &
+                                                            compute_projector_shadow
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: rot_hessian, rot_hessian_coupled, &
                                                             rot_hessian_projector, rot_hessian_projector_physical, &
                                                             rot_hessian_projector_physical_offdiag, &
+                                                            rot_hessian_projector_physical_offdiag_plateau, &
                                                             response, response_occ, response_density_physical, &
                                                             response_density_plateau, response_occ_physical
       LOGICAL, INTENT(INOUT)                             :: failed
@@ -8874,6 +8933,24 @@ CONTAINS
                      rot_hessian_projector_physical_offdiag(r, s) = 2.0_dp*grad_p_im(imo, jmo)
                   END SELECT
                END DO
+               IF (compute_projector_plateau_audit) THEN
+                  DO ie = 1, nmo
+                     IF (ABS(occ_curv_channel(ie)) > curvature_floor) &
+                        docc_plateau(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+                  END DO
+                  CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_plateau, &
+                                                   grad_p_re, grad_p_im, eps_p)
+                  DO r = first_var, last_var
+                     imo = var_i(r)
+                     jmo = var_j(r)
+                     SELECT CASE (var_kind(r))
+                     CASE (1)
+                        rot_hessian_projector_physical_offdiag_plateau(r, s) = 2.0_dp*grad_p_re(imo, jmo)
+                     CASE (2)
+                        rot_hessian_projector_physical_offdiag_plateau(r, s) = 2.0_dp*grad_p_im(imo, jmo)
+                     END SELECT
+                  END DO
+               END IF
                DO r = first_var, last_var
                   rot_hessian_projector_physical(r, s) = (1.0_dp - projector_weight)*rot_hessian(r, s)
                END DO
