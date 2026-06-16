@@ -10212,33 +10212,129 @@ CONTAINS
 
       INTEGER                                           :: first_energy, ie, local_channel, nmo, pass
       REAL(KIND=dp)                                     :: response_shift, weight_sum
+      LOGICAL                                           :: projected
 
          ! The fixed-N Mermin projector is global over the spin/k group, while
          ! the canonical tether gauge is local to each OT channel.
-         DO pass = 1, 2
-            IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
-               response_shift = DOT_PRODUCT(occ_curv, response_vec)
-               CALL para_env_inter_kp%sum(response_shift)
-               response_vec(:) = response_vec(:) - response_shift/occ_curv_sum
-            END IF
-            DO local_channel = 1, SIZE(channel_nmo)
-               nmo = channel_nmo(local_channel)
-               IF (nmo <= 0) CYCLE
-               first_energy = e_offset(local_channel)
-               weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
-               IF (weight_sum <= EPSILON(weight_sum)) CYCLE
-               response_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
-                                            response_vec(first_energy:first_energy + nmo - 1))
-               response_vec(first_energy:first_energy + nmo - 1) = &
-                  response_vec(first_energy:first_energy + nmo - 1) - response_shift/weight_sum
+         projected = .FALSE.
+         ! For one inter-k-point rank, remove the coupled gauges with the same
+         ! dense curvature metric used by the energy subproblem.  Distributed
+         ! k-point groups keep the robust legacy projection until their local
+         ! tether constraints are gathered into a common Gram solve.
+         IF (para_env_inter_kp%num_pe == 1) &
+            CALL project_kpoint_ot_schur_response_metric(response_vec, occ_curv, tether_curv, &
+                                                         occ_curv_sum, channel_nmo, e_offset, projected)
+         IF (.NOT. projected) THEN
+            DO pass = 1, 2
+               IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+                  response_shift = DOT_PRODUCT(occ_curv, response_vec)
+                  CALL para_env_inter_kp%sum(response_shift)
+                  response_vec(:) = response_vec(:) - response_shift/occ_curv_sum
+               END IF
+               DO local_channel = 1, SIZE(channel_nmo)
+                  nmo = channel_nmo(local_channel)
+                  IF (nmo <= 0) CYCLE
+                  first_energy = e_offset(local_channel)
+                  weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+                  IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+                  response_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                               response_vec(first_energy:first_energy + nmo - 1))
+                  response_vec(first_energy:first_energy + nmo - 1) = &
+                     response_vec(first_energy:first_energy + nmo - 1) - response_shift/weight_sum
+               END DO
             END DO
-         END DO
+         END IF
 
          DO ie = 1, SIZE(response_vec)
             IF (occ_curv(ie) + tether_curv(ie) <= EPSILON(occ_curv(ie) + tether_curv(ie))) &
                response_vec(ie) = 0.0_dp
          END DO
       END SUBROUTINE project_kpoint_ot_schur_response
+
+      SUBROUTINE project_kpoint_ot_schur_response_metric(response_vec, occ_curv, tether_curv, &
+                                                         occ_curv_sum, channel_nmo, e_offset, projected)
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)        :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                         :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                 :: channel_nmo, e_offset
+      LOGICAL, INTENT(OUT)                              :: projected
+
+      INTEGER                                           :: first_energy, ie, info, local_channel, nconstraints, &
+                                                           nmo, row
+      INTEGER, ALLOCATABLE, DIMENSION(:)                :: ipiv
+      REAL(KIND=dp)                                     :: curv_max, total_curv, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)          :: inv_curv, lambda, rhs
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)       :: constraint, gram
+
+         projected = .FALSE.
+         nconstraints = 0
+         IF (occ_curv_sum > EPSILON(occ_curv_sum)) nconstraints = nconstraints + 1
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+            IF (weight_sum > EPSILON(weight_sum)) nconstraints = nconstraints + 1
+         END DO
+         IF (nconstraints <= 0) RETURN
+
+         ALLOCATE (constraint(nconstraints, SIZE(response_vec)), gram(nconstraints, nconstraints), &
+                   inv_curv(SIZE(response_vec)), ipiv(nconstraints), lambda(nconstraints), rhs(nconstraints))
+         constraint(:, :) = 0.0_dp
+         row = 0
+         IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+            row = row + 1
+            constraint(row, :) = occ_curv(:)
+         END IF
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+            IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+            row = row + 1
+            constraint(row, first_energy:first_energy + nmo - 1) = &
+               tether_curv(first_energy:first_energy + nmo - 1)
+         END DO
+
+         curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
+         IF (curv_max <= EPSILON(curv_max)) THEN
+            DEALLOCATE (constraint, gram, inv_curv, ipiv, lambda, rhs)
+            RETURN
+         END IF
+         DO ie = 1, SIZE(response_vec)
+            total_curv = occ_curv(ie) + tether_curv(ie)
+            IF (total_curv > EPSILON(curv_max)) THEN
+               inv_curv(ie) = 1.0_dp/total_curv
+            ELSE
+               inv_curv(ie) = 0.0_dp
+            END IF
+         END DO
+
+         DO row = 1, nconstraints
+            rhs(row) = DOT_PRODUCT(constraint(row, :), response_vec(:))
+         END DO
+         IF (MAXVAL(ABS(rhs(:))) <= SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(response_vec(:))))) THEN
+            projected = .TRUE.
+            DEALLOCATE (constraint, gram, inv_curv, ipiv, lambda, rhs)
+            RETURN
+         END IF
+         DO row = 1, nconstraints
+            DO ie = 1, nconstraints
+               gram(row, ie) = DOT_PRODUCT(constraint(row, :)*inv_curv(:), constraint(ie, :))
+            END DO
+         END DO
+         lambda(:) = rhs(:)
+         CALL dgesv(nconstraints, 1, gram, nconstraints, ipiv, lambda, nconstraints, info)
+         IF (info == 0) THEN
+            DO row = 1, nconstraints
+               response_vec(:) = response_vec(:) - lambda(row)*inv_curv(:)*constraint(row, :)
+            END DO
+            projected = .TRUE.
+         END IF
+         DEALLOCATE (constraint, gram, inv_curv, ipiv, lambda, rhs)
+
+      END SUBROUTINE project_kpoint_ot_schur_response_metric
 
       SUBROUTINE project_kpoint_ot_descent_response(response_vec, descent_vec, grad_e, projected_vec, &
                                                     coeff, gdot, denom)

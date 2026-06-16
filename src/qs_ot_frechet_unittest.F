@@ -116,6 +116,8 @@ PROGRAM qs_ot_frechet_unittest
                                                           5.0E-12_dp, nfail)
    CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
                                                        5.0E-12_dp, nfail)
+   CALL check_projector_metric_response_projection("complex projector metric response projection", &
+                                                   5.0E-13_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
@@ -4324,6 +4326,57 @@ CONTAINS
    END SUBROUTINE check_complex_projector_density_coupled_schur
 
 ! **************************************************************************************************
+!> \brief Check exact metric projection of coupled fixed-N and local tether response gauges.
+! **************************************************************************************************
+   SUBROUTINE check_projector_metric_response_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nchannels = 2
+
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: metric_projected, single_projected
+      REAL(KIND=dp)                                      :: err, legacy_residual, single_err, tether_residual
+      REAL(KIND=dp), DIMENSION(ne)                       :: legacy, legacy_occ_only, metric, metric_occ_only, &
+                                                            occ_curv, response, tether_curv, tether_zero
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.90_dp, 0.20_dp, 0.05_dp, 0.70_dp, 0.12_dp, 0.03_dp]
+      tether_curv(:) = [0.40_dp, 0.05_dp, 0.02_dp, 0.25_dp, 0.14_dp, 0.03_dp]
+      tether_zero(:) = 0.0_dp
+      response(:) = [0.40_dp, -0.20_dp, 0.70_dp, -0.35_dp, 0.18_dp, 0.60_dp]
+
+      legacy(:) = response(:)
+      metric(:) = response(:)
+      CALL dense_project_response_two_pass(legacy, occ_curv, tether_curv, channel_nmo, e_offset)
+      CALL dense_project_response_metric(metric, occ_curv, tether_curv, channel_nmo, e_offset, metric_projected)
+      err = ABS(DOT_PRODUCT(occ_curv(:), metric(:)))
+      tether_residual = dense_response_tether_residual(metric, tether_curv, channel_nmo, e_offset)
+      err = MAX(err, tether_residual)
+      legacy_residual = ABS(DOT_PRODUCT(occ_curv(:), legacy(:)))
+
+      legacy_occ_only(:) = response(:)
+      metric_occ_only(:) = response(:)
+      CALL dense_project_response_two_pass(legacy_occ_only, occ_curv, tether_zero, channel_nmo, e_offset)
+      CALL dense_project_response_metric(metric_occ_only, occ_curv, tether_zero, channel_nmo, e_offset, single_projected)
+      single_err = MAXVAL(ABS(metric_occ_only(:) - legacy_occ_only(:)))
+      single_err = MAX(single_err, ABS(DOT_PRODUCT(occ_curv(:), metric_occ_only(:))))
+
+      IF (.NOT. metric_projected .OR. .NOT. single_projected .OR. err > tol .OR. single_err > tol .OR. &
+          legacy_residual < 1.0E-2_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/tether/legacy/single", err, tether_residual, legacy_residual, single_err
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/tether/legacy/single", err, tether_residual, legacy_residual, single_err
+      END IF
+
+   END SUBROUTINE check_projector_metric_response_projection
+
+! **************************************************************************************************
 !> \brief Check that Direct trace compensation follows the selected delta model.
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_trace_compensation(label, tol, nfail)
@@ -4683,6 +4736,139 @@ CONTAINS
       projected_vec(:) = coeff*descent_vec(:)
 
    END SUBROUTINE dense_project_descent_response
+
+! **************************************************************************************************
+!> \brief Legacy two-pass dense response-gauge projection.
+! **************************************************************************************************
+   SUBROUTINE dense_project_response_two_pass(response_vec, occ_curv, tether_curv, channel_nmo, e_offset)
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+
+      INTEGER                                             :: first_energy, local_channel, nmo, pass
+      REAL(KIND=dp)                                       :: occ_sum, response_shift, weight_sum
+
+      occ_sum = SUM(occ_curv(:))
+      DO pass = 1, 2
+         IF (occ_sum > EPSILON(occ_sum)) THEN
+            response_shift = DOT_PRODUCT(occ_curv(:), response_vec(:))
+            response_vec(:) = response_vec(:) - response_shift/occ_sum
+         END IF
+         DO local_channel = 1, SIZE(channel_nmo)
+            nmo = channel_nmo(local_channel)
+            IF (nmo <= 0) CYCLE
+            first_energy = e_offset(local_channel)
+            weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+            IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+            response_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                         response_vec(first_energy:first_energy + nmo - 1))
+            response_vec(first_energy:first_energy + nmo - 1) = &
+               response_vec(first_energy:first_energy + nmo - 1) - response_shift/weight_sum
+         END DO
+      END DO
+
+   END SUBROUTINE dense_project_response_two_pass
+
+! **************************************************************************************************
+!> \brief Dense curvature-metric response-gauge projection.
+! **************************************************************************************************
+   SUBROUTINE dense_project_response_metric(response_vec, occ_curv, tether_curv, channel_nmo, e_offset, projected)
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+      LOGICAL, INTENT(OUT)                                :: projected
+
+      INTEGER                                             :: first_energy, ie, info, local_channel, nconstraints, &
+                                                             nmo, row
+      INTEGER, ALLOCATABLE, DIMENSION(:)                  :: ipiv
+      REAL(KIND=dp)                                       :: curv_max, occ_sum, total_curv, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: inv_curv, lambda, rhs
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)         :: constraint, gram
+
+      projected = .FALSE.
+      occ_sum = SUM(occ_curv(:))
+      nconstraints = 0
+      IF (occ_sum > EPSILON(occ_sum)) nconstraints = nconstraints + 1
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum > EPSILON(weight_sum)) nconstraints = nconstraints + 1
+      END DO
+      IF (nconstraints <= 0) RETURN
+
+      ALLOCATE (constraint(nconstraints, SIZE(response_vec)), gram(nconstraints, nconstraints), &
+                inv_curv(SIZE(response_vec)), ipiv(nconstraints), lambda(nconstraints), rhs(nconstraints))
+      constraint(:, :) = 0.0_dp
+      row = 0
+      IF (occ_sum > EPSILON(occ_sum)) THEN
+         row = row + 1
+         constraint(row, :) = occ_curv(:)
+      END IF
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+         row = row + 1
+         constraint(row, first_energy:first_energy + nmo - 1) = &
+            tether_curv(first_energy:first_energy + nmo - 1)
+      END DO
+
+      curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
+      IF (curv_max <= EPSILON(curv_max)) THEN
+         DEALLOCATE (constraint, gram, inv_curv, ipiv, lambda, rhs)
+         RETURN
+      END IF
+      DO ie = 1, SIZE(response_vec)
+         total_curv = occ_curv(ie) + tether_curv(ie)
+         IF (total_curv > EPSILON(curv_max)) THEN
+            inv_curv(ie) = 1.0_dp/total_curv
+         ELSE
+            inv_curv(ie) = 0.0_dp
+         END IF
+      END DO
+
+      DO row = 1, nconstraints
+         rhs(row) = DOT_PRODUCT(constraint(row, :), response_vec(:))
+         DO ie = 1, nconstraints
+            gram(row, ie) = DOT_PRODUCT(constraint(row, :)*inv_curv(:), constraint(ie, :))
+         END DO
+      END DO
+      lambda(:) = rhs(:)
+      CALL dgesv(nconstraints, 1, gram, nconstraints, ipiv, lambda, nconstraints, info)
+      IF (info == 0) THEN
+         DO row = 1, nconstraints
+            response_vec(:) = response_vec(:) - lambda(row)*inv_curv(:)*constraint(row, :)
+         END DO
+         projected = .TRUE.
+      END IF
+      DEALLOCATE (constraint, gram, inv_curv, ipiv, lambda, rhs)
+
+   END SUBROUTINE dense_project_response_metric
+
+! **************************************************************************************************
+!> \brief Maximum channel-local tether residual for a dense response vector.
+! **************************************************************************************************
+   FUNCTION dense_response_tether_residual(response_vec, tether_curv, channel_nmo, e_offset) RESULT(residual)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+      REAL(KIND=dp)                                       :: residual
+
+      INTEGER                                             :: first_energy, local_channel, nmo
+
+      residual = 0.0_dp
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         residual = MAX(residual, ABS(DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                                  response_vec(first_energy:first_energy + nmo - 1))))
+      END DO
+
+   END FUNCTION dense_response_tether_residual
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
