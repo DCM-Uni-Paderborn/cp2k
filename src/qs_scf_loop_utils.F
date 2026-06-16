@@ -4097,6 +4097,7 @@ CONTAINS
                                                                        projector_physical_direct_spectral_ready, &
                                                                        projector_physical_direct_spectral_candidate_ready, &
                                                                        projector_physical_direct_spectral_candidate_selected, &
+                                                                       projector_physical_direct_spectral_enabled, &
                                                                        projector_plateau_gap_model_enabled, &
                                                                        projector_offdiag_candidate_ready, &
                                                                        projector_offdiag_candidate_selected, &
@@ -4623,6 +4624,15 @@ CONTAINS
          projector_plateau_gap_model_enabled = logger%iter_info%print_level >= high_print_level .OR. &
                                                (projector_physical_shadow_enabled .AND. &
                                                 residual_delta <= ot_kp_schur_projector_response_full_delta)
+         projector_physical_direct_spectral_enabled = logger%iter_info%print_level >= high_print_level
+         IF (local_ot_env(1)%schur_projector_spectral_candidate_enabled) &
+            projector_physical_direct_spectral_enabled = .TRUE.
+         IF (new_search_point) &
+            projector_physical_direct_spectral_enabled = &
+               projector_physical_direct_spectral_enabled .OR. &
+               (projector_physical_shadow_enabled .AND. &
+                local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
+                residual_delta <= ot_kp_schur_projector_response_full_delta)
          residual_reference_quality = 0.0_dp
          density_projector_fraction = 0.0_dp
          physical_response_gap_avg = 0.0_dp
@@ -6721,7 +6731,7 @@ CONTAINS
                                        projector_physical_direct_curv_diag_max = 0.0_dp
                                        projector_physical_direct_curv_eval_min = 0.0_dp
                                        projector_physical_direct_curv_eval_max = 0.0_dp
-                                       IF (logger%iter_info%print_level >= high_print_level) THEN
+                                       IF (projector_physical_direct_spectral_enabled) THEN
                                           IF (sigma > EPSILON(sigma)) &
                                              projector_physical_direct_curv_cap = kpoint_ot_fermi_window_anchor(sigma)
                                           DO r = 1, nrot
@@ -6826,10 +6836,10 @@ CONTAINS
                                           projector_physical_direct_spectral_shift_avg = 0.0_dp
                                           projector_physical_direct_spectral_shift_max = 0.0_dp
                                           projector_physical_direct_schur_negative_fraction = 0.0_dp
-                                          ! HIGH-only spectral audit.  These shifts
-                                          ! are not added to the direct Schur solve;
-                                          ! the applied row shifts are reported as
-                                          ! applied_shift in the ready line.
+                                          ! Spectral positive-subspace model.  These
+                                          ! shifts are not added to the direct Schur
+                                          ! solve; the applied row shifts are reported
+                                          ! as applied_shift in the ready line.
                                           DO r = 1, nrot
                                              IF (projector_physical_direct_schur_eval(r) < 0.0_dp) &
                                                 projector_physical_direct_schur_negative_fraction = &
@@ -6853,7 +6863,7 @@ CONTAINS
                                        projector_physical_direct_spectral_sol(:) = 0.0_dp
                                        CALL dgesv(nrot, 1, schur, nrot, ipiv, projector_physical_direct_sol, nrot, info)
                                        IF (info == 0) THEN
-                                          IF (logger%iter_info%print_level >= high_print_level) THEN
+                                          IF (projector_physical_direct_spectral_enabled) THEN
                                              projected_term = DOT_PRODUCT(rtd, projector_physical_direct_sol)
                                              IF (projected_term <= 0.0_dp .OR. projected_term /= projected_term) THEN
                                                 row_floor = MAX(0.0_dp, projector_physical_direct_rot_floor_min)
@@ -6877,13 +6887,16 @@ CONTAINS
                                                    EPSILON(projector_physical_direct_spectral_norm)
                                                 IF (projector_physical_direct_spectral_ready) &
                                                    projector_physical_direct_spectral_sol(:) = rhs(:)
-                                                WRITE (cp_logger_get_default_unit_nr(logger), &
-                                                       '(A,5(1X,ES16.8))') &
-                                                   " OT Schur projector phys direct spectral rescue dot fdot norm floor emin:", &
-                                                   projected_term, projector_physical_direct_spectral_dot, &
-                                                   projector_physical_direct_spectral_norm, row_floor, &
-                                                   projector_physical_direct_schur_eval_min
+                                                IF (logger%iter_info%print_level >= high_print_level) &
+                                                   WRITE (cp_logger_get_default_unit_nr(logger), &
+                                                          '(A,5(1X,ES16.8))') &
+                                                      " OT Schur projector phys direct spectral rescue dot fdot norm floor emin:", &
+                                                      projected_term, projector_physical_direct_spectral_dot, &
+                                                      projector_physical_direct_spectral_norm, row_floor, &
+                                                      projector_physical_direct_schur_eval_min
                                              END IF
+                                          END IF
+                                          IF (logger%iter_info%print_level >= high_print_level) THEN
                                              projector_physical_direct_trace_active_quad = 0.0_dp
                                              projector_physical_direct_trace_actual_quad = 0.0_dp
                                              projector_physical_direct_trace_full_quad = 0.0_dp
