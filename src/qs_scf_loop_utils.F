@@ -9618,7 +9618,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, scale
+      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, scale, &
+                                                            slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -9652,6 +9653,14 @@ CONTAINS
                   coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
                END IF
                coeff = MIN(0.0_dp, coeff)
+               IF (PRESENT(occ_curv_channel)) THEN
+                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(i), occ_curv_channel(j)))
+                  IF (slope_cap > EPSILON(slope_cap)) THEN
+                     coeff = MAX(coeff, -slope_cap)
+                  ELSE
+                     coeff = 0.0_dp
+                  END IF
+               END IF
                kernel(i, j) = coeff*work(i, j)
             END DO
          END DO

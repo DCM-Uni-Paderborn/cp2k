@@ -90,8 +90,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-10_dp, nfail)
    CALL check_complex_occ_projector_gauge_plateau("complex occupation-projector gauge plateau", &
                                                   5.0E-10_dp, nfail)
-   CALL check_occ_projector_plateau_keeps_far_slope( &
-      "complex occupation-projector plateau preserves nondegenerate slope", 5.0E-10_dp, nfail)
+   CALL check_occ_projector_plateau_caps_far_slope( &
+      "complex occupation-projector plateau caps non-Fermi slope", 5.0E-10_dp, nfail)
    CALL check_complex_occ_projector_gauge_covariance("complex occupation-projector gauge covariance", &
                                                      5.0E-10_dp, nfail)
    CALL check_complex_projector_density_response_projection("complex projector density-response projection", &
@@ -3252,9 +3252,9 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_gauge_plateau
 
 ! **************************************************************************************************
-!> \brief Keep the gauge plateau local; non-degenerate slopes are handled by the coupled model.
+!> \brief Keep the gauge plateau local, but cap non-Fermi divided-difference slopes.
 ! **************************************************************************************************
-   SUBROUTINE check_occ_projector_plateau_keeps_far_slope(label, tol, nfail)
+   SUBROUTINE check_occ_projector_plateau_caps_far_slope(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
@@ -3284,18 +3284,18 @@ CONTAINS
                                                        occ_curv, gauge_gap)
       raw_coeff = REAL(docc_raw(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
       plateau_coeff = REAL(docc_plateau(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
-      err = ABS(raw_coeff - plateau_coeff)
+      err = ABS(plateau_coeff + cap)
 
       IF (err > tol .OR. gap <= gauge_gap .OR. ABS(raw_coeff) < 10.0_dp*cap) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "failed with error/raw/plateau/cap/gap", &
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "failed with error/raw/cap/capped/gap", &
             err, raw_coeff, plateau_coeff, cap, gap
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "OK with error/raw/plateau/cap/gap", &
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "OK with error/raw/cap/capped/gap", &
             err, raw_coeff, plateau_coeff, cap, gap
       END IF
 
-   END SUBROUTINE check_occ_projector_plateau_keeps_far_slope
+   END SUBROUTINE check_occ_projector_plateau_caps_far_slope
 
 ! **************************************************************************************************
 !> \brief Keep the physical dP response covariant while removing near-degenerate gauge noise.
@@ -3498,8 +3498,9 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_plateau, &
                                                             docc_raw, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, occ_sum, physical_active, physical_err, &
-                                                            plateau_norm, raw_norm, shift
+      REAL(KIND=dp)                                      :: err, occ_sum, physical_active, physical_capped_norm, &
+                                                            physical_err, physical_raw_norm, plateau_norm, raw_norm, &
+                                                            shift
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale, projected_response
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
@@ -3561,7 +3562,9 @@ CONTAINS
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_plateau, &
                                                        occ_curv, gauge_gap)
-      physical_err = MAXVAL(ABS(docc_raw(:, :) - docc_plateau(:, :)))
+      physical_raw_norm = MAXVAL(ABS(docc_raw(:, :)))
+      physical_capped_norm = MAXVAL(ABS(docc_plateau(:, :)))
+      physical_err = MAX(0.0_dp, physical_capped_norm - physical_raw_norm)
       physical_active = 0.0_dp
       DO i = 1, n
          projected_response(i) = 0.5_dp*REAL(docc_plateau(i, i), KIND=dp)/occ_curv(i)
@@ -3570,7 +3573,8 @@ CONTAINS
       physical_active = MAXVAL(ABS(occ_curv(:)*(projected_response(:) - shift)))
 
       err = MAX(plateau_norm, physical_err)
-      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol) THEN
+      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol .OR. &
+          physical_capped_norm >= 0.5_dp*physical_raw_norm) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
             "failed with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
@@ -3597,8 +3601,8 @@ CONTAINS
                                                             docc_raw, q
       INTEGER                                            :: i, ivar, j
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: err, physical_active, physical_err, plateau_norm, &
-                                                            raw_norm
+      REAL(KIND=dp)                                      :: err, physical_active, physical_capped_norm, &
+                                                            physical_err, physical_raw_norm, plateau_norm, raw_norm
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_curv, occ_scale
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_physical_vec, grad_plateau_vec, grad_raw_vec
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_re
@@ -3683,11 +3687,14 @@ CONTAINS
       CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_physical_vec)
       CALL dense_projector_rotation_gradient(x_re, x_im, chc, docc_plateau, grad_re, grad_im, eps_diag)
       CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_plateau_vec)
-      physical_err = MAXVAL(ABS(grad_physical_vec(:) - grad_plateau_vec(:)))
+      physical_raw_norm = MAXVAL(ABS(grad_physical_vec(:)))
+      physical_capped_norm = MAXVAL(ABS(grad_plateau_vec(:)))
+      physical_err = MAX(0.0_dp, physical_capped_norm - physical_raw_norm)
       physical_active = MAXVAL(ABS(grad_plateau_vec(:)))
 
       err = MAX(plateau_norm, physical_err)
-      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol) THEN
+      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol .OR. &
+          physical_capped_norm >= 0.5_dp*physical_raw_norm) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
             "failed with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
@@ -4436,7 +4443,7 @@ CONTAINS
                coeff = (occ_work(i) - occ_work(j))/SIGN(gap_tol, denom)
             END IF
             coeff = MIN(0.0_dp, coeff)
-            IF (PRESENT(occ_curv) .AND. .NOT. PRESENT(gauge_gap)) THEN
+            IF (PRESENT(occ_curv)) THEN
                slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
                IF (slope_cap > EPSILON(slope_cap)) THEN
                   coeff = MAX(coeff, -slope_cap)
