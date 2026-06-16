@@ -4127,7 +4127,10 @@ CONTAINS
          projector_physical_direct_metric_norm_energy, projector_physical_direct_metric_normp, &
          projector_physical_direct_trust_scale, projector_physical_direct_unit_abs_step, &
          projector_physical_direct_unit_model_gap, projector_physical_direct_unit_model_gap_drop, &
-         projector_physical_direct_unit_weighted_step
+         projector_physical_direct_unit_weighted_step, projector_physical_density_diag_abs_sum, &
+         projector_physical_density_low_curv_fraction, projector_physical_density_low_curv_sum, &
+         projector_physical_density_response_abs_avg, projector_physical_density_response_abs_max, &
+         projector_physical_density_rhs_abs_avg, projector_physical_density_rhs_abs_max
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4345,8 +4348,15 @@ CONTAINS
          projector_physical_covariant_delta_max = 0.0_dp
          projector_physical_covariant_diag_avg = 0.0_dp
          projector_physical_density_abs_avg = 0.0_dp
+         projector_physical_density_diag_abs_sum = 0.0_dp
          projector_physical_density_delta_max = 0.0_dp
          projector_physical_density_diag_avg = 0.0_dp
+         projector_physical_density_low_curv_fraction = 0.0_dp
+         projector_physical_density_low_curv_sum = 0.0_dp
+         projector_physical_density_response_abs_avg = 0.0_dp
+         projector_physical_density_response_abs_max = 0.0_dp
+         projector_physical_density_rhs_abs_avg = 0.0_dp
+         projector_physical_density_rhs_abs_max = 0.0_dp
          projector_physical_offdiag_abs_avg = 0.0_dp
          projector_physical_offdiag_abs_ratio = 0.0_dp
          projector_physical_offdiag_delta_max = 0.0_dp
@@ -4967,6 +4977,12 @@ CONTAINS
                                                        z_density_trial, ipiv_energy, exact_density_response_ready, &
                                                        energy_gauge_weight)
             IF (exact_density_response_ready) THEN
+               projector_physical_density_rhs_abs_avg = &
+                  SUM(ABS(energy_cross_density(:, :)))/REAL(MAX(1, ne*nrot), KIND=dp)
+               projector_physical_density_rhs_abs_max = MAXVAL(ABS(energy_cross_density(:, :)))
+               projector_physical_density_response_abs_avg = &
+                  SUM(ABS(response_density_exact(:, :)))/REAL(MAX(1, ne*nrot), KIND=dp)
+               projector_physical_density_response_abs_max = MAXVAL(ABS(response_density_exact(:, :)))
                DO s = 1, nrot
                   DO r = 1, nrot
                      projected_term = 0.5_dp* &
@@ -4979,14 +4995,28 @@ CONTAINS
                      projector_physical_density_abs_avg = projector_physical_density_abs_avg + ABS(projected_term)
                      projector_physical_density_delta_max = MAX(projector_physical_density_delta_max, &
                                                                 ABS(projected_term))
-                     IF (r == s) projector_physical_density_diag_avg = &
-                        projector_physical_density_diag_avg + projected_term
+                     IF (r == s) THEN
+                        projector_physical_density_diag_avg = &
+                           projector_physical_density_diag_avg + projected_term
+                        DO ie = 1, ne
+                           dense_term = energy_cross_density(ie, r)*response_density_exact(ie, r)
+                           projector_physical_density_diag_abs_sum = &
+                              projector_physical_density_diag_abs_sum + ABS(dense_term)
+                           IF (occ_curv(ie) + tether_curv(ie) <= 0.1_dp*total_curv_diag_max) &
+                              projector_physical_density_low_curv_sum = &
+                                 projector_physical_density_low_curv_sum + ABS(dense_term)
+                        END DO
+                     END IF
                   END DO
                END DO
                projector_physical_density_abs_avg = projector_physical_density_abs_avg/ &
                                                     REAL(MAX(1, nrot*nrot), KIND=dp)
                projector_physical_density_diag_avg = projector_physical_density_diag_avg/ &
                                                      REAL(MAX(1, nrot), KIND=dp)
+               IF (projector_physical_density_diag_abs_sum > &
+                   EPSILON(projector_physical_density_diag_abs_sum)) &
+                  projector_physical_density_low_curv_fraction = &
+                     projector_physical_density_low_curv_sum/projector_physical_density_diag_abs_sum
             END IF
             exact_density_plateau_response_ready = .FALSE.
             IF (logger%iter_info%print_level >= high_print_level) &
@@ -8100,6 +8130,11 @@ CONTAINS
                      " OT Schur projector physical density curv ready diag abs max:", &
                      exact_density_response_ready, projector_physical_density_diag_avg, &
                      projector_physical_density_abs_avg, projector_physical_density_delta_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                     " OT Schur projector physical density response rhs_avg rhs_max sol_avg sol_max lowfrac:", &
+                     projector_physical_density_rhs_abs_avg, projector_physical_density_rhs_abs_max, &
+                     projector_physical_density_response_abs_avg, &
+                     projector_physical_density_response_abs_max, projector_physical_density_low_curv_fraction
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
                      " OT Schur projector phys direct diag parts pdelta ddelta hdelta cov acov residual density "// &
                      "diagref_gap offdiag_gap balance comp applied:", &
