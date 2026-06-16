@@ -6064,6 +6064,8 @@ CONTAINS
                    ot_kp_schur_calibration_min_samples) THEN
                   CALL audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, sol, &
                                                                 response_exact_raw, response_exact, curv, &
+                                                                occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                                channel_nmo, e_offset, .FALSE., &
                                                                 projector_coupled_weight, residual_delta, &
                                                                 projector_mode_history_quality, &
                                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -6154,6 +6156,8 @@ CONTAINS
                      CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                    rot_hessian_projector_physical, sol, &
                                                                    response_exact_raw, response_exact_physical, curv, &
+                                                                   occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                                   channel_nmo, e_offset, .FALSE., &
                                                                    projector_coupled_weight, residual_delta, &
                                                                    projector_mode_history_quality, &
                                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -6248,6 +6252,8 @@ CONTAINS
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                               projector_physical_direct_delta, sol, &
                                                                               response_exact_raw, response_exact_physical, curv, &
+                                                                              occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                                              channel_nmo, e_offset, .FALSE., &
                                                                               projector_coupled_weight, residual_delta, &
                                                                               projector_offdiag_history_quality, &
                                                                               projector_offdiag_history_trust, &
@@ -6869,7 +6875,9 @@ CONTAINS
                                              CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                 rot_hessian_projector_physical_active, &
                                                 projector_physical_direct_sol, response_exact_raw, &
-                                                response_exact_physical, curv, projector_coupled_weight, &
+                                                response_exact_physical, curv, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, .FALSE., &
+                                                projector_coupled_weight, &
                                                 residual_delta, projector_mode_history_quality, &
                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
                                                 projector_mode_history_response_ratio, grad_e, &
@@ -6889,7 +6897,9 @@ CONTAINS
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                    rot_hessian_projector_physical_diagref, &
                                                    projector_physical_direct_sol, response_exact_raw, &
-                                                   response_exact_physical, curv, projector_coupled_weight, &
+                                                   response_exact_physical, curv, occ_curv, tether_curv, &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset, .FALSE., &
+                                                   projector_coupled_weight, &
                                                    residual_delta, projector_mode_history_quality, &
                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
                                                    projector_mode_history_response_ratio, grad_e, &
@@ -7005,7 +7015,9 @@ CONTAINS
                                                    rot_hessian_projector_physical_offdiag, &
                                                    rot_hessian_projector_physical_offdiag_plateau, &
                                                    projector_physical_direct_sol, response_density_exact, &
-                                                   response_density_plateau_exact, curv, projector_coupled_weight, &
+                                                   response_density_plateau_exact, curv, occ_curv, tether_curv, &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
+                                                   projector_coupled_weight, &
                                                    residual_delta, projector_mode_history_quality, &
                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
                                                    projector_mode_history_response_ratio, grad_e, &
@@ -9174,6 +9186,12 @@ CONTAINS
 !> \param response_raw conservative response used by the accepted update
 !> \param response_exact finite fixed-N/tether response model
 !> \param curv energy curvature weights
+!> \param occ_curv projected fixed-N occupation curvature weights
+!> \param tether_curv projected canonical tether curvature weights
+!> \param occ_curv_projection_sum global fixed-N projection normalization
+!> \param channel_nmo number of MOs in each local spin/k-point channel
+!> \param e_offset energy-vector offset for each local spin/k-point channel
+!> \param use_projected_metric use the fixed-N/tether-projected Mermin metric for response norms
 !> \param projector_weight scalar finite Projector-Hessian tail weight
 !> \param residual_delta current OT residual
 !> \param history_quality accepted Mermin-drop quality of Projector-mode predictions
@@ -9184,7 +9202,7 @@ CONTAINS
 !> \param response_base conservative response vector used by the accepted update
 !> \param response_candidate finite-response candidate vector
 !> \param applied_weight step-weighted average shadow correction weight
-!> \param correction_drop curvature-weighted norm of the applied correction
+!> \param correction_drop selected-metric norm of the applied correction
 !> \param correction_negative_fraction fraction of sign-aware correction in negative Projector modes
 !> \param raw_negative_fraction raw negative finite Projector-response mode fraction
 !> \param positive_drop positive-mode contribution to the signed two-mode model
@@ -9193,18 +9211,24 @@ CONTAINS
 !> \param positive_coeff bounded positive-subspace response coefficient
 !> \param negative_coeff bounded negative-subspace response coefficient
       SUBROUTINE audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, step_rot, &
-                                                          response_raw, response_exact, curv, projector_weight, &
-                                                          residual_delta, history_quality, history_trust, &
-                                                          history_response_ratio, grad_e, energy_base, response_base, &
-                                                          response_candidate, applied_weight, &
-                                                          correction_drop, correction_negative_fraction, &
-                                                          raw_negative_fraction, positive_drop, negative_drop, cross_drop, &
-                                                          positive_coeff, negative_coeff)
+                                                          response_raw, response_exact, curv, occ_curv, tether_curv, &
+                                                          occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                          use_projected_metric, &
+                                                          projector_weight, residual_delta, history_quality, &
+                                                          history_trust, history_response_ratio, grad_e, energy_base, &
+                                                          response_base, response_candidate, applied_weight, &
+                                                          correction_drop, correction_negative_fraction, raw_negative_fraction, &
+                                                          positive_drop, negative_drop, cross_drop, positive_coeff, &
+                                                          negative_coeff)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
                                                             response_raw, response_exact
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, energy_base, grad_e, step_rot
-      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, residual_delta, history_quality, &
-                                                            history_trust, history_response_ratio
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, energy_base, grad_e, occ_curv, step_rot, &
+                                                            tether_curv
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv_projection_sum, projector_weight, &
+                                                            residual_delta, history_quality, history_trust, &
+                                                            history_response_ratio
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      LOGICAL, INTENT(IN)                                :: use_projected_metric
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_base
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: response_candidate
       REAL(KIND=dp), INTENT(OUT)                         :: applied_weight, correction_drop, &
@@ -9273,8 +9297,14 @@ CONTAINS
          DO imode = 1, nrot_local
             IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
             mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
-            mode_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
-            CALL para_env_inter_kp%sum(mode_norm)
+            IF (use_projected_metric) THEN
+               CALL kpoint_ot_mixed_projected_term(mode_rx, mode_rx, occ_curv, tether_curv, &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                   mode_norm)
+            ELSE
+               mode_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
+               CALL para_env_inter_kp%sum(mode_norm)
+            END IF
             mode_norms(imode) = MAX(0.0_dp, mode_norm)
             response_total_sum = response_total_sum + mode_norms(imode)
             IF (mode_eval(imode) < 0.0_dp) raw_negative_sum = raw_negative_sum + mode_norms(imode)
@@ -9312,14 +9342,26 @@ CONTAINS
                negative_weight_sum = negative_weight_sum + mode_weight*step_weight
             END IF
          END DO
-         h11 = DOT_PRODUCT(curv(:)*response_pos(:), response_pos(:))
-         h12 = -DOT_PRODUCT(curv(:)*response_pos(:), response_neg(:))
-         h22 = DOT_PRODUCT(curv(:)*response_neg(:), response_neg(:))
+         IF (use_projected_metric) THEN
+            CALL kpoint_ot_mixed_projected_term(response_pos, response_pos, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, h11)
+            CALL kpoint_ot_mixed_projected_term(response_pos, response_neg, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, h12)
+            CALL kpoint_ot_mixed_projected_term(response_neg, response_neg, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, h22)
+         ELSE
+            h11 = DOT_PRODUCT(curv(:)*response_pos(:), response_pos(:))
+            h12 = DOT_PRODUCT(curv(:)*response_pos(:), response_neg(:))
+            h22 = DOT_PRODUCT(curv(:)*response_neg(:), response_neg(:))
+            CALL para_env_inter_kp%sum(h11)
+            CALL para_env_inter_kp%sum(h12)
+            CALL para_env_inter_kp%sum(h22)
+         END IF
+         h11 = MAX(0.0_dp, h11)
+         h12 = -h12
+         h22 = MAX(0.0_dp, h22)
          g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
          g2 = -DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
-         CALL para_env_inter_kp%sum(h11)
-         CALL para_env_inter_kp%sum(h12)
-         CALL para_env_inter_kp%sum(h22)
          CALL para_env_inter_kp%sum(g1)
          CALL para_env_inter_kp%sum(g2)
          coeff_positive = 1.0_dp
@@ -9338,10 +9380,20 @@ CONTAINS
          positive_drop = 0.5_dp*coeff_positive*coeff_positive*MAX(0.0_dp, h11)
          negative_drop = 0.5_dp*coeff_negative*coeff_negative*MAX(0.0_dp, h22)
          cross_drop = coeff_positive*coeff_negative*h12
-         correction_drop = DOT_PRODUCT(curv(:)*response_corr(:), response_corr(:))
-         negative_norm = DOT_PRODUCT(curv(:)*(coeff_negative*response_neg(:)), coeff_negative*response_neg(:))
-         CALL para_env_inter_kp%sum(correction_drop)
-         CALL para_env_inter_kp%sum(negative_norm)
+         IF (use_projected_metric) THEN
+            CALL kpoint_ot_mixed_projected_term(response_corr, response_corr, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                correction_drop)
+            CALL kpoint_ot_mixed_projected_term(coeff_negative*response_neg, coeff_negative*response_neg, &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, &
+                                                e_offset, negative_norm)
+         ELSE
+            correction_drop = DOT_PRODUCT(curv(:)*response_corr(:), response_corr(:))
+            negative_norm = DOT_PRODUCT(curv(:)*(coeff_negative*response_neg(:)), &
+                                        coeff_negative*response_neg(:))
+            CALL para_env_inter_kp%sum(correction_drop)
+            CALL para_env_inter_kp%sum(negative_norm)
+         END IF
          correction_drop = 0.5_dp*MAX(0.0_dp, correction_drop)
          IF (step_weight_sum > EPSILON(step_weight_sum)) &
             applied_weight = (coeff_positive*positive_weight_sum + coeff_negative*negative_weight_sum)/step_weight_sum
