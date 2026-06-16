@@ -995,7 +995,7 @@ CONTAINS
                                                             handle, ic, ik, ispin, nmo_mat, &
                                                             nspins, old_nmo, target_nmo
       INTEGER, DIMENSION(2)                              :: new_added, new_nmo
-      LOGICAL                                            :: need_resize
+      LOGICAL                                            :: has_unit_metric, need_resize
       REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
                                                             maxocc, n_el_f
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, &
@@ -1020,7 +1020,7 @@ CONTAINS
 
       CALL get_qs_env(qs_env=qs_env, blacs_env=blacs_env, dft_control=dft_control, &
                       kpoints=kpoints, matrix_s_kp=matrix_s, mo_derivs=mo_derivs, &
-                      mos=mos, para_env=para_env)
+                      mos=mos, para_env=para_env, has_unit_metric=has_unit_metric)
 
       CPASSERT(ASSOCIATED(mos))
       CPASSERT(ASSOCIATED(kpoints))
@@ -1107,7 +1107,13 @@ CONTAINS
                          occupation_numbers=old_occupation_numbers)
 
          old_nmo = old_mos(ispin)%nmo
+         CALL cp_fm_init_random(mo_coeff, mos(ispin)%nmo)
          CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
+         IF (has_unit_metric) THEN
+            CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
+         ELSE
+            CALL make_basis_sm(mo_coeff, mos(ispin)%nmo, matrix_s(1, 1)%matrix)
+         END IF
 
          eigenvalues(1:old_nmo) = old_eigenvalues(1:old_nmo)
          occupation_numbers(:) = 0.0_dp
