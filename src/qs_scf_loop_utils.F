@@ -3915,6 +3915,7 @@ CONTAINS
             projector_physical_model_gap, projector_physical_model_gap_drop, projector_physical_model_gap_ratio, &
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
+            projector_physical_direct_quality_for_selection, projector_physical_trace_split_quality, &
             projector_physical_direct_delta_diag_avg, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
@@ -4555,6 +4556,8 @@ CONTAINS
             projector_physical_norm_ratio = 0.0_dp
             projector_diagref_quality_for_selection = 0.0_dp
             projector_physical_quality_for_selection = 0.0_dp
+            projector_physical_direct_quality_for_selection = 0.0_dp
+            projector_physical_trace_split_quality = 0.0_dp
             projector_physical_response_abs_step = 0.0_dp
             projector_physical_response_abs_trust_ratio = 0.0_dp
             projector_physical_response_weighted_step = 0.0_dp
@@ -5319,6 +5322,15 @@ CONTAINS
                                                         0.0_dp, &
                                                         ot_kp_schur_projector_response_quality_min_ratio, &
                                                         ot_kp_schur_projector_response_quality_max_ratio)
+                     projector_physical_trace_split_quality = &
+                        kpoint_ot_trace_split_history_quality( &
+                           local_ot_env(1)%schur_projector_physical_trace_actual_diag_ema, &
+                           local_ot_env(1)%schur_projector_physical_trace_actual_free_ema, &
+                           local_ot_env(1)%schur_projector_physical_trace_actual_diag_quality_ema, &
+                           local_ot_env(1)%schur_projector_physical_trace_actual_free_quality_ema, &
+                           local_ot_env(1)%schur_projector_physical_quality_samples, &
+                           projector_physical_quality_for_selection)
+                     projector_physical_direct_quality_for_selection = projector_physical_quality_for_selection
                      IF (local_ot_env(1)%schur_projector_offdiag_quality_samples >= &
                          ot_kp_schur_projector_response_min_samples) THEN
                         projector_offdiag_history_quality = &
@@ -6403,6 +6415,75 @@ CONTAINS
                                                 projector_physical_direct_delta_negative_fraction = &
                                                    projector_physical_direct_delta_negative_norm/rx_weight
                                           END IF
+                                          IF (logger%iter_info%print_level < high_print_level) THEN
+                                             projector_physical_direct_trace_active_quad = 0.0_dp
+                                             projector_physical_direct_trace_actual_quad = 0.0_dp
+                                             projector_physical_direct_trace_full_quad = 0.0_dp
+                                             DO s = 1, nrot
+                                                DO r = 1, nrot
+                                                   projected_term = 0.5_dp* &
+                                                      ((rot_hessian_projector_physical(r, s) - rot_hessian(r, s)) + &
+                                                       (rot_hessian_projector_physical(s, r) - rot_hessian(s, r)))
+                                                   tether_projected_term = 0.5_dp* &
+                                                      ((rot_hessian_projector_physical_active(r, s) - rot_hessian(r, s)) + &
+                                                       (rot_hessian_projector_physical_active(s, r) - rot_hessian(s, r)))
+                                                   rx_shift = 0.5_dp*(projector_physical_direct_delta(r, s) + &
+                                                                      projector_physical_direct_delta(s, r))
+                                                   projector_physical_direct_trace_actual_quad = &
+                                                      projector_physical_direct_trace_actual_quad + &
+                                                      projector_physical_direct_sol(r)*rx_shift* &
+                                                      projector_physical_direct_sol(s)
+                                                   projector_physical_direct_trace_full_quad = &
+                                                      projector_physical_direct_trace_full_quad + &
+                                                      projector_physical_direct_sol(r)*projected_term* &
+                                                      projector_physical_direct_sol(s)
+                                                   projector_physical_direct_trace_active_quad = &
+                                                      projector_physical_direct_trace_active_quad + &
+                                                      projector_physical_direct_sol(r)*tether_projected_term* &
+                                                      projector_physical_direct_sol(s)
+                                                END DO
+                                             END DO
+                                             projector_physical_direct_trace_excess_quad = &
+                                                projector_physical_direct_trace_full_quad - &
+                                                projector_physical_direct_trace_active_quad
+                                             IF (ABS(projector_physical_direct_trace_full_quad) > &
+                                                 EPSILON(projector_physical_direct_trace_full_quad)) &
+                                                projector_physical_direct_trace_ratio = &
+                                                   projector_physical_direct_trace_active_quad/ &
+                                                   projector_physical_direct_trace_full_quad
+                                             IF (ABS(projector_physical_direct_trace_actual_quad) > &
+                                                 EPSILON(projector_physical_direct_trace_actual_quad)) &
+                                                projector_physical_direct_trace_active_actual_ratio = &
+                                                   projector_physical_direct_trace_active_quad/ &
+                                                   projector_physical_direct_trace_actual_quad
+                                             rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
+                                                                     projector_physical_direct_sol)
+                                             IF (rx_weight > EPSILON(rx_weight)) THEN
+                                                projector_physical_direct_trace_actual_diag_quad = &
+                                                   projector_physical_direct_delta_diag_avg*rx_weight
+                                                projector_physical_direct_trace_full_diag_quad = &
+                                                   projector_physical_delta_diag_avg*rx_weight
+                                                projector_physical_direct_trace_active_diag_quad = &
+                                                   (projector_physical_delta_diag_avg - &
+                                                    projector_physical_covariant_diag_avg + &
+                                                    projector_physical_active_covariant_diag_avg)*rx_weight
+                                                projector_physical_direct_trace_actual_free_quad = &
+                                                   projector_physical_direct_trace_actual_quad - &
+                                                   projector_physical_direct_trace_actual_diag_quad
+                                                projector_physical_direct_trace_full_free_quad = &
+                                                   projector_physical_direct_trace_full_quad - &
+                                                   projector_physical_direct_trace_full_diag_quad
+                                                projector_physical_direct_trace_active_free_quad = &
+                                                   projector_physical_direct_trace_active_quad - &
+                                                   projector_physical_direct_trace_active_diag_quad
+                                                projector_physical_direct_trace_actual_norm = &
+                                                   projector_physical_direct_trace_actual_quad/rx_weight
+                                                projector_physical_direct_trace_full_norm = &
+                                                   projector_physical_direct_trace_full_quad/rx_weight
+                                                projector_physical_direct_trace_active_norm = &
+                                                   projector_physical_direct_trace_active_quad/rx_weight
+                                             END IF
+                                          END IF
                                           projector_physical_direct_rx_e(:) = &
                                              MATMUL(response_exact_raw, projector_physical_direct_sol)
                                           projector_physical_direct_model_e(:) = MATMUL(response_exact_physical, &
@@ -6816,7 +6897,7 @@ CONTAINS
                                              ! its model drop here.
                                              projector_physical_direct_expected_drop = &
                                                 kpoint_ot_schur_expected_drop(projector_physical_direct_model_calibrated_drop, &
-                                                                              projector_physical_quality_for_selection, &
+                                                                              projector_physical_direct_quality_for_selection, &
                                                                               projector_physical_direct_trust_quality)
                                              projector_physical_direct_candidate_ready = &
                                                 projector_physical_direct_model_calibrated_drop > &
@@ -7670,50 +7751,48 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_compensation = &
                         local_ot_env(1)%schur_projector_physical_compensation + &
                         projector_physical_model_calibrated_drop*projector_physical_direct_diag_compensation
-                     IF (logger%iter_info%print_level >= high_print_level) THEN
-                        local_ot_env(1)%schur_projector_physical_trace_actual = &
-                           local_ot_env(1)%schur_projector_physical_trace_actual + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_actual_norm
-                        local_ot_env(1)%schur_projector_physical_trace_raw = &
-                           local_ot_env(1)%schur_projector_physical_trace_raw + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_full_norm
-                        local_ot_env(1)%schur_projector_physical_trace_active = &
-                           local_ot_env(1)%schur_projector_physical_trace_active + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_active_norm
-                        local_ot_env(1)%schur_projector_physical_trace_actual_diag = &
-                           local_ot_env(1)%schur_projector_physical_trace_actual_diag + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_actual_diag_quad/ &
-                           MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
-                        local_ot_env(1)%schur_projector_physical_trace_actual_free = &
-                           local_ot_env(1)%schur_projector_physical_trace_actual_free + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_actual_free_quad/ &
-                           MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
-                        local_ot_env(1)%schur_projector_physical_trace_raw_diag = &
-                           local_ot_env(1)%schur_projector_physical_trace_raw_diag + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_full_diag_quad/ &
-                           MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
-                        local_ot_env(1)%schur_projector_physical_trace_raw_free = &
-                           local_ot_env(1)%schur_projector_physical_trace_raw_free + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_full_free_quad/ &
-                           MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
-                        local_ot_env(1)%schur_projector_physical_trace_active_diag = &
-                           local_ot_env(1)%schur_projector_physical_trace_active_diag + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_active_diag_quad/ &
-                           MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
-                        local_ot_env(1)%schur_projector_physical_trace_active_free = &
-                           local_ot_env(1)%schur_projector_physical_trace_active_free + &
-                           projector_physical_model_calibrated_drop* &
-                           projector_physical_direct_trace_active_free_quad/ &
-                           MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
-                     END IF
+                     local_ot_env(1)%schur_projector_physical_trace_actual = &
+                        local_ot_env(1)%schur_projector_physical_trace_actual + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_actual_norm
+                     local_ot_env(1)%schur_projector_physical_trace_raw = &
+                        local_ot_env(1)%schur_projector_physical_trace_raw + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_full_norm
+                     local_ot_env(1)%schur_projector_physical_trace_active = &
+                        local_ot_env(1)%schur_projector_physical_trace_active + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_active_norm
+                     local_ot_env(1)%schur_projector_physical_trace_actual_diag = &
+                        local_ot_env(1)%schur_projector_physical_trace_actual_diag + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_actual_diag_quad/ &
+                        MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
+                     local_ot_env(1)%schur_projector_physical_trace_actual_free = &
+                        local_ot_env(1)%schur_projector_physical_trace_actual_free + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_actual_free_quad/ &
+                        MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
+                     local_ot_env(1)%schur_projector_physical_trace_raw_diag = &
+                        local_ot_env(1)%schur_projector_physical_trace_raw_diag + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_full_diag_quad/ &
+                        MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
+                     local_ot_env(1)%schur_projector_physical_trace_raw_free = &
+                        local_ot_env(1)%schur_projector_physical_trace_raw_free + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_full_free_quad/ &
+                        MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
+                     local_ot_env(1)%schur_projector_physical_trace_active_diag = &
+                        local_ot_env(1)%schur_projector_physical_trace_active_diag + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_active_diag_quad/ &
+                        MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
+                     local_ot_env(1)%schur_projector_physical_trace_active_free = &
+                        local_ot_env(1)%schur_projector_physical_trace_active_free + &
+                        projector_physical_model_calibrated_drop* &
+                        projector_physical_direct_trace_active_free_quad/ &
+                        MAX(projector_physical_direct_norm_rotation, EPSILON(1.0_dp))
                   END IF
                   IF (projector_physical_direct_candidate_used .AND. &
                       projector_physical_direct_metric_norm_ratio > EPSILON(projector_physical_direct_metric_norm_ratio)) &
@@ -7959,11 +8038,12 @@ CONTAINS
                         projector_physical_response_cross_drop, projector_physical_response_positive_coeff, &
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected exp qsel cdrop "// &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),9(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected exp qsel qsplit cdrop "// &
                         "mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
-                        projector_physical_direct_expected_drop, projector_physical_quality_for_selection, &
+                        projector_physical_direct_expected_drop, projector_physical_direct_quality_for_selection, &
+                        projector_physical_trace_split_quality, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
                         projector_physical_direct_response_weighted_trust_ratio, &
                         projector_physical_direct_response_abs_trust_ratio, &
@@ -8566,6 +8646,52 @@ CONTAINS
                          MAX(0.0_dp, MIN(1.0_dp, trust_quality))
 
       END FUNCTION kpoint_ot_schur_expected_drop
+
+!> \brief accepted-drop quality for trace-bearing and trace-free Direct response pieces
+!> \param trace_diag_ema accepted Direct diagonal trace-bearing curvature average
+!> \param trace_free_ema accepted Direct trace-free curvature average
+!> \param trace_diag_quality_ema measured-drop weighted diagonal trace quality
+!> \param trace_free_quality_ema measured-drop weighted trace-free quality
+!> \param samples number of accepted physical Direct quality samples
+!> \param fallback_quality regular physical response history quality
+!> \return calibrated Direct quality from separately tracked diag/free pieces
+      FUNCTION kpoint_ot_trace_split_history_quality(trace_diag_ema, trace_free_ema, &
+                                                     trace_diag_quality_ema, trace_free_quality_ema, &
+                                                     samples, fallback_quality) RESULT(history_quality)
+      REAL(KIND=dp), INTENT(IN)                         :: trace_diag_ema, trace_free_ema, &
+                                                            trace_diag_quality_ema, trace_free_quality_ema, &
+                                                            fallback_quality
+      INTEGER, INTENT(IN)                               :: samples
+      REAL(KIND=dp)                                     :: balance_quality, component_quality, diag_abs, &
+                                                            diag_quality, free_abs, free_quality, history_quality, &
+                                                            trace_abs_sum
+
+         history_quality = fallback_quality
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+
+         diag_abs = ABS(trace_diag_ema)
+         free_abs = ABS(trace_free_ema)
+         trace_abs_sum = diag_abs + free_abs
+         IF (trace_abs_sum <= EPSILON(trace_abs_sum)) RETURN
+
+         diag_quality = 0.0_dp
+         free_quality = 0.0_dp
+         IF (diag_abs > EPSILON(diag_abs)) diag_quality = ABS(trace_diag_quality_ema)/diag_abs
+         IF (free_abs > EPSILON(free_abs)) free_quality = ABS(trace_free_quality_ema)/free_abs
+         component_quality = MIN(diag_quality, free_quality)
+         IF (component_quality <= EPSILON(component_quality)) RETURN
+
+         balance_quality = 1.0_dp - ABS(trace_diag_ema + trace_free_ema)/trace_abs_sum
+         balance_quality = MIN(1.0_dp, MAX(0.0_dp, balance_quality))
+
+         history_quality = MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                               MAX(ot_kp_schur_projector_response_quality_min_ratio, component_quality))
+         history_quality = history_quality*MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                               balance_quality)
+         history_quality = MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                               MAX(ot_kp_schur_projector_response_quality_min_ratio, history_quality))
+
+      END FUNCTION kpoint_ot_trace_split_history_quality
 
 !> \brief accepted-drop calibrated finite Projector-Hessian weight for the low residual tail
 !> \param residual_delta current OT residual
