@@ -3711,7 +3711,9 @@ CONTAINS
             projector_physical_direct_density_trust_quality, &
             density_plateau_direction_scale, density_plateau_expected_drop, density_plateau_gdot_energy, &
             density_plateau_gdot_rotation, density_plateau_gdotp, density_plateau_model_calibrated_drop, &
-            density_plateau_model_drop, density_plateau_model_gap_drop, density_plateau_norm_energy, &
+            density_plateau_model_drop, density_plateau_model_gap_drop, density_plateau_exact_gap_avg, &
+            density_plateau_exact_gap_max, density_plateau_norm_energy, density_plateau_raw_gap_avg, &
+            density_plateau_raw_gap_max, &
             density_plateau_norm_rotation, density_plateau_normp, density_plateau_response_abs_step, &
             density_plateau_response_abs_trust_ratio, density_plateau_response_weighted_step, &
             density_plateau_response_weighted_trust_ratio, density_plateau_scale_quality, &
@@ -4728,6 +4730,34 @@ CONTAINS
          physical_response_gap_avg = physical_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
          CALL para_env_inter_kp%max(projector_response_gap_max)
          CALL para_env_inter_kp%max(physical_response_gap_max)
+         IF (exact_density_response_ready .AND. exact_density_plateau_response_ready) THEN
+            DO r = 1, nrot
+               physical_response_gap_norm = &
+                  DOT_PRODUCT(occ_curv(:)*(response_density_plateau(:, r) - response_density_physical(:, r)), &
+                              response_density_plateau(:, r) - response_density_physical(:, r))
+               CALL para_env_inter_kp%sum(physical_response_gap_norm)
+               IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
+                  density_plateau_raw_gap_avg = density_plateau_raw_gap_avg + &
+                     SQRT(MAX(0.0_dp, physical_response_gap_norm/occ_curv_projection_sum))
+               density_plateau_raw_gap_max = MAX(density_plateau_raw_gap_max, &
+                                                  MAXVAL(ABS(response_density_plateau(:, r) - &
+                                                             response_density_physical(:, r))))
+               physical_response_gap_norm = &
+                  DOT_PRODUCT(curv(:)*(response_density_plateau_exact(:, r) - response_density_exact(:, r)), &
+                              response_density_plateau_exact(:, r) - response_density_exact(:, r))
+               CALL para_env_inter_kp%sum(physical_response_gap_norm)
+               IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
+                  density_plateau_exact_gap_avg = density_plateau_exact_gap_avg + &
+                     SQRT(MAX(0.0_dp, physical_response_gap_norm/curv_projection_sum))
+               density_plateau_exact_gap_max = MAX(density_plateau_exact_gap_max, &
+                                                    MAXVAL(ABS(response_density_plateau_exact(:, r) - &
+                                                               response_density_exact(:, r))))
+            END DO
+            density_plateau_raw_gap_avg = density_plateau_raw_gap_avg/REAL(MAX(1, nrot), KIND=dp)
+            density_plateau_exact_gap_avg = density_plateau_exact_gap_avg/REAL(MAX(1, nrot), KIND=dp)
+            CALL para_env_inter_kp%max(density_plateau_raw_gap_max)
+            CALL para_env_inter_kp%max(density_plateau_exact_gap_max)
+         END IF
          CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ, response, grad_e, &
                                                     channel_nmo, e_offset, energy_hessian, energy_cross, &
                                                     response_exact, z_exact_trial, ipiv_energy, &
@@ -5042,7 +5072,11 @@ CONTAINS
                density_plateau_model_calibrated_drop = 0.0_dp
                density_plateau_model_drop = 0.0_dp
                density_plateau_model_gap_drop = 0.0_dp
+               density_plateau_exact_gap_avg = 0.0_dp
+               density_plateau_exact_gap_max = 0.0_dp
                density_plateau_norm_energy = 0.0_dp
+               density_plateau_raw_gap_avg = 0.0_dp
+               density_plateau_raw_gap_max = 0.0_dp
                density_plateau_norm_rotation = 0.0_dp
                density_plateau_normp = 0.0_dp
                density_plateau_response_abs_step = 0.0_dp
@@ -7157,6 +7191,10 @@ CONTAINS
                         density_plateau_response_weighted_trust_ratio, &
                         density_plateau_response_abs_trust_ratio, density_plateau_trust_quality, &
                         density_plateau_direction_scale, density_plateau_model_gap_drop
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                        " OT Schur projector density-plateau response gap raw_avg raw_max exact_avg exact_max:", &
+                        density_plateau_raw_gap_avg, density_plateau_raw_gap_max, &
+                        density_plateau_exact_gap_avg, density_plateau_exact_gap_max
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector phys direct diag-ref audit ready enabled exp qsel cdrop rratio aratio weight trust:", &
                         projector_physical_direct_diagref_candidate_ready, &
