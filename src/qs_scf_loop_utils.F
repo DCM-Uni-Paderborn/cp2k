@@ -3813,6 +3813,7 @@ CONTAINS
             projector_physical_direct_diagref_scale_quality, &
             projector_physical_direct_diagref_trust_quality, &
             projector_physical_direct_diagref_weight, &
+            projector_physical_direct_diag_balance, &
             projector_physical_direct_density_direction_scale, &
             projector_physical_direct_density_expected_drop, &
             projector_physical_direct_density_gdot_energy, &
@@ -4924,6 +4925,9 @@ CONTAINS
          projector_physical_residual_abs_avg = &
             projector_physical_residual_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          projector_physical_trace_balance = MAX(0.0_dp, -projector_physical_delta_diag_avg)
+         projector_physical_direct_diag_balance = projector_physical_delta_diag_avg - &
+                                                  projector_physical_covariant_diag_avg - &
+                                                  projector_physical_residual_diag_avg
          projector_gauge_abs_avg = projector_gauge_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
@@ -5325,6 +5329,7 @@ CONTAINS
                projector_physical_direct_diagref_scale_quality = 0.0_dp
                projector_physical_direct_diagref_trust_quality = 1.0_dp
                projector_physical_direct_diagref_weight = 0.0_dp
+               projector_physical_direct_diag_balance = 0.0_dp
                projector_physical_direct_density_direction_scale = 0.0_dp
                projector_physical_direct_density_expected_drop = 0.0_dp
                projector_physical_direct_density_gdot_energy = 0.0_dp
@@ -7685,6 +7690,15 @@ CONTAINS
                      " OT Schur projector physical density curv ready diag abs max:", &
                      exact_density_response_ready, projector_physical_density_diag_avg, &
                      projector_physical_density_abs_avg, projector_physical_density_delta_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,11(1X,ES16.8))') &
+                     " OT Schur projector phys direct diag parts pdelta hdelta cov acov residual density "// &
+                     "diagref_gap offdiag_gap balance comp applied:", &
+                     projector_physical_delta_diag_avg, projector_hessian_delta_diag_avg, &
+                     projector_physical_covariant_diag_avg, projector_physical_active_covariant_diag_avg, &
+                     projector_physical_residual_diag_avg, projector_physical_density_diag_avg, &
+                     projector_physical_diagref_gap_diag_avg, &
+                     projector_physical_offdiag_plateau_gap_diag_avg, projector_physical_direct_diag_balance, &
+                     projector_physical_direct_diag_compensation, projector_physical_direct_diag_shift_avg
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
                      " OT Schur occ-gap shadow cdrop odrop ratio gap:", &
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
