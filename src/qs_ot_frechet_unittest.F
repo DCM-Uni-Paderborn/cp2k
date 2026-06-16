@@ -49,6 +49,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fixed_n_preconditioner_gauge("fixed-N preconditioner gauge", 5.0E-15_dp, nfail)
    CALL check_fixed_n_tether_preconditioner_gauge("fixed-N/tether preconditioner gauge", &
                                                    5.0E-15_dp, nfail)
+   CALL check_weighted_kpoint_tether_preconditioner_gauge("weighted k-point/tether preconditioner gauge", &
+                                                          5.0E-15_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
                                                      2.0E-7_dp, nfail)
    CALL check_complex_fixed_n_schur_hessian("complex fixed-N Schur Hessian", &
@@ -606,6 +608,85 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fixed_n_tether_preconditioner_gauge
+
+! **************************************************************************************************
+!> \brief Check that the k-point energy preconditioner removes the fixed-N
+!>        gauge in the combined irreducible-k-point and canonical-tether
+!>        curvature metric.  Dropping either the k-point weights or the tether
+!>        curvature leaves a residual chemical-potential component.
+! **************************************************************************************************
+   SUBROUTINE check_weighted_kpoint_tether_preconditioner_gauge(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 7
+      REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
+
+      REAL(KIND=dp)                                      :: err, no_tether_err, no_weight_err, &
+                                                            shift, wrong_err
+      REAL(KIND=dp), DIMENSION(n)                        :: curv, grad, gvalue, step, tether_curv, &
+                                                            wkp, wrong_curv, wrong_step
+
+      wkp = [0.35_dp, 0.35_dp, 0.65_dp, 0.65_dp, 1.0_dp, 0.5_dp, 0.5_dp]
+      gvalue = [2.7_dp, 0.4_dp, 6.0_dp, 0.2_dp, 1.5_dp, 0.0_dp, 4.5_dp]
+      tether_curv = [0.08_dp, 0.0_dp, 0.30_dp, 0.12_dp, 0.0_dp, 0.0_dp, 0.20_dp]
+      grad = [0.42_dp, -0.31_dp, 0.26_dp, 0.75_dp, -0.18_dp, 0.66_dp, 0.11_dp]
+      curv(:) = wkp(:)*gvalue(:) + tether_curv(:)
+
+      step(:) = 0.0_dp
+      WHERE (curv(:) > EPSILON(curv(:)))
+         step(:) = grad(:)/MAX(curv(:), curvature_floor)
+      END WHERE
+      shift = SUM(curv(:)*step(:))/SUM(curv(:))
+      WHERE (curv(:) > EPSILON(curv(:)))
+         step(:) = step(:) - shift
+      END WHERE
+      err = ABS(SUM(curv(:)*step(:)))
+
+      wrong_curv(:) = gvalue(:) + tether_curv(:)
+      wrong_step(:) = 0.0_dp
+      WHERE (wrong_curv(:) > EPSILON(wrong_curv(:)))
+         wrong_step(:) = grad(:)/MAX(wrong_curv(:), curvature_floor)
+      END WHERE
+      shift = SUM(wrong_curv(:)*wrong_step(:))/SUM(wrong_curv(:))
+      WHERE (wrong_curv(:) > EPSILON(wrong_curv(:)))
+         wrong_step(:) = wrong_step(:) - shift
+      END WHERE
+      no_weight_err = ABS(SUM(curv(:)*wrong_step(:)))
+
+      wrong_curv(:) = wkp(:)*gvalue(:)
+      wrong_step(:) = 0.0_dp
+      WHERE (wrong_curv(:) > EPSILON(wrong_curv(:)))
+         wrong_step(:) = grad(:)/MAX(wrong_curv(:), curvature_floor)
+      END WHERE
+      shift = SUM(wrong_curv(:)*wrong_step(:))/SUM(wrong_curv(:))
+      WHERE (wrong_curv(:) > EPSILON(wrong_curv(:)))
+         wrong_step(:) = wrong_step(:) - shift
+      END WHERE
+      no_tether_err = ABS(SUM(curv(:)*wrong_step(:)))
+
+      wrong_step(:) = 0.0_dp
+      WHERE (curv(:) > EPSILON(curv(:)))
+         wrong_step(:) = grad(:)/MAX(curv(:), curvature_floor)
+      END WHERE
+      shift = SUM(wrong_step(:))/REAL(n, KIND=dp)
+      WHERE (curv(:) > EPSILON(curv(:)))
+         wrong_step(:) = wrong_step(:) - shift
+      END WHERE
+      wrong_err = ABS(SUM(curv(:)*wrong_step(:)))
+
+      IF (err > tol .OR. ABS(step(6)) > tol .OR. no_weight_err <= 1.0E-3_dp .OR. &
+          no_tether_err <= 1.0E-3_dp .OR. wrong_err <= 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "failed with errors", &
+            err, no_weight_err, no_tether_err, wrong_err, ABS(step(6))
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), "OK with errors", &
+            err, no_weight_err, no_tether_err, wrong_err, ABS(step(6))
+      END IF
+
+   END SUBROUTINE check_weighted_kpoint_tether_preconditioner_gauge
 
 ! **************************************************************************************************
 !> \brief Dense weighted k-point Mermin free-energy model.
