@@ -245,6 +245,7 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_physical_pending = .FALSE.
       LOGICAL :: schur_projector_spectral_pending = .FALSE.
       LOGICAL :: schur_projector_physical_candidate_enabled = .FALSE.
+      LOGICAL :: schur_projector_spectral_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_diagref_pending = .FALSE.
       LOGICAL :: schur_projector_diagref_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_density_pending = .FALSE.
@@ -685,6 +686,7 @@ CONTAINS
       qs_ot_env%schur_projector_physical_pending = .FALSE.
       qs_ot_env%schur_projector_spectral_pending = .FALSE.
       qs_ot_env%schur_projector_physical_candidate_enabled = .FALSE.
+      qs_ot_env%schur_projector_spectral_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_diagref_pending = .FALSE.
       qs_ot_env%schur_projector_diagref_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_density_pending = .FALSE.
