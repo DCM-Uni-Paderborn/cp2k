@@ -3771,6 +3771,7 @@ CONTAINS
             projector_physical_model_gap, projector_physical_model_gap_drop, projector_physical_model_gap_ratio, &
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
+            projector_physical_direct_delta_diag_avg, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
             projector_physical_direct_diag_compensation_local_max, &
@@ -4324,6 +4325,7 @@ CONTAINS
             projector_physical_direct_diag_compensation_local_avg = 0.0_dp
             projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
             projector_physical_direct_diag_compensation_local_max = 0.0_dp
+            projector_physical_direct_delta_diag_avg = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -6011,6 +6013,14 @@ CONTAINS
                                              END DO
                                           END IF
                                        END IF
+                                       projector_physical_direct_delta_diag_avg = 0.0_dp
+                                       DO r = 1, nrot
+                                          projector_physical_direct_delta_diag_avg = &
+                                             projector_physical_direct_delta_diag_avg + &
+                                             projector_physical_direct_delta(r, r)
+                                       END DO
+                                       projector_physical_direct_delta_diag_avg = &
+                                          projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        schur(:, :) = rot_hessian_coupled(:, :) + &
                                                      projector_coupled_weight* &
                                                      projector_physical_direct_delta(:, :)
@@ -7690,10 +7700,11 @@ CONTAINS
                      " OT Schur projector physical density curv ready diag abs max:", &
                      exact_density_response_ready, projector_physical_density_diag_avg, &
                      projector_physical_density_abs_avg, projector_physical_density_delta_max
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,11(1X,ES16.8))') &
-                     " OT Schur projector phys direct diag parts pdelta hdelta cov acov residual density "// &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
+                     " OT Schur projector phys direct diag parts pdelta ddelta hdelta cov acov residual density "// &
                      "diagref_gap offdiag_gap balance comp applied:", &
-                     projector_physical_delta_diag_avg, projector_hessian_delta_diag_avg, &
+                     projector_physical_delta_diag_avg, projector_physical_direct_delta_diag_avg, &
+                     projector_hessian_delta_diag_avg, &
                      projector_physical_covariant_diag_avg, projector_physical_active_covariant_diag_avg, &
                      projector_physical_residual_diag_avg, projector_physical_density_diag_avg, &
                      projector_physical_diagref_gap_diag_avg, &
