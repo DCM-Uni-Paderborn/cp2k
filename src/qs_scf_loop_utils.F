@@ -9390,7 +9390,10 @@ CONTAINS
                ! use the analytic curvature shift instead of another finite
                ! off-diagonal dP application.
                DO ie = 1, nmo
-                  IF (ABS(occ_curv_channel(ie)) > curvature_floor) THEN
+                  ! This is only a division guard.  The OT curvature floor is a
+                  ! preconditioner scale and must not suppress physical
+                  ! low-curvature density response.
+                  IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! docc_mat is a doubled k-point density response, while
                      ! occ_curv_channel is w_k*g_i.
                      density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)
@@ -9423,7 +9426,7 @@ CONTAINS
                END DO
                IF (compute_projector_plateau_audit) THEN
                   DO ie = 1, nmo
-                     IF (ABS(occ_curv_channel(ie)) > curvature_floor) &
+                     IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) &
                         docc_plateau(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                   END DO
                   CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_plateau, &
