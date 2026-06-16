@@ -6509,8 +6509,9 @@ CONTAINS
                                           IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                                              projector_physical_direct_model_e(:) = projector_physical_direct_model_e(:) - &
                                                                                     rx_shift/curv_projection_sum
-                                          IF (logger%iter_info%print_level >= high_print_level .AND. &
-                                              exact_density_response_ready) THEN
+                                          ! Feed the low-rank density-response shadow in normal
+                                          ! runs as well; only its printed diagnostics stay HIGH-only.
+                                          IF (exact_density_response_ready) THEN
                                              projector_physical_direct_density_rx_e(:) = &
                                                 MATMUL(response_density_exact, projector_physical_direct_sol)
                                              rx_shift = DOT_PRODUCT(curv, projector_physical_direct_density_rx_e)

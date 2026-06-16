@@ -33,7 +33,7 @@
 # so the default restart/smearing regtest stays cheap while the optional
 # physics tail can still be checked against the 1E-6 Mermin path, including
 # the NO_TEXT first/last-band smearing guards. Current local LOW reference:
-# 504 SCF steps, E_total = Mermin = -8.14585275705688 Ha.
+# 531 SCF steps, E_total = Mermin = -8.14585275727113 Ha.
 # Pre-physical-tail tail-weight sweep: 0.05 -> 894, 0.10 -> 843, 0.15 -> 927.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
