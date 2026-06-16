@@ -10062,8 +10062,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, projector_weight, scale, &
-                                                            slope_cap
+      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, gap_tol, occ_jump, occ_tol, &
+                                                            physical_slope, projector_weight, scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -10082,13 +10082,20 @@ CONTAINS
          gap_tol = SQRT(EPSILON(1.0_dp))*scale
          occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
-         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
-            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_slope)
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
                IF (i == j) CYCLE
                denom = evals(i) - evals(j)
+               physical_slope = 0.0_dp
+               IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
+                  IF (ABS(denom) <= gauge_gap) THEN
+                     physical_slope = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(i), occ_curv_channel(j)))
+                     allowed_jump = 4.0_dp*physical_slope*MAX(ABS(denom), EPSILON(1.0_dp)) + occ_tol
+                     occ_jump = ABS(occ_slope(i) - occ_slope(j))
+                     IF (occ_jump > allowed_jump) CYCLE
+                  END IF
+               END IF
                IF (ABS(denom) > gap_tol) THEN
                   coeff = (occ_slope(i) - occ_slope(j))/denom
                ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN

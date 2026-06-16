@@ -4309,9 +4309,9 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
                                                             docc_raw, docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, physical_active, physical_err, raw_gauge, &
-                                                            safe_gauge
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_plateau, occ_scale
+      REAL(KIND=dp)                                      :: err, physical_active, physical_err, physical_near_err, &
+                                                            raw_gauge, safe_gauge
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_near_physical, occ_plateau, occ_scale
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -4369,14 +4369,30 @@ CONTAINS
       physical_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
       physical_active = MAXVAL(ABS(docc_safe(:, :)))
 
-      err = MAX(safe_gauge, physical_err)
+      occ_near_physical(:) = occ_scale(:)
+      occ_near_physical(1) = 1.10_dp
+      occ_near_physical(2) = occ_near_physical(1) - &
+                             2.0_dp*occ_curv(1)*(REAL(chc_eig(2, 2), KIND=dp) - &
+                                                 REAL(chc_eig(1, 1), KIND=dp))
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(-0.12_dp, 0.08_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_near_physical, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_near_physical, docc_raw)
+      physical_near_err = MAXVAL(ABS(docc_safe(:, :) - projector_weight*docc_raw(:, :)))
+
+      err = MAX(safe_gauge, physical_err, physical_near_err)
       IF (err > tol .OR. raw_gauge < active_tol .OR. physical_active < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/raw_gauge/safe_gauge/physical", err, raw_gauge, safe_gauge, physical_active
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw_gauge/safe_gauge/physical/near", err, raw_gauge, safe_gauge, &
+            physical_active, physical_near_err
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/raw_gauge/safe_gauge/physical", err, raw_gauge, safe_gauge, physical_active
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw_gauge/safe_gauge/physical/near", err, raw_gauge, safe_gauge, physical_active, &
+            physical_near_err
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_gauge_physical_split
@@ -4505,7 +4521,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: coeff, denom, gap_tol, occ_tol, scale, slope_cap
+      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, gap_tol, occ_jump, occ_tol, &
+                                                            physical_slope, scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       n = SIZE(chc, 1)
@@ -4517,13 +4534,20 @@ CONTAINS
       gap_tol = SQRT(EPSILON(1.0_dp))*scale
       occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
       occ_work(:) = occ_scale(:)
-      IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) &
-         CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
       kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO j = 1, n
          DO i = 1, n
             IF (i == j) CYCLE
             denom = evals(i) - evals(j)
+            physical_slope = 0.0_dp
+            IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
+               IF (ABS(denom) <= gauge_gap) THEN
+                  physical_slope = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
+                  allowed_jump = 4.0_dp*physical_slope*MAX(ABS(denom), EPSILON(1.0_dp)) + occ_tol
+                  occ_jump = ABS(occ_work(i) - occ_work(j))
+                  IF (occ_jump > allowed_jump) CYCLE
+               END IF
+            END IF
             IF (ABS(denom) > gap_tol) THEN
                coeff = (occ_work(i) - occ_work(j))/denom
             ELSE IF (ABS(occ_work(i) - occ_work(j)) <= occ_tol) THEN
