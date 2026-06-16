@@ -4123,6 +4123,11 @@ CONTAINS
          constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
          tether_strength, tether_weight, occ_curv_diag_max, occ_curv_diag_sum, tether_curv_diag_max, &
          tether_curv_diag_sum, total_curv_diag_max, total_curv_diag_sum, z_shift, z_weight
+      REAL(KIND=dp) :: projector_physical_direct_curvature_scale, projector_physical_direct_euclidean_scale, &
+         projector_physical_direct_metric_norm_energy, projector_physical_direct_metric_normp, &
+         projector_physical_direct_trust_scale, projector_physical_direct_unit_abs_step, &
+         projector_physical_direct_unit_model_gap, projector_physical_direct_unit_model_gap_drop, &
+         projector_physical_direct_unit_weighted_step
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4536,7 +4541,9 @@ CONTAINS
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
+            projector_physical_direct_curvature_scale = 0.0_dp
             projector_physical_direct_direction_scale = 0.0_dp
+            projector_physical_direct_euclidean_scale = 0.0_dp
             projector_physical_direct_expected_drop = 0.0_dp
             projector_physical_direct_gdot_energy = 0.0_dp
             projector_physical_direct_gdot_rotation = 0.0_dp
@@ -4557,6 +4564,8 @@ CONTAINS
             projector_physical_direct_model_gap_drop = 0.0_dp
             projector_physical_direct_model_gap_ratio = 0.0_dp
             projector_physical_direct_model_gap_trust = HUGE(1.0_dp)
+            projector_physical_direct_metric_norm_energy = 0.0_dp
+            projector_physical_direct_metric_normp = 0.0_dp
             projector_physical_direct_metric_norm_ratio = 0.0_dp
             projector_physical_direct_metric_norm_rotation = 0.0_dp
             projector_physical_direct_soft_cut = 0.0_dp
@@ -4579,6 +4588,11 @@ CONTAINS
             projector_physical_direct_spectral_floor = 0.0_dp
             projector_physical_direct_spectral_shift_avg = 0.0_dp
             projector_physical_direct_spectral_shift_max = 0.0_dp
+            projector_physical_direct_trust_scale = HUGE(1.0_dp)
+            projector_physical_direct_unit_abs_step = 0.0_dp
+            projector_physical_direct_unit_model_gap = 0.0_dp
+            projector_physical_direct_unit_model_gap_drop = 0.0_dp
+            projector_physical_direct_unit_weighted_step = 0.0_dp
             projector_physical_direct_trace_active_actual_ratio = 0.0_dp
             projector_physical_direct_trace_active_diag_quad = 0.0_dp
             projector_physical_direct_trace_active_free_quad = 0.0_dp
@@ -6837,13 +6851,24 @@ CONTAINS
                                                                                               projector_physical_direct_z_e)
                                           projector_physical_direct_norm_rotation = DOT_PRODUCT(projector_physical_direct_sol, &
                                                                                                 projector_physical_direct_sol)
+                                          CALL kpoint_ot_mixed_projected_term(projector_physical_direct_z_e, &
+                                             projector_physical_direct_z_e, occ_curv, tether_curv, &
+                                             occ_curv_projection_sum, channel_nmo, e_offset, &
+                                             projector_physical_direct_metric_norm_energy)
+                                          projector_physical_direct_metric_norm_energy = &
+                                             MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                                           projector_physical_direct_metric_norm_rotation = &
                                              MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
-                                          IF (projector_physical_direct_norm_rotation > &
-                                              EPSILON(projector_physical_direct_norm_rotation)) &
+                                          projector_physical_direct_metric_normp = &
+                                             projector_physical_direct_metric_norm_energy + &
+                                             projector_physical_direct_metric_norm_rotation
+                                          projector_physical_direct_normp = projector_physical_direct_norm_energy + &
+                                                                            projector_physical_direct_norm_rotation
+                                          IF (projector_physical_direct_normp > &
+                                              EPSILON(projector_physical_direct_normp)) &
                                              projector_physical_direct_metric_norm_ratio = &
-                                                projector_physical_direct_metric_norm_rotation/ &
-                                                projector_physical_direct_norm_rotation
+                                                projector_physical_direct_metric_normp/ &
+                                                projector_physical_direct_normp
                                           IF (logger%iter_info%print_level >= high_print_level .AND. &
                                               projector_physical_direct_norm_rotation > &
                                               EPSILON(projector_physical_direct_norm_rotation) .AND. &
@@ -6875,16 +6900,55 @@ CONTAINS
                                           END IF
                                           projector_physical_direct_gdotp = projector_physical_direct_gdot_energy + &
                                                                             projector_physical_direct_gdot_rotation
-                                          projector_physical_direct_normp = projector_physical_direct_norm_energy + &
-                                                                            projector_physical_direct_norm_rotation
                                           projector_physical_direct_norm_ratio = projector_physical_direct_normp/ &
                                                                                  MAX(gnorm, EPSILON(1.0_dp))
                                           IF (projector_physical_direct_gdotp > 0.0_dp .AND. &
                                               projector_physical_direct_normp > EPSILON(projector_physical_direct_normp) .AND. &
-                                              projector_physical_direct_norm_ratio <= max_norm_ratio) THEN
-                                             projector_physical_direct_direction_scale = &
+                                              projector_physical_direct_metric_normp > &
+                                              EPSILON(projector_physical_direct_metric_normp)) THEN
+                                             projector_physical_direct_euclidean_scale = &
                                                 projector_physical_direct_gdotp/ &
                                                 MAX(projector_physical_direct_normp, EPSILON(projector_physical_direct_normp))
+                                             projector_physical_direct_curvature_scale = &
+                                                projector_physical_direct_gdotp/ &
+                                                MAX(projector_physical_direct_metric_normp, &
+                                                    EPSILON(projector_physical_direct_metric_normp))
+                                             projector_physical_direct_unit_abs_step = &
+                                                MAXVAL(ABS(projector_physical_direct_rx_e))
+                                             CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                                             projector_physical_direct_unit_weighted_step = &
+                                                kpoint_ot_weighted_response_step(projector_physical_direct_rx_e, curv, &
+                                                                                 curv_projection_sum)
+                                             projector_physical_direct_unit_model_gap = &
+                                                MAXVAL(ABS(projector_physical_direct_model_e - projector_physical_direct_rx_e))
+                                             projector_physical_direct_unit_model_gap_drop = &
+                                                kpoint_ot_response_mismatch_drop(projector_physical_direct_rx_e, &
+                                                                                 projector_physical_direct_model_e, curv, &
+                                                                                 1.0_dp)
+                                             projector_physical_direct_trust_scale = 1.0_dp
+                                             IF (response_trust > EPSILON(response_trust) .AND. &
+                                                 projector_physical_direct_unit_weighted_step > &
+                                                 EPSILON(projector_physical_direct_unit_weighted_step)) &
+                                                projector_physical_direct_trust_scale = &
+                                                   MIN(projector_physical_direct_trust_scale, &
+                                                       0.8_dp*response_trust/ &
+                                                       projector_physical_direct_unit_weighted_step)
+                                             IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                 projector_physical_direct_unit_abs_step > &
+                                                 EPSILON(projector_physical_direct_unit_abs_step)) &
+                                                projector_physical_direct_trust_scale = &
+                                                   MIN(projector_physical_direct_trust_scale, &
+                                                       0.8_dp*response_abs_trust/ &
+                                                       projector_physical_direct_unit_abs_step)
+                                             projector_physical_direct_direction_scale = &
+                                                MIN(1.0_dp, projector_physical_direct_curvature_scale, &
+                                                    projector_physical_direct_trust_scale)
+                                             projector_physical_direct_norm_ratio = &
+                                                projector_physical_direct_direction_scale* &
+                                                projector_physical_direct_direction_scale* &
+                                                projector_physical_direct_normp/MAX(gnorm, EPSILON(1.0_dp))
+                                             IF (projector_physical_direct_direction_scale > 0.0_dp .AND. &
+                                                 projector_physical_direct_norm_ratio <= max_norm_ratio) THEN
                                              projector_physical_direct_scale_quality = &
                                                 kpoint_ot_schur_scale_quality(projector_physical_direct_direction_scale, &
                                                                               schur_min_coupled_scale)
@@ -6892,23 +6956,26 @@ CONTAINS
                                                                                  projector_physical_direct_z_e(:)
                                              projector_physical_direct_sol(:) = projector_physical_direct_direction_scale* &
                                                                                  projector_physical_direct_sol(:)
-                                             projector_physical_direct_model_drop = 0.5_dp* &
-                                                projector_physical_direct_direction_scale*projector_physical_direct_gdotp
+                                             projector_physical_direct_model_drop = &
+                                                projector_physical_direct_direction_scale*projector_physical_direct_gdotp - &
+                                                0.5_dp*projector_physical_direct_direction_scale* &
+                                                projector_physical_direct_direction_scale* &
+                                                projector_physical_direct_metric_normp
+                                             projector_physical_direct_model_drop = &
+                                                MAX(0.0_dp, projector_physical_direct_model_drop)
                                              projector_physical_direct_response_abs_step = &
                                                 projector_physical_direct_direction_scale* &
-                                                MAXVAL(ABS(projector_physical_direct_rx_e))
-                                             CALL para_env_inter_kp%max(projector_physical_direct_response_abs_step)
+                                                projector_physical_direct_unit_abs_step
                                              projector_physical_direct_response_weighted_step = &
                                                 projector_physical_direct_direction_scale* &
-                                                kpoint_ot_weighted_response_step(projector_physical_direct_rx_e, curv, &
-                                                                                 curv_projection_sum)
+                                                projector_physical_direct_unit_weighted_step
                                              projector_physical_direct_model_gap = &
                                                 projector_physical_direct_direction_scale* &
-                                                MAXVAL(ABS(projector_physical_direct_model_e - projector_physical_direct_rx_e))
+                                                projector_physical_direct_unit_model_gap
                                              projector_physical_direct_model_gap_drop = &
-                                                kpoint_ot_response_mismatch_drop(projector_physical_direct_rx_e, &
-                                                                                 projector_physical_direct_model_e, curv, &
-                                                                                 projector_physical_direct_direction_scale)
+                                                projector_physical_direct_direction_scale* &
+                                                projector_physical_direct_direction_scale* &
+                                                projector_physical_direct_unit_model_gap_drop
                                              projector_physical_direct_model_calibrated_drop = &
                                                 MAX(0.0_dp, projector_physical_direct_model_drop - &
                                                             projector_physical_direct_model_gap_drop)
@@ -6930,23 +6997,15 @@ CONTAINS
                                                    projector_physical_direct_response_abs_trust_ratio, &
                                                    projector_physical_direct_model_gap_ratio)
                                              projector_physical_direct_line_step_curvature = &
-                                                1.0_dp/projector_physical_direct_direction_scale
-                                             rx_weight = MAX(projector_physical_direct_response_weighted_trust_ratio, &
-                                                             projector_physical_direct_response_abs_trust_ratio)
-                                             projector_physical_direct_line_step_trust = HUGE(1.0_dp)
-                                             IF (rx_weight > EPSILON(rx_weight)) &
-                                                projector_physical_direct_line_step_trust = 0.8_dp/rx_weight
+                                                projector_physical_direct_curvature_scale
+                                             projector_physical_direct_line_step_trust = &
+                                                projector_physical_direct_trust_scale
                                              projector_physical_direct_line_step = &
-                                                MIN(projector_physical_direct_line_step_curvature, &
-                                                    projector_physical_direct_line_step_trust)
-                                             projector_physical_direct_line_step = &
-                                                MIN(projector_physical_direct_line_step, &
-                                                    (MAX(local_ot_env(1)%ds_min, EPSILON(1.0_dp))**3* &
-                                                     projector_physical_direct_line_step)**0.25_dp)
+                                                projector_physical_direct_direction_scale
                                              ! The physical-direct candidate is selected only after
                                              ! accepted-drop history proves it conservative.  Keep the
-                                             ! z.z=g.z scale diagnostic, but do not double-discount
-                                             ! its model drop here.
+                                             ! Euclidean z.z=g.z scale diagnostic separate from the
+                                             ! Mermin-metric curvature/trust scale used above.
                                              projector_physical_direct_expected_drop = &
                                                 kpoint_ot_schur_expected_drop(projector_physical_direct_model_calibrated_drop, &
                                                                               projector_physical_direct_quality_for_selection, &
@@ -6956,6 +7015,7 @@ CONTAINS
                                                 EPSILON(projector_physical_direct_model_drop) .AND. &
                                                 projector_physical_direct_response_weighted_step <= response_trust .AND. &
                                                 projector_physical_direct_response_abs_step <= response_abs_trust
+                                             END IF
                                           END IF
                                        END IF
                                        IF (projector_physical_direct_candidate_ready) THEN
