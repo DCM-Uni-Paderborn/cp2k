@@ -4223,7 +4223,8 @@ CONTAINS
          plateau_gap_mode_step_negative_fraction
       REAL(KIND=dp) :: direct_pg_correction_drop, direct_pg_correction_negative, direct_pg_cross_drop, &
          direct_pg_negative_coeff, direct_pg_negative_drop, direct_pg_positive_coeff, direct_pg_positive_drop, &
-         direct_pg_raw_negative_fraction, direct_pg_response_weight
+         direct_pg_metric_drop, direct_pg_metric_ratio, direct_pg_metric_step, direct_pg_raw_negative_fraction, &
+         direct_pg_response_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
@@ -4479,6 +4480,9 @@ CONTAINS
          direct_pg_cross_drop = 0.0_dp
          direct_pg_negative_coeff = 0.0_dp
          direct_pg_negative_drop = 0.0_dp
+         direct_pg_metric_drop = 0.0_dp
+         direct_pg_metric_ratio = 0.0_dp
+         direct_pg_metric_step = 0.0_dp
          direct_pg_positive_coeff = 0.0_dp
          direct_pg_positive_drop = 0.0_dp
          direct_pg_raw_negative_fraction = 0.0_dp
@@ -7011,6 +7015,20 @@ CONTAINS
                                                    direct_pg_raw_negative_fraction, direct_pg_positive_drop, &
                                                    direct_pg_negative_drop, direct_pg_cross_drop, &
                                                    direct_pg_positive_coeff, direct_pg_negative_coeff)
+                                                CALL project_kpoint_ot_schur_response(direct_pg_rx_e, occ_curv, &
+                                                   tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                                direct_pg_base_e(:) = direct_pg_rx_e(:) - direct_pg_base_e(:)
+                                                CALL kpoint_ot_mixed_projected_term(direct_pg_base_e, &
+                                                   direct_pg_base_e, occ_curv, tether_curv, &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                   direct_pg_metric_drop)
+                                                direct_pg_metric_drop = 0.5_dp*MAX(0.0_dp, direct_pg_metric_drop)
+                                                direct_pg_metric_step = &
+                                                   kpoint_ot_weighted_response_step(direct_pg_base_e, curv, &
+                                                                                    curv_projection_sum)
+                                                IF (direct_pg_correction_drop > EPSILON(direct_pg_correction_drop)) &
+                                                   direct_pg_metric_ratio = &
+                                                      direct_pg_metric_drop/direct_pg_correction_drop
                                              END IF
                                           END IF
                                           projector_physical_direct_z_e(:) = z_exact_physical_trial(:) + &
@@ -8400,6 +8418,9 @@ CONTAINS
                         direct_pg_correction_negative, direct_pg_raw_negative_fraction, &
                         direct_pg_positive_drop, direct_pg_negative_drop, direct_pg_cross_drop, &
                         direct_pg_positive_coeff, direct_pg_negative_coeff
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
+                        " OT Schur projector phys direct plateau-gap metric pdrop pstep ratio:", &
+                        direct_pg_metric_drop, direct_pg_metric_step, direct_pg_metric_ratio
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                         " OT Schur projector phys direct diag-ref-response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
                         projector_physical_direct_diagref_weight, &
