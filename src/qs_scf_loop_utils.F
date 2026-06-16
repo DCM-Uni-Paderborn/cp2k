@@ -4053,6 +4053,7 @@ CONTAINS
             projector_physical_model_gap_trust, projector_physical_norm_energy, projector_physical_norm_rotation, &
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_quality_for_selection, projector_physical_trace_split_quality, &
+            projector_physical_direct_density_audit_quality, &
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
@@ -4722,6 +4723,7 @@ CONTAINS
             projector_physical_quality_for_selection = 0.0_dp
             projector_physical_direct_quality_for_selection = 0.0_dp
             projector_physical_trace_split_quality = 0.0_dp
+            projector_physical_direct_density_audit_quality = 1.0_dp
             projector_physical_response_abs_step = 0.0_dp
             projector_physical_response_abs_trust_ratio = 0.0_dp
             projector_physical_response_weighted_step = 0.0_dp
@@ -5518,6 +5520,13 @@ CONTAINS
                            local_ot_env(1)%schur_projector_physical_quality_samples, &
                            projector_physical_quality_for_selection)
                      projector_physical_direct_quality_for_selection = projector_physical_trace_split_quality
+                     projector_physical_direct_density_audit_quality = &
+                        kpoint_ot_density_audit_trust_quality( &
+                           local_ot_env(1)%schur_projector_density_audit_lowcurv_ema, &
+                           local_ot_env(1)%schur_projector_density_audit_lowcurv_quality_ema, &
+                           local_ot_env(1)%schur_projector_density_audit_amplification_ema, &
+                           local_ot_env(1)%schur_projector_density_audit_amplification_quality_ema, &
+                           local_ot_env(1)%schur_projector_density_audit_samples)
                      IF (local_ot_env(1)%schur_projector_offdiag_quality_samples >= &
                          ot_kp_schur_projector_response_min_samples) THEN
                         projector_offdiag_history_quality = &
@@ -7123,7 +7132,8 @@ CONTAINS
                                              projector_physical_direct_expected_drop = &
                                                 kpoint_ot_schur_expected_drop(projector_physical_direct_model_calibrated_drop, &
                                                                               projector_physical_direct_quality_for_selection, &
-                                                                              projector_physical_direct_trust_quality)
+                                                                              projector_physical_direct_trust_quality* &
+                                                                              projector_physical_direct_density_audit_quality)
                                              projector_physical_direct_candidate_ready = &
                                                 projector_physical_direct_model_calibrated_drop > &
                                                 EPSILON(projector_physical_direct_model_drop) .AND. &
@@ -8285,12 +8295,13 @@ CONTAINS
                         projector_physical_response_cross_drop, projector_physical_response_positive_coeff, &
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),9(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected exp qsel qsplit cdrop "// &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),10(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected exp qsel qsplit dq cdrop "// &
                         "mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                         projector_physical_direct_expected_drop, projector_physical_direct_quality_for_selection, &
                         projector_physical_trace_split_quality, &
+                        projector_physical_direct_density_audit_quality, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
                         projector_physical_direct_response_weighted_trust_ratio, &
                         projector_physical_direct_response_abs_trust_ratio, &
@@ -8893,6 +8904,48 @@ CONTAINS
                          MAX(0.0_dp, MIN(1.0_dp, trust_quality))
 
       END FUNCTION kpoint_ot_schur_expected_drop
+
+!> \brief accepted-drop quality for high-amplification low-curvature density response
+!> \param lowcurv_ema accepted density-response low-curvature fraction
+!> \param lowcurv_quality_ema accepted-drop weighted low-curvature fraction
+!> \param amplification_ema accepted density-response/RHS amplification
+!> \param amplification_quality_ema accepted-drop weighted amplification
+!> \param samples number of accepted audit samples
+!> \return neutral trust factor without history; otherwise a selective
+!>         low-curvature density-response quality factor in [qmin,1]
+      FUNCTION kpoint_ot_density_audit_trust_quality(lowcurv_ema, lowcurv_quality_ema, &
+                                                     amplification_ema, amplification_quality_ema, &
+                                                     samples) RESULT(trust_quality)
+      REAL(KIND=dp), INTENT(IN)                         :: lowcurv_ema, lowcurv_quality_ema, &
+                                                            amplification_ema, amplification_quality_ema
+      INTEGER, INTENT(IN)                               :: samples
+      REAL(KIND=dp)                                     :: amplification_quality, amplification_weight, &
+                                                            component_quality, lowcurv_quality, &
+                                                            lowcurv_weight, trust_quality
+
+         trust_quality = 1.0_dp
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (lowcurv_ema <= 0.25_dp .OR. amplification_ema <= 1.0_dp) RETURN
+
+         lowcurv_quality = 0.0_dp
+         amplification_quality = 0.0_dp
+         IF (ABS(lowcurv_ema) > EPSILON(lowcurv_ema)) &
+            lowcurv_quality = ABS(lowcurv_quality_ema)/ABS(lowcurv_ema)
+         IF (ABS(amplification_ema) > EPSILON(amplification_ema)) &
+            amplification_quality = ABS(amplification_quality_ema)/ABS(amplification_ema)
+         component_quality = MIN(lowcurv_quality, amplification_quality)
+         IF (component_quality <= EPSILON(component_quality)) RETURN
+
+         component_quality = MIN(1.0_dp, MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                             component_quality))
+         lowcurv_weight = MIN(1.0_dp, MAX(0.0_dp, (lowcurv_ema - 0.25_dp)/0.75_dp))
+         amplification_weight = MIN(1.0_dp, MAX(0.0_dp, LOG(MAX(1.0_dp, amplification_ema))/ &
+                                                LOG(1.0E6_dp)))
+
+         trust_quality = 1.0_dp - lowcurv_weight*amplification_weight*(1.0_dp - component_quality)
+         trust_quality = MIN(1.0_dp, MAX(ot_kp_schur_projector_response_quality_min_ratio, trust_quality))
+
+      END FUNCTION kpoint_ot_density_audit_trust_quality
 
 !> \brief accepted-drop quality for trace-bearing and trace-free Direct response pieces
 !> \param trace_diag_ema accepted Direct diagonal trace-bearing curvature average
