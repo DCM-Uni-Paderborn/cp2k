@@ -3,7 +3,7 @@
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
 ! Local 2026-06 LOW reference: initial AUTO buffer 4, one grow to 8 after
 ! 720 pre-grow SCF steps, then convergence in 49 restarted SCF steps,
-! E_total = Mermin = -8.14585275649643 Ha, with no first/last-band warnings.
+! E_total = Mermin = -8.14585274679045 Ha, with no first/last-band warnings.
 &GLOBAL
   PRINT_LEVEL LOW
   PROJECT Al_kp_ot_added_auto
