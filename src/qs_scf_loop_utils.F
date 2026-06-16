@@ -4457,8 +4457,7 @@ CONTAINS
             new_search_point = .NOT. local_ot_env(1)%energy_only .AND. &
                                (local_ot_env(1)%line_search_count == 0 .OR. &
                                 local_ot_env(1)%line_search_might_be_done)
-            projector_physical_shadow_enabled = logger%iter_info%print_level >= high_print_level .OR. &
-                                                local_ot_env(1)%schur_projector_physical_candidate_enabled
+            projector_physical_shadow_enabled = local_ot_env(1)%schur_projector_physical_candidate_enabled
             IF (new_search_point) &
                projector_physical_shadow_enabled = projector_physical_shadow_enabled .OR. &
                                                    local_ot_env(1)%schur_projector_physical_quality_samples > 0 .OR. &
@@ -4621,10 +4620,9 @@ CONTAINS
          response_trust_base = HUGE(1.0_dp)
          response_trust_factor = 1.0_dp
          residual_delta = MAX(local_ot_env(1)%delta, 0.0_dp)
-         projector_plateau_gap_model_enabled = logger%iter_info%print_level >= high_print_level .OR. &
-                                               (projector_physical_shadow_enabled .AND. &
-                                                residual_delta <= ot_kp_schur_projector_response_full_delta)
-         projector_physical_direct_spectral_enabled = logger%iter_info%print_level >= high_print_level
+         projector_plateau_gap_model_enabled = projector_physical_shadow_enabled .AND. &
+                                               residual_delta <= ot_kp_schur_projector_response_full_delta
+         projector_physical_direct_spectral_enabled = .FALSE.
          IF (local_ot_env(1)%schur_projector_spectral_candidate_enabled) &
             projector_physical_direct_spectral_enabled = .TRUE.
          IF (new_search_point) &
@@ -5698,8 +5696,7 @@ CONTAINS
          split_candidate_enabled = new_search_point .AND. local_ot_env(1)%schur_split_candidate_enabled
          constrained_candidate_enabled = new_search_point .AND. &
                                          local_ot_env(1)%schur_constrained_candidate_enabled
-         split_candidate_diagnostic = logger%iter_info%print_level >= high_print_level .OR. &
-                                      split_candidate_enabled .OR. constrained_candidate_enabled
+         split_candidate_diagnostic = split_candidate_enabled .OR. constrained_candidate_enabled
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
             split_quality_for_calibration = &
                kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_drop_sum, &
@@ -7413,7 +7410,7 @@ CONTAINS
                                                 projector_physical_direct_response_cross_drop, &
                                                 projector_physical_direct_response_positive_coeff, &
                                                 projector_physical_direct_response_negative_coeff)
-                                             IF (logger%iter_info%print_level >= high_print_level) &
+                                             IF (projector_physical_shadow_enabled) &
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                    rot_hessian_projector_physical_diagref, &
                                                    projector_physical_direct_sol, response_exact_raw, &
@@ -7863,8 +7860,7 @@ CONTAINS
                         IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
                             projector_coupled_weight > 0.0_dp .AND. &
                             (local_ot_env(1)%schur_projector_mode_quality_samples < &
-                             ot_kp_schur_calibration_min_samples .OR. split_candidate_ready .OR. &
-                             logger%iter_info%print_level >= high_print_level)) THEN
+                             ot_kp_schur_calibration_min_samples .OR. split_candidate_ready)) THEN
                            CALL audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, sol, &
                                                                 response_exact_raw, response_exact, curv, &
                                                                 model_calibrated_drop, projector_coupled_weight, &
@@ -8513,7 +8509,7 @@ CONTAINS
                accepted_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                accepted_projector_coupled_weight = projector_coupled_weight
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
-               IF (logger%iter_info%print_level >= high_print_level) THEN
+               IF (logger%iter_info%print_level >= high_print_level .OR. projector_physical_shadow_enabled) THEN
                   CALL audit_kpoint_ot_hessian_delta_modes(rot_hessian_projector_physical_offdiag, sol, &
                                                            model_calibrated_drop, &
                                                            projector_physical_offdiag_mode_negative_fraction, &
@@ -8540,7 +8536,7 @@ CONTAINS
                      plateau_gap_mode_quad_signed_ratio, &
                      plateau_gap_mode_quad_abs_ratio)
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (projector_physical_shadow_enabled .AND. &
                    projector_physical_offdiag_mode_abs_quad > &
                    EPSILON(projector_physical_offdiag_mode_abs_quad)) THEN
                   accepted_projector_offdiag_drop = 0.5_dp*projector_physical_offdiag_mode_abs_quad
@@ -8570,7 +8566,7 @@ CONTAINS
                   accepted_projector_response_weight = projector_mode_response_weight
                   accepted_projector_response_negative = projector_mode_response_correction_negative
                END IF
-               IF (logger%iter_info%print_level >= high_print_level .AND. &
+               IF (projector_plateau_gap_model_enabled .AND. &
                    direct_pg_metric_drop > EPSILON(direct_pg_metric_drop)) THEN
                   accepted_projector_plateau_gap_drop = direct_pg_metric_drop
                   accepted_projector_plateau_gap_weight = direct_pg_response_weight
