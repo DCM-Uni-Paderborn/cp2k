@@ -6578,6 +6578,8 @@ CONTAINS
                                        END IF
                                        DO r = 1, nrot
                                           rtd(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                                          IF (exact_density_response_ready) &
+                                             rtd(r) = rtd(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
                                           projector_physical_direct_sol(r) = rtd(r)
                                        END DO
                                        DO s = 1, nrot
@@ -6592,6 +6594,20 @@ CONTAINS
                                                              response_exact_physical(:, s)) + &
                                                  DOT_PRODUCT(energy_cross_physical(:, s), &
                                                              response_exact_physical(:, r)))
+                                             IF (exact_density_response_ready) &
+                                                projected_term = projected_term + 0.5_dp* &
+                                                   (DOT_PRODUCT(energy_cross_physical(:, r), &
+                                                                response_density_exact(:, s)) + &
+                                                    DOT_PRODUCT(energy_cross_density(:, r), &
+                                                                response_exact_physical(:, s)) + &
+                                                    DOT_PRODUCT(energy_cross_density(:, r), &
+                                                                response_density_exact(:, s)) + &
+                                                    DOT_PRODUCT(energy_cross_physical(:, s), &
+                                                                response_density_exact(:, r)) + &
+                                                    DOT_PRODUCT(energy_cross_density(:, s), &
+                                                                response_exact_physical(:, r)) + &
+                                                    DOT_PRODUCT(energy_cross_density(:, s), &
+                                                                response_density_exact(:, r)))
                                              schur(r, s) = schur(r, s) - projected_term
                                           END DO
                                        END DO
@@ -6836,6 +6852,9 @@ CONTAINS
                                              MATMUL(response_exact_raw, projector_physical_direct_sol)
                                           projector_physical_direct_model_e(:) = MATMUL(response_exact_physical, &
                                                                                          projector_physical_direct_sol)
+                                          IF (exact_density_response_ready) &
+                                             projector_physical_direct_model_e(:) = projector_physical_direct_model_e(:) + &
+                                                MATMUL(response_density_exact, projector_physical_direct_sol)
                                           CALL project_kpoint_ot_schur_response(projector_physical_direct_rx_e, &
                                              occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                           CALL project_kpoint_ot_schur_response(projector_physical_direct_model_e, &
