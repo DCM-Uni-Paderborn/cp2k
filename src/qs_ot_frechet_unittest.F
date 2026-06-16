@@ -15,7 +15,8 @@ PROGRAM qs_ot_frechet_unittest
         dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: default_output_unit
-   USE mathlib,                         ONLY: diag_complex
+   USE mathlib,                         ONLY: diamat_all,&
+                                              diag_complex
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_world_finalize,&
                                               mp_world_init
@@ -99,6 +100,8 @@ PROGRAM qs_ot_frechet_unittest
                                                           5.0E-12_dp, nfail)
    CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
                                                        5.0E-12_dp, nfail)
+   CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
+                                                  5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -3726,6 +3729,292 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_coupled_schur
+
+! **************************************************************************************************
+!> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
+! **************************************************************************************************
+   SUBROUTINE check_projector_modal_response_sign_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 3, nrot = 4
+
+      INTEGER                                            :: i, imode
+      REAL(KIND=dp)                                      :: active, applied_weight_diag, applied_weight_ref, &
+                                                            applied_weight_rot, base_weight, c, cross_drop_diag, &
+                                                            cross_drop_rot, drop_diag, drop_ref, drop_rot, err, &
+                                                            eval_abs_avg, mode_norm, mode_weight, neg_balance, &
+                                                            neg_coeff_diag, neg_coeff_rot, neg_drop_diag, &
+                                                            neg_drop_rot, neg_fraction_diag, neg_fraction_ref, &
+                                                            neg_fraction_rot, neg_norm_diag, &
+                                                            neg_weight_sum, pos_coeff_diag, pos_coeff_rot, &
+                                                            pos_drop_diag, pos_drop_rot, pos_weight_sum, &
+                                                            raw_neg_fraction_diag, raw_neg_fraction_ref, &
+                                                            raw_neg_fraction_rot, raw_neg_sum, response_total_sum, &
+                                                            s, spectral_weight, step_weight_sum, target_neg, target_pos
+      REAL(KIND=dp), DIMENSION(ne)                       :: cand_diag, cand_ref, cand_rot, corr_ref, curv, &
+                                                            energy_base, grad_e, mode_rx, response_base, &
+                                                            response_neg_ref, response_pos_ref
+      REAL(KIND=dp), DIMENSION(nrot)                     :: eval_diag, step_diag, step_rot
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: response_delta_diag, response_delta_rot, &
+                                                            response_exact_diag, response_exact_rot, response_raw
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: delta_diag, delta_rot, q, rot_hessian
+
+      base_weight = 0.42_dp
+      target_pos = 0.63_dp
+      target_neg = 0.37_dp
+      curv(:) = [0.52_dp, 0.81_dp, 0.34_dp]
+      response_base(:) = [0.08_dp, -0.04_dp, 0.03_dp]
+      energy_base(:) = [0.03_dp, -0.02_dp, 0.01_dp]
+      eval_diag(:) = [0.20_dp, -0.32_dp, 0.07_dp, -0.18_dp]
+      step_diag(:) = [0.40_dp, -0.25_dp, 0.30_dp, 0.18_dp]
+
+      response_delta_diag(:, 1) = [0.20_dp, -0.10_dp, 0.06_dp]
+      response_delta_diag(:, 2) = [-0.12_dp, 0.04_dp, 0.15_dp]
+      response_delta_diag(:, 3) = [0.05_dp, 0.11_dp, -0.07_dp]
+      response_delta_diag(:, 4) = [0.09_dp, -0.08_dp, 0.04_dp]
+      response_raw(:, :) = 0.0_dp
+      response_exact_diag(:, :) = response_delta_diag(:, :)
+
+      response_pos_ref(:) = 0.0_dp
+      response_neg_ref(:) = 0.0_dp
+      response_total_sum = 0.0_dp
+      raw_neg_sum = 0.0_dp
+      eval_abs_avg = SUM(ABS(eval_diag(:)))/REAL(nrot, KIND=dp)
+      DO imode = 1, nrot
+         mode_rx(:) = step_diag(imode)*response_delta_diag(:, imode)
+         mode_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
+         response_total_sum = response_total_sum + mode_norm
+         IF (eval_diag(imode) < 0.0_dp) raw_neg_sum = raw_neg_sum + mode_norm
+      END DO
+      raw_neg_fraction_ref = raw_neg_sum/response_total_sum
+      neg_balance = SQRT((response_total_sum - raw_neg_sum)/raw_neg_sum)
+      neg_balance = MIN(1.0_dp, MAX(0.0_dp, neg_balance))
+
+      step_weight_sum = DOT_PRODUCT(step_diag(:), step_diag(:))
+      pos_weight_sum = 0.0_dp
+      neg_weight_sum = 0.0_dp
+      DO imode = 1, nrot
+         mode_rx(:) = step_diag(imode)*response_delta_diag(:, imode)
+         spectral_weight = 1.0_dp
+         IF (eval_diag(imode) < 0.0_dp) THEN
+            spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(eval_diag(imode))/eval_abs_avg)
+            spectral_weight = spectral_weight*neg_balance
+         END IF
+         mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
+         IF (eval_diag(imode) < 0.0_dp) THEN
+            response_neg_ref(:) = response_neg_ref(:) + mode_weight*mode_rx(:)
+            neg_weight_sum = neg_weight_sum + mode_weight*step_diag(imode)*step_diag(imode)
+         ELSE
+            response_pos_ref(:) = response_pos_ref(:) + mode_weight*mode_rx(:)
+            pos_weight_sum = pos_weight_sum + mode_weight*step_diag(imode)*step_diag(imode)
+         END IF
+      END DO
+
+      corr_ref(:) = target_pos*response_pos_ref(:) - target_neg*response_neg_ref(:)
+      cand_ref(:) = response_base(:) + corr_ref(:)
+      grad_e(:) = curv(:)*energy_base(:) + curv(:)*corr_ref(:)
+      drop_ref = 0.5_dp*DOT_PRODUCT(curv(:)*corr_ref(:), corr_ref(:))
+      neg_norm_diag = DOT_PRODUCT(curv(:)*(target_neg*response_neg_ref(:)), &
+                                  target_neg*response_neg_ref(:))
+      neg_fraction_ref = neg_norm_diag/(2.0_dp*drop_ref)
+      applied_weight_ref = (target_pos*pos_weight_sum + target_neg*neg_weight_sum)/step_weight_sum
+
+      rot_hessian(:, :) = 0.0_dp
+      delta_diag(:, :) = 0.0_dp
+      DO i = 1, nrot
+         delta_diag(i, i) = eval_diag(i)
+      END DO
+      CALL dense_projector_modal_response_candidate(rot_hessian, delta_diag, step_diag, response_raw, &
+                                                    response_exact_diag, curv, grad_e, energy_base, &
+                                                    response_base, base_weight, cand_diag, applied_weight_diag, &
+                                                    drop_diag, neg_fraction_diag, raw_neg_fraction_diag, &
+                                                    pos_drop_diag, neg_drop_diag, cross_drop_diag, &
+                                                    pos_coeff_diag, neg_coeff_diag)
+
+      q(:, :) = 0.0_dp
+      DO i = 1, nrot
+         q(i, i) = 1.0_dp
+      END DO
+      c = COS(0.37_dp)
+      s = SIN(0.37_dp)
+      q(1, 1) = c
+      q(2, 2) = c
+      q(1, 2) = -s
+      q(2, 1) = s
+      c = COS(-0.28_dp)
+      s = SIN(-0.28_dp)
+      q(3, 3) = c
+      q(4, 4) = c
+      q(3, 4) = -s
+      q(4, 3) = s
+      delta_rot(:, :) = MATMUL(q, MATMUL(delta_diag, TRANSPOSE(q)))
+      step_rot(:) = MATMUL(q, step_diag)
+      response_delta_rot(:, :) = MATMUL(response_delta_diag, TRANSPOSE(q))
+      response_exact_rot(:, :) = response_delta_rot(:, :)
+      CALL dense_projector_modal_response_candidate(rot_hessian, delta_rot, step_rot, response_raw, &
+                                                    response_exact_rot, curv, grad_e, energy_base, &
+                                                    response_base, base_weight, cand_rot, applied_weight_rot, &
+                                                    drop_rot, neg_fraction_rot, raw_neg_fraction_rot, &
+                                                    pos_drop_rot, neg_drop_rot, cross_drop_rot, &
+                                                    pos_coeff_rot, neg_coeff_rot)
+
+      err = MAXVAL(ABS(cand_diag(:) - cand_ref(:)))
+      err = MAX(err, MAXVAL(ABS(cand_rot(:) - cand_ref(:))))
+      err = MAX(err, ABS(drop_diag - drop_ref), ABS(drop_rot - drop_ref))
+      err = MAX(err, ABS(drop_diag - (pos_drop_diag + neg_drop_diag + cross_drop_diag)), &
+                ABS(drop_rot - (pos_drop_rot + neg_drop_rot + cross_drop_rot)))
+      err = MAX(err, ABS(raw_neg_fraction_diag - raw_neg_fraction_ref), &
+                ABS(raw_neg_fraction_rot - raw_neg_fraction_ref))
+      err = MAX(err, ABS(neg_fraction_diag - neg_fraction_ref), &
+                ABS(neg_fraction_rot - neg_fraction_ref))
+      err = MAX(err, ABS(applied_weight_diag - applied_weight_ref), &
+                ABS(applied_weight_rot - applied_weight_ref))
+      err = MAX(err, ABS(pos_coeff_diag - target_pos), ABS(pos_coeff_rot - target_pos))
+      err = MAX(err, ABS(neg_coeff_diag - target_neg), ABS(neg_coeff_rot - target_neg))
+
+      active = MAXVAL(ABS(cand_ref(:) - response_base(:)))
+      IF (err > tol .OR. active < 1.0E-4_dp .OR. raw_neg_fraction_ref < 0.1_dp .OR. &
+          raw_neg_fraction_ref > 0.9_dp .OR. neg_fraction_ref <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/rawneg/corrneg", err, active, raw_neg_fraction_ref, neg_fraction_ref
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/rawneg/corrneg", err, active, raw_neg_fraction_ref, neg_fraction_ref
+      END IF
+
+   END SUBROUTINE check_projector_modal_response_sign_model
+
+! **************************************************************************************************
+!> \brief Dense copy of the finite Projector-Hessian modal response algebra.
+! **************************************************************************************************
+   SUBROUTINE dense_projector_modal_response_candidate(rot_hessian, rot_hessian_projector, step_rot, &
+                                                       response_raw, response_exact, curv, grad_e, energy_base, &
+                                                       response_base, base_weight, response_candidate, applied_weight, &
+                                                       correction_drop, correction_negative_fraction, &
+                                                       raw_negative_fraction, positive_drop, negative_drop, cross_drop, &
+                                                       positive_coeff, negative_coeff)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
+                                                            response_raw, response_exact
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, energy_base, grad_e, response_base, step_rot
+      REAL(KIND=dp), INTENT(IN)                          :: base_weight
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: response_candidate
+      REAL(KIND=dp), INTENT(OUT)                         :: applied_weight, correction_drop, &
+                                                            correction_negative_fraction, cross_drop, negative_drop, &
+                                                            negative_coeff, positive_coeff, positive_drop, &
+                                                            raw_negative_fraction
+
+      INTEGER                                            :: imode, nrot_local
+      REAL(KIND=dp)                                      :: coeff_det, coeff_negative, coeff_positive, eval_abs_avg, &
+                                                            g1, g2, h11, h12, h22, mode_norm, mode_sign, mode_weight, &
+                                                            negative_balance, negative_norm, negative_weight_sum, &
+                                                            positive_sum, positive_weight_sum, raw_negative_sum, &
+                                                            response_total_sum, spectral_weight, step_weight, &
+                                                            step_weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_rx, response_corr, &
+                                                            response_neg, response_pos
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
+
+      applied_weight = 0.0_dp
+      correction_drop = 0.0_dp
+      correction_negative_fraction = 0.0_dp
+      cross_drop = 0.0_dp
+      negative_coeff = 0.0_dp
+      negative_drop = 0.0_dp
+      positive_coeff = 0.0_dp
+      positive_drop = 0.0_dp
+      raw_negative_fraction = 0.0_dp
+      response_candidate(:) = response_base(:)
+      IF (base_weight <= EPSILON(base_weight)) RETURN
+
+      nrot_local = SIZE(rot_hessian, 1)
+      ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_rx(SIZE(curv)), &
+                response_corr(SIZE(curv)), response_neg(SIZE(curv)), response_pos(SIZE(curv)), &
+                mode_vec(nrot_local, nrot_local))
+      response_corr(:) = 0.0_dp
+      response_neg(:) = 0.0_dp
+      response_pos(:) = 0.0_dp
+      mode_vec(:, :) = 0.5_dp*((rot_hessian_projector(:, :) - rot_hessian(:, :)) + &
+                               TRANSPOSE(rot_hessian_projector(:, :) - rot_hessian(:, :)))
+      CALL diamat_all(mode_vec, mode_eval)
+      mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+      eval_abs_avg = SUM(ABS(mode_eval(:)))/REAL(MAX(1, nrot_local), KIND=dp)
+
+      response_total_sum = 0.0_dp
+      raw_negative_sum = 0.0_dp
+      DO imode = 1, nrot_local
+         IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
+         mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
+         mode_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
+         response_total_sum = response_total_sum + MAX(0.0_dp, mode_norm)
+         IF (mode_eval(imode) < 0.0_dp) raw_negative_sum = raw_negative_sum + MAX(0.0_dp, mode_norm)
+      END DO
+      IF (response_total_sum > EPSILON(response_total_sum)) &
+         raw_negative_fraction = raw_negative_sum/response_total_sum
+      positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
+      negative_balance = 0.0_dp
+      IF (raw_negative_sum > EPSILON(raw_negative_sum)) negative_balance = SQRT(positive_sum/raw_negative_sum)
+      negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
+
+      step_weight_sum = DOT_PRODUCT(mode_coeff(:), mode_coeff(:))
+      negative_weight_sum = 0.0_dp
+      positive_weight_sum = 0.0_dp
+      DO imode = 1, nrot_local
+         IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
+         spectral_weight = 1.0_dp
+         mode_sign = 1.0_dp
+         IF (mode_eval(imode) < 0.0_dp) THEN
+            mode_sign = -1.0_dp
+            spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(mode_eval(imode))/ &
+                                         MAX(eval_abs_avg, EPSILON(eval_abs_avg)))
+            spectral_weight = spectral_weight*negative_balance
+         END IF
+         mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
+         IF (mode_weight <= EPSILON(mode_weight)) CYCLE
+         mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
+         step_weight = mode_coeff(imode)*mode_coeff(imode)
+         IF (mode_sign > 0.0_dp) THEN
+            response_pos(:) = response_pos(:) + mode_weight*mode_rx(:)
+            positive_weight_sum = positive_weight_sum + mode_weight*step_weight
+         ELSE
+            response_neg(:) = response_neg(:) + mode_weight*mode_rx(:)
+            negative_weight_sum = negative_weight_sum + mode_weight*step_weight
+         END IF
+      END DO
+
+      h11 = DOT_PRODUCT(curv(:)*response_pos(:), response_pos(:))
+      h12 = -DOT_PRODUCT(curv(:)*response_pos(:), response_neg(:))
+      h22 = DOT_PRODUCT(curv(:)*response_neg(:), response_neg(:))
+      g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
+      g2 = -DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
+      coeff_positive = 1.0_dp
+      coeff_negative = 1.0_dp
+      coeff_det = h11*h22 - h12*h12
+      IF (coeff_det > EPSILON(coeff_det)) THEN
+         coeff_positive = (g1*h22 - g2*h12)/coeff_det
+         coeff_negative = (h11*g2 - h12*g1)/coeff_det
+         coeff_positive = MIN(1.0_dp, MAX(0.0_dp, coeff_positive))
+         coeff_negative = MIN(1.0_dp, MAX(0.0_dp, coeff_negative))
+      END IF
+
+      positive_coeff = coeff_positive
+      negative_coeff = coeff_negative
+      response_corr(:) = coeff_positive*response_pos(:) - coeff_negative*response_neg(:)
+      response_candidate(:) = response_base(:) + response_corr(:)
+      positive_drop = 0.5_dp*coeff_positive*coeff_positive*MAX(0.0_dp, h11)
+      negative_drop = 0.5_dp*coeff_negative*coeff_negative*MAX(0.0_dp, h22)
+      cross_drop = coeff_positive*coeff_negative*h12
+      correction_drop = 0.5_dp*MAX(0.0_dp, DOT_PRODUCT(curv(:)*response_corr(:), response_corr(:)))
+      negative_norm = DOT_PRODUCT(curv(:)*(coeff_negative*response_neg(:)), coeff_negative*response_neg(:))
+      IF (step_weight_sum > EPSILON(step_weight_sum)) &
+         applied_weight = (coeff_positive*positive_weight_sum + coeff_negative*negative_weight_sum)/step_weight_sum
+      IF (correction_drop > EPSILON(correction_drop)) &
+         correction_negative_fraction = negative_norm/(2.0_dp*correction_drop)
+      DEALLOCATE (mode_coeff, mode_eval, mode_rx, response_corr, response_neg, response_pos, mode_vec)
+
+   END SUBROUTINE dense_projector_modal_response_candidate
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
