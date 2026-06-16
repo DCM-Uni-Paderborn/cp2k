@@ -2529,7 +2529,12 @@ CONTAINS
                                                                projector_diagref_correction_ratio, &
                                                                projector_diagref_quality_for_selection, &
                                                                projector_diagref_quality_ratio, &
+                                                               projector_density_audit_amplification_quality, &
+                                                               projector_density_audit_lowcurv_quality, &
+                                                               projector_density_audit_quality_ratio, &
                                                                projector_density_predicted_drop, &
+                                                               projector_density_lowcurv_quality, &
+                                                               projector_density_lowcurv_ratio, &
                                                                projector_density_quality_ratio, &
                                                                projector_response_predicted_drop, &
                                                                projector_response_quality_ratio, &
@@ -2585,6 +2590,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_pending = .FALSE.
+               local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             RETURN
          END IF
@@ -2992,26 +2998,87 @@ CONTAINS
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
 
             projector_density_predicted_drop = local_ot_env(1)%schur_projector_density_drop
+            projector_density_lowcurv_ratio = 0.0_dp
+            projector_density_lowcurv_quality = 0.0_dp
             projector_density_quality_ratio = 0.0_dp
+            IF (projector_density_predicted_drop > EPSILON(projector_density_predicted_drop)) &
+               projector_density_lowcurv_ratio = &
+                  local_ot_env(1)%schur_projector_density_lowcurv/projector_density_predicted_drop
             IF (mermin_search .AND. local_ot_env(1)%schur_projector_density_pending .AND. &
                 projector_density_predicted_drop > EPSILON(projector_density_predicted_drop) .AND. &
                 measured_drop > 0.0_dp) THEN
                projector_density_quality_ratio = measured_drop/projector_density_predicted_drop
+               projector_density_lowcurv_quality = &
+                  projector_density_lowcurv_ratio*projector_density_quality_ratio
                local_ot_env(1)%schur_projector_density_quality = projector_density_quality_ratio
                samples = MIN(local_ot_env(1)%schur_projector_density_quality_samples + 1, HUGE(samples) - 1)
                local_ot_env(1)%schur_projector_density_quality_samples = samples
                IF (samples == 1) THEN
                   local_ot_env(1)%schur_projector_density_quality_ema = projector_density_quality_ratio
+                  local_ot_env(1)%schur_projector_density_lowcurv_ema = projector_density_lowcurv_ratio
+                  local_ot_env(1)%schur_projector_density_lowcurv_quality_ema = &
+                     projector_density_lowcurv_quality
                ELSE
                   local_ot_env(1)%schur_projector_density_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_density_quality_ema + &
                      ot_kp_schur_quality_ema_alpha*projector_density_quality_ratio
+                  local_ot_env(1)%schur_projector_density_lowcurv_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_lowcurv_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_density_lowcurv_ratio
+                  local_ot_env(1)%schur_projector_density_lowcurv_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_lowcurv_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_density_lowcurv_quality
                END IF
                local_ot_env(1)%schur_projector_density_drop_sum = &
                   local_ot_env(1)%schur_projector_density_drop_sum + projector_density_predicted_drop
                local_ot_env(1)%schur_projector_density_measured_sum = &
                   local_ot_env(1)%schur_projector_density_measured_sum + measured_drop
+            END IF
+            projector_density_audit_quality_ratio = calibrated_quality_ratio
+            IF (projector_density_audit_quality_ratio <= 0.0_dp) &
+               projector_density_audit_quality_ratio = quality_ratio
+            IF (mermin_search .AND. local_ot_env(1)%schur_projector_density_audit_pending .AND. &
+                projector_density_audit_quality_ratio > 0.0_dp .AND. measured_drop > 0.0_dp) THEN
+               projector_density_audit_lowcurv_quality = &
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv* &
+                  projector_density_audit_quality_ratio
+               projector_density_audit_amplification_quality = &
+                  local_ot_env(1)%schur_projector_density_audit_amplification* &
+                  projector_density_audit_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_density_audit_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_density_audit_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv_ema = &
+                     local_ot_env(1)%schur_projector_density_audit_lowcurv
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv_quality_ema = &
+                     projector_density_audit_lowcurv_quality
+                  local_ot_env(1)%schur_projector_density_audit_amplification_ema = &
+                     local_ot_env(1)%schur_projector_density_audit_amplification
+                  local_ot_env(1)%schur_projector_density_audit_amplification_quality_ema = &
+                     projector_density_audit_amplification_quality
+               ELSE
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_audit_lowcurv_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     local_ot_env(1)%schur_projector_density_audit_lowcurv
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_audit_lowcurv_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_density_audit_lowcurv_quality
+                  local_ot_env(1)%schur_projector_density_audit_amplification_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_audit_amplification_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     local_ot_env(1)%schur_projector_density_audit_amplification
+                  local_ot_env(1)%schur_projector_density_audit_amplification_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_audit_amplification_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_density_audit_amplification_quality
+               END IF
             END IF
 
             projector_physical_predicted_drop = local_ot_env(1)%schur_projector_physical_drop
@@ -3363,6 +3430,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_physical_pending = .FALSE.
             local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_pending = .FALSE.
+            local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
 
          logger => cp_get_default_logger()
          projector_physical_weight_quality = 0.0_dp
@@ -3521,14 +3589,26 @@ CONTAINS
                   local_ot_env(1)%schur_projector_diagref_correction_ratio_ema, &
                   local_ot_env(1)%schur_projector_diagref_negative_ema, &
                   local_ot_env(1)%schur_projector_diagref_candidate_enabled
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
-                  " OT Schur LS projector density n ratio ema pred meas latest:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES16.8))') &
+                  " OT Schur LS projector density n ratio ema pred meas latest lowcurv lcema lcqema:", &
                   local_ot_env(1)%schur_projector_density_quality_samples, &
                   local_ot_env(1)%schur_projector_density_quality, &
                   local_ot_env(1)%schur_projector_density_quality_ema, &
                   local_ot_env(1)%schur_projector_density_drop_sum, &
                   local_ot_env(1)%schur_projector_density_measured_sum, &
-                  projector_density_predicted_drop
+                  projector_density_predicted_drop, projector_density_lowcurv_ratio, &
+                  local_ot_env(1)%schur_projector_density_lowcurv_ema, &
+                  local_ot_env(1)%schur_projector_density_lowcurv_quality_ema
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+                  " OT Schur LS projector density audit n lowcurv lcema lcqema amp aema aqema q:", &
+                  local_ot_env(1)%schur_projector_density_audit_samples, &
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv, &
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv_ema, &
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_audit_amplification, &
+                  local_ot_env(1)%schur_projector_density_audit_amplification_ema, &
+                  local_ot_env(1)%schur_projector_density_audit_amplification_quality_ema, &
+                  projector_density_audit_quality_ratio
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
                   " OT Schur LS projector physical n ratio ema pred meas metric mema weight wema neg enabled:", &
                   local_ot_env(1)%schur_projector_physical_quality_samples, &
@@ -3764,6 +3844,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
                local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_pending = .FALSE.
+               local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
@@ -3797,6 +3878,9 @@ CONTAINS
                local_ot_env(1)%schur_projector_diagref_correction_drop = 0.0_dp
                local_ot_env(1)%schur_projector_diagref_negative = 0.0_dp
                local_ot_env(1)%schur_projector_density_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_density_lowcurv = 0.0_dp
+               local_ot_env(1)%schur_projector_density_audit_amplification = 0.0_dp
+               local_ot_env(1)%schur_projector_density_audit_lowcurv = 0.0_dp
                local_ot_env(1)%schur_projector_physical_drop = 0.0_dp
                local_ot_env(1)%schur_projector_physical_metric = 0.0_dp
                local_ot_env(1)%schur_projector_physical_weight = 0.0_dp
@@ -7875,6 +7959,22 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_drop = &
                      local_ot_env(1)%schur_projector_density_drop + &
                      projector_physical_direct_density_model_calibrated_drop
+                  local_ot_env(1)%schur_projector_density_lowcurv = &
+                     local_ot_env(1)%schur_projector_density_lowcurv + &
+                     projector_physical_direct_density_model_calibrated_drop* &
+                     projector_physical_density_low_curv_fraction
+               END IF
+               IF (exact_density_response_ready) THEN
+                  local_ot_env(1)%schur_projector_density_audit_pending = .TRUE.
+                  local_ot_env(1)%schur_projector_density_audit_lowcurv = &
+                     MAX(local_ot_env(1)%schur_projector_density_audit_lowcurv, &
+                         projector_physical_density_low_curv_fraction)
+                  IF (projector_physical_density_rhs_abs_max > &
+                      EPSILON(projector_physical_density_rhs_abs_max)) &
+                     local_ot_env(1)%schur_projector_density_audit_amplification = &
+                        MAX(local_ot_env(1)%schur_projector_density_audit_amplification, &
+                            projector_physical_density_response_abs_max/ &
+                            projector_physical_density_rhs_abs_max)
                END IF
                IF (projector_physical_candidate_ready .AND. &
                    projector_physical_model_calibrated_drop > EPSILON(projector_physical_model_calibrated_drop)) THEN
