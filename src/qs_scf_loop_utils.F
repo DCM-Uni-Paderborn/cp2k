@@ -2285,7 +2285,11 @@ CONTAINS
 
       INTEGER                                            :: group, ikpoint, imo, ispin, local_channel, &
                                                             local_kpoint, ngroups, nmo
-      REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
+      ! Keep the auxiliary-energy regularization separate from the rotation
+      ! Schur floor; later metallic calibration can then tune one channel
+      ! without silently changing the other.
+      REAL(KIND=dp), PARAMETER                           :: energy_curvature_floor = 1.0_dp, &
+                                                            rotation_curvature_floor = 1.0_dp
 
       REAL(KIND=dp)                                      :: delta, gvalue, maxocc, mu, sigma, &
                                                             rayleigh_edge_gap, tether_response, &
@@ -3656,7 +3660,7 @@ CONTAINS
                   total_curv_sum(group) = total_curv_sum(group) + curvature
                   total_curv_max(group) = MAX(total_curv_max(group), curvature)
                   IF (curvature > EPSILON(curvature)) THEN
-                     precond_weight = MAX(curvature, curvature_floor)
+                     precond_weight = MAX(curvature, energy_curvature_floor)
                      local_ot_env(local_channel)%ener_gx(imo) = &
                         local_ot_env(local_channel)%ener_gx(imo)/precond_weight
                      precond_sum(group) = precond_sum(group) + &
@@ -4311,7 +4315,7 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_plateau(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
-         rot_floor(:) = curvature_floor
+         rot_floor(:) = rotation_curvature_floor
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
          response_abs_step = 0.0_dp
@@ -4398,7 +4402,7 @@ CONTAINS
          projector_physical_residual_delta_max = 0.0_dp
          projector_physical_residual_diag_avg = 0.0_dp
          projector_physical_trace_balance = 0.0_dp
-         rot_floor_min = curvature_floor
+         rot_floor_min = rotation_curvature_floor
          schur_diag_min = HUGE(1.0_dp)
          constrained_diag_shift_avg = 0.0_dp
          constrained_direction_scale = 0.0_dp
@@ -4562,7 +4566,7 @@ CONTAINS
             projector_physical_direct_norm_rotation = 0.0_dp
             projector_physical_direct_normp = 0.0_dp
             projector_physical_direct_norm_ratio = 0.0_dp
-            projector_physical_direct_rot_floor_min = curvature_floor
+            projector_physical_direct_rot_floor_min = rotation_curvature_floor
             projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
             projector_physical_direct_schur_eval_max = 0.0_dp
             projector_physical_direct_schur_eval_min = 0.0_dp
@@ -4705,7 +4709,7 @@ CONTAINS
          split_response_abs_trust = HUGE(1.0_dp)
          split_response_trust = HUGE(1.0_dp)
          split_response_trust_factor = 1.0_dp
-         split_rot_floor_min = curvature_floor
+         split_rot_floor_min = rotation_curvature_floor
          split_schur_diag_min = HUGE(1.0_dp)
             exact_density_plateau_response_ready = .FALSE.
             exact_density_response_ready = .FALSE.
@@ -4899,7 +4903,7 @@ CONTAINS
          z_weight = 0.0_dp
          DO ie = 1, ne
             IF (curv(ie) > EPSILON(curv(ie))) THEN
-               z_e(ie) = grad_e(ie)/MAX(curv(ie), curvature_floor)
+               z_e(ie) = grad_e(ie)/MAX(curv(ie), energy_curvature_floor)
                z_shift = z_shift + curv(ie)*z_e(ie)
                z_weight = z_weight + curv(ie)
             END IF
@@ -5605,7 +5609,7 @@ CONTAINS
                projector_physical_direct_curv_diag_max = 0.0_dp
                projector_physical_direct_curv_eval_max = 0.0_dp
                projector_physical_direct_curv_eval_min = 0.0_dp
-               projector_physical_direct_rot_floor_min = curvature_floor
+               projector_physical_direct_rot_floor_min = rotation_curvature_floor
                projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
                projector_physical_direct_schur_eval_max = 0.0_dp
                projector_physical_direct_schur_eval_min = 0.0_dp
@@ -5757,7 +5761,7 @@ CONTAINS
             response_penalty_diag_sum = 0.0_dp
             rot_diag_sum = 0.0_dp
             tether_response_diag_sum = 0.0_dp
-            rot_floor_min = curvature_floor
+            rot_floor_min = rotation_curvature_floor
             schur_diag_min = HUGE(1.0_dp)
 
             DO s = 1, nrot
@@ -5802,7 +5806,7 @@ CONTAINS
             IF (schur_attempt <= 2) schur(:, :) = split_curvature_scale*schur(:, :)
             DO r = 1, nrot
                IF (projector_diag_compensation > 0.0_dp) schur(r, r) = schur(r, r) + projector_diag_compensation
-               row_floor = curvature_floor
+               row_floor = rotation_curvature_floor
                IF (schur_attempt <= 3) THEN
                   row_floor = rot_floor(r)
                   IF (exact_attempt_response .AND. exact_physical_response_ready .AND. &
@@ -6309,7 +6313,7 @@ CONTAINS
                                        END DO
                                        projector_physical_direct_diag_shift_sum = 0.0_dp
                                        projector_physical_direct_diag_shift_max = 0.0_dp
-                                       projector_physical_direct_rot_floor_min = curvature_floor
+                                       projector_physical_direct_rot_floor_min = rotation_curvature_floor
                                        projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
                                        DO r = 1, nrot
                                           ! The exact fixed-N Mermin Schur complement has genuinely soft
