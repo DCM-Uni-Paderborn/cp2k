@@ -61,6 +61,8 @@ PROGRAM qs_ot_frechet_unittest
                                                          5.0E-9_dp, nfail)
    CALL check_complex_projector_physical_response_channel("complex projector physical response channel", &
                                                           5.0E-9_dp, nfail)
+   CALL check_complex_projector_physical_hessian_split("complex projector physical Hessian split", &
+                                                       2.0E-6_dp, nfail)
    CALL check_mixed_fixed_n_tether_projector("mixed fixed-N/tether Schur projector", &
                                              5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_cross_projector("mixed fixed-N/tether Schur cross projector", &
@@ -1423,6 +1425,161 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_physical_response_channel
+
+! **************************************************************************************************
+!> \brief Check that the physical Projector-Hessian keeps off-diagonal occupation response.
+!>        The diagonal density response is held fixed here because the production
+!>        Schur model consumes it in the auxiliary-energy response channel.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_physical_hessian_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            fd_step = 1.0E-6_dp, projector_weight = 0.63_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_mat, &
+                                                            occ0, occ_m, occ_p, u
+      INTEGER                                            :: i, ivar, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: active, err
+      REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_docc_im, grad_docc_re, grad_m_im, &
+                                                            grad_m_re, grad_p_im, grad_p_re
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: fixed_hessian, model_hessian, reference_hessian
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.021_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(0.014_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.41_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.026_dp, -0.031_dp, KIND=dp)
+      base(1, 3) = CMPLX(-0.052_dp, 0.017_dp, KIND=dp)
+      base(2, 3) = CMPLX(0.028_dp, 0.037_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(3, 1) = CONJG(base(1, 3))
+      base(3, 2) = CONJG(base(2, 3))
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.051_dp
+      x_re(1, 3) = -0.029_dp
+      x_re(2, 3) = 0.034_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+         END DO
+      END DO
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.016_dp
+      x_im(2, 2) = -0.015_dp
+      x_im(3, 3) = 0.023_dp
+      x_im(1, 2) = -0.024_dp
+      x_im(1, 3) = 0.021_dp
+      x_im(2, 3) = 0.019_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+
+      ivar = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 1
+            ivar = ivar + 1
+            var_i(ivar) = i
+            var_j(ivar) = j
+            var_kind(ivar) = 2
+         END DO
+      END DO
+
+      occ_scale(:) = [1.46_dp, 0.81_dp, 0.28_dp]
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      CALL dense_spectral_occ_projector_from_chc(chc, occ_scale, occ0)
+      occ0(:, :) = projector_weight*occ0(:, :)
+      DO i = 1, n
+         occ0(i, i) = occ0(i, i) + CMPLX((1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+
+      DO s = 1, nrot
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ0, grad_p_re, grad_p_im, eps_diag)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ0, grad_m_re, grad_m_im, eps_diag)
+         DO r = 1, nrot
+            SELECT CASE (var_kind(r))
+            CASE (1)
+               fixed_hessian(r, s) = &
+                  2.0_dp*(grad_p_re(var_i(r), var_j(r)) - grad_m_re(var_i(r), var_j(r)))/(2.0_dp*fd_step)
+            CASE (2)
+               fixed_hessian(r, s) = &
+                  2.0_dp*(grad_p_im(var_i(r), var_j(r)) - grad_m_im(var_i(r), var_j(r)))/(2.0_dp*fd_step)
+            END SELECT
+         END DO
+
+         CALL dense_rotation_u(x_p_re, x_p_im, u)
+         chc_p(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+         CALL dense_rotation_u(x_m_re, x_m_im, u)
+         chc_m(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+
+         CALL dense_spectral_occ_projector_from_chc(chc_p, occ_scale, occ_p)
+         CALL dense_spectral_occ_projector_from_chc(chc_m, occ_scale, occ_m)
+         occ_p(:, :) = projector_weight*occ_p(:, :)
+         occ_m(:, :) = projector_weight*occ_m(:, :)
+         DO i = 1, n
+            occ_p(i, i) = occ0(i, i)
+            occ_m(i, i) = occ0(i, i)
+         END DO
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_p, grad_p_re, grad_p_im, eps_diag)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_m, grad_m_re, grad_m_im, eps_diag)
+
+         dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
+         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat)
+         docc_mat(:, :) = projector_weight*docc_mat(:, :)
+         DO i = 1, n
+            docc_mat(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         END DO
+         CALL dense_projector_rotation_gradient(x_re, x_im, base, docc_mat, &
+                                                grad_docc_re, grad_docc_im, eps_diag)
+
+         DO r = 1, nrot
+            SELECT CASE (var_kind(r))
+            CASE (1)
+               reference_hessian(r, s) = &
+                  2.0_dp*(grad_p_re(var_i(r), var_j(r)) - grad_m_re(var_i(r), var_j(r)))/(2.0_dp*fd_step)
+               model_hessian(r, s) = fixed_hessian(r, s) + &
+                                     2.0_dp*grad_docc_re(var_i(r), var_j(r))
+            CASE (2)
+               reference_hessian(r, s) = &
+                  2.0_dp*(grad_p_im(var_i(r), var_j(r)) - grad_m_im(var_i(r), var_j(r)))/(2.0_dp*fd_step)
+               model_hessian(r, s) = fixed_hessian(r, s) + &
+                                     2.0_dp*grad_docc_im(var_i(r), var_j(r))
+            END SELECT
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(model_hessian(:, :) - reference_hessian(:, :)))
+      active = MAXVAL(ABS(model_hessian(:, :) - fixed_hessian(:, :)))
+      IF (err > tol .OR. active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active
+      END IF
+
+   END SUBROUTINE check_complex_projector_physical_hessian_split
 
 ! **************************************************************************************************
 !> \brief Dense derivative of the blended projector rotation gradient with respect to occupations.
