@@ -3756,6 +3756,7 @@ CONTAINS
                      projector_offdiag_model_gap_ratio, projector_offdiag_model_gap_trust, &
                      projector_offdiag_norm_energy, projector_offdiag_norm_rotation, projector_offdiag_normp, &
                      projector_offdiag_norm_ratio, projector_offdiag_quality_for_selection, &
+                     projector_offdiag_reference_drop, projector_offdiag_expected_drop_ratio, &
                      projector_offdiag_response_abs_step, projector_offdiag_response_abs_trust_ratio, &
                      projector_offdiag_response_weighted_step, projector_offdiag_response_weighted_trust_ratio, &
                      projector_offdiag_scale_quality, projector_offdiag_trust_quality, &
@@ -4173,6 +4174,8 @@ CONTAINS
                   projector_offdiag_normp = 0.0_dp
                   projector_offdiag_norm_ratio = 0.0_dp
                   projector_offdiag_quality_for_selection = 0.0_dp
+                  projector_offdiag_expected_drop_ratio = 0.0_dp
+                  projector_offdiag_reference_drop = 0.0_dp
                   projector_offdiag_response_abs_step = 0.0_dp
                   projector_offdiag_response_abs_trust_ratio = 0.0_dp
                   projector_offdiag_response_weighted_step = 0.0_dp
@@ -7091,6 +7094,13 @@ CONTAINS
                   END IF
                   IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
                       projector_offdiag_candidate_ready .AND. &
+                      projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop)) THEN
+                     projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
+                     projector_offdiag_expected_drop_ratio = &
+                        projector_offdiag_expected_drop/projector_offdiag_reference_drop
+                  END IF
+                  IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+                      projector_offdiag_candidate_ready .AND. &
                       projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
                       projector_offdiag_expected_drop >= &
                       ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
@@ -7257,6 +7267,13 @@ CONTAINS
                         schur_diag_min = projector_physical_direct_schur_diag_min
                      END IF
                      dense_expected_drop = projector_physical_expected_drop
+                  END IF
+                  IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+                      projector_offdiag_candidate_ready .AND. &
+                      projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop)) THEN
+                     projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
+                     projector_offdiag_expected_drop_ratio = &
+                        projector_offdiag_expected_drop/projector_offdiag_reference_drop
                   END IF
                   IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
                       projector_offdiag_candidate_ready .AND. &
@@ -7628,11 +7645,13 @@ CONTAINS
                               projector_physical_offdiag_mode_quad_abs_ratio, &
                               projector_physical_offdiag_mode_positive_quad, &
                               projector_physical_offdiag_mode_negative_quad
-                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),15(1X,ES16.8))') &
-                              " OT Schur projector offdiag-dP response ready selected exp qsel hq htrust hrratio cdrop mgap "// &
+                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),17(1X,ES16.8))') &
+                              " OT Schur projector offdiag-dP response ready selected exp refdrop eratio qsel "// &
+                              "hq htrust hrratio cdrop mgap "// &
                               "rratio aratio weight sneg rneg pdrop ndrop xdrop:", &
                               projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
-                              projector_offdiag_expected_drop, &
+                              projector_offdiag_expected_drop, projector_offdiag_reference_drop, &
+                              projector_offdiag_expected_drop_ratio, &
                               projector_offdiag_quality_for_selection, projector_offdiag_history_quality, &
                               projector_offdiag_history_trust, projector_offdiag_history_response_ratio, &
                               projector_offdiag_model_calibrated_drop, projector_offdiag_model_gap, &
