@@ -1300,11 +1300,12 @@ CONTAINS
             END IF
          END IF
          IF (smear%do_smear) THEN
-            CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
             IF (PRESENT(added_mos_auto)) THEN
                CALL kpoint_check_added_mos_auto_occupation(wocc, wkp, smear, nspin, &
                                                            added_mos_auto, nao, my_added_mos_auto_grow)
             END IF
+            IF (.NOT. my_added_mos_auto_grow) &
+               CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
          END IF
          IF (my_added_mos_auto_grow) THEN
             IF (PRESENT(added_mos_auto_grow)) THEN

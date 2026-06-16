@@ -1278,7 +1278,8 @@ CONTAINS
                END IF
             ELSE
                CALL set_mo_occupation(mo_set=mos(ispin), &
-                                      smear=scf_control%smear)
+                                      smear=scf_control%smear, &
+                                      emit_warnings=.NOT. do_kpoints)
             END IF
          END IF
       END DO

@@ -6344,7 +6344,7 @@ CONTAINS
                   CALL audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, sol, &
                                                                 response_exact_raw, response_exact, curv, &
                                                                 occ_curv, tether_curv, occ_curv_projection_sum, &
-                                                                channel_nmo, e_offset, .FALSE., &
+                                                                channel_nmo, e_offset, .TRUE., &
                                                                 projector_coupled_weight, residual_delta, &
                                                                 projector_mode_history_quality, &
                                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -6436,7 +6436,7 @@ CONTAINS
                                                                    rot_hessian_projector_physical, sol, &
                                                                    response_exact_raw, response_exact_physical, curv, &
                                                                    occ_curv, tether_curv, occ_curv_projection_sum, &
-                                                                   channel_nmo, e_offset, .FALSE., &
+                                                                   channel_nmo, e_offset, .TRUE., &
                                                                    projector_coupled_weight, residual_delta, &
                                                                    projector_mode_history_quality, &
                                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -6532,7 +6532,7 @@ CONTAINS
                                                                               projector_physical_direct_delta, sol, &
                                                                               response_exact_raw, response_exact_physical, curv, &
                                                                               occ_curv, tether_curv, occ_curv_projection_sum, &
-                                                                              channel_nmo, e_offset, .FALSE., &
+                                                                              channel_nmo, e_offset, .TRUE., &
                                                                               projector_coupled_weight, residual_delta, &
                                                                               projector_offdiag_history_quality, &
                                                                               projector_offdiag_history_trust, &
@@ -7396,7 +7396,7 @@ CONTAINS
                                                 rot_hessian_projector_physical_active, &
                                                 projector_physical_direct_sol, response_exact_raw, &
                                                 response_exact_physical, curv, occ_curv, tether_curv, &
-                                                occ_curv_projection_sum, channel_nmo, e_offset, .FALSE., &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
                                                 projector_coupled_weight, &
                                                 residual_delta, projector_mode_history_quality, &
                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -7418,7 +7418,7 @@ CONTAINS
                                                    rot_hessian_projector_physical_diagref, &
                                                    projector_physical_direct_sol, response_exact_raw, &
                                                    response_exact_physical, curv, occ_curv, tether_curv, &
-                                                   occ_curv_projection_sum, channel_nmo, e_offset, .FALSE., &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
                                                    projector_coupled_weight, &
                                                    residual_delta, projector_mode_history_quality, &
                                                    local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -9984,6 +9984,12 @@ CONTAINS
             END IF
          END DO
          IF (use_projected_metric) THEN
+            CALL project_kpoint_ot_schur_response(response_pos, occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
+            CALL project_kpoint_ot_schur_response(response_neg, occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
+         END IF
+         IF (use_projected_metric) THEN
             CALL kpoint_ot_mixed_projected_term(response_pos, response_pos, occ_curv, tether_curv, &
                                                 occ_curv_projection_sum, channel_nmo, e_offset, h11)
             CALL kpoint_ot_mixed_projected_term(response_pos, response_neg, occ_curv, tether_curv, &
@@ -10018,6 +10024,9 @@ CONTAINS
          negative_coeff = coeff_negative
          response_corr(:) = coeff_positive*response_pos(:) - coeff_negative*response_neg(:)
          response_candidate(:) = response_base(:) + response_corr(:)
+         IF (use_projected_metric) &
+            CALL project_kpoint_ot_schur_response(response_candidate, occ_curv, tether_curv, &
+                                                  occ_curv_projection_sum, channel_nmo, e_offset)
          positive_drop = 0.5_dp*coeff_positive*coeff_positive*MAX(0.0_dp, h11)
          negative_drop = 0.5_dp*coeff_negative*coeff_negative*MAX(0.0_dp, h22)
          cross_drop = coeff_positive*coeff_negative*h12
