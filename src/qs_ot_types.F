@@ -372,6 +372,18 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_trace_raw_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_active = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_active_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_actual_diag = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_actual_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_actual_free = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_actual_free_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_raw_diag = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_raw_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_raw_free = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_raw_free_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_active_diag = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_active_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_active_free = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_active_free_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_weight_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_metric_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_correction_quality_ema = 0.0_dp
@@ -383,6 +395,12 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_physical_trace_actual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_raw_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_active_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_actual_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_actual_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_raw_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_raw_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_active_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_trace_active_free_quality_ema = 0.0_dp
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
@@ -774,6 +792,18 @@ CONTAINS
       qs_ot_env%schur_projector_physical_trace_raw_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_active = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_active_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_actual_diag = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_actual_diag_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_actual_free = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_actual_free_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_raw_diag = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_raw_diag_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_raw_free = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_raw_free_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_active_diag = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_active_diag_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_active_free = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_active_free_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_weight_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_metric_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_correction_quality_ema = 0.0_dp
@@ -785,6 +815,12 @@ CONTAINS
       qs_ot_env%schur_projector_physical_trace_actual_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_raw_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_active_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_actual_diag_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_actual_free_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_raw_diag_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_raw_free_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_active_diag_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_trace_active_free_quality_ema = 0.0_dp
 
       CALL dbcsr_set(qs_ot_env%matrix_gx, 0.0_dp)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &
