@@ -10121,6 +10121,8 @@ CONTAINS
          gap_tol = SQRT(EPSILON(1.0_dp))*scale
          occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
+         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
+            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_slope)
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
