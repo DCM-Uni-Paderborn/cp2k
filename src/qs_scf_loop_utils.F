@@ -6544,6 +6544,9 @@ CONTAINS
                                                 projector_physical_direct_delta(:, :) = &
                                                    rot_hessian(:, :) + rot_hessian_projector_physical_offdiag(:, :)
                                                 projector_physical_model_e(:) = MATMUL(response_exact_physical, sol)
+                                                IF (exact_density_response_ready) &
+                                                   projector_physical_model_e(:) = projector_physical_model_e(:) + &
+                                                      MATMUL(response_density_exact, sol)
                                                 CALL project_kpoint_ot_schur_response(projector_physical_model_e, &
                                                    occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
