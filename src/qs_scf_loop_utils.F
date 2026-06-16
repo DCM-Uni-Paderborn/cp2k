@@ -10496,6 +10496,11 @@ CONTAINS
                         rot_hessian_projector_physical_offdiag_plateau(r, s) = 2.0_dp*grad_p_im(imo, jmo)
                      END SELECT
                   END DO
+               ELSE
+                  DO r = first_var, last_var
+                     rot_hessian_projector_physical_offdiag_plateau(r, s) = &
+                        rot_hessian_projector_physical_offdiag(r, s)
+                  END DO
                END IF
                DO r = first_var, last_var
                   rot_hessian_projector_physical(r, s) = (1.0_dp - projector_weight)*rot_hessian(r, s)
