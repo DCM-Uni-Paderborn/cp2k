@@ -1282,6 +1282,24 @@ CONTAINS
    END FUNCTION kpoint_ot_shared_occ_slope
 
 ! **************************************************************************************************
+!> \brief Direct-model trace compensation for the physical Projector Schur correction
+!> \param coupled_weight ...
+!> \param direct_delta_diag_avg ...
+!> \param reference_delta_diag_avg ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_direct_trace_compensation(coupled_weight, direct_delta_diag_avg, &
+                                                reference_delta_diag_avg) RESULT(compensation)
+      REAL(KIND=dp), INTENT(IN)                          :: coupled_weight, direct_delta_diag_avg, &
+                                                            reference_delta_diag_avg
+      REAL(KIND=dp)                                      :: compensation
+
+      compensation = MAX(0.0_dp, -coupled_weight*direct_delta_diag_avg)
+      IF (direct_delta_diag_avg > reference_delta_diag_avg) &
+         compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - reference_delta_diag_avg))
+
+   END FUNCTION kpoint_ot_direct_trace_compensation
+
+! **************************************************************************************************
 !> \brief project k-point OT auxiliary energies onto the exact fixed-N Mermin subproblem
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
@@ -6925,40 +6943,43 @@ CONTAINS
                                              END IF
                                              IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
                                                  exact_physical_response_ready .AND. &
-                                        projector_physical_shadow_enabled .AND. &
-                                        projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                                        local_ot_env(1)%schur_projector_mode_quality_samples >= &
-                                        ot_kp_schur_calibration_min_samples) THEN
+                                                 projector_physical_shadow_enabled .AND. &
+                                                 projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                                 local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                                                 ot_kp_schur_calibration_min_samples) THEN
                                        projector_physical_direct_delta(:, :) = &
                                           0.5_dp*((rot_hessian_projector_physical(:, :) - rot_hessian(:, :)) + &
-                                                  TRANSPOSE(rot_hessian_projector_physical(:, :) - rot_hessian(:, :)))
+                                                  TRANSPOSE(rot_hessian_projector_physical(:, :) - &
+                                                            rot_hessian(:, :)))
+                                       projector_physical_direct_delta_diag_avg = 0.0_dp
+                                       DO r = 1, nrot
+                                          projector_physical_direct_delta_diag_avg = &
+                                             projector_physical_direct_delta_diag_avg + &
+                                             projector_physical_direct_delta(r, r)
+                                       END DO
+                                       projector_physical_direct_delta_diag_avg = &
+                                          projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        projector_physical_direct_diag_compensation = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_avg = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_max = 0.0_dp
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
-                                             MAX(0.0_dp, -projector_coupled_weight*projector_physical_delta_diag_avg)
+                                             kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
+                                                projector_physical_direct_delta_diag_avg, &
+                                                projector_hessian_delta_diag_avg)
                                           ! Retain the trace curvature implied by the finite
                                           ! Projector response inside the Direct curvature matrix.
                                           ! This is algebraically the old stabilizing diagonal
                                           ! correction, but it is now part of the physical Schur
                                           ! model instead of a post-solve scalar patch.
-                                          IF (projector_physical_delta_diag_avg > &
-                                              projector_hessian_delta_diag_avg) &
-                                             projector_physical_direct_diag_compensation = &
-                                                MAX(projector_physical_direct_diag_compensation, &
-                                                    projector_coupled_weight* &
-                                                    (projector_physical_delta_diag_avg - &
-                                                     projector_hessian_delta_diag_avg))
                                           DO r = 1, nrot
                                              diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
                                                                      projector_physical_direct_delta(r, r))
                                              projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
                                              IF (projector_physical_direct_delta(r, r) > projected_term) &
                                                 diag_shift = MAX(diag_shift, projector_coupled_weight* &
-                                                                            (projector_physical_direct_delta(r, r) - &
-                                                                             projected_term))
+                                                   (projector_physical_direct_delta(r, r) - projected_term))
                                              projector_physical_direct_diag_compensation_local_avg = &
                                                 projector_physical_direct_diag_compensation_local_avg + diag_shift
                                              projector_physical_direct_diag_compensation_local_max = &
@@ -6968,7 +6989,8 @@ CONTAINS
                                                    projector_physical_direct_diag_compensation_local_fraction + 1.0_dp
                                           END DO
                                           projector_physical_direct_diag_compensation_local_avg = &
-                                             projector_physical_direct_diag_compensation_local_avg/REAL(MAX(1, nrot), KIND=dp)
+                                             projector_physical_direct_diag_compensation_local_avg/ &
+                                             REAL(MAX(1, nrot), KIND=dp)
                                           projector_physical_direct_diag_compensation_local_fraction = &
                                              projector_physical_direct_diag_compensation_local_fraction/ &
                                              REAL(MAX(1, nrot), KIND=dp)

@@ -112,6 +112,8 @@ PROGRAM qs_ot_frechet_unittest
                                                           5.0E-12_dp, nfail)
    CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
                                                        5.0E-12_dp, nfail)
+   CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
+                                                  5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
                                                   5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
@@ -4231,6 +4233,44 @@ CONTAINS
    END SUBROUTINE check_complex_projector_density_coupled_schur
 
 ! **************************************************************************************************
+!> \brief Check that Direct trace compensation follows the selected delta model.
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_trace_compensation(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: active_delta = -0.027_dp, &
+                                                            coupled_weight = 0.20_dp, &
+                                                            full_delta = -0.181_dp, reference_delta = 0.0_dp
+
+      REAL(KIND=dp)                                      :: active_comp, active_diag_after, err, full_comp, &
+                                                            old_active_diag_after, positive_comp
+
+      full_comp = dense_direct_trace_compensation(coupled_weight, full_delta, reference_delta)
+      active_comp = dense_direct_trace_compensation(coupled_weight, active_delta, reference_delta)
+      active_diag_after = active_delta + active_comp/coupled_weight
+      old_active_diag_after = active_delta + full_comp/coupled_weight
+      positive_comp = dense_direct_trace_compensation(coupled_weight, 0.05_dp, 0.01_dp)
+
+      err = ABS(active_diag_after)
+      err = MAX(err, ABS(full_delta + full_comp/coupled_weight))
+      err = MAX(err, ABS(positive_comp - coupled_weight*(0.05_dp - 0.01_dp)))
+
+      IF (err > tol .OR. old_active_diag_after < 0.1_dp .OR. active_comp >= full_comp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/active/old/positive", err, full_comp, active_comp, &
+            old_active_diag_after, positive_comp
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/active/old/positive", err, full_comp, active_comp, &
+            old_active_diag_after, positive_comp
+      END IF
+
+   END SUBROUTINE check_projector_direct_trace_compensation
+
+! **************************************************************************************************
 !> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
 ! **************************************************************************************************
    SUBROUTINE check_projector_modal_response_sign_model(label, tol, nfail)
@@ -4515,6 +4555,21 @@ CONTAINS
       DEALLOCATE (mode_coeff, mode_eval, mode_rx, response_corr, response_neg, response_pos, mode_vec)
 
    END SUBROUTINE dense_projector_modal_response_candidate
+
+! **************************************************************************************************
+!> \brief Dense mirror of the Direct trace compensation model.
+! **************************************************************************************************
+   FUNCTION dense_direct_trace_compensation(coupled_weight, direct_delta_diag_avg, reference_delta_diag_avg) &
+      RESULT(compensation)
+      REAL(KIND=dp), INTENT(IN)                          :: coupled_weight, direct_delta_diag_avg, &
+                                                            reference_delta_diag_avg
+      REAL(KIND=dp)                                      :: compensation
+
+      compensation = MAX(0.0_dp, -coupled_weight*direct_delta_diag_avg)
+      IF (direct_delta_diag_avg > reference_delta_diag_avg) &
+         compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - reference_delta_diag_avg))
+
+   END FUNCTION dense_direct_trace_compensation
 
 ! **************************************************************************************************
 !> \brief Project a density response onto the fixed-N Mermin descent direction.
