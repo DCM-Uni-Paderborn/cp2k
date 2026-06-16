@@ -108,6 +108,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
+   CALL check_history_safe_occ_projector_derivative("history-safe occupation-projector derivative", &
+                                                    5.0E-12_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -4230,6 +4232,60 @@ CONTAINS
    END SUBROUTINE check_monotone_occupation_slope_projection
 
 ! **************************************************************************************************
+!> \brief Check the production-style monotone occupation preprojection used by k-point OT.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_derivative(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_raw, docc_ref, docc_safe
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, err
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_mono, occ_noisy, occ_projected
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.42_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(-0.11_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.02_dp, 0.0_dp, KIND=dp)
+      chc(4, 4) = CMPLX(0.47_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.17_dp, -0.05_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(-0.09_dp, 0.03_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(0.21_dp, -0.13_dp, KIND=dp)
+      dchc(2, 4) = CMPLX(-0.04_dp, -0.02_dp, KIND=dp)
+      dchc(3, 4) = CMPLX(0.08_dp, 0.06_dp, KIND=dp)
+      DO i = 2, n
+         dchc(i, 1:i - 1) = CONJG(dchc(1:i - 1, i))
+      END DO
+
+      occ_mono(:) = [1.40_dp, 0.92_dp, 0.54_dp, 0.11_dp]
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_mono, projector_weight, docc_safe)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_mono, docc_ref)
+      err = MAXVAL(ABS(docc_safe(:, :) - projector_weight*docc_ref(:, :)))
+
+      occ_noisy(:) = [1.40_dp, 0.82_dp, 0.87_dp, 0.35_dp]
+      CALL dense_monotone_occupation_slopes(occ_noisy, SQRT(EPSILON(1.0_dp)), occ_projected)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_noisy, projector_weight, docc_safe)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_projected, docc_ref)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_raw)
+      err = MAX(err, MAXVAL(ABS(docc_safe(:, :) - projector_weight*docc_ref(:, :))))
+      active = MAXVAL(ABS(docc_safe(:, :) - projector_weight*docc_raw(:, :)))
+
+      IF (err > tol .OR. active < 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/active", err, active
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/active", err, active
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_derivative
+
+! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
 ! **************************************************************************************************
    SUBROUTINE dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
@@ -4397,6 +4453,37 @@ CONTAINS
       DEALLOCATE (evec, kernel, work, evals, occ_work)
 
    END SUBROUTINE dense_spectral_occ_projector_derivative_chc
+
+! **************************************************************************************************
+!> \brief Production-like history-safe derivative: monotone slopes before projector dP.
+! **************************************************************************************************
+   SUBROUTINE dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                              docc_mat, occ_curv, gauge_gap)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
+
+      REAL(KIND=dp)                                      :: occ_tol
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: occ_work
+
+      docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      IF (projector_weight <= 0.0_dp) RETURN
+
+      ALLOCATE (occ_work(SIZE(occ_scale)))
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_work)
+      IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
+         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap)
+      ELSE
+         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat)
+      END IF
+      docc_mat(:, :) = projector_weight*docc_mat(:, :)
+      DEALLOCATE (occ_work)
+
+   END SUBROUTINE dense_history_safe_occ_projector_derivative_chc
 
    SUBROUTINE dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_mono)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: evals, occ_curv
