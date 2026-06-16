@@ -10437,9 +10437,10 @@ CONTAINS
                                                                 ot_kp_projector_occupation_gauge_gap)
                ! The diagonal density response is consumed by the auxiliary-energy
                ! channel below.  The remaining spectral Projector motion is the
-               ! covariant unitary transport of the canonical blend; for that part
-               ! use the analytic curvature shift instead of another finite
-               ! off-diagonal dP application.
+               ! history-safe off-diagonal occupation response.  Use the
+               ! gauge-filtered derivative for the physical rotation Hessian so
+               ! near-degenerate projector-gauge motion does not enter the
+               ! finite complex Mermin curvature.
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! docc_mat is a doubled k-point density response, while
@@ -10467,9 +10468,10 @@ CONTAINS
                      ! rotation Hessian as well double-counts the same density
                      ! response and creates an artificial physical row floor.
                      docc_mat(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+                     docc_plateau(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                   END IF
                END DO
-               CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, &
+               CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_plateau, &
                                                 grad_p_re, grad_p_im, eps_p)
                DO r = first_var, last_var
                   imo = var_i(r)
@@ -10482,10 +10484,6 @@ CONTAINS
                   END SELECT
                END DO
                IF (compute_projector_plateau_audit) THEN
-                  DO ie = 1, nmo
-                     IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) &
-                        docc_plateau(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-                  END DO
                   CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_plateau, &
                                                    grad_p_re, grad_p_im, eps_p)
                   DO r = first_var, last_var
