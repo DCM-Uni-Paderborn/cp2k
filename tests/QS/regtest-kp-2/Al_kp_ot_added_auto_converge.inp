@@ -1,9 +1,10 @@
 ! Slow/manual companion to the cheap ADDED_MOS AUTO k-point OT smoke test.
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
-! Local 2026-06 LOW reference: initial AUTO buffer 4, one grow to 8 after
-! 603 pre-grow SCF steps, then convergence in 55 restarted SCF steps,
-! E_total = Mermin = -8.14585274906149 Ha, with no first/last-band warnings.
+! Local 2026-06 LOW reference after residual/fractional tail grow: initial
+! AUTO buffer 4, one grow to 8 after 276 pre-grow SCF steps, then convergence
+! in 145 restarted SCF steps, E_total = Mermin = -8.14585275414508 Ha, with
+! no first/last-band warnings.
 &GLOBAL
   PRINT_LEVEL LOW
   PROJECT Al_kp_ot_added_auto

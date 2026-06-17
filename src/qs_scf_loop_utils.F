@@ -128,7 +128,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 40, &
                                   ot_kp_schur_quality_min_samples = 3
-   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
+                                        ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
                                         ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
@@ -913,30 +914,58 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: nspin_ot
       LOGICAL                                            :: grow
 
-      INTEGER                                            :: ispin, local_kpoint, trigger_step
+      INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo, trigger_step
+      LOGICAL                                            :: expandable
+      REAL(KIND=dp)                                      :: fractional_weight, grow_limit, max_fractional, &
+                                                            maxocc, occ_tail, weight
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers, wkp
       TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
 
       grow = .FALSE.
       IF (.NOT. ANY(scf_control%added_mos_auto)) RETURN
       IF (.NOT. scf_control%smear%do_smear) RETURN
       IF (scf_control%eps_scf <= 0.0_dp) RETURN
       IF (scf_env%iter_delta <= scf_control%eps_scf) RETURN
-      IF (scf_env%iter_delta > ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf) RETURN
+      grow_limit = MAX(ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf, &
+                       ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
+      IF (scf_env%iter_delta > grow_limit) RETURN
 
       trigger_step = MAX(ot_kp_added_mos_auto_tail_min_steps, &
                          MIN(200, scf_control%max_scf/4))
       IF (scf_env%iter_count < trigger_step) RETURN
 
+      NULLIFY (occupation_numbers, para_env_inter_kp, wkp)
+      CALL get_kpoint_info(kpoints, wkp=wkp, para_env_inter_kp=para_env_inter_kp)
+      expandable = .FALSE.
+      fractional_weight = 0.0_dp
+      max_fractional = 0.0_dp
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
          DO ispin = 1, MIN(nspin_ot, SIZE(scf_control%added_mos_auto))
             IF (.NOT. scf_control%added_mos_auto(ispin)) CYCLE
-            IF (kp%mos(1, ispin)%nmo < kp%mos(1, ispin)%nao) THEN
-               grow = .TRUE.
-               RETURN
-            END IF
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, &
+                            occupation_numbers=occupation_numbers)
+            IF (nmo < kp%mos(1, ispin)%nao) expandable = .TRUE.
+            IF (.NOT. ASSOCIATED(occupation_numbers)) CYCLE
+            IF (ikpoint < 1 .OR. ikpoint > SIZE(wkp)) CYCLE
+            weight = ABS(wkp(ikpoint))
+            DO imo = 1, SIZE(occupation_numbers)
+               occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
+               fractional_weight = fractional_weight + weight*occ_tail
+               max_fractional = MAX(max_fractional, occ_tail)
+            END DO
          END DO
       END DO
+      CALL para_env_inter_kp%sum(fractional_weight)
+      CALL para_env_inter_kp%max(max_fractional)
+
+      IF (.NOT. expandable) RETURN
+      IF (fractional_weight <= ot_kp_fermi_window_min_frac .AND. &
+          max_fractional <= 10.0_dp*MAX(scf_control%smear%eps_fermi_dirac, EPSILON(1.0_dp))) RETURN
+
+      grow = .TRUE.
 
    END FUNCTION qs_scf_loop_ot_kp_added_mos_auto_tail_grow
 
