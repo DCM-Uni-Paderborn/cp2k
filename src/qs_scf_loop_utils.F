@@ -8045,10 +8045,14 @@ CONTAINS
                                           END IF
                                           IF (local_ot_env(1)%schur_projector_mode_quality_samples >= &
                                               ot_kp_schur_calibration_min_samples) THEN
+                                             response_physical_model(:, :) = response_exact_physical(:, :)
+                                             IF (exact_density_response_ready) &
+                                                response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                                               response_density_exact(:, :)
                                              CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                 rot_hessian_projector_physical_active, &
                                                 projector_physical_direct_sol, response_exact_raw, &
-                                                response_exact_physical, curv, occ_curv, tether_curv, &
+                                                response_physical_model, curv, occ_curv, tether_curv, &
                                                 occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
                                                 projector_coupled_weight, &
                                                 residual_delta, projector_mode_history_quality, &
@@ -8070,7 +8074,7 @@ CONTAINS
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                    rot_hessian_projector_physical_diagref, &
                                                    projector_physical_direct_sol, response_exact_raw, &
-                                                   response_exact_physical, curv, occ_curv, tether_curv, &
+                                                   response_physical_model, curv, occ_curv, tether_curv, &
                                                    occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
                                                    projector_coupled_weight, &
                                                    residual_delta, projector_mode_history_quality, &
@@ -9932,6 +9936,14 @@ CONTAINS
                            projected_term = 0.5_dp* &
                               (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
                                DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
+                           IF (exact_density_response_ready) &
+                              projected_term = projected_term + 0.5_dp* &
+                                 (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
                            schur(r, s) = schur(r, s) - projected_term
                         END DO
                      END DO
@@ -9956,6 +9968,8 @@ CONTAINS
                      projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                      DO r = 1, nrot
                         rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                        IF (exact_density_response_ready) &
+                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
                      END DO
                      sol(:) = rhs(:)
                      CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
@@ -9970,6 +9984,7 @@ CONTAINS
                      IF (solved) THEN
                         rx_e(:) = MATMUL(response_exact_raw, sol)
                         rx_model(:) = MATMUL(response_exact_physical, sol)
+                        IF (exact_density_response_ready) rx_model(:) = rx_model(:) + MATMUL(response_density_exact, sol)
                         CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                               occ_curv_projection_sum, channel_nmo, e_offset)
                         CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
