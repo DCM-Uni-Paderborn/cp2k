@@ -10871,6 +10871,9 @@ CONTAINS
 !> \param cross_drop positive/negative cross contribution to the signed two-mode model
 !> \param positive_coeff bounded positive-subspace response coefficient
 !> \param negative_coeff bounded negative-subspace response coefficient
+!> \note Below the nominal response floor the correction is softly tapered, not
+!>       disabled.  The late metallic tail still needs accepted-history feedback
+!>       to calibrate finite Projector/Occupation response toward 1e-6.
       SUBROUTINE audit_kpoint_ot_projector_response_modes(rot_hessian, rot_hessian_projector, step_rot, &
                                                           response_raw, response_exact, curv, occ_curv, tether_curv, &
                                                           occ_curv_projection_sum, channel_nmo, e_offset, &
@@ -10928,11 +10931,14 @@ CONTAINS
          IF (SIZE(energy_base) /= SIZE(curv)) RETURN
          IF (SIZE(grad_e) /= SIZE(curv)) RETURN
 
-         residual_weight = (residual_delta - ot_kp_schur_projector_response_floor_delta)/ &
-                           MAX(EPSILON(1.0_dp), &
-                               ot_kp_schur_projector_response_full_delta - &
-                               ot_kp_schur_projector_response_floor_delta)
+         residual_weight = residual_delta/ &
+                           MAX(EPSILON(1.0_dp), ot_kp_schur_projector_response_full_delta)
          residual_weight = MAX(0.0_dp, MIN(1.0_dp, residual_weight))
+         IF (residual_delta < ot_kp_schur_projector_response_floor_delta) &
+            residual_weight = residual_weight* &
+                              SQRT(MAX(0.0_dp, residual_delta/ &
+                                            MAX(EPSILON(1.0_dp), &
+                                                ot_kp_schur_projector_response_floor_delta)))
          base_weight = ot_kp_schur_projector_response_max_weight*residual_weight* &
                        MIN(1.0_dp, MAX(0.0_dp, projector_weight))* &
                        MIN(1.0_dp, MAX(0.0_dp, history_quality))* &
