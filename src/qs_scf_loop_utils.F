@@ -4593,13 +4593,18 @@ CONTAINS
             projector_physical_direct_trace_full_free_quad, &
             projector_physical_direct_trace_full_quad, projector_physical_direct_trace_ratio, &
             projector_physical_direct_trust_quality, &
-            projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
-            projector_physical_response_weighted_step, projector_physical_response_weighted_trust_ratio, &
-            projector_physical_scale_quality, projector_physical_trust_quality, &
-            projector_physical_response_correction_drop, projector_physical_response_correction_negative, &
-            projector_physical_response_negative_coeff, projector_physical_response_positive_coeff, &
-            projector_physical_response_cross_drop, projector_physical_response_negative_drop, &
-            projector_physical_response_positive_drop, projector_physical_response_raw_negative_fraction, &
+         projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
+         projector_physical_response_weighted_step, projector_physical_response_weighted_trust_ratio, &
+         projector_physical_scale_quality, projector_physical_trust_quality, &
+         projector_physical_response_audit_base_weight, projector_physical_response_audit_eval_abs_avg, &
+         projector_physical_response_audit_negative_weight_sum, &
+         projector_physical_response_audit_positive_weight_sum, &
+         projector_physical_response_audit_response_total_sum, &
+         projector_physical_response_audit_step_weight_sum, &
+         projector_physical_response_correction_drop, projector_physical_response_correction_negative, &
+         projector_physical_response_negative_coeff, projector_physical_response_positive_coeff, &
+         projector_physical_response_cross_drop, projector_physical_response_negative_drop, &
+         projector_physical_response_positive_drop, projector_physical_response_raw_negative_fraction, &
             projector_physical_response_weight, projector_response_direction_scale, &
             projector_response_expected_drop, projector_response_gdot_energy, projector_response_gdot_rotation, &
          projector_response_gdotp, projector_response_model_calibrated_drop, projector_response_model_drop, &
@@ -4609,6 +4614,11 @@ CONTAINS
          projector_response_response_abs_step, projector_response_response_abs_trust_ratio, &
          projector_response_response_weighted_step, projector_response_response_weighted_trust_ratio, &
          projector_response_scale_quality, projector_response_trust_quality, &
+         projector_mode_response_audit_base_weight, projector_mode_response_audit_eval_abs_avg, &
+         projector_mode_response_audit_negative_weight_sum, &
+         projector_mode_response_audit_positive_weight_sum, &
+         projector_mode_response_audit_response_total_sum, &
+         projector_mode_response_audit_step_weight_sum, &
          projector_mode_response_correction_drop, projector_mode_response_correction_negative, &
          projector_mode_response_negative_coeff, projector_mode_response_positive_coeff, &
          projector_mode_response_cross_drop, projector_mode_response_negative_drop, &
@@ -5316,6 +5326,12 @@ CONTAINS
             projector_physical_response_weighted_trust_ratio = 0.0_dp
             projector_physical_scale_quality = 0.0_dp
             projector_physical_trust_quality = 1.0_dp
+            projector_physical_response_audit_base_weight = 0.0_dp
+            projector_physical_response_audit_eval_abs_avg = 0.0_dp
+            projector_physical_response_audit_negative_weight_sum = 0.0_dp
+            projector_physical_response_audit_positive_weight_sum = 0.0_dp
+            projector_physical_response_audit_response_total_sum = 0.0_dp
+            projector_physical_response_audit_step_weight_sum = 0.0_dp
             projector_physical_response_correction_drop = 0.0_dp
             projector_physical_response_correction_negative = 0.0_dp
             projector_physical_response_negative_coeff = 0.0_dp
@@ -5347,6 +5363,12 @@ CONTAINS
          projector_response_response_weighted_trust_ratio = 0.0_dp
          projector_response_scale_quality = 0.0_dp
          projector_response_trust_quality = 1.0_dp
+         projector_mode_response_audit_base_weight = 0.0_dp
+         projector_mode_response_audit_eval_abs_avg = 0.0_dp
+         projector_mode_response_audit_negative_weight_sum = 0.0_dp
+         projector_mode_response_audit_positive_weight_sum = 0.0_dp
+         projector_mode_response_audit_response_total_sum = 0.0_dp
+         projector_mode_response_audit_step_weight_sum = 0.0_dp
          projector_mode_response_correction_drop = 0.0_dp
          projector_mode_response_correction_negative = 0.0_dp
          projector_mode_response_negative_coeff = 0.0_dp
@@ -6756,7 +6778,19 @@ CONTAINS
                                                                 projector_mode_response_negative_drop, &
                                                                 projector_mode_response_cross_drop, &
                                                                 projector_mode_response_positive_coeff, &
-                                                                projector_mode_response_negative_coeff)
+                                                                projector_mode_response_negative_coeff, &
+                                                                diag_base_weight= &
+                                                                projector_mode_response_audit_base_weight, &
+                                                                diag_response_total_sum= &
+                                                                projector_mode_response_audit_response_total_sum, &
+                                                                diag_step_weight_sum= &
+                                                                projector_mode_response_audit_step_weight_sum, &
+                                                                diag_eval_abs_avg= &
+                                                                projector_mode_response_audit_eval_abs_avg, &
+                                                                diag_positive_weight_sum= &
+                                                                projector_mode_response_audit_positive_weight_sum, &
+                                                                diag_negative_weight_sum= &
+                                                                projector_mode_response_audit_negative_weight_sum)
                   IF (projector_mode_response_weight > EPSILON(projector_mode_response_weight)) THEN
                      projector_response_z_e(:) = z_e(:) + projector_response_rx_e(:)
                      projector_response_gdot_energy = DOT_PRODUCT(grad_e, projector_response_z_e)
@@ -6848,7 +6882,19 @@ CONTAINS
                                                                    projector_physical_response_negative_drop, &
                                                                    projector_physical_response_cross_drop, &
                                                                    projector_physical_response_positive_coeff, &
-                                                                   projector_physical_response_negative_coeff)
+                                                                   projector_physical_response_negative_coeff, &
+                                                                   diag_base_weight= &
+                                                                   projector_physical_response_audit_base_weight, &
+                                                                   diag_response_total_sum= &
+                                                                   projector_physical_response_audit_response_total_sum, &
+                                                                   diag_step_weight_sum= &
+                                                                   projector_physical_response_audit_step_weight_sum, &
+                                                                   diag_eval_abs_avg= &
+                                                                   projector_physical_response_audit_eval_abs_avg, &
+                                                                   diag_positive_weight_sum= &
+                                                                   projector_physical_response_audit_positive_weight_sum, &
+                                                                   diag_negative_weight_sum= &
+                                                                   projector_physical_response_audit_negative_weight_sum)
                      IF (projector_physical_response_weight > EPSILON(projector_physical_response_weight)) THEN
                         projector_physical_z_e(:) = z_e(:) + projector_physical_rx_e(:)
                         projector_physical_gdot_energy = DOT_PRODUCT(grad_e, projector_physical_z_e)
@@ -9621,6 +9667,14 @@ CONTAINS
                      projector_mode_response_cross_drop, projector_mode_response_positive_coeff, &
                      projector_mode_response_negative_coeff, &
                      projector_mode_history_response_ratio, projector_mode_history_response_negative
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                        " OT Schur projector response audit base total step eval posw negw:", &
+                        projector_mode_response_audit_base_weight, &
+                        projector_mode_response_audit_response_total_sum, &
+                        projector_mode_response_audit_step_weight_sum, &
+                        projector_mode_response_audit_eval_abs_avg, &
+                        projector_mode_response_audit_positive_weight_sum, &
+                        projector_mode_response_audit_negative_weight_sum
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector response candidate ready selected exp qsel cdrop mgap rratio aratio weight:", &
                         projector_response_candidate_ready, projector_response_candidate_selected, &
@@ -9636,6 +9690,14 @@ CONTAINS
                         projector_physical_response_cross_drop, projector_physical_response_positive_coeff, &
                         projector_physical_response_negative_coeff, projector_physical_quality_for_selection, &
                         local_ot_env(1)%schur_projector_physical_negative_ema
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                        " OT Schur projector physical audit base total step eval posw negw:", &
+                        projector_physical_response_audit_base_weight, &
+                        projector_physical_response_audit_response_total_sum, &
+                        projector_physical_response_audit_step_weight_sum, &
+                        projector_physical_response_audit_eval_abs_avg, &
+                        projector_physical_response_audit_positive_weight_sum, &
+                        projector_physical_response_audit_negative_weight_sum
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),11(1X,ES16.8))') &
                         " OT Schur projector phys direct ready selected exp qsel qsplit pgq dq cdrop "// &
                         "mgap rratio aratio comp applied_shift:", &
@@ -10890,6 +10952,12 @@ CONTAINS
 !> \param cross_drop positive/negative cross contribution to the signed two-mode model
 !> \param positive_coeff bounded positive-subspace response coefficient
 !> \param negative_coeff bounded negative-subspace response coefficient
+!> \param diag_base_weight raw scalar response weight before modal projection
+!> \param diag_response_total_sum modal projected response norm before weighting
+!> \param diag_step_weight_sum squared Schur step norm in Projector eigenmodes
+!> \param diag_eval_abs_avg average absolute Projector-Hessian eigenvalue shift
+!> \param diag_positive_weight_sum step-weighted positive-mode response weight
+!> \param diag_negative_weight_sum step-weighted negative-mode response weight
 !> \note Below the nominal response floor the correction is softly tapered, not
 !>       disabled.  The late metallic tail still needs accepted-history feedback
 !>       to calibrate finite Projector/Occupation response toward 1e-6.
@@ -10902,7 +10970,10 @@ CONTAINS
                                                           response_base, response_candidate, applied_weight, &
                                                           correction_drop, correction_negative_fraction, raw_negative_fraction, &
                                                           positive_drop, negative_drop, cross_drop, positive_coeff, &
-                                                          negative_coeff)
+                                                          negative_coeff, diag_base_weight, &
+                                                          diag_response_total_sum, diag_step_weight_sum, &
+                                                          diag_eval_abs_avg, diag_positive_weight_sum, &
+                                                          diag_negative_weight_sum)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
                                                             response_raw, response_exact
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, energy_base, grad_e, occ_curv, step_rot, &
@@ -10918,6 +10989,9 @@ CONTAINS
                                                             correction_negative_fraction, cross_drop, negative_drop, &
                                                             negative_coeff, positive_coeff, positive_drop, &
                                                             raw_negative_fraction
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: diag_base_weight, diag_eval_abs_avg, &
+                                                            diag_negative_weight_sum, diag_positive_weight_sum, &
+                                                            diag_response_total_sum, diag_step_weight_sum
 
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp)                                      :: base_weight, coeff_det, coeff_negative, coeff_positive, &
@@ -10940,6 +11014,12 @@ CONTAINS
          positive_drop = 0.0_dp
          raw_negative_fraction = 0.0_dp
          response_candidate(:) = response_base(:)
+         IF (PRESENT(diag_base_weight)) diag_base_weight = 0.0_dp
+         IF (PRESENT(diag_response_total_sum)) diag_response_total_sum = 0.0_dp
+         IF (PRESENT(diag_step_weight_sum)) diag_step_weight_sum = 0.0_dp
+         IF (PRESENT(diag_eval_abs_avg)) diag_eval_abs_avg = 0.0_dp
+         IF (PRESENT(diag_positive_weight_sum)) diag_positive_weight_sum = 0.0_dp
+         IF (PRESENT(diag_negative_weight_sum)) diag_negative_weight_sum = 0.0_dp
          IF (projector_weight <= EPSILON(projector_weight)) RETURN
          IF (history_quality < ot_kp_schur_calibrated_quality_min_ratio) RETURN
          IF (history_trust <= EPSILON(history_trust)) RETURN
@@ -10964,6 +11044,7 @@ CONTAINS
                        MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
                        MAX(1.0_dp, history_response_ratio/ &
                            ot_kp_schur_projector_response_ratio_gate)
+         IF (PRESENT(diag_base_weight)) diag_base_weight = base_weight
          IF (base_weight <= EPSILON(base_weight)) RETURN
 
          ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_norms(nrot_local), &
@@ -10995,6 +11076,8 @@ CONTAINS
             response_total_sum = response_total_sum + mode_norms(imode)
             IF (mode_eval(imode) < 0.0_dp) raw_negative_sum = raw_negative_sum + mode_norms(imode)
          END DO
+         IF (PRESENT(diag_response_total_sum)) diag_response_total_sum = response_total_sum
+         IF (PRESENT(diag_eval_abs_avg)) diag_eval_abs_avg = eval_abs_avg
          IF (response_total_sum > EPSILON(response_total_sum)) &
             raw_negative_fraction = raw_negative_sum/response_total_sum
          positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
@@ -11004,6 +11087,7 @@ CONTAINS
          negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
 
          step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
+         IF (PRESENT(diag_step_weight_sum)) diag_step_weight_sum = step_weight_sum
          negative_weight_sum = 0.0_dp
          positive_weight_sum = 0.0_dp
          DO imode = 1, nrot_local
@@ -11028,6 +11112,8 @@ CONTAINS
                negative_weight_sum = negative_weight_sum + mode_weight*step_weight
             END IF
          END DO
+         IF (PRESENT(diag_positive_weight_sum)) diag_positive_weight_sum = positive_weight_sum
+         IF (PRESENT(diag_negative_weight_sum)) diag_negative_weight_sum = negative_weight_sum
          IF (use_projected_metric) THEN
             CALL project_kpoint_ot_schur_response(response_pos, occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
