@@ -4061,7 +4061,8 @@ CONTAINS
       REAL(KIND=dp)                                      :: curvature, gvalue, maxocc, mu, occ_curvature, &
                                                             precond_weight, rayleigh_edge_gap, tether_response, &
                                                             tether_strength, tether_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag, occ_curv_max, occ_curv_sum, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_diag, floor_curv_sum, floor_count, &
+                                                            occ_curv_max, occ_curv_sum, &
                                                             tether_curv_max, tether_curv_sum, &
                                                             total_curv_max, total_curv_sum
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -4070,8 +4071,11 @@ CONTAINS
          precond_count(:) = 0.0_dp
          precond_shift(:) = 0.0_dp
          precond_sum(:) = 0.0_dp
-         ALLOCATE (occ_curv_max(ngroups), occ_curv_sum(ngroups), tether_curv_max(ngroups), &
+         ALLOCATE (floor_count(ngroups), floor_curv_sum(ngroups), &
+                   occ_curv_max(ngroups), occ_curv_sum(ngroups), tether_curv_max(ngroups), &
                    tether_curv_sum(ngroups), total_curv_max(ngroups), total_curv_sum(ngroups))
+         floor_count(:) = 0.0_dp
+         floor_curv_sum(:) = 0.0_dp
          occ_curv_max(:) = 0.0_dp
          occ_curv_sum(:) = 0.0_dp
          tether_curv_max(:) = 0.0_dp
@@ -4122,6 +4126,10 @@ CONTAINS
                   total_curv_sum(group) = total_curv_sum(group) + curvature
                   total_curv_max(group) = MAX(total_curv_max(group), curvature)
                   IF (curvature > EPSILON(curvature)) THEN
+                     IF (curvature < energy_curvature_floor) THEN
+                        floor_count(group) = floor_count(group) + 1.0_dp
+                        floor_curv_sum(group) = floor_curv_sum(group) + curvature
+                     END IF
                      precond_weight = MAX(curvature, energy_curvature_floor)
                      local_ot_env(local_channel)%ener_gx(imo) = &
                         local_ot_env(local_channel)%ener_gx(imo)/precond_weight
@@ -4137,6 +4145,8 @@ CONTAINS
 
          CALL para_env_inter_kp%sum(precond_sum)
          CALL para_env_inter_kp%sum(precond_count)
+         CALL para_env_inter_kp%sum(floor_count)
+         CALL para_env_inter_kp%sum(floor_curv_sum)
          CALL para_env_inter_kp%sum(occ_curv_sum)
          CALL para_env_inter_kp%sum(tether_curv_sum)
          CALL para_env_inter_kp%sum(total_curv_sum)
@@ -4158,6 +4168,9 @@ CONTAINS
                   " OT k-point occupation preconditioner group occ_sum occ_max tether_sum tether_max total_sum total_max:", &
                   group, occ_curv_sum(group), occ_curv_max(group), tether_curv_sum(group), &
                   tether_curv_max(group), total_curv_sum(group), total_curv_max(group)
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
+                  " OT k-point occupation preconditioner floor group count curv_sum floor:", &
+                  group, floor_count(group), floor_curv_sum(group), energy_curvature_floor
             END DO
          END IF
 
@@ -4202,8 +4215,8 @@ CONTAINS
                END DO
             END DO
          END DO
-         DEALLOCATE (occ_curv_max, occ_curv_sum, tether_curv_max, tether_curv_sum, &
-                     total_curv_max, total_curv_sum)
+         DEALLOCATE (floor_count, floor_curv_sum, occ_curv_max, occ_curv_sum, tether_curv_max, &
+                     tether_curv_sum, total_curv_max, total_curv_sum)
       END SUBROUTINE precondition_kpoint_ot_energy_diagonal
 
       SUBROUTINE precondition_kpoint_ot_schur(group_done)
@@ -4383,7 +4396,7 @@ CONTAINS
          dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
          dense_residual_quality, dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, &
          diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, diag_shift_fraction, direction_scale, &
-         energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
+         energy_floor_count, energy_floor_curv_sum, energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
          gdot_rotation, gnorm, &
          accepted_projector_coupled_weight, density_projector_fraction, dense_projector_coupled_weight, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
@@ -5661,12 +5674,18 @@ CONTAINS
 
          z_shift = 0.0_dp
          z_weight = 0.0_dp
+         energy_floor_count = 0.0_dp
+         energy_floor_curv_sum = 0.0_dp
          curv_projection_sum = SUM(curv)
          CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
          CALL para_env_inter_kp%sum(occ_curv_projection_sum)
          DO ie = 1, ne
             IF (curv(ie) > EPSILON(curv(ie))) THEN
+               IF (curv(ie) < energy_curvature_floor) THEN
+                  energy_floor_count = energy_floor_count + 1.0_dp
+                  energy_floor_curv_sum = energy_floor_curv_sum + curv(ie)
+               END IF
                z_e(ie) = grad_e(ie)/MAX(curv(ie), energy_curvature_floor)
                z_shift = z_shift + curv(ie)*z_e(ie)
                z_weight = z_weight + curv(ie)
@@ -5674,6 +5693,12 @@ CONTAINS
          END DO
          CALL para_env_inter_kp%sum(z_shift)
          CALL para_env_inter_kp%sum(z_weight)
+         CALL para_env_inter_kp%sum(energy_floor_count)
+         CALL para_env_inter_kp%sum(energy_floor_curv_sum)
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
+               " OT Schur occupation preconditioner energy-floor group count curv_sum floor:", &
+               target_group, energy_floor_count, energy_floor_curv_sum, energy_curvature_floor
          IF (z_weight > EPSILON(z_weight)) z_e(:) = z_e(:) - z_shift/z_weight
          CALL project_kpoint_ot_schur_response(z_e, occ_curv, tether_curv, &
                                                occ_curv_projection_sum, channel_nmo, e_offset)
