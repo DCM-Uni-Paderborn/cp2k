@@ -744,6 +744,7 @@ CONTAINS
          END DO
       END DO
 
+      CALL para_env_inter_kp%sum(ener_nondiag)
       local_ot_env(1)%etotal = energy%total + ener_nondiag
 
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
@@ -838,7 +839,8 @@ CONTAINS
          CALL kpoint_density_matrices(kpoints)
          IF (kpoint_ot_project_energy_subproblem(local_ot_env(1), scf_control%smear)) THEN
             CALL qs_scf_loop_apply_ot_kp_projected_density(kpoints, local_ot_env, first_channel, &
-                                                           nspin_ot, kp_range, scf_control%smear)
+                                                           nspin_ot, kp_range, para_env_inter_kp, &
+                                                           scf_control%smear)
          END IF
          CALL kpoint_density_transform(kpoints, density_target, .FALSE., &
                                        matrix_s(1, 1)%matrix, sab_nl, fmwork, &
@@ -1473,15 +1475,17 @@ CONTAINS
 !> \param first_channel ...
 !> \param nspin_ot ...
 !> \param kp_range ...
+!> \param para_env_inter_kp ...
 !> \param smear ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_apply_ot_kp_projected_density(kpoints, local_ot_env, first_channel, &
-                                                        nspin_ot, kp_range, smear)
+                                                        nspin_ot, kp_range, para_env_inter_kp, smear)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
       INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
       INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       TYPE(smear_type), INTENT(IN)                       :: smear
 
       INTEGER                                            :: ikpoint, ispin, local_channel, &
@@ -1580,6 +1584,10 @@ CONTAINS
             DEALLOCATE (canonical_energies)
          END DO
       END DO
+
+      CALL para_env_inter_kp%max(max_weight)
+      CALL para_env_inter_kp%sum(sum_weight)
+      CALL para_env_inter_kp%sum(nblend)
 
       IF (nblend > 0 .AND. logger%iter_info%print_level >= high_print_level .AND. &
           logger%para_env%is_source()) THEN
