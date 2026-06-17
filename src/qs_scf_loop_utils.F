@@ -4671,7 +4671,7 @@ CONTAINS
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
-         response_mixed_diag_avg, row_floor_avg, row_floor_max, row_floor_shift_quad, &
+         response_mixed_diag_avg, row_floor_avg, row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
          row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
@@ -5434,6 +5434,7 @@ CONTAINS
          model_gap_ratio = 0.0_dp
          model_gap_trust = HUGE(1.0_dp)
          model_calibrated_drop = 0.0_dp
+         row_floor_shift_drop = 0.0_dp
          occgap_shadow_abs_step = 0.0_dp
          occgap_shadow_drop = 0.0_dp
          occgap_shadow_gap_ratio = 0.0_dp
@@ -8567,6 +8568,7 @@ CONTAINS
                      z_e(:) = direction_scale*z_e(:)
                      sol(:) = direction_scale*sol(:)
                      model_drop = 0.5_dp*direction_scale*gdotp
+                     row_floor_shift_drop = 0.5_dp*direction_scale*direction_scale*row_floor_shift_quad
                      model_calibrated_drop = model_drop
                      IF (schur_attempt <= 2) model_calibrated_drop = &
                         split_quality_for_calibration*model_drop
@@ -8588,6 +8590,13 @@ CONTAINS
                         ELSE
                            model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
                         END IF
+                        model_calibrated_drop = MAX(0.0_dp, model_calibrated_drop - row_floor_shift_drop)
+                        IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+                            row_floor_shift_drop > EPSILON(row_floor_shift_drop)) &
+                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),4(1X,ES16.8))') &
+                              " OT Schur row-floor model audit group att drop gap_drop floor_drop cdrop:", &
+                              target_group, schur_attempt, model_drop, model_gap_drop, row_floor_shift_drop, &
+                              model_calibrated_drop
                         model_gap_trust = schur_model_gap_factor*response_trust
                         IF (model_gap_trust > EPSILON(model_gap_trust)) model_gap_ratio = model_gap/model_gap_trust
                         IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
