@@ -1238,6 +1238,28 @@ CONTAINS
    END FUNCTION kpoint_ot_canonical_projector_weight
 
 ! **************************************************************************************************
+!> \brief fixed-point consistent canonical density blend weight for k-point OT
+!> \param delta ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_canonical_density_projector_weight(delta) RESULT(projector_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: delta
+      REAL(KIND=dp)                                      :: projector_weight
+
+      REAL(KIND=dp)                                      :: tail_scale
+
+      projector_weight = kpoint_ot_canonical_projector_weight(delta, &
+                                                              ot_kp_canonical_density_max_weight)
+      IF (projector_weight <= 0.0_dp) RETURN
+
+      IF (delta < ot_kp_schur_projector_response_full_delta) THEN
+         tail_scale = MAX(0.0_dp, delta/ot_kp_schur_projector_response_full_delta)
+         tail_scale = tail_scale**2
+         projector_weight = projector_weight*tail_scale
+      END IF
+
+   END FUNCTION kpoint_ot_canonical_density_projector_weight
+
+! **************************************************************************************************
 !> \brief occupation-window projector weight for one rotation pair
 !> \param projector_weight ...
 !> \param curv_i ...
@@ -1512,8 +1534,7 @@ CONTAINS
          CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            density_weight = kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
-                                                                  ot_kp_canonical_density_max_weight)
+            density_weight = kpoint_ot_canonical_density_projector_weight(local_ot_env(local_channel)%delta)
             IF (density_weight <= 0.0_dp) CYCLE
             IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), smear)) THEN
                CALL cp_abort(__LOCATION__, &
@@ -1840,8 +1861,7 @@ CONTAINS
       CALL para_env_inter_kp%max(trusted_step_max)
       CALL para_env_inter_kp%min(min_trust_scale)
 
-      density_projector_weight = kpoint_ot_canonical_projector_weight(residual_delta, &
-                                                                      ot_kp_canonical_density_max_weight)
+      density_projector_weight = kpoint_ot_canonical_density_projector_weight(residual_delta)
       density_projector_fraction = 0.0_dp
       IF (ot_kp_canonical_density_max_weight > 0.0_dp) &
          density_projector_fraction = density_projector_weight/ot_kp_canonical_density_max_weight
@@ -6009,8 +6029,7 @@ CONTAINS
             response_abs_trust = ot_kp_fermi_window_outer_factor*sigma
             IF (residual_delta > 0.0_dp .AND. ot_kp_canonical_density_max_weight > 0.0_dp) THEN
                density_projector_fraction = &
-                  kpoint_ot_canonical_projector_weight(residual_delta, ot_kp_canonical_density_max_weight)/ &
-                  ot_kp_canonical_density_max_weight
+                  kpoint_ot_canonical_density_projector_weight(residual_delta)/ot_kp_canonical_density_max_weight
                density_projector_fraction = MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))
                response_trust_factor = MAX(ot_kp_schur_response_trust_min_factor, &
                                            1.0_dp - density_projector_fraction)
