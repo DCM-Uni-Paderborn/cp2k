@@ -126,7 +126,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_fermi_window_min_frac = 1.0E-3_dp, &
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
-   INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 40, &
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 80, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp
@@ -931,8 +931,7 @@ CONTAINS
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
       IF (scf_env%iter_delta > grow_limit) RETURN
 
-      trigger_step = MAX(ot_kp_added_mos_auto_tail_min_steps, &
-                         MIN(200, scf_control%max_scf/4))
+      trigger_step = ot_kp_added_mos_auto_tail_min_steps
       IF (scf_env%iter_count < trigger_step) RETURN
 
       NULLIFY (occupation_numbers, para_env_inter_kp, wkp)
