@@ -4475,11 +4475,14 @@ CONTAINS
             projector_physical_direct_density_audit_quality, &
             projector_physical_direct_active_delta_diag_avg, &
             projector_physical_direct_active_diag_compensation, &
+            projector_phys_direct_active_comp_trial, &
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
             projector_physical_direct_diag_compensation_local_max, &
+            projector_phys_direct_comp_trial, projector_phys_direct_lcomp_trial_avg, &
+            projector_phys_direct_lcomp_trial_frac, projector_phys_direct_lcomp_trial_max, &
             projector_physical_direct_diag_shift_avg, projector_physical_direct_diag_shift_max, &
             projector_physical_direct_diag_shift_sum, &
             projector_physical_direct_direction_scale, &
@@ -5233,10 +5236,15 @@ CONTAINS
             projector_mode_history_quality = 1.0_dp
             projector_mode_history_response_negative = 0.0_dp
             projector_mode_history_response_ratio = 0.0_dp
+            projector_phys_direct_active_comp_trial = 0.0_dp
             projector_physical_direct_diag_compensation = 0.0_dp
+            projector_phys_direct_comp_trial = 0.0_dp
             projector_physical_direct_diag_compensation_local_avg = 0.0_dp
             projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
             projector_physical_direct_diag_compensation_local_max = 0.0_dp
+            projector_phys_direct_lcomp_trial_avg = 0.0_dp
+            projector_phys_direct_lcomp_trial_frac = 0.0_dp
+            projector_phys_direct_lcomp_trial_max = 0.0_dp
             projector_physical_direct_delta_diag_avg = 0.0_dp
             projector_physical_direct_trace_diag_scale = 1.0_dp
             projector_physical_direct_trace_free_scale = 1.0_dp
@@ -6374,10 +6382,15 @@ CONTAINS
                projector_physical_direct_spectral_candidate_selected = .FALSE.
                projector_physical_direct_active_delta_diag_avg = 0.0_dp
                projector_physical_direct_active_diag_compensation = 0.0_dp
+               projector_phys_direct_active_comp_trial = 0.0_dp
                projector_physical_direct_diag_compensation = 0.0_dp
+               projector_phys_direct_comp_trial = 0.0_dp
                projector_physical_direct_diag_compensation_local_avg = 0.0_dp
                projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
                projector_physical_direct_diag_compensation_local_max = 0.0_dp
+               projector_phys_direct_lcomp_trial_avg = 0.0_dp
+               projector_phys_direct_lcomp_trial_frac = 0.0_dp
+               projector_phys_direct_lcomp_trial_max = 0.0_dp
                projector_physical_direct_diag_shift_avg = 0.0_dp
                projector_physical_direct_diag_shift_max = 0.0_dp
                projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -7181,41 +7194,52 @@ CONTAINS
                                        projector_physical_direct_diag_compensation_local_avg = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_max = 0.0_dp
+                                       projector_phys_direct_comp_trial = &
+                                          kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
+                                             projector_physical_direct_delta_diag_avg, &
+                                             projector_hessian_delta_diag_avg)
+                                       projector_phys_direct_active_comp_trial = &
+                                          kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
+                                             projector_physical_direct_active_delta_diag_avg, &
+                                             projector_hessian_delta_diag_avg)
+                                       projector_phys_direct_lcomp_trial_avg = 0.0_dp
+                                       projector_phys_direct_lcomp_trial_frac = 0.0_dp
+                                       projector_phys_direct_lcomp_trial_max = 0.0_dp
+                                       DO r = 1, nrot
+                                          diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
+                                                                  projector_physical_direct_delta(r, r))
+                                          projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
+                                          IF (projector_physical_direct_delta(r, r) > projected_term) &
+                                             diag_shift = MAX(diag_shift, projector_coupled_weight* &
+                                                (projector_physical_direct_delta(r, r) - projected_term))
+                                          projector_phys_direct_lcomp_trial_avg = &
+                                             projector_phys_direct_lcomp_trial_avg + diag_shift
+                                          projector_phys_direct_lcomp_trial_max = &
+                                             MAX(projector_phys_direct_lcomp_trial_max, diag_shift)
+                                          IF (diag_shift > 0.0_dp) &
+                                             projector_phys_direct_lcomp_trial_frac = &
+                                                projector_phys_direct_lcomp_trial_frac + 1.0_dp
+                                       END DO
+                                       projector_phys_direct_lcomp_trial_avg = &
+                                          projector_phys_direct_lcomp_trial_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       projector_phys_direct_lcomp_trial_frac = &
+                                          projector_phys_direct_lcomp_trial_frac/REAL(MAX(1, nrot), KIND=dp)
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
-                                             kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
-                                                projector_physical_direct_delta_diag_avg, &
-                                                projector_hessian_delta_diag_avg)
+                                             projector_phys_direct_comp_trial
                                           projector_physical_direct_active_diag_compensation = &
-                                             kpoint_ot_direct_trace_compensation(projector_coupled_weight, &
-                                                projector_physical_direct_active_delta_diag_avg, &
-                                                projector_hessian_delta_diag_avg)
+                                             projector_phys_direct_active_comp_trial
                                           ! Retain the trace curvature implied by the finite
                                           ! Projector response inside the Direct curvature matrix.
                                           ! This is algebraically the old stabilizing diagonal
                                           ! correction, but it is now part of the physical Schur
                                           ! model instead of a post-solve scalar patch.
-                                          DO r = 1, nrot
-                                             diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
-                                                                     projector_physical_direct_delta(r, r))
-                                             projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
-                                             IF (projector_physical_direct_delta(r, r) > projected_term) &
-                                                diag_shift = MAX(diag_shift, projector_coupled_weight* &
-                                                   (projector_physical_direct_delta(r, r) - projected_term))
-                                             projector_physical_direct_diag_compensation_local_avg = &
-                                                projector_physical_direct_diag_compensation_local_avg + diag_shift
-                                             projector_physical_direct_diag_compensation_local_max = &
-                                                MAX(projector_physical_direct_diag_compensation_local_max, diag_shift)
-                                             IF (diag_shift > 0.0_dp) &
-                                                projector_physical_direct_diag_compensation_local_fraction = &
-                                                   projector_physical_direct_diag_compensation_local_fraction + 1.0_dp
-                                          END DO
                                           projector_physical_direct_diag_compensation_local_avg = &
-                                             projector_physical_direct_diag_compensation_local_avg/ &
-                                             REAL(MAX(1, nrot), KIND=dp)
+                                             projector_phys_direct_lcomp_trial_avg
                                           projector_physical_direct_diag_compensation_local_fraction = &
-                                             projector_physical_direct_diag_compensation_local_fraction/ &
-                                             REAL(MAX(1, nrot), KIND=dp)
+                                             projector_phys_direct_lcomp_trial_frac
+                                          projector_physical_direct_diag_compensation_local_max = &
+                                             projector_phys_direct_lcomp_trial_max
                                           IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                                               projector_physical_direct_diag_compensation > 0.0_dp) THEN
                                              diag_shift = projector_physical_direct_diag_compensation/ &
@@ -9904,6 +9928,14 @@ CONTAINS
                         projector_physical_direct_diag_compensation_local_max, &
                         projector_physical_direct_diag_compensation_local_fraction, &
                         projector_physical_direct_diag_compensation
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8),1(1X,L1))') &
+                        " OT Schur projector phys direct ungated comp audit avg max frac global active tail:", &
+                        projector_phys_direct_lcomp_trial_avg, &
+                        projector_phys_direct_lcomp_trial_max, &
+                        projector_phys_direct_lcomp_trial_frac, &
+                        projector_phys_direct_comp_trial, &
+                        projector_phys_direct_active_comp_trial, &
+                        residual_delta <= ot_kp_schur_projector_coupled_tail_delta
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,13(1X,ES16.8))') &
                         " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr mratio nratio tq sq:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
