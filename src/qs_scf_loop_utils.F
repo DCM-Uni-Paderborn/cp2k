@@ -4671,7 +4671,8 @@ CONTAINS
          response_penalty_diag_sum, &
          response_penalty_term, response_shift, rot_diag_sum, projector_response_gap_avg, &
          projector_response_gap_max, projector_response_gap_norm, &
-         response_mixed_diag_avg, row_floor_avg, row_floor_max, &
+         response_mixed_diag_avg, row_floor_avg, row_floor_max, row_floor_shift_quad, &
+         row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, scale_quality, &
@@ -4762,8 +4763,8 @@ CONTAINS
                                                                      projector_physical_model_e, projector_physical_rx_e, &
                                                             projector_physical_sol, projector_physical_z_e, &
                                                             projector_response_rx_e, projector_response_sol, &
-                                                            projector_response_z_e, rot_floor, rtd, rx_e, rx_model, &
-                                                            sol, split_sol, split_z_e, tether_curv, &
+                                                            projector_response_z_e, rot_floor, row_floor_shift, rtd, &
+                                                            rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
                                                             var_projector_active_weight, var_projector_weight, z_e, &
                                                             z_density_plateau_trial, &
                                                             z_density_full_trial, &
@@ -4864,7 +4865,7 @@ CONTAINS
                                var_projector_active_weight(nrot), &
                                var_projector_weight(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
-         ALLOCATE (rot_floor(nrot))
+         ALLOCATE (rot_floor(nrot), row_floor_shift(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
                    energy_cross_density_full(ne, nrot), &
                    energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
@@ -4971,6 +4972,7 @@ CONTAINS
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = rotation_curvature_floor
+         row_floor_shift(:) = 0.0_dp
          diag_shift_max = 0.0_dp
          diag_shift_sum = 0.0_dp
          response_abs_step = 0.0_dp
@@ -5636,7 +5638,7 @@ CONTAINS
                                     projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
                                     var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, energy_cross, energy_cross_density, energy_cross_density_full, &
+            DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_density_full, &
                         energy_cross_physical, energy_cross_raw, &
                         energy_hessian, response, response_coupled, response_density_exact, &
                         response_density_full, response_density_full_exact, response_density_physical, &
@@ -6665,6 +6667,7 @@ CONTAINS
             END DO
             diag_shift_sum = 0.0_dp
             diag_shift_max = 0.0_dp
+            row_floor_shift(:) = 0.0_dp
             diag_prefloor_avg = 0.0_dp
             diag_prefloor_min = HUGE(1.0_dp)
             diag_prefloor_max = -HUGE(1.0_dp)
@@ -6761,6 +6764,7 @@ CONTAINS
                   diag_shift = MAX(0.0_dp, row_abs + row_floor - schur(r, r))
                END IF
                IF (diag_shift > 0.0_dp) THEN
+                  row_floor_shift(r) = diag_shift
                   schur(r, r) = schur(r, r) + diag_shift
                   diag_shift_sum = diag_shift_sum + diag_shift
                   diag_shift_max = MAX(diag_shift_max, diag_shift)
@@ -6786,6 +6790,22 @@ CONTAINS
             END IF
 
             IF (.NOT. attempt_failed) THEN
+               row_floor_shift_quad = 0.0_dp
+               row_floor_shifted_step = 0.0_dp
+               row_floor_step_norm = DOT_PRODUCT(sol, sol)
+               DO r = 1, nrot
+                  row_floor_shift_quad = row_floor_shift_quad + row_floor_shift(r)*sol(r)*sol(r)
+                  IF (row_floor_shift(r) > 0.0_dp) &
+                     row_floor_shifted_step = row_floor_shifted_step + sol(r)*sol(r)
+               END DO
+               row_floor_step_fraction = 0.0_dp
+               IF (row_floor_step_norm > EPSILON(row_floor_step_norm)) &
+                  row_floor_step_fraction = row_floor_shifted_step/row_floor_step_norm
+               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
+                     " OT Schur row-floor step audit group att shifted_frac shift_quad step_norm dsum dmax:", &
+                     target_group, schur_attempt, row_floor_step_fraction, row_floor_shift_quad, &
+                     row_floor_step_norm, diag_shift_sum, diag_shift_max
                IF (schur_attempt <= 2) THEN
                   IF (exact_energy_model_ready) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
@@ -10360,7 +10380,8 @@ CONTAINS
                                           projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
                                  var_projector_active_weight, var_projector_weight)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, energy_cross, energy_cross_density, energy_cross_physical, energy_cross_raw, &
+         DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_physical, &
+                     energy_cross_raw, &
                      energy_cross_density_full, &
                      energy_hessian, response, response_coupled, response_density_exact, &
                      response_density_full, response_density_full_exact, response_density_physical, &
