@@ -881,9 +881,16 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       REAL(KIND=dp), INTENT(OUT)                         :: residual_delta
 
-      residual_delta = MAX(0.0_dp, local_ot_env(1)%delta)
+      INTEGER                                            :: local_channel
+
+      residual_delta = 0.0_dp
+      DO local_channel = 1, SIZE(local_ot_env)
+         residual_delta = MAX(residual_delta, local_ot_env(local_channel)%delta)
+      END DO
       CALL para_env_inter_kp%max(residual_delta)
-      local_ot_env(1)%delta = residual_delta
+      DO local_channel = 1, SIZE(local_ot_env)
+         local_ot_env(local_channel)%delta = residual_delta
+      END DO
 
    END SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta
 
