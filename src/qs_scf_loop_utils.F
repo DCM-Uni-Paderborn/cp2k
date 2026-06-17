@@ -129,7 +129,9 @@ MODULE qs_scf_loop_utils
    INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 80, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
-                                        ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp
+                                        ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
+                                        ot_kp_added_mos_auto_basis_signal_min = 50.0_dp, &
+                                        ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
                                         ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
@@ -915,8 +917,8 @@ CONTAINS
       LOGICAL                                            :: grow
 
       INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo, trigger_step
-      LOGICAL                                            :: expandable
-      REAL(KIND=dp)                                      :: fractional_weight, grow_limit, max_fractional, &
+      LOGICAL                                            :: basis_limited, expandable
+      REAL(KIND=dp)                                      :: basis_signal, fractional_weight, grow_limit, max_fractional, &
                                                             maxocc, occ_tail, weight
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers, wkp
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -929,13 +931,22 @@ CONTAINS
       IF (scf_env%iter_delta <= scf_control%eps_scf) RETURN
       grow_limit = MAX(ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf, &
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
-      IF (scf_env%iter_delta > grow_limit) RETURN
 
       trigger_step = ot_kp_added_mos_auto_tail_min_steps
       IF (scf_env%iter_count < trigger_step) RETURN
 
       NULLIFY (occupation_numbers, para_env_inter_kp, wkp)
       CALL get_kpoint_info(kpoints, wkp=wkp, para_env_inter_kp=para_env_inter_kp)
+      basis_signal = 0.0_dp
+      IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
+         DO ispin = 1, SIZE(scf_env%qs_ot_env)
+            basis_signal = MAX(basis_signal, scf_env%qs_ot_env(ispin)%added_mos_auto_basis_signal)
+         END DO
+      END IF
+      CALL para_env_inter_kp%max(basis_signal)
+      basis_limited = basis_signal >= ot_kp_added_mos_auto_basis_signal_min
+      IF (scf_env%iter_delta > grow_limit .AND. .NOT. basis_limited) RETURN
+
       expandable = .FALSE.
       fractional_weight = 0.0_dp
       max_fractional = 0.0_dp
@@ -4473,6 +4484,7 @@ CONTAINS
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_quality_for_selection, projector_physical_trace_split_quality, &
             projector_physical_direct_density_audit_quality, &
+            projector_physical_direct_basis_signal, &
             projector_physical_direct_active_delta_diag_avg, &
             projector_physical_direct_active_diag_compensation, &
             projector_phys_direct_active_comp_trial, &
@@ -5245,6 +5257,7 @@ CONTAINS
             projector_phys_direct_lcomp_trial_avg = 0.0_dp
             projector_phys_direct_lcomp_trial_frac = 0.0_dp
             projector_phys_direct_lcomp_trial_max = 0.0_dp
+            projector_physical_direct_basis_signal = 0.0_dp
             projector_physical_direct_delta_diag_avg = 0.0_dp
             projector_physical_direct_trace_diag_scale = 1.0_dp
             projector_physical_direct_trace_free_scale = 1.0_dp
@@ -6391,6 +6404,7 @@ CONTAINS
                projector_phys_direct_lcomp_trial_avg = 0.0_dp
                projector_phys_direct_lcomp_trial_frac = 0.0_dp
                projector_phys_direct_lcomp_trial_max = 0.0_dp
+               projector_physical_direct_basis_signal = 0.0_dp
                projector_physical_direct_diag_shift_avg = 0.0_dp
                projector_physical_direct_diag_shift_max = 0.0_dp
                projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -7224,6 +7238,16 @@ CONTAINS
                                           projector_phys_direct_lcomp_trial_avg/REAL(MAX(1, nrot), KIND=dp)
                                        projector_phys_direct_lcomp_trial_frac = &
                                           projector_phys_direct_lcomp_trial_frac/REAL(MAX(1, nrot), KIND=dp)
+                                       projector_physical_direct_basis_signal = 0.0_dp
+                                       IF (projector_phys_direct_lcomp_trial_frac >= &
+                                           ot_kp_added_mos_auto_basis_signal_frac) THEN
+                                          projector_physical_direct_basis_signal = &
+                                             projector_phys_direct_lcomp_trial_frac*projector_phys_direct_comp_trial/ &
+                                             MAX(kpoint_ot_fermi_window_anchor(sigma), EPSILON(1.0_dp))
+                                          local_ot_env(1)%added_mos_auto_basis_signal = &
+                                             MAX(local_ot_env(1)%added_mos_auto_basis_signal, &
+                                                 projector_physical_direct_basis_signal)
+                                       END IF
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
                                              projector_phys_direct_comp_trial
@@ -9928,13 +9952,14 @@ CONTAINS
                         projector_physical_direct_diag_compensation_local_max, &
                         projector_physical_direct_diag_compensation_local_fraction, &
                         projector_physical_direct_diag_compensation
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8),1(1X,L1))') &
-                        " OT Schur projector phys direct ungated comp audit avg max frac global active tail:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),1(1X,L1))') &
+                        " OT Schur projector phys direct ungated comp audit avg max frac global active signal tail:", &
                         projector_phys_direct_lcomp_trial_avg, &
                         projector_phys_direct_lcomp_trial_max, &
                         projector_phys_direct_lcomp_trial_frac, &
                         projector_phys_direct_comp_trial, &
                         projector_phys_direct_active_comp_trial, &
+                        projector_physical_direct_basis_signal, &
                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,13(1X,ES16.8))') &
                         " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr mratio nratio tq sq:", &

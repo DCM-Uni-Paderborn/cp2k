@@ -231,6 +231,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: canonical_tether_energy = 0.0_dp, canonical_tether_strength = 0.0_dp
       REAL(KIND=dp) :: canonical_tether_weight_sum = 0.0_dp, canonical_tether_shift = 0.0_dp
       REAL(KIND=dp) :: canonical_tether_grad_max = 0.0_dp
+      REAL(KIND=dp) :: added_mos_auto_basis_signal = 0.0_dp
       ! Runtime accepted-step calibration only.  Restart files persist the OT
       ! orbitals/history, while this Schur quality model is relearned after read.
       LOGICAL :: schur_model_pending = .FALSE., schur_model_quality_ready = .FALSE.
@@ -997,6 +998,7 @@ CONTAINS
          qs_ot_env%canonical_tether_weight_sum = 0.0_dp
          qs_ot_env%canonical_tether_shift = 0.0_dp
          qs_ot_env%canonical_tether_grad_max = 0.0_dp
+         qs_ot_env%added_mos_auto_basis_signal = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
          IF (qs_ot_env%use_dx) &
             qs_ot_env%ener_dx(:) = 0.0_dp
