@@ -4738,6 +4738,7 @@ CONTAINS
                                                             response_exact_physical, response_exact_raw, response_occ, &
                                                             projector_physical_direct_delta, response_occ_physical, &
                                                             projector_physical_direct_schur_vec, &
+                                                            response_physical_model, &
                                                             response_split, rot_hessian, rot_hessian_coupled, &
                                                             rot_hessian_projector, &
                                                             rot_hessian_projector_physical, &
@@ -4832,6 +4833,7 @@ CONTAINS
                    response_density_full_exact(ne, nrot), response_density_plateau_exact(ne, nrot), &
                    response_exact(ne, nrot), response_exact_physical(ne, nrot), &
                    response_exact_raw(ne, nrot), response_occ(ne, nrot), response_occ_physical(ne, nrot), &
+                   response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
@@ -4915,6 +4917,7 @@ CONTAINS
          response_exact_raw(:, :) = 0.0_dp
          response_occ(:, :) = 0.0_dp
          response_occ_physical(:, :) = 0.0_dp
+         response_physical_model(:, :) = 0.0_dp
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
@@ -6859,14 +6862,19 @@ CONTAINS
                       projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                       local_ot_env(1)%schur_projector_mode_quality_samples >= &
                      ot_kp_schur_calibration_min_samples) THEN
-                     projector_physical_model_e(:) = MATMUL(response_exact_physical, sol)
+                     response_physical_model(:, :) = response_exact_physical(:, :)
+                     IF (exact_density_response_ready) &
+                        response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                        response_density_exact(:, :)
+                     projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
                      CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
                                                            occ_curv_projection_sum, channel_nmo, e_offset)
                      ! The physical shadow must see the active occupation-response
-                     ! curvature, not only the tiny projector-basis gauge remainder.
+                     ! curvature and the fixed-N density response, not only the
+                     ! tiny projector-basis gauge remainder.
                      CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                    rot_hessian_projector_physical, sol, &
-                                                                   response_exact_raw, response_exact_physical, curv, &
+                                                                   response_exact_raw, response_physical_model, curv, &
                                                                    occ_curv, tether_curv, occ_curv_projection_sum, &
                                                                    channel_nmo, e_offset, .TRUE., &
                                                                    projector_coupled_weight, residual_delta, &
@@ -6969,15 +6977,16 @@ CONTAINS
                                                  projector_offdiag_history_trust > EPSILON(projector_offdiag_history_trust)) THEN
                                                 projector_physical_direct_delta(:, :) = &
                                                    rot_hessian(:, :) + rot_hessian_projector_physical_offdiag(:, :)
-                                                projector_physical_model_e(:) = MATMUL(response_exact_physical, sol)
+                                                response_physical_model(:, :) = response_exact_physical(:, :)
                                                 IF (exact_density_response_ready) &
-                                                   projector_physical_model_e(:) = projector_physical_model_e(:) + &
-                                                      MATMUL(response_density_exact, sol)
+                                                   response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                                                  response_density_exact(:, :)
+                                                projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
                                                 CALL project_kpoint_ot_schur_response(projector_physical_model_e, &
                                                    occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                               projector_physical_direct_delta, sol, &
-                                                                              response_exact_raw, response_exact_physical, curv, &
+                                                                              response_exact_raw, response_physical_model, curv, &
                                                                               occ_curv, tether_curv, occ_curv_projection_sum, &
                                                                               channel_nmo, e_offset, .TRUE., &
                                                                               projector_coupled_weight, residual_delta, &
@@ -10289,7 +10298,7 @@ CONTAINS
                      response_density_full, response_density_full_exact, response_density_physical, &
                      response_density_plateau, response_density_plateau_exact, &
                      response_exact, response_exact_physical, response_exact_raw, &
-                     response_occ, response_occ_physical, response_split, rot_hessian, &
+                     response_occ, response_occ_physical, response_physical_model, response_split, rot_hessian, &
                      projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
                      projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
