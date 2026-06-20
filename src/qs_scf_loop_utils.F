@@ -2048,7 +2048,7 @@ CONTAINS
 
       LOGICAL                                            :: active
       REAL(KIND=dp)                                      :: edge_window, fi_norm, gvalue, occ_tail, &
-                                                            response_floor
+                                                            response_floor, tail_scale
 
       response = 0.0_dp
       IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) RETURN
@@ -2061,6 +2061,8 @@ CONTAINS
       fi_norm = occupation/MAX(maxocc, EPSILON(maxocc))
       gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
       response_floor = response_floor_fraction*maxocc/sigma
+      tail_scale = occ_tail/MAX(ot_kp_fermi_window_tail_fraction*maxocc, EPSILON(maxocc))
+      response_floor = response_floor*MIN(1.0_dp, MAX(0.0_dp, tail_scale))
       response = MAX(gvalue, response_floor)
 
    END FUNCTION kpoint_ot_canonical_tether_response
