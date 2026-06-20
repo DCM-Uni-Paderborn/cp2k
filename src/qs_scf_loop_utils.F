@@ -11088,7 +11088,8 @@ CONTAINS
                                                             density_projector_fraction, projector_diag_avg, &
                                                             projector_delta_diag_avg
       INTEGER, INTENT(IN)                               :: samples
-      REAL(KIND=dp)                                     :: diag_ratio, projector_weight, quality_weight
+      REAL(KIND=dp)                                     :: diag_ratio, projector_weight, quality_weight, &
+                                                            shadow_weight
 
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) THEN
             projector_weight = 1.0_dp
@@ -11101,6 +11102,10 @@ CONTAINS
          quality_weight = (1.0_dp - MIN(1.0_dp, MAX(0.0_dp, history_quality)))/ &
                           MAX(EPSILON(1.0_dp), 1.0_dp - ot_kp_schur_calibrated_quality_min_ratio)
          quality_weight = MAX(0.0_dp, MIN(1.0_dp, quality_weight))
+         shadow_weight = 0.0_dp
+         IF (history_quality > 1.0_dp .AND. density_projector_fraction > 0.0_dp) &
+            shadow_weight = 5.0E-2_dp/MAX(1.0_dp, history_quality)
+         quality_weight = MAX(quality_weight, shadow_weight)
          diag_ratio = ABS(projector_delta_diag_avg)/MAX(ABS(projector_diag_avg), EPSILON(1.0_dp))
          projector_weight = ot_kp_schur_projector_coupled_tail_max_weight* &
                             quality_weight*MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))/ &
