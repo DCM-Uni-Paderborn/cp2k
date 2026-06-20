@@ -2776,12 +2776,13 @@ CONTAINS
                   local_ot_env(1)%schur_model_calibrated_quality_ema + &
                   ot_kp_schur_quality_ema_alpha*calibrated_quality_ratio
             END IF
+            ! Ratios above one mean the accepted Mermin drop was larger than
+            ! predicted.  Treat that as conservative calibration evidence; the
+            ! step-size model below still clamps how much of it can be used.
             local_ot_env(1)%schur_model_quality_ready = &
                samples >= ot_kp_schur_quality_min_samples .AND. &
                local_ot_env(1)%schur_model_quality_ema >= ot_kp_schur_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_model_quality_ema <= ot_kp_schur_quality_max_ratio .AND. &
-               quality_ratio >= 0.5_dp*ot_kp_schur_quality_min_ratio .AND. &
-               quality_ratio <= 2.0_dp*ot_kp_schur_quality_max_ratio
+               quality_ratio >= 0.5_dp*ot_kp_schur_quality_min_ratio
          ELSE
             local_ot_env(1)%schur_model_quality = 0.0_dp
             local_ot_env(1)%schur_model_quality_ema = 0.0_dp
@@ -3739,12 +3740,8 @@ CONTAINS
             local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_split_candidate_enabled .AND. &
                local_ot_env(1)%schur_split_calibrated_quality_ema >= &
                ot_kp_schur_calibrated_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_split_calibrated_quality_ema <= &
-               ot_kp_schur_calibrated_quality_max_ratio .AND. &
                local_ot_env(1)%schur_split_calibrated_quality >= &
-               0.5_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_split_calibrated_quality <= &
-               2.0_dp*ot_kp_schur_calibrated_quality_max_ratio
+               0.5_dp*ot_kp_schur_calibrated_quality_min_ratio
          local_ot_env(1)%schur_constrained_candidate_enabled = &
             local_ot_env(1)%schur_split_candidate_enabled .AND. &
             local_ot_env(1)%schur_constrained_quality_samples >= ot_kp_schur_constrained_min_samples .AND. &
