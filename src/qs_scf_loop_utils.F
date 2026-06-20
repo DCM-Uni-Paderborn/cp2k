@@ -1352,7 +1352,7 @@ CONTAINS
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
       IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
 
-      response_weight = MIN(1.0_dp, MAX(0.0_dp, occ_curv/occ_curv_max))
+      response_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv/occ_curv_max)))
 
    END FUNCTION kpoint_ot_active_density_response_weight
 

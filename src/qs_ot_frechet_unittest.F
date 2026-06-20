@@ -3793,7 +3793,7 @@ CONTAINS
          reference_response(i) = 0.5_dp*REAL(docc_fd(i, i), KIND=dp)/occ_curv(i)
          active_weight = 0.0_dp
          IF (occ_curv(i) > EPSILON(occ_curv(i)) .AND. occ_curv_max > EPSILON(occ_curv_max)) &
-            active_weight = MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max))
+            active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
          active_response(i) = active_weight*full_response(i)
       END DO
 
@@ -3801,7 +3801,7 @@ CONTAINS
       active_bound_err = MAXVAL(MAX(0.0_dp, ABS(active_response(:)) - ABS(full_response(:))))
       full_norm = MAXVAL(ABS(full_response(:)))
       active_norm = MAXVAL(ABS(active_response(:)))
-      low_weight = occ_curv(n)/occ_curv_max
+      low_weight = SQRT(occ_curv(n)/occ_curv_max)
       low_ratio_err = ABS(active_response(n)/full_response(n) - low_weight)
 
       IF (full_err > tol .OR. active_bound_err > tol .OR. low_ratio_err > tol .OR. &
