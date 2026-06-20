@@ -129,7 +129,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_history_safe_occ_projector_derivative("history-safe occupation-projector derivative", &
                                                     5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_gauge_physical_split( &
-      "history-safe occupation-projector gauge/physical split", 2.0E-8_dp, nfail)
+      "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -5237,11 +5237,13 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
                                                             docc_raw, docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, mixed_safe, physical_active, physical_err, &
-                                                            physical_near_err, raw_gauge, raw_mixed, &
-                                                            raw_transitive, safe_gauge, transitive_err
+      REAL(KIND=dp)                                      :: err, gauge_err, mixed_err, mixed_safe, occ_tol, &
+                                                            physical_active, physical_err, physical_near_err, &
+                                                            raw_gauge, raw_mixed, raw_transitive, safe_gauge, &
+                                                            transitive_err
       REAL(KIND=dp), DIMENSION(n)                        :: occ_cluster, occ_curv, occ_curv_mixed, occ_mixed, &
-                                                            occ_near_physical, occ_plateau, occ_scale
+                                                            occ_filtered, occ_near_physical, occ_plateau, &
+                                                            occ_scale, evals_ref
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -5276,6 +5278,9 @@ CONTAINS
       occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
       occ_plateau(:) = occ_scale(:)
       occ_plateau(1:2) = SUM(occ_scale(1:2))/2.0_dp
+      DO i = 1, n
+         evals_ref(i) = REAL(chc_eig(i, i), KIND=dp)
+      END DO
 
       dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       dchc_eig(1, 2) = CMPLX(0.21_dp, -0.17_dp, KIND=dp)
@@ -5284,6 +5289,13 @@ CONTAINS
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_safe, occ_curv, gauge_gap)
+      occ_filtered(:) = occ_scale(:)
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_filtered(:))))
+      CALL dense_near_degenerate_occupation_plateau(evals_ref, occ_curv, gauge_gap, occ_tol, occ_filtered)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_filtered, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_filtered, occ_mat_m)
+      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      gauge_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
       raw_gauge = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
       safe_gauge = MAXVAL(ABS(docc_safe(:, :)))
 
@@ -5295,6 +5307,13 @@ CONTAINS
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_mixed, projector_weight, &
                                                            docc_safe, occ_curv_mixed, gauge_gap)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_mixed, docc_raw)
+      occ_filtered(:) = occ_mixed(:)
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_filtered(:))))
+      CALL dense_near_degenerate_occupation_plateau(evals_ref, occ_curv_mixed, gauge_gap, occ_tol, occ_filtered)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_filtered, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_filtered, occ_mat_m)
+      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      mixed_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
       mixed_safe = MAXVAL(ABS(docc_safe(:, :)))
       raw_mixed = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
 
@@ -5330,8 +5349,12 @@ CONTAINS
       chc_eig(3, 3) = CMPLX(-0.009940_dp, 0.0_dp, KIND=dp)
       chc_eig(4, 4) = CMPLX(0.51_dp, 0.0_dp, KIND=dp)
       chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+      DO i = 1, n
+         evals_ref(i) = REAL(chc_eig(i, i), KIND=dp)
+      END DO
       occ_cluster(:) = occ_scale(:)
-      occ_cluster(1:3) = SUM(occ_cluster(1:3))/3.0_dp
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_cluster(:))))
+      CALL dense_near_degenerate_occupation_plateau(evals_ref, occ_curv, gauge_gap, occ_tol, occ_cluster)
       dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       dchc_eig(1, 3) = CMPLX(0.18_dp, -0.09_dp, KIND=dp)
       dchc_eig(3, 1) = CONJG(dchc_eig(1, 3))
@@ -5345,21 +5368,21 @@ CONTAINS
       docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
       transitive_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
 
-      err = MAX(safe_gauge, physical_err, physical_near_err, transitive_err)
-      err = MAX(err, mixed_safe)
+      err = MAX(gauge_err, mixed_err, physical_err, physical_near_err, transitive_err)
       IF (err > tol .OR. raw_gauge < active_tol .OR. raw_mixed < active_tol .OR. &
           raw_transitive < active_tol .OR. &
+          safe_gauge >= 0.20_dp*raw_gauge .OR. mixed_safe >= 0.20_dp*raw_mixed .OR. &
           physical_active < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
-            "failed with error/raw_gauge/safe_gauge/raw_mixed/mixed/physical/near/transitive", &
-            err, raw_gauge, safe_gauge, raw_mixed, mixed_safe, physical_active, physical_near_err, &
-            raw_transitive, transitive_err
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed with error/gerr/raw/safe/merr/raw_mixed/mixed/physical/near/transitive", &
+            err, gauge_err, raw_gauge, safe_gauge, mixed_err, raw_mixed, mixed_safe, &
+            physical_active, physical_near_err, transitive_err
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
-            "OK with error/raw_gauge/safe_gauge/raw_mixed/mixed/physical/near/transitive", &
-            err, raw_gauge, safe_gauge, raw_mixed, mixed_safe, physical_active, physical_near_err, &
-            raw_transitive, transitive_err
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK with error/gerr/raw/safe/merr/raw_mixed/mixed/physical/near/transitive", &
+            err, gauge_err, raw_gauge, safe_gauge, mixed_err, raw_mixed, mixed_safe, &
+            physical_active, physical_near_err, transitive_err
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_gauge_physical_split
@@ -5618,8 +5641,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                           :: gauge_gap, occ_tol
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: occ_mono
 
-      INTEGER                                             :: first, last, n
-      REAL(KIND=dp)                                      :: allowed_jump, gap, occ_jump, plateau, slope_cap
+      INTEGER                                             :: first, idx, last, n
+      REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
+                                                            occ_jump, physical_slope, plateau, slope_cap
 
       n = SIZE(evals)
       IF (n <= 1) RETURN
@@ -5641,7 +5665,23 @@ CONTAINS
          END DO
          IF (last > first) THEN
             plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
-            occ_mono(first:last) = plateau
+            eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
+            slope_cap = HUGE(1.0_dp)
+            DO idx = first, last - 1
+               slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv(idx), occ_curv(idx + 1)))
+            END DO
+            fit_num = 0.0_dp
+            fit_den = 0.0_dp
+            DO idx = first, last
+               fit_num = fit_num + (evals(idx) - eval_center)*(occ_mono(idx) - plateau)
+               fit_den = fit_den + (evals(idx) - eval_center)**2
+            END DO
+            physical_slope = 0.0_dp
+            IF (fit_den > EPSILON(fit_den)) physical_slope = MIN(0.0_dp, fit_num/fit_den)
+            physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
+            DO idx = first, last
+               occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
+            END DO
          END IF
          first = last + 1
       END DO

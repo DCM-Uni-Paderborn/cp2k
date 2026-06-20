@@ -12261,8 +12261,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                           :: gauge_gap, occ_tol
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: occ_mono
 
-      INTEGER                                             :: first, last, n
-      REAL(KIND=dp)                                      :: allowed_jump, gap, occ_jump, plateau, slope_cap
+      INTEGER                                             :: first, idx, last, n
+      REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
+                                                            occ_jump, physical_slope, plateau, slope_cap
 
          n = SIZE(evals)
          IF (n <= 1) RETURN
@@ -12284,7 +12285,25 @@ CONTAINS
             END DO
             IF (last > first) THEN
                plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
-               occ_mono(first:last) = plateau
+               eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
+               slope_cap = HUGE(1.0_dp)
+               DO idx = first, last - 1
+                  slope_cap = MIN(slope_cap, &
+                                  kpoint_ot_shared_occ_slope(occ_curv_channel(idx), &
+                                                             occ_curv_channel(idx + 1)))
+               END DO
+               fit_num = 0.0_dp
+               fit_den = 0.0_dp
+               DO idx = first, last
+                  fit_num = fit_num + (evals(idx) - eval_center)*(occ_mono(idx) - plateau)
+                  fit_den = fit_den + (evals(idx) - eval_center)**2
+               END DO
+               physical_slope = 0.0_dp
+               IF (fit_den > EPSILON(fit_den)) physical_slope = MIN(0.0_dp, fit_num/fit_den)
+               physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
+               DO idx = first, last
+                  occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
+               END DO
             END IF
             first = last + 1
          END DO
