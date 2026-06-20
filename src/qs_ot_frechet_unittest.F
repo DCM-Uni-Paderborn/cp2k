@@ -3734,10 +3734,12 @@ CONTAINS
                                                             docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_bound_err, active_norm, active_weight, &
-                                                            full_err, full_norm, low_ratio_err, low_weight, &
-                                                            occ_curv_max
+                                                            full_err, full_norm, gauge_leak_err, gauge_norm, &
+                                                            gauge_shift, low_ratio_err, low_weight, occ_curv_max, &
+                                                            occ_sum
       REAL(KIND=dp), DIMENSION(n)                        :: active_response, full_response, occ_curv, &
-                                                            occ_plateau, occ_scale, reference_response
+                                                            occ_plateau, occ_scale, reference_response, &
+                                                            response_shifted, weight_response
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -3788,32 +3790,41 @@ CONTAINS
       active_response(:) = 0.0_dp
       full_response(:) = 0.0_dp
       reference_response(:) = 0.0_dp
+      weight_response(:) = 0.0_dp
       DO i = 1, n
          full_response(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
          reference_response(i) = 0.5_dp*REAL(docc_fd(i, i), KIND=dp)/occ_curv(i)
          active_weight = 0.0_dp
          IF (occ_curv(i) > EPSILON(occ_curv(i)) .AND. occ_curv_max > EPSILON(occ_curv_max)) &
             active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
-         active_response(i) = active_weight*full_response(i)
+         weight_response(i) = active_weight
       END DO
+      occ_sum = SUM(occ_curv(:))
+      gauge_shift = DOT_PRODUCT(occ_curv(:), full_response(:))/occ_sum
+      response_shifted(:) = full_response(:) - gauge_shift
+      active_response(:) = weight_response(:)*response_shifted(:)
 
       full_err = MAXVAL(ABS(full_response(:) - reference_response(:)))
-      active_bound_err = MAXVAL(MAX(0.0_dp, ABS(active_response(:)) - ABS(full_response(:))))
-      full_norm = MAXVAL(ABS(full_response(:)))
+      active_bound_err = MAXVAL(MAX(0.0_dp, ABS(active_response(:)) - ABS(response_shifted(:))))
+      full_norm = MAXVAL(ABS(response_shifted(:)))
       active_norm = MAXVAL(ABS(active_response(:)))
       low_weight = SQRT(occ_curv(n)/occ_curv_max)
-      low_ratio_err = ABS(active_response(n)/full_response(n) - low_weight)
+      low_ratio_err = ABS(active_response(n)/response_shifted(n) - low_weight)
+      gauge_shift = 0.42_dp
+      gauge_norm = MAXVAL(ABS(weight_response(:)*(0.42_dp - gauge_shift)))
+      gauge_leak_err = MAXVAL(ABS(weight_response(:)*0.42_dp))
 
       IF (full_err > tol .OR. active_bound_err > tol .OR. low_ratio_err > tol .OR. &
+          gauge_norm > tol .OR. gauge_leak_err < active_tol .OR. &
           full_norm < active_tol .OR. active_norm >= full_norm) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/bound/low/full/active", full_err, active_bound_err, low_ratio_err, &
-            full_norm, active_norm
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/bound/low/gauge/leak/full/active", full_err, active_bound_err, &
+            low_ratio_err, gauge_norm, gauge_leak_err, full_norm, active_norm
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/bound/low/full/active", full_err, active_bound_err, low_ratio_err, &
-            full_norm, active_norm
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/bound/low/gauge/leak/full/active", full_err, active_bound_err, &
+            low_ratio_err, gauge_norm, gauge_leak_err, full_norm, active_norm
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_response_filter

@@ -11893,10 +11893,12 @@ CONTAINS
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp)                                      :: active_density_weight, channel_occ_curv_max, &
+                                                            density_occ_curv_sum, density_plateau_shift, &
                                                             density_plateau_response, density_response, &
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
-                                                            projector_evals_p
+                                                            projector_evals_p, density_full_column, &
+                                                            density_plateau_column, density_weight_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
                                                             x_m_re, x_p_im, x_p_re, x_re
@@ -11919,6 +11921,7 @@ CONTAINS
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
+         ALLOCATE (density_full_column(nmo), density_plateau_column(nmo), density_weight_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -12035,6 +12038,11 @@ CONTAINS
                ! gauge-filtered derivative for the physical rotation Hessian so
                ! near-degenerate projector-gauge motion does not enter the
                ! finite complex Mermin curvature.
+               density_full_column(:) = 0.0_dp
+               density_plateau_column(:) = 0.0_dp
+               density_weight_column(:) = 0.0_dp
+               density_occ_curv_sum = 0.0_dp
+               density_plateau_shift = 0.0_dp
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! docc_mat/docc_plateau are doubled k-point density
@@ -12046,14 +12054,30 @@ CONTAINS
                      ! occupation response from projector-basis gauge motion.
                      active_density_weight = kpoint_ot_active_density_response_weight( &
                         occ_curv_channel(ie), channel_occ_curv_max)
-                     density_plateau_response = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
-                                                occ_curv_channel(ie)
-                     density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/occ_curv_channel(ie)
+                     density_plateau_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
+                                                 occ_curv_channel(ie)
+                     density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
+                                               occ_curv_channel(ie)
+                     density_weight_column(ie) = active_density_weight
+                     density_occ_curv_sum = density_occ_curv_sum + occ_curv_channel(ie)
+                     density_plateau_shift = density_plateau_shift + &
+                                             occ_curv_channel(ie)*density_plateau_column(ie)
+                  END IF
+               END DO
+               IF (density_occ_curv_sum > EPSILON(density_occ_curv_sum)) &
+                  density_plateau_shift = density_plateau_shift/density_occ_curv_sum
+               DO ie = 1, nmo
+                  IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
+                     ! Remove the fixed-N energy gauge before applying
+                     ! band-dependent active weights; otherwise a uniform
+                     ! response becomes an artificial density signal.
+                     density_plateau_response = density_plateau_column(ie) - density_plateau_shift
+                     density_response = density_full_column(ie)
                      response_density_full(first_energy + ie - 1, s) = density_response
                      response_density_physical(first_energy + ie - 1, s) = &
-                        active_density_weight*density_plateau_response
+                        density_weight_column(ie)*density_plateau_response
                      response_density_plateau(first_energy + ie - 1, s) = &
-                        active_density_weight*density_plateau_response
+                        density_weight_column(ie)*density_plateau_response
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
                         response_density_physical(first_energy + ie - 1, s)
@@ -12128,6 +12152,7 @@ CONTAINS
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
+         DEALLOCATE (density_full_column, density_plateau_column, density_weight_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
