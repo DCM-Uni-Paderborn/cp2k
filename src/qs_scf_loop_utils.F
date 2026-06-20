@@ -9011,8 +9011,7 @@ CONTAINS
                      response_weighted_trust_ratio = projector_response_response_weighted_trust_ratio
                      dense_expected_drop = projector_response_expected_drop
                   END IF
-                  IF (.NOT. attempt_failed .AND. local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
-                      projector_physical_direct_density_candidate_ready .AND. &
+                  IF (.NOT. attempt_failed .AND. projector_physical_direct_density_candidate_ready .AND. &
                       projector_physical_direct_density_expected_drop > &
                       EPSILON(projector_physical_direct_density_expected_drop) .AND. &
                       projector_physical_direct_density_expected_drop >= &
@@ -9271,8 +9270,7 @@ CONTAINS
                      response_weighted_trust_ratio = projector_response_response_weighted_trust_ratio
                      dense_expected_drop = projector_response_expected_drop
                   END IF
-                  IF (.NOT. attempt_failed .AND. local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
-                      projector_physical_direct_density_candidate_ready .AND. &
+                  IF (.NOT. attempt_failed .AND. projector_physical_direct_density_candidate_ready .AND. &
                       projector_physical_direct_density_expected_drop > &
                       EPSILON(projector_physical_direct_density_expected_drop) .AND. &
                       projector_physical_direct_density_expected_drop >= &

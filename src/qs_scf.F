@@ -1185,6 +1185,8 @@ CONTAINS
       IF (ASSOCIATED(kpoints%scf_diis_buffer)) &
          CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
 
+      CALL qs_scf_save_kpoint_ot_density_calibration(scf_env)
+
       IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
          DO ispin = 1, SIZE(scf_env%qs_ot_env)
             CALL ot_scf_destroy(scf_env%qs_ot_env(ispin))
@@ -1202,6 +1204,161 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_grow_added_mos_auto_kp
+
+! **************************************************************************************************
+!> \brief cache accepted scalar density-response calibration across k-point ADDED_MOS AUTO rebuilds
+!> \param scf_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_save_kpoint_ot_density_calibration(scf_env)
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+
+      INTEGER                                            :: ot_channel
+
+      IF (ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) THEN
+         DEALLOCATE (scf_env%qs_ot_schur_density_calibration%channel)
+         NULLIFY (scf_env%qs_ot_schur_density_calibration%channel)
+      END IF
+      scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = 0
+
+      IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) RETURN
+
+      ALLOCATE (scf_env%qs_ot_schur_density_calibration%channel(SIZE(scf_env%qs_ot_env)))
+      scf_env%qs_ot_schur_density_calibration%valid = .TRUE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = SIZE(scf_env%qs_ot_env)
+
+      DO ot_channel = 1, SIZE(scf_env%qs_ot_env)
+         ASSOCIATE (cache => scf_env%qs_ot_schur_density_calibration%channel(ot_channel), &
+                    ot_env => scf_env%qs_ot_env(ot_channel))
+            cache%valid = ot_env%has_kpoint_context .AND. &
+                          (ot_env%schur_projector_density_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_density_audit_samples > 0 .OR. &
+                           ot_env%schur_projector_density_descent_quality_samples > 0)
+            IF (.NOT. cache%valid) CYCLE
+            cache%spin_index = ot_env%spin_index
+            cache%kpoint_index = ot_env%kpoint_index
+            cache%density_quality_samples = ot_env%schur_projector_density_quality_samples
+            cache%density_audit_samples = ot_env%schur_projector_density_audit_samples
+            cache%density_descent_quality_samples = &
+               ot_env%schur_projector_density_descent_quality_samples
+            cache%density_quality = ot_env%schur_projector_density_quality
+            cache%density_quality_ema = ot_env%schur_projector_density_quality_ema
+            cache%density_drop_sum = ot_env%schur_projector_density_drop_sum
+            cache%density_measured_sum = ot_env%schur_projector_density_measured_sum
+            cache%density_lowcurv_ema = ot_env%schur_projector_density_lowcurv_ema
+            cache%density_lowcurv_quality_ema = &
+               ot_env%schur_projector_density_lowcurv_quality_ema
+            cache%density_audit_amplification_ema = &
+               ot_env%schur_projector_density_audit_amplification_ema
+            cache%density_audit_amplification_quality_ema = &
+               ot_env%schur_projector_density_audit_amplification_quality_ema
+            cache%density_audit_lowcurv_ema = &
+               ot_env%schur_projector_density_audit_lowcurv_ema
+            cache%density_audit_lowcurv_quality_ema = &
+               ot_env%schur_projector_density_audit_lowcurv_quality_ema
+            cache%density_descent_quality = ot_env%schur_projector_density_descent_quality
+            cache%density_descent_quality_ema = &
+               ot_env%schur_projector_density_descent_quality_ema
+            cache%density_descent_drop_sum = &
+               ot_env%schur_projector_density_descent_drop_sum
+            cache%density_descent_measured_sum = &
+               ot_env%schur_projector_density_descent_measured_sum
+            cache%density_descent_coeff_ema = &
+               ot_env%schur_projector_density_descent_coeff_ema
+            cache%density_descent_support = ot_env%schur_projector_density_descent_support
+            cache%density_descent_support_ema = &
+               ot_env%schur_projector_density_descent_support_ema
+            cache%density_descent_support_ready = &
+               ot_env%schur_projector_density_descent_support_ready
+         END ASSOCIATE
+      END DO
+
+   END SUBROUTINE qs_scf_save_kpoint_ot_density_calibration
+
+! **************************************************************************************************
+!> \brief restore scalar density-response calibration after a k-point ADDED_MOS AUTO rebuild
+!> \param qs_ot_env ...
+!> \param scf_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_restore_kpoint_ot_density_calibration(qs_ot_env, scf_env)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+
+      INTEGER                                            :: ot_channel
+
+      IF (.NOT. scf_env%qs_ot_schur_density_calibration%valid) RETURN
+      IF (.NOT. ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) RETURN
+      IF (.NOT. qs_ot_env%has_kpoint_context) RETURN
+
+      DO ot_channel = 1, SIZE(scf_env%qs_ot_schur_density_calibration%channel)
+         ASSOCIATE (cache => scf_env%qs_ot_schur_density_calibration%channel(ot_channel))
+            IF (.NOT. cache%valid) CYCLE
+            IF (cache%spin_index /= qs_ot_env%spin_index) CYCLE
+            IF (cache%kpoint_index /= qs_ot_env%kpoint_index) CYCLE
+
+            qs_ot_env%schur_projector_density_pending = .FALSE.
+            qs_ot_env%schur_projector_density_audit_pending = .FALSE.
+            qs_ot_env%schur_projector_density_descent_pending = .FALSE.
+            qs_ot_env%schur_projector_density_drop = 0.0_dp
+            qs_ot_env%schur_projector_density_lowcurv = 0.0_dp
+            qs_ot_env%schur_projector_density_audit_amplification = 0.0_dp
+            qs_ot_env%schur_projector_density_audit_lowcurv = 0.0_dp
+            qs_ot_env%schur_projector_density_descent_drop = 0.0_dp
+            qs_ot_env%schur_projector_density_descent_coeff = 0.0_dp
+            qs_ot_env%schur_projector_density_descent_support = cache%density_descent_support
+
+            qs_ot_env%schur_projector_density_quality_samples = cache%density_quality_samples
+            qs_ot_env%schur_projector_density_audit_samples = cache%density_audit_samples
+            qs_ot_env%schur_projector_density_descent_quality_samples = &
+               cache%density_descent_quality_samples
+            qs_ot_env%schur_projector_density_quality = cache%density_quality
+            qs_ot_env%schur_projector_density_quality_ema = cache%density_quality_ema
+            qs_ot_env%schur_projector_density_drop_sum = cache%density_drop_sum
+            qs_ot_env%schur_projector_density_measured_sum = cache%density_measured_sum
+            qs_ot_env%schur_projector_density_lowcurv_ema = cache%density_lowcurv_ema
+            qs_ot_env%schur_projector_density_lowcurv_quality_ema = &
+               cache%density_lowcurv_quality_ema
+            qs_ot_env%schur_projector_density_audit_amplification_ema = &
+               cache%density_audit_amplification_ema
+            qs_ot_env%schur_projector_density_audit_amplification_quality_ema = &
+               cache%density_audit_amplification_quality_ema
+            qs_ot_env%schur_projector_density_audit_lowcurv_ema = &
+               cache%density_audit_lowcurv_ema
+            qs_ot_env%schur_projector_density_audit_lowcurv_quality_ema = &
+               cache%density_audit_lowcurv_quality_ema
+            qs_ot_env%schur_projector_density_descent_quality = cache%density_descent_quality
+            qs_ot_env%schur_projector_density_descent_quality_ema = &
+               cache%density_descent_quality_ema
+            qs_ot_env%schur_projector_density_descent_drop_sum = cache%density_descent_drop_sum
+            qs_ot_env%schur_projector_density_descent_measured_sum = &
+               cache%density_descent_measured_sum
+            qs_ot_env%schur_projector_density_descent_coeff_ema = &
+               cache%density_descent_coeff_ema
+            qs_ot_env%schur_projector_density_descent_support_ema = &
+               cache%density_descent_support_ema
+            qs_ot_env%schur_projector_density_descent_support_ready = &
+               cache%density_descent_support_ready
+            EXIT
+         END ASSOCIATE
+      END DO
+
+   END SUBROUTINE qs_scf_restore_kpoint_ot_density_calibration
+
+! **************************************************************************************************
+!> \brief clear cached scalar density-response calibration
+!> \param scf_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_clear_kpoint_ot_density_calibration(scf_env)
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+
+      IF (ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) THEN
+         DEALLOCATE (scf_env%qs_ot_schur_density_calibration%channel)
+         NULLIFY (scf_env%qs_ot_schur_density_calibration%channel)
+      END IF
+      scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = 0
+
+   END SUBROUTINE qs_scf_clear_kpoint_ot_density_calibration
 
 ! **************************************************************************************************
 !> \brief inits those objects needed if you want to restart the scf with, say
@@ -1727,6 +1884,7 @@ CONTAINS
             END IF
 
             CALL qs_ot_init(scf_env%qs_ot_env(ot_channel))
+            CALL qs_scf_restore_kpoint_ot_density_calibration(scf_env%qs_ot_env(ot_channel), scf_env)
             scf_env%qs_ot_env(ot_channel)%broyden_adaptive_sigma = qs_env%broyden_adaptive_sigma
 
             CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_x, 0.0_dp)
@@ -1798,6 +1956,7 @@ CONTAINS
 
       CALL dbcsr_deallocate_matrix(matrix_sk_re)
       IF (ASSOCIATED(matrix_sk_im)) CALL dbcsr_deallocate_matrix(matrix_sk_im)
+      CALL qs_scf_clear_kpoint_ot_density_calibration(scf_env)
 
       CALL timestop(handle)
 

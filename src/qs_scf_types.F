@@ -141,6 +141,32 @@ MODULE qs_scf_types
       INTEGER :: format_version = 0, nchannel = 0
       TYPE(qs_ot_restart_channel_type), DIMENSION(:), POINTER :: channel => NULL()
    END TYPE qs_ot_restart_cache_type
+
+   TYPE qs_ot_schur_density_calibration_channel_type
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: spin_index = 0, kpoint_index = 0
+      INTEGER :: density_quality_samples = 0, density_audit_samples = 0
+      INTEGER :: density_descent_quality_samples = 0
+      REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_lowcurv_ema = 0.0_dp, density_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_quality = 0.0_dp, density_descent_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_coeff_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_support = 0.0_dp, density_descent_support_ema = 0.0_dp
+      LOGICAL :: density_descent_support_ready = .FALSE.
+   END TYPE qs_ot_schur_density_calibration_channel_type
+
+   TYPE qs_ot_schur_density_calibration_cache_type
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: nchannel = 0
+      TYPE(qs_ot_schur_density_calibration_channel_type), DIMENSION(:), POINTER :: channel => NULL()
+   END TYPE qs_ot_schur_density_calibration_cache_type
 ! **************************************************************************************************
    TYPE qs_scf_env_type
       TYPE(qs_outer_scf_type) :: outer_scf = qs_outer_scf_type()
@@ -161,6 +187,8 @@ MODULE qs_scf_types
       TYPE(preconditioner_p_type), DIMENSION(:), POINTER :: ot_preconditioner => NULL()
       TYPE(qs_ot_type), POINTER, DIMENSION(:)  :: qs_ot_env => NULL()
       TYPE(qs_ot_restart_cache_type) :: qs_ot_restart = qs_ot_restart_cache_type()
+      TYPE(qs_ot_schur_density_calibration_cache_type) :: qs_ot_schur_density_calibration = &
+         qs_ot_schur_density_calibration_cache_type()
       TYPE(qs_diis_buffer_type), POINTER :: scf_diis_buffer => NULL()
       TYPE(subspace_env_type), POINTER :: subspace_env => NULL()
       TYPE(davidson_type), POINTER, DIMENSION(:) :: block_davidson_env => NULL()
@@ -227,6 +255,9 @@ CONTAINS
       scf_env%qs_ot_restart%format_version = 0
       scf_env%qs_ot_restart%nchannel = 0
       NULLIFY (scf_env%qs_ot_restart%channel)
+      scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = 0
+      NULLIFY (scf_env%qs_ot_schur_density_calibration%channel)
       NULLIFY (scf_env%scf_diis_buffer)
       NULLIFY (scf_env%buf1_dbcsr)
       NULLIFY (scf_env%buf2_dbcsr)
@@ -370,6 +401,12 @@ CONTAINS
          END DO
          DEALLOCATE (scf_env%qs_ot_env)
       END IF
+      IF (ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) THEN
+         DEALLOCATE (scf_env%qs_ot_schur_density_calibration%channel)
+      END IF
+      scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = 0
+      NULLIFY (scf_env%qs_ot_schur_density_calibration%channel)
       CALL qs_scf_ot_restart_clear(scf_env)
       IF (ASSOCIATED(scf_env%scf_diis_buffer)) THEN
          CALL qs_diis_b_release(scf_env%scf_diis_buffer)
