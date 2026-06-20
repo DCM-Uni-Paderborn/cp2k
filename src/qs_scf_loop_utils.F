@@ -1299,6 +1299,24 @@ CONTAINS
    END FUNCTION kpoint_ot_canonical_density_projector_weight
 
 ! **************************************************************************************************
+!> \brief line-search consistent residual for the k-point canonical density projector
+!> \param qs_ot_env ...
+!> \param delta ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_canonical_density_projector_delta(qs_ot_env, delta) RESULT(model_delta)
+      TYPE(qs_ot_type), INTENT(IN)                       :: qs_ot_env
+      REAL(KIND=dp), INTENT(IN)                          :: delta
+      REAL(KIND=dp)                                      :: model_delta
+
+      model_delta = MAX(0.0_dp, delta)
+      IF (qs_ot_env%line_search_count > 0 .AND. qs_ot_env%schur_model_pending .AND. &
+          qs_ot_env%schur_model_delta > 0.0_dp) THEN
+         model_delta = MIN(model_delta, qs_ot_env%schur_model_delta)
+      END IF
+
+   END FUNCTION kpoint_ot_canonical_density_projector_delta
+
+! **************************************************************************************************
 !> \brief occupation-window projector weight for one rotation pair
 !> \param projector_weight ...
 !> \param curv_i ...
@@ -1551,7 +1569,8 @@ CONTAINS
 
       INTEGER                                            :: ikpoint, ispin, local_channel, &
                                                             local_kpoint, nao, nblend, nmo
-      REAL(KIND=dp)                                      :: density_weight, max_weight, sum_weight
+      REAL(KIND=dp)                                      :: density_model_delta, density_weight, &
+                                                            max_weight, sum_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
       TYPE(cp_fm_type)                                   :: can_im, can_re, evec_fm_im, &
@@ -1573,7 +1592,9 @@ CONTAINS
          CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            density_weight = kpoint_ot_canonical_density_projector_weight(local_ot_env(local_channel)%delta)
+            density_model_delta = kpoint_ot_canonical_density_projector_delta( &
+               local_ot_env(1), local_ot_env(local_channel)%delta)
+            density_weight = kpoint_ot_canonical_density_projector_weight(density_model_delta)
             IF (density_weight <= 0.0_dp) CYCLE
             IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), smear)) THEN
                CALL cp_abort(__LOCATION__, &
@@ -1833,11 +1854,11 @@ CONTAINS
       INTEGER                                            :: ikpoint, imo, ispin, local_channel, &
                                                             local_kpoint, nmo, nspin
       REAL(KIND=dp)                                      :: density_projector_fraction, &
-                                                            density_projector_weight, fractional_weight, &
-                                                            kTS, max_partial, maxocc, min_fermi_dist, &
-                                                            min_trust_scale, mu, occ_tail, residual_delta, &
-                                                            tether_energy, tether_grad_max, trusted_step_max, &
-                                                            weighted_electrons
+                                                            density_projector_model_delta, &
+                                                            density_projector_weight, fractional_weight, kTS, &
+                                                            max_partial, maxocc, min_fermi_dist, min_trust_scale, &
+                                                            mu, occ_tail, residual_delta, tether_energy, &
+                                                            tether_grad_max, trusted_step_max, weighted_electrons
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -1900,7 +1921,9 @@ CONTAINS
       CALL para_env_inter_kp%max(trusted_step_max)
       CALL para_env_inter_kp%min(min_trust_scale)
 
-      density_projector_weight = kpoint_ot_canonical_density_projector_weight(residual_delta)
+      density_projector_model_delta = kpoint_ot_canonical_density_projector_delta(local_ot_env(1), &
+                                                                                  residual_delta)
+      density_projector_weight = kpoint_ot_canonical_density_projector_weight(density_projector_model_delta)
       density_projector_fraction = 0.0_dp
       IF (ot_kp_canonical_density_max_weight > 0.0_dp) &
          density_projector_fraction = density_projector_weight/ot_kp_canonical_density_max_weight
@@ -1909,10 +1932,11 @@ CONTAINS
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
             " OT k-point smearing kTS mu weighted_N frac_weight max_partial min_abs_eps_mu:", &
             kTS, mu, weighted_electrons, fractional_weight, max_partial, min_fermi_dist
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
-            " OT k-point residual model delta dproj frac trusted scale tether_E tether_g ls:", &
-            residual_delta, density_projector_weight, density_projector_fraction, trusted_step_max, &
-            min_trust_scale, tether_energy, tether_grad_max, local_ot_env(1)%line_search_count
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8),1X,I5)') &
+            " OT k-point residual model delta pdelta dproj frac trusted scale tether_E tether_g ls:", &
+            residual_delta, density_projector_model_delta, density_projector_weight, &
+            density_projector_fraction, trusted_step_max, min_trust_scale, tether_energy, &
+            tether_grad_max, local_ot_env(1)%line_search_count
       END IF
 
    END SUBROUTINE qs_scf_loop_print_ot_kp_smearing

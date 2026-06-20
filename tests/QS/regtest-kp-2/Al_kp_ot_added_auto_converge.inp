@@ -3,8 +3,8 @@
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
 ! Local 2026-06 HIGH reference after Schur basis-stress AUTO grow: initial
 ! AUTO buffer 4, grow to 8 after 234 pre-grow OT steps, grow to 16 after
-! 79 restarted OT steps, then convergence in 37 restarted OT steps,
-! E_total = Mermin = -8.14585275505359 Ha, with no first/last-band warnings.
+! 79 restarted OT steps, then convergence in 34 restarted OT steps,
+! E_total = Mermin = -8.14585275405257 Ha, with no first/last-band warnings.
 &GLOBAL
   PRINT_LEVEL LOW
   PROJECT Al_kp_ot_added_auto
