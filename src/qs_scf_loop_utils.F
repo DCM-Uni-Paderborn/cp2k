@@ -147,6 +147,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_advantage_ratio = 1.10_dp, &
                                         ot_kp_schur_projector_response_floor_delta = 3.0E-6_dp, &
                                         ot_kp_schur_projector_response_full_delta = 1.2E-5_dp, &
+                                        ot_kp_schur_density_descent_history_max_scale = 1.75_dp, &
                                         ot_kp_schur_projector_response_quality_max_ratio = 1.25_dp, &
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
@@ -4672,6 +4673,7 @@ CONTAINS
             density_descent_gdot_energy, &
             density_descent_gdot_rotation, &
             density_descent_gdotp, &
+            density_descent_history_scale, &
             density_descent_model_calibrated_drop, &
             density_descent_model_drop, &
             density_descent_norm_energy, &
@@ -6632,6 +6634,7 @@ CONTAINS
                density_descent_gdot_energy = 0.0_dp
                density_descent_gdot_rotation = 0.0_dp
                density_descent_gdotp = 0.0_dp
+               density_descent_history_scale = 1.0_dp
                density_descent_model_calibrated_drop = 0.0_dp
                density_descent_model_drop = 0.0_dp
                density_descent_norm_energy = 0.0_dp
@@ -8190,21 +8193,51 @@ CONTAINS
                                                  density_descent_normp > EPSILON(density_descent_normp)) THEN
                                                 density_descent_direction_scale = density_descent_gdotp/ &
                                                    MAX(density_descent_normp, EPSILON(density_descent_normp))
-                                                density_descent_scale_quality = &
-                                                   kpoint_ot_schur_scale_quality(density_descent_direction_scale, &
-                                                                                 schur_min_coupled_scale)
                                                 density_descent_model_drop = 0.5_dp*density_descent_direction_scale* &
                                                                              density_descent_gdotp
-                                                density_descent_model_calibrated_drop = density_descent_model_drop
-                                                IF (density_descent_direction_scale < schur_min_coupled_scale) &
-                                                   density_descent_model_calibrated_drop = &
-                                                      density_descent_scale_quality*density_descent_model_calibrated_drop
                                                 density_descent_response_abs_step = density_descent_direction_scale* &
                                                    MAXVAL(ABS(density_descent_rx_e))
                                                 CALL para_env_inter_kp%max(density_descent_response_abs_step)
                                                 density_descent_response_weighted_step = density_descent_direction_scale* &
                                                    kpoint_ot_weighted_response_step(density_descent_rx_e, curv, &
                                                                                    curv_projection_sum)
+                                                IF (local_ot_env(1)%schur_projector_density_descent_quality_samples >= &
+                                                    ot_kp_schur_projector_response_min_samples .AND. &
+                                                    local_ot_env(1)%schur_projector_density_descent_support_ready .AND. &
+                                                    local_ot_env(1)%schur_projector_density_descent_quality_ema > &
+                                                    1.0_dp) THEN
+                                                   density_descent_history_scale = SQRT(MIN( &
+                                                      ot_kp_schur_density_descent_history_max_scale**2, &
+                                                      local_ot_env(1)%schur_projector_density_descent_quality_ema))
+                                                   IF (response_trust > EPSILON(response_trust) .AND. &
+                                                       density_descent_response_weighted_step > &
+                                                       EPSILON(density_descent_response_weighted_step)) &
+                                                      density_descent_history_scale = MIN(density_descent_history_scale, &
+                                                         response_trust/density_descent_response_weighted_step)
+                                                   IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                       density_descent_response_abs_step > &
+                                                       EPSILON(density_descent_response_abs_step)) &
+                                                      density_descent_history_scale = MIN(density_descent_history_scale, &
+                                                         response_abs_trust/density_descent_response_abs_step)
+                                                   density_descent_history_scale = MAX(1.0_dp, MIN( &
+                                                      ot_kp_schur_density_descent_history_max_scale, &
+                                                      density_descent_history_scale))
+                                                   density_descent_direction_scale = density_descent_history_scale* &
+                                                                                    density_descent_direction_scale
+                                                   density_descent_model_drop = density_descent_history_scale* &
+                                                                                density_descent_model_drop
+                                                   density_descent_response_abs_step = density_descent_history_scale* &
+                                                                                      density_descent_response_abs_step
+                                                   density_descent_response_weighted_step = density_descent_history_scale* &
+                                                                                           density_descent_response_weighted_step
+                                                END IF
+                                                density_descent_scale_quality = &
+                                                   kpoint_ot_schur_scale_quality(density_descent_direction_scale, &
+                                                                                 schur_min_coupled_scale)
+                                                density_descent_model_calibrated_drop = density_descent_model_drop
+                                                IF (density_descent_direction_scale < schur_min_coupled_scale) &
+                                                   density_descent_model_calibrated_drop = &
+                                                      density_descent_scale_quality*density_descent_model_calibrated_drop
                                                 IF (response_trust > EPSILON(response_trust)) &
                                                    density_descent_response_weighted_trust_ratio = &
                                                       density_descent_response_weighted_step/response_trust
