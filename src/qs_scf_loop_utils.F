@@ -2662,6 +2662,8 @@ CONTAINS
                                                                projector_plateau_gap_predicted_drop, &
                                                                projector_plateau_gap_quality_ratio, &
                                                                projector_physical_predicted_drop, &
+                                                               projector_physical_direct_predicted_drop, &
+                                                               projector_physical_direct_quality_ratio, &
                                                                projector_mixed_direct_predicted_drop, &
                                                                projector_mixed_direct_quality_ratio, &
                                                                projector_physical_compensation_ratio, &
@@ -3661,6 +3663,33 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_measured_sum = &
                   local_ot_env(1)%schur_projector_physical_measured_sum + measured_drop
             END IF
+            projector_physical_direct_predicted_drop = local_ot_env(1)%schur_projector_physical_direct
+            projector_physical_direct_quality_ratio = 0.0_dp
+            IF (mermin_search .AND. local_ot_env(1)%schur_projector_physical_pending .AND. &
+                projector_physical_direct_predicted_drop > &
+                EPSILON(projector_physical_direct_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
+               projector_physical_direct_quality_ratio = &
+                  measured_drop/projector_physical_direct_predicted_drop
+               local_ot_env(1)%schur_projector_physical_direct_quality = &
+                  projector_physical_direct_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_physical_direct_quality_samples + 1, &
+                             HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_physical_direct_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_physical_direct_quality_shadow_ema = &
+                     projector_physical_direct_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_projector_physical_direct_quality_shadow_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_direct_quality_shadow_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_physical_direct_quality_ratio
+               END IF
+               local_ot_env(1)%schur_projector_physical_direct_drop_sum = &
+                  local_ot_env(1)%schur_projector_physical_direct_drop_sum + &
+                  projector_physical_direct_predicted_drop
+               local_ot_env(1)%schur_projector_physical_direct_measured_sum = &
+                  local_ot_env(1)%schur_projector_physical_direct_measured_sum + measured_drop
+            END IF
             projector_mixed_direct_predicted_drop = local_ot_env(1)%schur_projector_mixed_direct_drop
             projector_mixed_direct_quality_ratio = 0.0_dp
             IF (mermin_search .AND. local_ot_env(1)%schur_projector_mixed_direct_pending .AND. &
@@ -4027,6 +4056,14 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_direct_ema, &
                   local_ot_env(1)%schur_projector_physical_selected_ema, &
                   local_ot_env(1)%schur_projector_physical_shift_ema
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
+                  " OT Schur LS projector physical direct history n ratio ema pred meas latest:", &
+                  local_ot_env(1)%schur_projector_physical_direct_quality_samples, &
+                  local_ot_env(1)%schur_projector_physical_direct_quality, &
+                  local_ot_env(1)%schur_projector_physical_direct_quality_shadow_ema, &
+                  local_ot_env(1)%schur_projector_physical_direct_drop_sum, &
+                  local_ot_env(1)%schur_projector_physical_direct_measured_sum, &
+                  projector_physical_direct_predicted_drop
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
                   " OT Schur LS projector mixed-direct shadow n ratio ema pred meas latest weight wema:", &
                   local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
