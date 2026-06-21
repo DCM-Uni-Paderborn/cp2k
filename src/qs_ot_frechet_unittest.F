@@ -112,6 +112,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density active-filter descent recovery", 5.0E-14_dp, nfail)
    CALL check_projector_density_metric_descent_recovery( &
       "complex projector density metric-descent recovery", 5.0E-13_dp, nfail)
+   CALL check_projector_density_mixed_metric_descent_recovery( &
+      "complex projector density mixed-metric descent recovery", 5.0E-13_dp, nfail)
    CALL check_projector_density_metric_coupled_schur( &
       "complex projector density metric-coupled Schur", 5.0E-13_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
@@ -4071,6 +4073,76 @@ CONTAINS
    END SUBROUTINE check_projector_density_metric_descent_recovery
 
 ! **************************************************************************************************
+!> \brief Recover density-gap response hidden in the fixed-N/tether Mermin metric.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_mixed_metric_descent_recovery(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nchannel = 2
+      REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.29_dp
+
+      INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: coeff_grad, coeff_metric, denom_grad, err, &
+                                                            gdot_grad, gdot_metric, metric_cross, &
+                                                            metric_denom, null_dot, old_norm, &
+                                                            recovered_norm
+      REAL(KIND=dp), DIMENSION(ne)                       :: descent, grad, metric_null, occ_curv, &
+                                                            projected_grad, projected_metric, response, &
+                                                            tether_curv
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.045_dp, 0.026_dp, 0.018_dp, 0.010_dp, 0.004_dp, 0.003_dp]
+      tether_curv(:) = [0.008_dp, 0.012_dp, 0.010_dp, 0.006_dp, 0.009_dp, 0.005_dp]
+      descent(:) = [0.18_dp, -0.10_dp, 0.06_dp, -0.03_dp, 0.015_dp, -0.007_dp]
+      grad(:) = [0.36_dp, -0.21_dp, 0.09_dp, -0.05_dp, 0.02_dp, -0.01_dp]
+      metric_null(:) = [-0.08_dp, 0.17_dp, 0.04_dp, -0.11_dp, 0.05_dp, -0.03_dp]
+
+      CALL dense_projected_mixed_metric(metric_null, descent, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, metric_cross)
+      CALL dense_projected_mixed_metric(descent, descent, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, metric_denom)
+      metric_null(:) = metric_null(:) - metric_cross/MAX(metric_denom, EPSILON(metric_denom))*descent(:)
+      null_dot = DOT_PRODUCT(grad, metric_null)
+      denom_grad = DOT_PRODUCT(grad, descent)
+      response(:) = expected_coeff*descent(:) - expected_coeff*denom_grad/null_dot*metric_null(:)
+
+      CALL dense_project_descent_response(response, descent, grad, projected_grad, coeff_grad, &
+                                          gdot_grad, denom_grad)
+      CALL dense_project_mixed_metric_descent_response(response, descent, grad, occ_curv, tether_curv, &
+                                                       channel_nmo, e_offset, projected_metric, &
+                                                       coeff_metric, gdot_metric, denom_grad)
+
+      CALL dense_projected_mixed_metric(response, descent, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, metric_cross)
+      CALL dense_projected_mixed_metric(descent, descent, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, metric_denom)
+      old_norm = MAXVAL(ABS(projected_grad(:)))
+      recovered_norm = MAXVAL(ABS(projected_metric(:)))
+      err = MAXVAL(ABS(projected_metric(:) - expected_coeff*descent(:)))
+      err = MAX(err, ABS(coeff_metric - expected_coeff))
+      err = MAX(err, ABS(gdot_metric))
+      err = MAX(err, ABS(metric_cross/metric_denom - expected_coeff))
+
+      IF (err > tol .OR. old_norm > tol .OR. recovered_norm <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/old/recovered/gdot/mcoeff", err, old_norm, recovered_norm, &
+            gdot_metric, coeff_metric
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/old/recovered/gdot/mcoeff", err, old_norm, recovered_norm, &
+            gdot_metric, coeff_metric
+      END IF
+
+   END SUBROUTINE check_projector_density_mixed_metric_descent_recovery
+
+! **************************************************************************************************
 !> \brief Hidden density-gap response must enter the coupled fixed-N Schur curvature.
 !> \param label ...
 !> \param tol ...
@@ -5334,6 +5406,55 @@ CONTAINS
    END SUBROUTINE dense_project_metric_descent_response
 
 ! **************************************************************************************************
+!> \brief Project a density response onto the mixed fixed-N/tether Mermin descent direction.
+! **************************************************************************************************
+   SUBROUTINE dense_project_mixed_metric_descent_response(response_vec, descent_vec, grad_vec, occ_curv, &
+                                                          tether_curv, channel_nmo, e_offset, projected_vec, &
+                                                          coeff, gdot, denom, flip_negative)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, descent_vec, grad_vec, &
+                                                             occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: projected_vec
+      REAL(KIND=dp), INTENT(OUT)                          :: coeff, denom, gdot
+      LOGICAL, INTENT(IN), OPTIONAL                       :: flip_negative
+
+      REAL(KIND=dp)                                       :: grad_coeff, metric_coeff, metric_cross, &
+                                                             metric_denom
+
+      projected_vec(:) = 0.0_dp
+      coeff = 0.0_dp
+      gdot = DOT_PRODUCT(grad_vec, response_vec)
+      denom = DOT_PRODUCT(grad_vec, descent_vec)
+      IF (denom <= EPSILON(denom)) RETURN
+
+      grad_coeff = 0.0_dp
+      IF (gdot > 0.0_dp) THEN
+         grad_coeff = gdot/denom
+      ELSE IF (PRESENT(flip_negative)) THEN
+         IF (flip_negative .AND. gdot < -EPSILON(denom)) grad_coeff = ABS(gdot)/denom
+      END IF
+
+      metric_coeff = 0.0_dp
+      CALL dense_projected_mixed_metric(response_vec, descent_vec, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, metric_cross)
+      CALL dense_projected_mixed_metric(descent_vec, descent_vec, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, metric_denom)
+      IF (metric_denom > EPSILON(metric_denom)) THEN
+         IF (metric_cross > 0.0_dp) THEN
+            metric_coeff = metric_cross/metric_denom
+         ELSE IF (PRESENT(flip_negative)) THEN
+            IF (flip_negative .AND. metric_cross < -EPSILON(metric_denom)) &
+               metric_coeff = ABS(metric_cross)/metric_denom
+         END IF
+      END IF
+
+      coeff = MAX(grad_coeff, metric_coeff)
+      IF (coeff <= 0.0_dp) RETURN
+      projected_vec(:) = coeff*descent_vec(:)
+
+   END SUBROUTINE dense_project_mixed_metric_descent_response
+
+! **************************************************************************************************
 !> \brief Fixed-N dense Mermin metric used by the density-response projection fixture.
 ! **************************************************************************************************
    SUBROUTINE dense_projected_metric(response_left, response_right, occ_curv, projected_term)
@@ -5354,6 +5475,46 @@ CONTAINS
                                    response_right(:) - right_shift)
 
    END SUBROUTINE dense_projected_metric
+
+! **************************************************************************************************
+!> \brief Mixed fixed-N/tether dense Mermin metric for response projection fixtures.
+! **************************************************************************************************
+   SUBROUTINE dense_projected_mixed_metric(response_left, response_right, occ_curv, tether_curv, &
+                                           channel_nmo, e_offset, projected_term)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_left, response_right, occ_curv, &
+                                                             tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+      REAL(KIND=dp), INTENT(OUT)                          :: projected_term
+
+      INTEGER                                             :: first_energy, local_channel, nmo
+      REAL(KIND=dp)                                       :: left_shift, occ_sum, occ_term, right_shift, &
+                                                             tether_term, weight_sum
+
+      occ_term = DOT_PRODUCT(occ_curv(:)*response_left(:), response_right(:))
+      occ_sum = SUM(occ_curv(:))
+      IF (occ_sum > EPSILON(occ_sum)) THEN
+         left_shift = DOT_PRODUCT(occ_curv(:), response_left(:))
+         right_shift = DOT_PRODUCT(occ_curv(:), response_right(:))
+         occ_term = occ_term - left_shift*right_shift/occ_sum
+      END IF
+
+      tether_term = DOT_PRODUCT(tether_curv(:)*response_left(:), response_right(:))
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+         left_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                  response_left(first_energy:first_energy + nmo - 1))
+         right_shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                   response_right(first_energy:first_energy + nmo - 1))
+         tether_term = tether_term - left_shift*right_shift/weight_sum
+      END DO
+
+      projected_term = occ_term + tether_term
+
+   END SUBROUTINE dense_projected_mixed_metric
 
 ! **************************************************************************************************
 !> \brief Legacy two-pass dense response-gauge projection.

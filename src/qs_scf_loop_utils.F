@@ -8494,7 +8494,9 @@ CONTAINS
                                              CALL project_kpoint_ot_descent_response( &
                                                 density_gap_rx_e, z_exact_physical_trial, grad_e, &
                                                 density_gap_projected_e, density_descent_gap_coeff, &
-                                                density_gap_gdot, density_descent_gap_denom, .TRUE.)
+                                                density_gap_gdot, density_descent_gap_denom, .TRUE., &
+                                                occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                channel_nmo, e_offset)
                                              density_descent_gap_projected_abs = MAXVAL(ABS(density_gap_projected_e))
                                              CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
                                              density_descent_gap_projected_weighted = &
@@ -11480,11 +11482,18 @@ CONTAINS
       END SUBROUTINE project_kpoint_ot_schur_response_metric
 
       SUBROUTINE project_kpoint_ot_descent_response(response_vec, descent_vec, grad_e, projected_vec, &
-                                                    coeff, gdot, denom, flip_negative)
+                                                    coeff, gdot, denom, flip_negative, occ_curv, &
+                                                    tether_curv, occ_curv_sum, channel_nmo, e_offset)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_vec, descent_vec, grad_e
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)          :: projected_vec
       REAL(KIND=dp), INTENT(OUT)                        :: coeff, denom, gdot
       LOGICAL, INTENT(IN), OPTIONAL                     :: flip_negative
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL :: occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN), OPTIONAL               :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL       :: channel_nmo, e_offset
+
+      REAL(KIND=dp)                                     :: grad_coeff, metric_coeff, metric_cross, &
+                                                            metric_denom
 
          projected_vec(:) = 0.0_dp
          coeff = 0.0_dp
@@ -11493,13 +11502,34 @@ CONTAINS
          CALL para_env_inter_kp%sum(gdot)
          CALL para_env_inter_kp%sum(denom)
          IF (denom <= EPSILON(denom)) RETURN
-         IF (gdot <= 0.0_dp) THEN
-            IF (.NOT. PRESENT(flip_negative)) RETURN
-            IF (.NOT. flip_negative) RETURN
-            IF (gdot >= -EPSILON(denom)) RETURN
+
+         grad_coeff = 0.0_dp
+         IF (gdot > 0.0_dp) THEN
+            grad_coeff = gdot/denom
+         ELSE IF (PRESENT(flip_negative)) THEN
+            IF (flip_negative .AND. gdot < -EPSILON(denom)) &
+               grad_coeff = ABS(gdot)/denom
          END IF
 
-         coeff = ABS(gdot)/denom
+         metric_coeff = 0.0_dp
+         IF (PRESENT(occ_curv) .AND. PRESENT(tether_curv) .AND. PRESENT(occ_curv_sum) .AND. &
+             PRESENT(channel_nmo) .AND. PRESENT(e_offset)) THEN
+            CALL kpoint_ot_mixed_projected_term(response_vec, descent_vec, occ_curv, tether_curv, &
+                                                occ_curv_sum, channel_nmo, e_offset, metric_cross)
+            CALL kpoint_ot_mixed_projected_term(descent_vec, descent_vec, occ_curv, tether_curv, &
+                                                occ_curv_sum, channel_nmo, e_offset, metric_denom)
+            IF (metric_denom > EPSILON(metric_denom)) THEN
+               IF (metric_cross > 0.0_dp) THEN
+                  metric_coeff = metric_cross/metric_denom
+               ELSE IF (PRESENT(flip_negative)) THEN
+                  IF (flip_negative .AND. metric_cross < -EPSILON(metric_denom)) &
+                     metric_coeff = ABS(metric_cross)/metric_denom
+               END IF
+            END IF
+         END IF
+
+         coeff = MAX(grad_coeff, metric_coeff)
+         IF (coeff <= 0.0_dp) RETURN
          projected_vec(:) = coeff*descent_vec(:)
 
       END SUBROUTINE project_kpoint_ot_descent_response
