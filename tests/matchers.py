@@ -250,6 +250,9 @@ registry["DEBUG_force_sum"] = GenericMatcher(
 registry["XTB_reference_cli_failed"] = TextPresenceMatcher(
     "tblite reference CLI check failed to run."
 )
+registry["SCF_guess_restart"] = TextPresenceMatcher(
+    "Density guess:                                   RESTART"
+)
 registry["NO_TEXT"] = TextAbsenceMatcher()
 registry["M083"] = GenericMatcher(r"1[   1] - 2[   1]", col=7)
 registry["M084"] = GenericMatcher(r"Ionization potential of the excited atom:", col=7)
