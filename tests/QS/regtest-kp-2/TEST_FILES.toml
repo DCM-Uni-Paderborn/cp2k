@@ -28,8 +28,8 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05303056394670},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14575532138444},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14575532138444},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14575578360330},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14575578360330},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104032E-4},
                                            {matcher="OT_SCF_convergence", tol=1.0E-1, ref=4.4052E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
