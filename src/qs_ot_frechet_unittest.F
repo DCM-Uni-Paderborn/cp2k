@@ -104,6 +104,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
    CALL check_complex_projector_active_density_response_filter( &
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
+   CALL check_complex_projector_density_raw_audit_split( &
+      "complex projector density raw-audit split", 5.0E-8_dp, nfail)
    CALL check_projector_active_rotation_pair_weight( &
       "complex projector active rotation pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
@@ -3873,6 +3875,108 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_response_filter
+
+! **************************************************************************************************
+!> \brief Check that raw projector-basis density motion stays in audit, not production response.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_raw_audit_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.55_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_raw, &
+                                                            docc_safe, q
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active_norm, active_shift, active_sum, &
+                                                            active_weight, audit_gap, err, fixed_n_leak, &
+                                                            occ_curv_max, occ_sum, production_norm, &
+                                                            raw_norm, response_shift
+      REAL(KIND=dp), DIMENSION(n)                        :: active_response, audit_response, occ_curv, &
+                                                            occ_scale, physical_column, production_full
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.020000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.019987_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.17_dp, 0.0_dp, KIND=dp)
+      chc_eig(4, 4) = CMPLX(0.44_dp, 0.0_dp, KIND=dp)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.11_dp
+      x_re(1, 3) = -0.05_dp
+      x_re(2, 4) = 0.06_dp
+      x_re(3, 4) = -0.04_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.01_dp
+      x_im(1, 3) = -0.03_dp
+      x_im(2, 4) = 0.04_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+
+      occ_scale(:) = [1.76_dp, 0.36_dp, 0.19_dp, 0.08_dp]
+      occ_curv(:) = [0.045_dp, 0.034_dp, 0.010_dp, 0.002_dp]
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.19_dp, -0.07_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_raw)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+
+      DO i = 1, n
+         audit_response(i) = 0.5_dp*REAL(docc_raw(i, i), KIND=dp)/occ_curv(i)
+         physical_column(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
+      END DO
+      occ_sum = SUM(occ_curv(:))
+      response_shift = DOT_PRODUCT(occ_curv(:), physical_column(:))/occ_sum
+      production_full(:) = physical_column(:) - response_shift
+
+      occ_curv_max = MAXVAL(occ_curv(:))
+      active_sum = 0.0_dp
+      active_shift = 0.0_dp
+      DO i = 1, n
+         active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
+         active_sum = active_sum + occ_curv(i)*active_weight
+         active_shift = active_shift + occ_curv(i)*active_weight*physical_column(i)
+      END DO
+      IF (active_sum > EPSILON(active_sum)) active_shift = active_shift/active_sum
+      DO i = 1, n
+         active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
+         active_response(i) = active_weight*(physical_column(i) - active_shift)
+      END DO
+
+      raw_norm = MAXVAL(ABS(audit_response(:)))
+      production_norm = MAXVAL(ABS(production_full(:)))
+      active_norm = MAXVAL(ABS(active_response(:)))
+      audit_gap = MAXVAL(ABS(audit_response(:) - production_full(:)))
+      fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), production_full(:)))/occ_sum
+      err = fixed_n_leak
+
+      IF (err > tol .OR. raw_norm < 1.0E-2_dp .OR. &
+          production_norm >= 0.25_dp*raw_norm .OR. active_norm > production_norm + tol .OR. &
+          audit_gap < 0.5_dp*raw_norm) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw/prod/active/gap", err, raw_norm, production_norm, active_norm, audit_gap
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw/prod/active/gap", err, raw_norm, production_norm, active_norm, audit_gap
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_raw_audit_split
 
 ! **************************************************************************************************
 !> \brief Check that active rotation weights require both bands to be in the Fermi window.

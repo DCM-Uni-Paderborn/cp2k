@@ -12956,11 +12956,11 @@ CONTAINS
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! docc_mat/docc_plateau are doubled k-point density
                      ! responses, while occ_curv_channel is w_k*g_i.  Keep
-                     ! the raw finite projector derivative explicit for
-                     ! Full-vs-Active audits, but feed the active production
-                     ! energy-response channel with the gauge-filtered
-                     ! plateau derivative.  This separates physical
-                     ! occupation response from projector-basis gauge motion.
+                     ! the raw finite projector derivative explicit for audits,
+                     ! but feed all production energy-response channels with the
+                     ! gauge-filtered plateau derivative.  This separates
+                     ! physical occupation response from projector-basis gauge
+                     ! motion before the Schur candidates are built.
                      active_density_weight = kpoint_ot_active_density_response_weight( &
                         occ_curv_channel(ie), channel_occ_curv_max)
                      density_plateau_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
@@ -12998,7 +12998,8 @@ CONTAINS
                      IF (compute_density_full_audit) &
                         response_density_full_audit(first_energy + ie - 1, s) = density_response
                      IF (compute_projector_shadow) THEN
-                        response_density_full(first_energy + ie - 1, s) = density_response
+                        response_density_full(first_energy + ie - 1, s) = &
+                           density_plateau_full_response
                         response_density_physical(first_energy + ie - 1, s) = &
                            density_plateau_response
                         response_density_plateau(first_energy + ie - 1, s) = &
