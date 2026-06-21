@@ -4549,8 +4549,11 @@ CONTAINS
                                                             coupled_weight = 0.20_dp, &
                                                             full_delta = -0.181_dp, reference_delta = 0.0_dp
 
+      INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_comp, active_diag_after, active_negative_ref_comp, &
-                                                            err, full_comp, old_active_diag_after, positive_comp
+                                                            err, full_comp, old_active_diag_after, positive_comp, &
+                                                            uniform_after, uniform_comp
+      REAL(KIND=dp), DIMENSION(4)                        :: row_after, row_comp, row_delta, row_reference
 
       full_comp = dense_direct_trace_compensation(coupled_weight, full_delta, reference_delta)
       active_comp = dense_direct_trace_compensation(coupled_weight, active_delta, reference_delta)
@@ -4558,21 +4561,34 @@ CONTAINS
       old_active_diag_after = active_delta + full_comp/coupled_weight
       active_negative_ref_comp = dense_direct_trace_compensation(coupled_weight, active_delta, full_delta)
       positive_comp = dense_direct_trace_compensation(coupled_weight, 0.05_dp, 0.01_dp)
+      row_delta(:) = [-0.20_dp, -0.04_dp, 0.005_dp, 0.06_dp]
+      row_reference(:) = [0.0_dp, -0.10_dp, 0.01_dp, 0.10_dp]
+      DO i = 1, SIZE(row_delta)
+         row_comp(i) = dense_direct_trace_compensation(coupled_weight, row_delta(i), row_reference(i))
+         row_after(i) = row_delta(i) + row_comp(i)/coupled_weight
+      END DO
+      uniform_comp = dense_direct_trace_compensation(coupled_weight, &
+                                                     SUM(row_delta(:))/REAL(SIZE(row_delta), KIND=dp), &
+                                                     SUM(row_reference(:))/REAL(SIZE(row_reference), KIND=dp))
+      uniform_after = row_delta(3) + uniform_comp/coupled_weight
 
       err = ABS(active_diag_after)
       err = MAX(err, ABS(full_delta + full_comp/coupled_weight))
       err = MAX(err, ABS(active_negative_ref_comp - active_comp))
       err = MAX(err, ABS(positive_comp - coupled_weight*(0.05_dp - 0.01_dp)))
+      err = MAX(err, ABS(row_after(1)), ABS(row_after(2)), ABS(row_after(3) - row_delta(3)))
+      err = MAX(err, ABS(row_after(4) - row_delta(4)))
 
-      IF (err > tol .OR. old_active_diag_after < 0.1_dp .OR. active_comp >= full_comp) THEN
+      IF (err > tol .OR. old_active_diag_after < 0.1_dp .OR. active_comp >= full_comp .OR. &
+          uniform_after <= row_delta(3)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with error/full/active/negref/old/positive", err, full_comp, active_comp, &
-            active_negative_ref_comp, old_active_diag_after, positive_comp
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/active/negref/old/positive/row/uniform", err, full_comp, active_comp, &
+            active_negative_ref_comp, old_active_diag_after, positive_comp, row_comp(3), uniform_after
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with error/full/active/negref/old/positive", err, full_comp, active_comp, &
-            active_negative_ref_comp, old_active_diag_after, positive_comp
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/active/negref/old/positive/row/uniform", err, full_comp, active_comp, &
+            active_negative_ref_comp, old_active_diag_after, positive_comp, row_comp(3), uniform_after
       END IF
 
    END SUBROUTINE check_projector_direct_trace_compensation

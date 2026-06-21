@@ -7360,12 +7360,10 @@ CONTAINS
                                        projector_phys_direct_lcomp_trial_frac = 0.0_dp
                                        projector_phys_direct_lcomp_trial_max = 0.0_dp
                                        DO r = 1, nrot
-                                          diag_shift = MAX(0.0_dp, -projector_coupled_weight* &
-                                                                  projector_physical_direct_delta(r, r))
                                           projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
-                                          IF (projector_physical_direct_delta(r, r) > projected_term) &
-                                             diag_shift = MAX(diag_shift, projector_coupled_weight* &
-                                                (projector_physical_direct_delta(r, r) - projected_term))
+                                          diag_shift = kpoint_ot_direct_trace_compensation( &
+                                             projector_coupled_weight, projector_physical_direct_delta(r, r), &
+                                             projected_term)
                                           projector_phys_direct_lcomp_trial_avg = &
                                              projector_phys_direct_lcomp_trial_avg + diag_shift
                                           projector_phys_direct_lcomp_trial_max = &
@@ -7390,14 +7388,14 @@ CONTAINS
                                        END IF
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
-                                             projector_phys_direct_comp_trial
+                                             projector_phys_direct_lcomp_trial_avg
                                           projector_physical_direct_active_diag_compensation = &
                                              projector_phys_direct_active_comp_trial
                                           ! Retain the trace curvature implied by the finite
-                                          ! Projector response inside the Direct curvature matrix.
-                                          ! This is algebraically the old stabilizing diagonal
-                                          ! correction, but it is now part of the physical Schur
-                                          ! model instead of a post-solve scalar patch.
+                                          ! Projector response inside the Direct curvature matrix,
+                                          ! but apply it only to the rows that actually need the
+                                          ! compensation.  A homogeneous average shift hardens
+                                          ! unrelated rotation modes in the metallic tail.
                                           projector_physical_direct_diag_compensation_local_avg = &
                                              projector_phys_direct_lcomp_trial_avg
                                           projector_physical_direct_diag_compensation_local_fraction = &
@@ -7405,12 +7403,16 @@ CONTAINS
                                           projector_physical_direct_diag_compensation_local_max = &
                                              projector_phys_direct_lcomp_trial_max
                                           IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                                              projector_physical_direct_diag_compensation > 0.0_dp) THEN
-                                             diag_shift = projector_physical_direct_diag_compensation/ &
-                                                          projector_coupled_weight
+                                              projector_physical_direct_diag_compensation_local_max > 0.0_dp) THEN
                                              DO r = 1, nrot
+                                                projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
+                                                diag_shift = kpoint_ot_direct_trace_compensation( &
+                                                   projector_coupled_weight, &
+                                                   projector_physical_direct_delta(r, r), projected_term)
+                                                IF (diag_shift <= 0.0_dp) CYCLE
                                                 projector_physical_direct_delta(r, r) = &
-                                                   projector_physical_direct_delta(r, r) + diag_shift
+                                                   projector_physical_direct_delta(r, r) + &
+                                                   diag_shift/projector_coupled_weight
                                              END DO
                                           END IF
                                        END IF
