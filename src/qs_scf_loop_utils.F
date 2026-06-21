@@ -12002,6 +12002,12 @@ CONTAINS
          IF (info == 0) THEN
             response_exact(:, 1:nrot_local) = rhs(:, 1:nrot_local)
             z_exact(:) = rhs(:, nrhs)
+            DO r = 1, nrot_local
+               CALL project_kpoint_ot_schur_response(response_exact(:, r), occ_curv, tether_curv, &
+                                                     occ_sum, channel_nmo, e_offset)
+            END DO
+            CALL project_kpoint_ot_schur_response(z_exact, occ_curv, tether_curv, &
+                                                  occ_sum, channel_nmo, e_offset)
             ready = .TRUE.
          END IF
          DEALLOCATE (rhs)
