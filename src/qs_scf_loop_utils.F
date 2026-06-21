@@ -894,10 +894,13 @@ CONTAINS
 
       INTEGER                                            :: local_channel
 
-      residual_delta = 0.0_dp
-      DO local_channel = 1, SIZE(local_ot_env)
-         residual_delta = MAX(residual_delta, local_ot_env(local_channel)%delta)
-      END DO
+      CPASSERT(SIZE(local_ot_env) > 0)
+
+      ! ot_mini stores the scalar minimizer residual for the complete local
+      ! spin/k-point set in channel 1.  The other channel slots only mirror this
+      ! value for restart and model diagnostics, and may still contain older
+      ! values before this synchronization point.
+      residual_delta = local_ot_env(1)%delta
       CALL para_env_inter_kp%max(residual_delta)
       DO local_channel = 1, SIZE(local_ot_env)
          local_ot_env(local_channel)%delta = residual_delta
