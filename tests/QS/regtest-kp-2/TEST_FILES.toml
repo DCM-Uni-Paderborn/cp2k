@@ -13,7 +13,9 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.25831321160179},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"}]
 # Slow/manual ADDED_MOS AUTO tail companion: run
 # Al_kp_ot_added_auto_converge.inp by hand. It is intentionally not listed
 # here, so the default regtest stays cheap while the adaptive AUTO grow path
