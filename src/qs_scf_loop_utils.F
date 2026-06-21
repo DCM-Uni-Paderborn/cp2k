@@ -4734,6 +4734,8 @@ CONTAINS
                      projector_offdiag_response_abs_step, projector_offdiag_response_abs_trust_ratio, &
                      projector_offdiag_response_weighted_step, projector_offdiag_response_weighted_trust_ratio, &
                      projector_offdiag_scale_quality, projector_offdiag_trust_quality, &
+                     projector_offdiag_trust_scale, projector_offdiag_unit_abs_step, &
+                     projector_offdiag_unit_weighted_step, &
                      projector_offdiag_response_correction_drop, projector_offdiag_response_correction_negative, &
                      projector_offdiag_response_negative_coeff, projector_offdiag_response_positive_coeff, &
                      projector_offdiag_response_cross_drop, projector_offdiag_response_negative_drop, &
@@ -4924,6 +4926,8 @@ CONTAINS
          projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
          projector_physical_response_weighted_step, projector_physical_response_weighted_trust_ratio, &
          projector_physical_scale_quality, projector_physical_trust_quality, &
+         projector_physical_trust_scale, projector_physical_unit_abs_step, &
+         projector_physical_unit_weighted_step, &
          projector_physical_response_audit_base_weight, projector_physical_response_audit_eval_abs_avg, &
          projector_physical_response_audit_negative_weight_sum, &
          projector_physical_response_audit_positive_weight_sum, &
@@ -4942,6 +4946,8 @@ CONTAINS
          projector_response_response_abs_step, projector_response_response_abs_trust_ratio, &
          projector_response_response_weighted_step, projector_response_response_weighted_trust_ratio, &
          projector_response_scale_quality, projector_response_trust_quality, &
+         projector_response_trust_scale, projector_response_unit_abs_step, &
+         projector_response_unit_weighted_step, &
          projector_mode_response_audit_base_weight, projector_mode_response_audit_eval_abs_avg, &
          projector_mode_response_audit_negative_weight_sum, &
          projector_mode_response_audit_positive_weight_sum, &
@@ -5464,6 +5470,9 @@ CONTAINS
                   projector_offdiag_response_weighted_trust_ratio = 0.0_dp
                   projector_offdiag_scale_quality = 0.0_dp
                   projector_offdiag_trust_quality = 1.0_dp
+                  projector_offdiag_trust_scale = 1.0_dp
+                  projector_offdiag_unit_abs_step = 0.0_dp
+                  projector_offdiag_unit_weighted_step = 0.0_dp
                   projector_offdiag_response_correction_drop = 0.0_dp
                   projector_offdiag_response_correction_negative = 0.0_dp
                   projector_offdiag_response_negative_coeff = 0.0_dp
@@ -5757,6 +5766,9 @@ CONTAINS
             projector_physical_response_weighted_trust_ratio = 0.0_dp
             projector_physical_scale_quality = 0.0_dp
             projector_physical_trust_quality = 1.0_dp
+            projector_physical_trust_scale = 1.0_dp
+            projector_physical_unit_abs_step = 0.0_dp
+            projector_physical_unit_weighted_step = 0.0_dp
             projector_physical_response_audit_base_weight = 0.0_dp
             projector_physical_response_audit_eval_abs_avg = 0.0_dp
             projector_physical_response_audit_negative_weight_sum = 0.0_dp
@@ -5794,6 +5806,9 @@ CONTAINS
          projector_response_response_weighted_trust_ratio = 0.0_dp
          projector_response_scale_quality = 0.0_dp
          projector_response_trust_quality = 1.0_dp
+         projector_response_trust_scale = 1.0_dp
+         projector_response_unit_abs_step = 0.0_dp
+         projector_response_unit_weighted_step = 0.0_dp
          projector_mode_response_audit_base_weight = 0.0_dp
          projector_mode_response_audit_eval_abs_avg = 0.0_dp
          projector_mode_response_audit_negative_weight_sum = 0.0_dp
@@ -7102,6 +7117,9 @@ CONTAINS
                         projector_offdiag_response_weighted_trust_ratio = 0.0_dp
                         projector_offdiag_scale_quality = 0.0_dp
                         projector_offdiag_trust_quality = 1.0_dp
+                        projector_offdiag_trust_scale = 1.0_dp
+                        projector_offdiag_unit_abs_step = 0.0_dp
+                        projector_offdiag_unit_weighted_step = 0.0_dp
                         projector_offdiag_response_correction_drop = 0.0_dp
                         projector_offdiag_response_correction_negative = 0.0_dp
                         projector_offdiag_response_negative_coeff = 0.0_dp
@@ -7391,19 +7409,39 @@ CONTAINS
                      IF (projector_response_gdotp > 0.0_dp .AND. &
                          projector_response_normp > EPSILON(projector_response_normp) .AND. &
                          projector_response_norm_ratio <= max_norm_ratio) THEN
+                        projector_response_unit_abs_step = MAXVAL(ABS(projector_response_rx_e))
+                        CALL para_env_inter_kp%max(projector_response_unit_abs_step)
+                        projector_response_unit_weighted_step = &
+                           kpoint_ot_weighted_response_step(projector_response_rx_e, curv, curv_projection_sum)
+                        projector_response_trust_scale = 1.0_dp
+                        IF (response_trust > EPSILON(response_trust) .AND. &
+                            projector_response_unit_weighted_step > &
+                            EPSILON(projector_response_unit_weighted_step)) &
+                           projector_response_trust_scale = &
+                              MIN(projector_response_trust_scale, &
+                                  0.8_dp*response_trust/projector_response_unit_weighted_step)
+                        IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                            projector_response_unit_abs_step > EPSILON(projector_response_unit_abs_step)) &
+                           projector_response_trust_scale = &
+                              MIN(projector_response_trust_scale, &
+                                  0.8_dp*response_abs_trust/projector_response_unit_abs_step)
                         projector_response_direction_scale = &
-                           projector_response_gdotp/MAX(projector_response_normp, EPSILON(projector_response_normp))
+                           MIN(1.0_dp, projector_response_trust_scale, &
+                               projector_response_gdotp/ &
+                               MAX(projector_response_normp, EPSILON(projector_response_normp)))
                         projector_response_scale_quality = &
                            kpoint_ot_schur_scale_quality(projector_response_direction_scale, schur_min_coupled_scale)
                         projector_response_z_e(:) = projector_response_direction_scale*projector_response_z_e(:)
                         projector_response_sol(:) = projector_response_direction_scale*sol(:)
-                        projector_response_model_drop = 0.5_dp*projector_response_direction_scale* &
-                                                        projector_response_gdotp
+                        projector_response_model_drop = projector_response_direction_scale* &
+                                                        projector_response_gdotp - &
+                                                        0.5_dp*projector_response_direction_scale* &
+                                                        projector_response_direction_scale* &
+                                                        projector_response_normp
                         projector_response_response_abs_step = &
-                           projector_response_direction_scale*MAXVAL(ABS(projector_response_rx_e))
-                        CALL para_env_inter_kp%max(projector_response_response_abs_step)
-                        projector_response_response_weighted_step = projector_response_direction_scale* &
-                           kpoint_ot_weighted_response_step(projector_response_rx_e, curv, curv_projection_sum)
+                           projector_response_direction_scale*projector_response_unit_abs_step
+                        projector_response_response_weighted_step = &
+                           projector_response_direction_scale*projector_response_unit_weighted_step
                         projector_response_model_gap = &
                            projector_response_direction_scale*MAXVAL(ABS(rx_model - projector_response_rx_e))
                         projector_response_model_gap_drop = &
@@ -7500,19 +7538,39 @@ CONTAINS
                         IF (projector_physical_gdotp > 0.0_dp .AND. &
                             projector_physical_normp > EPSILON(projector_physical_normp) .AND. &
                             projector_physical_norm_ratio <= max_norm_ratio) THEN
+                           projector_physical_unit_abs_step = MAXVAL(ABS(projector_physical_rx_e))
+                           CALL para_env_inter_kp%max(projector_physical_unit_abs_step)
+                           projector_physical_unit_weighted_step = &
+                              kpoint_ot_weighted_response_step(projector_physical_rx_e, curv, curv_projection_sum)
+                           projector_physical_trust_scale = 1.0_dp
+                           IF (response_trust > EPSILON(response_trust) .AND. &
+                               projector_physical_unit_weighted_step > &
+                               EPSILON(projector_physical_unit_weighted_step)) &
+                              projector_physical_trust_scale = &
+                                 MIN(projector_physical_trust_scale, &
+                                     0.8_dp*response_trust/projector_physical_unit_weighted_step)
+                           IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                               projector_physical_unit_abs_step > EPSILON(projector_physical_unit_abs_step)) &
+                              projector_physical_trust_scale = &
+                                 MIN(projector_physical_trust_scale, &
+                                     0.8_dp*response_abs_trust/projector_physical_unit_abs_step)
                            projector_physical_direction_scale = &
-                              projector_physical_gdotp/MAX(projector_physical_normp, EPSILON(projector_physical_normp))
+                              MIN(1.0_dp, projector_physical_trust_scale, &
+                                  projector_physical_gdotp/ &
+                                  MAX(projector_physical_normp, EPSILON(projector_physical_normp)))
                            projector_physical_scale_quality = &
                               kpoint_ot_schur_scale_quality(projector_physical_direction_scale, schur_min_coupled_scale)
                            projector_physical_z_e(:) = projector_physical_direction_scale*projector_physical_z_e(:)
                            projector_physical_sol(:) = projector_physical_direction_scale*sol(:)
-                           projector_physical_model_drop = 0.5_dp*projector_physical_direction_scale* &
-                                                           projector_physical_gdotp
+                           projector_physical_model_drop = projector_physical_direction_scale* &
+                                                           projector_physical_gdotp - &
+                                                           0.5_dp*projector_physical_direction_scale* &
+                                                           projector_physical_direction_scale* &
+                                                           projector_physical_normp
                            projector_physical_response_abs_step = &
-                              projector_physical_direction_scale*MAXVAL(ABS(projector_physical_rx_e))
-                           CALL para_env_inter_kp%max(projector_physical_response_abs_step)
-                           projector_physical_response_weighted_step = projector_physical_direction_scale* &
-                              kpoint_ot_weighted_response_step(projector_physical_rx_e, curv, curv_projection_sum)
+                              projector_physical_direction_scale*projector_physical_unit_abs_step
+                           projector_physical_response_weighted_step = &
+                              projector_physical_direction_scale*projector_physical_unit_weighted_step
                            projector_physical_model_gap = &
                               projector_physical_direction_scale* &
                               MAXVAL(ABS(projector_physical_model_e - projector_physical_rx_e))
@@ -7607,24 +7665,46 @@ CONTAINS
                                                    IF (projector_offdiag_gdotp > 0.0_dp .AND. &
                                                        projector_offdiag_normp > EPSILON(projector_offdiag_normp) .AND. &
                                                        projector_offdiag_norm_ratio <= max_norm_ratio) THEN
+                                                      projector_offdiag_unit_abs_step = MAXVAL(ABS(projector_offdiag_rx_e))
+                                                      CALL para_env_inter_kp%max(projector_offdiag_unit_abs_step)
+                                                      projector_offdiag_unit_weighted_step = &
+                                                         kpoint_ot_weighted_response_step(projector_offdiag_rx_e, curv, &
+                                                                                          curv_projection_sum)
+                                                      projector_offdiag_trust_scale = 1.0_dp
+                                                      IF (response_trust > EPSILON(response_trust) .AND. &
+                                                          projector_offdiag_unit_weighted_step > &
+                                                          EPSILON(projector_offdiag_unit_weighted_step)) &
+                                                         projector_offdiag_trust_scale = &
+                                                            MIN(projector_offdiag_trust_scale, &
+                                                                0.8_dp*response_trust/ &
+                                                                projector_offdiag_unit_weighted_step)
+                                                      IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                          projector_offdiag_unit_abs_step > &
+                                                          EPSILON(projector_offdiag_unit_abs_step)) &
+                                                         projector_offdiag_trust_scale = &
+                                                            MIN(projector_offdiag_trust_scale, &
+                                                                0.8_dp*response_abs_trust/ &
+                                                                projector_offdiag_unit_abs_step)
                                                       projector_offdiag_direction_scale = &
-                                                         projector_offdiag_gdotp/ &
-                                                         MAX(projector_offdiag_normp, EPSILON(projector_offdiag_normp))
+                                                         MIN(1.0_dp, projector_offdiag_trust_scale, &
+                                                             projector_offdiag_gdotp/ &
+                                                             MAX(projector_offdiag_normp, &
+                                                                 EPSILON(projector_offdiag_normp)))
                                                       projector_offdiag_scale_quality = &
                                                          kpoint_ot_schur_scale_quality(projector_offdiag_direction_scale, &
                                                                                        schur_min_coupled_scale)
                                                       projector_offdiag_z_e(:) = projector_offdiag_direction_scale* &
                                                                                  projector_offdiag_z_e(:)
                                                       projector_offdiag_sol(:) = projector_offdiag_direction_scale*sol(:)
-                                                      projector_offdiag_model_drop = 0.5_dp* &
-                                                         projector_offdiag_direction_scale*projector_offdiag_gdotp
+                                                      projector_offdiag_model_drop = projector_offdiag_direction_scale* &
+                                                         projector_offdiag_gdotp - &
+                                                         0.5_dp*projector_offdiag_direction_scale* &
+                                                         projector_offdiag_direction_scale*projector_offdiag_normp
                                                       projector_offdiag_response_abs_step = &
-                                                         projector_offdiag_direction_scale*MAXVAL(ABS(projector_offdiag_rx_e))
-                                                      CALL para_env_inter_kp%max(projector_offdiag_response_abs_step)
+                                                         projector_offdiag_direction_scale*projector_offdiag_unit_abs_step
                                                       projector_offdiag_response_weighted_step = &
                                                          projector_offdiag_direction_scale* &
-                                                         kpoint_ot_weighted_response_step(projector_offdiag_rx_e, curv, &
-                                                                                          curv_projection_sum)
+                                                         projector_offdiag_unit_weighted_step
                                                       projector_offdiag_model_gap = projector_offdiag_direction_scale* &
                                                          MAXVAL(ABS(projector_physical_model_e - projector_offdiag_rx_e))
                                                       projector_offdiag_model_gap_drop = &
