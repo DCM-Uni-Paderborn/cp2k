@@ -142,6 +142,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
+   CALL check_projector_active_residual_filter("complex projector active residual filter", &
+                                               5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
@@ -5473,6 +5475,74 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_trace_active_mix_weight
+
+! **************************************************************************************************
+!> \brief Check that active Direct curvature filters local residuals, not fixed-N cross-channel terms.
+! **************************************************************************************************
+   SUBROUTINE check_projector_active_residual_filter(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      INTEGER, DIMENSION(n)                              :: channel
+      INTEGER                                            :: r, s
+      REAL(KIND=dp)                                      :: active_cov, active_weight, cov, diag_change, err, &
+                                                            local_change, residual
+      REAL(KIND=dp), DIMENSION(n)                        :: active_projector_weight, projector_weight
+      REAL(KIND=dp), DIMENSION(n, n)                     :: active, expected, physical, rot
+
+      channel(:) = [1, 1, 2]
+      projector_weight(:) = [0.50_dp, 0.20_dp, 0.40_dp]
+      active_projector_weight(:) = [0.10_dp, 0.00_dp, 0.40_dp]
+      rot(:, :) = RESHAPE([0.31_dp, 0.04_dp, -0.02_dp, &
+                           0.04_dp, 0.27_dp, 0.03_dp, &
+                           -0.02_dp, 0.03_dp, 0.18_dp], [n, n])
+      physical(:, :) = rot(:, :)
+      physical(1, 1) = physical(1, 1) + 0.35_dp
+      physical(1, 2) = physical(1, 2) - 0.12_dp
+      physical(2, 1) = physical(1, 2)
+      physical(2, 2) = physical(2, 2) + 0.08_dp
+      physical(1, 3) = physical(1, 3) + 0.21_dp
+      physical(3, 1) = physical(1, 3)
+
+      active(:, :) = physical(:, :)
+      expected(:, :) = physical(:, :)
+      DO s = 1, n
+         DO r = 1, n
+            IF (channel(r) /= channel(s)) CYCLE
+            cov = -0.5_dp*(projector_weight(r) + projector_weight(s))*rot(r, s)
+            active_cov = -0.5_dp*(active_projector_weight(r) + active_projector_weight(s))*rot(r, s)
+            active_weight = 0.0_dp
+            IF (projector_weight(r) + projector_weight(s) > EPSILON(active_weight)) &
+               active_weight = (active_projector_weight(r) + active_projector_weight(s))/ &
+                               MAX(projector_weight(r) + projector_weight(s), EPSILON(1.0_dp))
+            active_weight = MIN(1.0_dp, MAX(0.0_dp, active_weight))
+            residual = physical(r, s) - rot(r, s) - cov
+            active(r, s) = rot(r, s) + active_cov + active_weight*residual
+            expected(r, s) = active(r, s)
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(active(:, :) - expected(:, :)))
+      err = MAX(err, ABS(active(1, 3) - physical(1, 3)))
+      local_change = ABS(active(1, 2) - physical(1, 2))
+      diag_change = ABS(active(1, 1) - physical(1, 1))
+
+      IF (err > tol .OR. local_change < 1.0E-3_dp .OR. diag_change < 1.0E-3_dp .OR. &
+          ABS(active(1, 3) - physical(1, 3)) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/local/diag/full/cross", err, local_change, diag_change, &
+            physical(1, 2), active(1, 3)
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/local/diag/full/cross", err, local_change, diag_change, &
+            physical(1, 2), active(1, 3)
+      END IF
+
+   END SUBROUTINE check_projector_active_residual_filter
 
 ! **************************************************************************************************
 !> \brief Check that Direct trace mismatch contributes even when projected response vectors match.

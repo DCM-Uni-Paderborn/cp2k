@@ -6351,8 +6351,11 @@ CONTAINS
                                                        z_density_full_audit_trial, ipiv_energy, &
                                                        exact_density_full_audit_ready, energy_gauge_weight)
          END IF
-         ! Keep the validated full physical trace backbone, but expose an
-         ! active-window view for the Direct finite-response correction.
+         ! Keep the validated full physical trace backbone for cross-channel
+         ! fixed-N terms, but filter the same-channel non-covariant residual
+         ! with the active occupation-window pair weight.  This keeps genuine
+         ! Fermi-window curvature while avoiding hardening local gauge-noise
+         ! modes in the Direct finite-response correction.
          rot_hessian_projector_physical_active(:, :) = rot_hessian_projector_physical(:, :)
          DO s = 1, nrot
             DO r = 1, nrot
@@ -6361,9 +6364,22 @@ CONTAINS
                projector_physical_active_covariant_delta = &
                   -0.5_dp*(var_projector_active_weight(r) + &
                            var_projector_active_weight(s))*rot_hessian(r, s)
+               IF (var_channel(r) /= var_channel(s)) CYCLE
+               projector_offdiag_active_weight = 0.0_dp
+               IF (var_projector_weight(r) + var_projector_weight(s) > &
+                   EPSILON(projector_offdiag_active_weight)) THEN
+                  projector_offdiag_active_weight = &
+                     (var_projector_active_weight(r) + var_projector_active_weight(s))/ &
+                     MAX(var_projector_weight(r) + var_projector_weight(s), EPSILON(1.0_dp))
+                  projector_offdiag_active_weight = &
+                     MIN(1.0_dp, MAX(0.0_dp, projector_offdiag_active_weight))
+               END IF
+               projector_physical_residual_delta = &
+                  rot_hessian_projector_physical(r, s) - rot_hessian(r, s) - &
+                  projector_physical_covariant_delta
                rot_hessian_projector_physical_active(r, s) = &
-                  rot_hessian_projector_physical_active(r, s) + &
-                  projector_physical_active_covariant_delta - projector_physical_covariant_delta
+                  rot_hessian(r, s) + projector_physical_active_covariant_delta + &
+                  projector_offdiag_active_weight*projector_physical_residual_delta
             END DO
          END DO
          DO r = 1, nrot
