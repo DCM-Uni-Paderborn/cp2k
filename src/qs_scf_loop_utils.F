@@ -6700,6 +6700,19 @@ CONTAINS
                            0.0_dp, &
                            ot_kp_schur_projector_response_quality_min_ratio, &
                            ot_kp_schur_projector_response_quality_max_ratio)
+                     IF (local_ot_env(1)%schur_projector_density_descent_selected_quality_samples >= &
+                         ot_kp_schur_calibration_min_samples) THEN
+                        density_descent_quality_for_selection = &
+                           kpoint_ot_schur_history_quality( &
+                              local_ot_env(1)%schur_projector_density_descent_selected_drop_sum, &
+                              local_ot_env(1)%schur_projector_density_descent_selected_measured_sum, &
+                              local_ot_env(1)%schur_projector_density_descent_selected_quality_ema, &
+                              local_ot_env(1)%schur_projector_density_descent_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples, &
+                              density_descent_quality_for_selection, &
+                              ot_kp_schur_projector_response_quality_min_ratio, &
+                              ot_kp_schur_projector_response_quality_max_ratio)
+                     END IF
                      IF (local_ot_env(1)%schur_projector_offdiag_quality_samples >= &
                          ot_kp_schur_projector_response_min_samples) THEN
                         projector_offdiag_history_quality = &
