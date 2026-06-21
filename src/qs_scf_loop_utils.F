@@ -5074,6 +5074,7 @@ CONTAINS
                                                             response_exact_physical, response_exact_raw, response_occ, &
                                                             projector_physical_direct_base_delta, &
                                                             projector_physical_direct_delta, response_occ_physical, &
+                                                            projector_physical_direct_schur_mat, &
                                                             projector_physical_direct_schur_vec, &
                                                             response_physical_model, &
                                                             response_split, rot_hessian, rot_hessian_coupled, &
@@ -5231,6 +5232,7 @@ CONTAINS
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    projector_physical_direct_base_delta(nrot, nrot), &
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
+                   projector_physical_direct_schur_mat(nrot, nrot), &
                    projector_physical_direct_schur_vec(nrot, nrot), &
                    rot_hessian_projector_physical(nrot, nrot), &
                    rot_hessian_projector_physical_active(nrot, nrot), &
@@ -5333,6 +5335,7 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_plateau_active(:, :) = 0.0_dp
          projector_physical_direct_base_delta(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
+         projector_physical_direct_schur_mat(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = rotation_curvature_floor
          row_floor_shift(:) = 0.0_dp
@@ -6039,8 +6042,9 @@ CONTAINS
                         response_density_plateau, response_density_plateau_exact, &
                         response_exact, response_exact_physical, &
                         response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
-                        projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
-                        projector_physical_direct_schur_vec, &
+                        projector_physical_direct_base_delta, projector_physical_direct_delta, &
+                        rot_hessian_coupled, rot_hessian_projector, &
+                        projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
                         rot_hessian_projector_physical, &
                         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
                         rot_hessian_projector_physical_offdiag_active, &
@@ -7941,9 +7945,14 @@ CONTAINS
                                        END DO
                                        projector_physical_direct_diag_shift_avg = &
                                           projector_physical_direct_diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
-                                       IF (logger%iter_info%print_level >= high_print_level) THEN
+                                       projector_physical_direct_schur_mat(:, :) = &
+                                          0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                                       projector_physical_direct_schur_vec(:, :) = &
+                                          projector_physical_direct_schur_mat(:, :)
+                                       IF (logger%iter_info%print_level >= high_print_level .OR. &
+                                           projector_physical_direct_spectral_enabled) THEN
                                           projector_physical_direct_schur_vec(:, :) = &
-                                             0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                                             projector_physical_direct_schur_mat(:, :)
                                           CALL diamat_all(projector_physical_direct_schur_vec, &
                                                           projector_physical_direct_schur_eval)
                                           projector_physical_direct_schur_eval_min = &
@@ -9037,8 +9046,15 @@ CONTAINS
                                              projector_physical_direct_metric_norm_energy)
                                           projector_physical_direct_metric_norm_energy = &
                                              MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
+                                          ! Indefinite physical Schur curvature is a trust signal,
+                                          ! not a reason to suppress the candidate completely.
                                           projector_physical_direct_metric_norm_rotation = &
-                                             MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                             ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                          IF (projector_physical_direct_metric_norm_rotation <= &
+                                             EPSILON(projector_physical_direct_metric_norm_rotation)) &
+                                             projector_physical_direct_metric_norm_rotation = &
+                                                kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
+                                                                             projector_physical_direct_sol)
                                           projector_physical_direct_metric_normp = &
                                              projector_physical_direct_metric_norm_energy + &
                                              projector_physical_direct_metric_norm_rotation
@@ -9126,41 +9142,36 @@ CONTAINS
                                                    MIN(projector_physical_direct_trust_scale, &
                                                        0.8_dp*response_abs_trust/ &
                                                        projector_physical_direct_unit_abs_step)
-                                             projector_physical_direct_direction_scale = &
-                                                MIN(1.0_dp, projector_physical_direct_curvature_scale, &
-                                                    projector_physical_direct_trust_scale)
+                                             direction_scale = 1.0_dp
+                                             direction_scale = MIN(direction_scale, &
+                                                                   projector_physical_direct_curvature_scale)
+                                             direction_scale = MIN(direction_scale, projector_physical_direct_trust_scale)
+                                             projector_physical_direct_direction_scale = direction_scale
                                              projector_physical_direct_norm_ratio = &
-                                                projector_physical_direct_direction_scale* &
-                                                projector_physical_direct_direction_scale* &
+                                                direction_scale*direction_scale* &
                                                 projector_physical_direct_normp/MAX(gnorm, EPSILON(1.0_dp))
-                                             IF (projector_physical_direct_direction_scale > 0.0_dp .AND. &
+                                             IF (direction_scale > 0.0_dp .AND. &
                                                  projector_physical_direct_norm_ratio <= max_norm_ratio) THEN
+                                             projector_physical_direct_direction_scale = direction_scale
                                              projector_physical_direct_scale_quality = &
-                                                kpoint_ot_schur_scale_quality(projector_physical_direct_direction_scale, &
+                                                kpoint_ot_schur_scale_quality(direction_scale, &
                                                                               schur_min_coupled_scale)
-                                             projector_physical_direct_z_e(:) = projector_physical_direct_direction_scale* &
-                                                                                 projector_physical_direct_z_e(:)
-                                             projector_physical_direct_sol(:) = projector_physical_direct_direction_scale* &
-                                                                                 projector_physical_direct_sol(:)
+                                             projector_physical_direct_z_e(:) = direction_scale*projector_physical_direct_z_e(:)
+                                             projector_physical_direct_sol(:) = direction_scale*projector_physical_direct_sol(:)
                                              projector_physical_direct_model_drop = &
-                                                projector_physical_direct_direction_scale*projector_physical_direct_gdotp - &
-                                                0.5_dp*projector_physical_direct_direction_scale* &
-                                                projector_physical_direct_direction_scale* &
+                                                direction_scale*projector_physical_direct_gdotp - &
+                                                0.5_dp*direction_scale*direction_scale* &
                                                 projector_physical_direct_metric_normp
                                              projector_physical_direct_model_drop = &
                                                 MAX(0.0_dp, projector_physical_direct_model_drop)
                                              projector_physical_direct_response_abs_step = &
-                                                projector_physical_direct_direction_scale* &
-                                                projector_physical_direct_unit_abs_step
+                                                direction_scale*projector_physical_direct_unit_abs_step
                                              projector_physical_direct_response_weighted_step = &
-                                                projector_physical_direct_direction_scale* &
-                                                projector_physical_direct_unit_weighted_step
+                                                direction_scale*projector_physical_direct_unit_weighted_step
                                              projector_physical_direct_model_gap = &
-                                                projector_physical_direct_direction_scale* &
-                                                projector_physical_direct_unit_model_gap
+                                                direction_scale*projector_physical_direct_unit_model_gap
                                              projector_physical_direct_model_gap_drop = &
-                                                projector_physical_direct_direction_scale* &
-                                                projector_physical_direct_direction_scale* &
+                                                direction_scale*direction_scale* &
                                                 projector_physical_direct_unit_model_gap_drop
                                              projector_physical_direct_model_calibrated_drop = &
                                                 MAX(0.0_dp, projector_physical_direct_model_drop - &
@@ -9187,7 +9198,7 @@ CONTAINS
                                              projector_physical_direct_line_step_trust = &
                                                 projector_physical_direct_trust_scale
                                              projector_physical_direct_line_step = &
-                                                projector_physical_direct_direction_scale
+                                                direction_scale
                                              ! The physical-direct candidate is selected only after
                                              ! accepted-drop history proves it conservative.  Keep the
                                              ! Euclidean z.z=g.z scale diagnostic separate from the
@@ -10974,15 +10985,17 @@ CONTAINS
                         projector_phys_direct_active_comp_trial, &
                         projector_physical_direct_basis_signal, &
                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,13(1X,ES16.8))') &
-                        " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr mratio nratio tq sq:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,15(1X,ES16.8))') &
+                        " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr "// &
+                        "mratio nratio tq sq mnorm mrot:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
                         projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
                         projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
                         projector_physical_direct_normp, projector_physical_direct_norm_energy, &
                         projector_physical_direct_norm_rotation, projector_physical_direct_metric_norm_ratio, &
                         projector_physical_direct_norm_ratio, &
-                        projector_physical_direct_trust_quality, projector_physical_direct_scale_quality
+                        projector_physical_direct_trust_quality, projector_physical_direct_scale_quality, &
+                        projector_physical_direct_metric_normp, projector_physical_direct_metric_norm_rotation
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                         " OT Schur projector phys direct trace shadow actual raw active excess raw_ratio "// &
                         "active_actual actual_norm raw_norm active_norm:", &
@@ -11016,6 +11029,14 @@ CONTAINS
                         " OT Schur projector phys direct line curv trust hint ds:", &
                         projector_physical_direct_line_step_curvature, projector_physical_direct_line_step_trust, &
                         projector_physical_direct_line_step, local_ot_env(1)%ds_min
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),7(1X,ES16.8))') &
+                        " OT Schur projector phys direct gate g n m escale cscale trust unitw unita nratio maxratio:", &
+                        projector_physical_direct_gdotp > 0.0_dp, &
+                        projector_physical_direct_normp > EPSILON(projector_physical_direct_normp), &
+                        projector_physical_direct_metric_normp > EPSILON(projector_physical_direct_metric_normp), &
+                        projector_physical_direct_euclidean_scale, projector_physical_direct_curvature_scale, &
+                        projector_physical_direct_trust_scale, projector_physical_direct_unit_weighted_step, &
+                        projector_physical_direct_unit_abs_step, projector_physical_direct_norm_ratio, max_norm_ratio
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct curv pcap clipavg clipmax diagmax emin emax:", &
                         projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
@@ -11162,7 +11183,8 @@ CONTAINS
                         projector_physical_direct_metric_norm_energy = &
                            MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                         projector_physical_direct_metric_norm_rotation = &
-                           MAX(0.0_dp, DOT_PRODUCT(sol, MATMUL(projector_physical_direct_schur_vec, sol)))
+                           kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                                                    projector_physical_direct_schur_eval, sol)
                         projector_physical_direct_metric_normp = &
                            projector_physical_direct_metric_norm_energy + &
                            projector_physical_direct_metric_norm_rotation
@@ -11307,7 +11329,8 @@ CONTAINS
                         projector_physical_direct_metric_norm_energy = &
                            MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                         projector_physical_direct_metric_norm_rotation = &
-                           MAX(0.0_dp, DOT_PRODUCT(sol, MATMUL(projector_physical_direct_schur_vec, sol)))
+                           kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                                                    projector_physical_direct_schur_eval, sol)
                         projector_physical_direct_metric_normp = &
                            projector_physical_direct_metric_norm_energy + &
                            projector_physical_direct_metric_norm_rotation
@@ -11460,7 +11483,8 @@ CONTAINS
                            projector_physical_direct_metric_norm_energy = &
                               MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                            projector_physical_direct_metric_norm_rotation = &
-                              MAX(0.0_dp, DOT_PRODUCT(sol, MATMUL(projector_physical_direct_schur_vec, sol)))
+                              kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                                                       projector_physical_direct_schur_eval, sol)
                            projector_physical_direct_metric_normp = &
                               projector_physical_direct_metric_norm_energy + &
                               projector_physical_direct_metric_norm_rotation
@@ -11580,9 +11604,9 @@ CONTAINS
                      response_density_plateau, response_density_plateau_exact, &
                      response_exact, response_exact_physical, response_exact_raw, &
                      response_occ, response_occ_physical, response_physical_model, response_split, rot_hessian, &
-                     projector_physical_direct_base_delta, &
-                     projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
-                     projector_physical_direct_schur_vec, &
+                     projector_physical_direct_base_delta, projector_physical_direct_delta, &
+                     rot_hessian_coupled, rot_hessian_projector, &
+                     projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
                      rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
                      rot_hessian_projector_physical_offdiag_active, &
@@ -12764,6 +12788,55 @@ CONTAINS
          drop = 0.5_dp*scale*scale*MAX(0.0_dp, drop)
 
       END FUNCTION kpoint_ot_response_mismatch_drop
+
+      FUNCTION kpoint_ot_symmetric_abs_quad(hessian, step_vec) RESULT(abs_quad)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_vec
+      REAL(KIND=dp)                                      :: abs_quad
+
+      INTEGER                                            :: imode, nrot_local
+      REAL(KIND=dp)                                      :: coeff
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
+
+         abs_quad = 0.0_dp
+         nrot_local = SIZE(hessian, 1)
+         IF (nrot_local <= 0) RETURN
+         IF (SIZE(hessian, 2) /= nrot_local) RETURN
+         IF (SIZE(step_vec) /= nrot_local) RETURN
+
+         ALLOCATE (mode_eval(nrot_local), mode_vec(nrot_local, nrot_local))
+         mode_vec(:, :) = 0.5_dp*(hessian(:, :) + TRANSPOSE(hessian(:, :)))
+         CALL diamat_all(mode_vec, mode_eval)
+         DO imode = 1, nrot_local
+            coeff = DOT_PRODUCT(mode_vec(:, imode), step_vec)
+            abs_quad = abs_quad + ABS(mode_eval(imode))*coeff*coeff
+         END DO
+         DEALLOCATE (mode_eval, mode_vec)
+
+      END FUNCTION kpoint_ot_symmetric_abs_quad
+
+      FUNCTION kpoint_ot_modal_abs_quad(mode_vec, mode_eval, step_vec) RESULT(abs_quad)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)       :: mode_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)          :: mode_eval, step_vec
+      REAL(KIND=dp)                                    :: abs_quad
+
+      INTEGER                                          :: imode, nrot_local
+      REAL(KIND=dp)                                    :: coeff
+
+         abs_quad = 0.0_dp
+         nrot_local = SIZE(mode_eval)
+         IF (nrot_local <= 0) RETURN
+         IF (SIZE(mode_vec, 1) /= nrot_local) RETURN
+         IF (SIZE(mode_vec, 2) /= nrot_local) RETURN
+         IF (SIZE(step_vec) /= nrot_local) RETURN
+
+         DO imode = 1, nrot_local
+            coeff = DOT_PRODUCT(mode_vec(:, imode), step_vec)
+            abs_quad = abs_quad + ABS(mode_eval(imode))*coeff*coeff
+         END DO
+
+      END FUNCTION kpoint_ot_modal_abs_quad
 
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
