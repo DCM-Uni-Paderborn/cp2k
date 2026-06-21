@@ -272,6 +272,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_mixed_direct_quality_samples = 0
       INTEGER :: schur_projector_spectral_quality_samples = 0
       INTEGER :: schur_projector_spectral_selected_quality_samples = 0
+      INTEGER :: schur_projector_spectral_selected_failure_samples = 0
       INTEGER :: schur_projector_diagref_quality_samples = 0
       INTEGER :: schur_projector_density_quality_samples = 0
       INTEGER :: schur_projector_density_audit_samples = 0
@@ -777,6 +778,7 @@ CONTAINS
       qs_ot_env%schur_projector_mixed_direct_quality_samples = 0
       qs_ot_env%schur_projector_spectral_quality_samples = 0
       qs_ot_env%schur_projector_spectral_selected_quality_samples = 0
+      qs_ot_env%schur_projector_spectral_selected_failure_samples = 0
       qs_ot_env%schur_projector_diagref_quality_samples = 0
       qs_ot_env%schur_projector_density_quality_samples = 0
       qs_ot_env%schur_projector_density_audit_samples = 0
