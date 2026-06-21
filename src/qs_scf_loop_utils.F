@@ -7494,9 +7494,18 @@ CONTAINS
                                                            occ_curv_projection_sum, channel_nmo, e_offset)
                      ! The physical shadow must see the active occupation-response
                      ! curvature and the fixed-N density response, not only the
-                     ! tiny projector-basis gauge remainder.
+                     ! tiny projector-basis gauge remainder.  The diagonal density
+                     ! response is represented in response_physical_model below;
+                     ! add only the gauge-filtered off-diagonal projector Hessian
+                     ! to the rotational metric used for the modal response audit.
+                     projector_physical_direct_delta(:, :) = &
+                        rot_hessian_projector_physical(:, :) + &
+                        rot_hessian_projector_physical_offdiag_active(:, :)
+                     projector_physical_direct_delta(:, :) = &
+                        0.5_dp*(projector_physical_direct_delta(:, :) + &
+                                TRANSPOSE(projector_physical_direct_delta(:, :)))
                      CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
-                                                                   rot_hessian_projector_physical, sol, &
+                                                                   projector_physical_direct_delta, sol, &
                                                                    response_exact_raw, response_physical_model, curv, &
                                                                    occ_curv, tether_curv, occ_curv_projection_sum, &
                                                                    channel_nmo, e_offset, .TRUE., &
