@@ -4703,6 +4703,7 @@ CONTAINS
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_quality_for_selection, projector_physical_trace_split_quality, &
             projector_physical_direct_density_quality_for_selection, &
+            projector_physical_direct_density_shadow_quality_for_selection, &
             projector_physical_direct_density_audit_quality, &
             projector_physical_direct_basis_signal, &
             projector_physical_direct_active_delta_diag_avg, &
@@ -4758,6 +4759,7 @@ CONTAINS
             projector_physical_direct_diag_balance, &
             projector_physical_direct_density_direction_scale, &
             projector_physical_direct_density_expected_drop, &
+            projector_physical_direct_density_shadow_expected_drop, &
             projector_physical_direct_density_gdot_energy, &
             projector_physical_direct_density_gdot_rotation, &
             projector_physical_direct_density_gdotp, &
@@ -5645,6 +5647,7 @@ CONTAINS
             projector_physical_quality_for_selection = 0.0_dp
             projector_physical_direct_quality_for_selection = 0.0_dp
             projector_physical_direct_density_quality_for_selection = 0.0_dp
+            projector_physical_direct_density_shadow_quality_for_selection = 0.0_dp
             density_descent_quality_for_selection = 0.0_dp
             projector_physical_trace_split_quality = 0.0_dp
             projector_physical_direct_density_audit_quality = 1.0_dp
@@ -6619,6 +6622,8 @@ CONTAINS
                            0.0_dp, &
                            ot_kp_schur_projector_response_quality_min_ratio, &
                            ot_kp_schur_projector_response_quality_max_ratio)
+                     projector_physical_direct_density_shadow_quality_for_selection = &
+                        projector_physical_direct_density_quality_for_selection
                      density_descent_quality_for_selection = &
                         kpoint_ot_schur_history_quality( &
                            local_ot_env(1)%schur_projector_density_descent_drop_sum, &
@@ -6810,6 +6815,7 @@ CONTAINS
                projector_physical_direct_diag_balance = 0.0_dp
                projector_physical_direct_density_direction_scale = 0.0_dp
                projector_physical_direct_density_expected_drop = 0.0_dp
+               projector_physical_direct_density_shadow_expected_drop = 0.0_dp
                projector_physical_direct_density_gdot_energy = 0.0_dp
                projector_physical_direct_density_gdot_rotation = 0.0_dp
                projector_physical_direct_density_gdotp = 0.0_dp
@@ -8333,6 +8339,12 @@ CONTAINS
                                                    kpoint_ot_schur_trust_quality( &
                                                       projector_physical_direct_density_response_weighted_trust_ratio, &
                                                       projector_physical_direct_density_response_abs_trust_ratio, 0.0_dp)
+                                                projector_physical_direct_density_shadow_expected_drop = &
+                                                   kpoint_ot_schur_expected_drop( &
+                                                      projector_physical_direct_density_model_calibrated_drop, &
+                                                      projector_physical_direct_density_shadow_quality_for_selection, &
+                                                      projector_physical_direct_density_trust_quality* &
+                                                      projector_physical_direct_density_audit_quality)
                                                 projector_physical_direct_density_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &
                                                       projector_physical_direct_density_model_calibrated_drop, &
@@ -10690,9 +10702,10 @@ CONTAINS
                         projector_physical_direct_diagref_cross_drop, &
                         projector_physical_direct_diagref_positive_coeff, &
                         projector_physical_direct_diagref_negative_coeff
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                        " OT Schur projector phys direct density shadow exp cdrop rratio aratio tq scale:", &
-                        projector_physical_direct_density_expected_drop, &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8))') &
+                        " OT Schur projector phys direct density shadow exp qhist cdrop rratio aratio tq scale:", &
+                        projector_physical_direct_density_shadow_expected_drop, &
+                        projector_physical_direct_density_shadow_quality_for_selection, &
                         projector_physical_direct_density_model_calibrated_drop, &
                         projector_physical_direct_density_response_weighted_trust_ratio, &
                         projector_physical_direct_density_response_abs_trust_ratio, &
