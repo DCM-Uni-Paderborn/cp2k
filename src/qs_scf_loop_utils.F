@@ -4757,6 +4757,7 @@ CONTAINS
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
             projector_physical_direct_mixed_quality, projector_physical_direct_mixed_weight, &
+            projector_physical_direct_shadow_weight, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
             projector_physical_direct_diag_compensation_local_max, &
@@ -11112,14 +11113,20 @@ CONTAINS
                      constrained_direction_scale, constrained_scale_quality, constrained_gdot_energy, &
                      constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
                      dense_direction_scale, dense_scale_quality, dense_quality_for_selection
+                  projector_physical_direct_shadow_weight = &
+                     MAX(projector_coupled_weight, &
+                         MAX(projector_physical_response_weight, projector_physical_direct_response_weight))
                   IF (projector_physical_shadow_enabled .AND. exact_physical_response_ready .AND. &
-                      projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                      local_ot_env(1)%schur_projector_mode_quality_samples >= &
-                      ot_kp_schur_calibration_min_samples) THEN
+                      projector_physical_direct_shadow_weight > &
+                      EPSILON(projector_physical_direct_shadow_weight) .AND. &
+                      (local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                       ot_kp_schur_calibration_min_samples .OR. &
+                       projector_physical_direct_promoted)) THEN
                      projector_physical_direct_schur_vec(:, :) = projector_physical_direct_delta(:, :) + &
                                                                  rot_hessian_projector_physical_offdiag(:, :)
                      schur(:, :) = rot_hessian_coupled(:, :) + &
-                                   projector_coupled_weight*projector_physical_direct_schur_vec(:, :)
+                                   projector_physical_direct_shadow_weight* &
+                                   projector_physical_direct_schur_vec(:, :)
                      DO s = 1, nrot
                         DO r = 1, nrot
                            projected_term = 0.5_dp* &
@@ -11258,15 +11265,18 @@ CONTAINS
                      projector_physical_direct_schur_vec(:, :) = &
                         0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
                                 TRANSPOSE(rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)))
-                     IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                     IF (projector_physical_direct_shadow_weight > &
+                         EPSILON(projector_physical_direct_shadow_weight) .AND. &
                          projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
-                        diag_shift = projector_physical_direct_active_diag_compensation/projector_coupled_weight
+                        diag_shift = projector_physical_direct_active_diag_compensation/ &
+                                     projector_physical_direct_shadow_weight
                         DO r = 1, nrot
                            projector_physical_direct_schur_vec(r, r) = projector_physical_direct_schur_vec(r, r) + diag_shift
                         END DO
                      END IF
                      schur(:, :) = rot_hessian_coupled(:, :) + &
-                                   projector_coupled_weight*projector_physical_direct_schur_vec(:, :)
+                                   projector_physical_direct_shadow_weight* &
+                                   projector_physical_direct_schur_vec(:, :)
                      DO s = 1, nrot
                         DO r = 1, nrot
                            projected_term = 0.5_dp* &
@@ -11410,17 +11420,19 @@ CONTAINS
                            z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
                                             TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
                                                       rot_hessian(:, :)))
-                        IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                        IF (projector_physical_direct_shadow_weight > &
+                            EPSILON(projector_physical_direct_shadow_weight) .AND. &
                             projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
                            diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
-                                        projector_coupled_weight
+                                        projector_physical_direct_shadow_weight
                            DO r = 1, nrot
                               projector_physical_direct_schur_vec(r, r) = &
                                  projector_physical_direct_schur_vec(r, r) + diag_shift
                            END DO
                         END IF
                         schur(:, :) = rot_hessian_coupled(:, :) + &
-                                      projector_coupled_weight*projector_physical_direct_schur_vec(:, :)
+                                      projector_physical_direct_shadow_weight* &
+                                      projector_physical_direct_schur_vec(:, :)
                         DO s = 1, nrot
                            DO r = 1, nrot
                               projected_term = 0.5_dp* &
