@@ -72,6 +72,8 @@ PROGRAM qs_ot_frechet_unittest
                                                       5.0E-14_dp, nfail)
    CALL check_mixed_fixed_n_tether_exact_response("mixed fixed-N/tether exact response", &
                                                   5.0E-12_dp, nfail)
+   CALL check_mixed_fixed_n_tether_exact_projection("mixed fixed-N/tether exact projection", &
+                                                    5.0E-12_dp, nfail)
    CALL check_mixed_fixed_n_tether_exact_schur("mixed fixed-N/tether exact Schur", &
                                                5.0E-11_dp, nfail)
    CALL check_indefinite_schur_spectral_fallback("indefinite Schur spectral fallback", &
@@ -2149,6 +2151,84 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_mixed_fixed_n_tether_exact_response
+
+! **************************************************************************************************
+!> \brief Check that exact dense energy response is returned in the mixed response gauge.
+! **************************************************************************************************
+   SUBROUTINE check_mixed_fixed_n_tether_exact_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nrot = 3, nchannels = 2
+
+      INTEGER                                            :: info, r
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: projected_ok, projected
+      REAL(KIND=dp)                                      :: err, projected_occ_residual, &
+                                                            projected_tether_residual, raw_occ_residual, &
+                                                            raw_tether_residual
+      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, projected_response, raw_response, &
+                                                            tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, rhs
+
+      channel_nmo = [3, 3]
+      e_offset = [1, 4]
+      occ_curv = [0.31_dp, 0.74_dp, 0.16_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      tether_curv = [0.05_dp, 0.02_dp, 0.08_dp, 0.07_dp, 0.03_dp, 0.0_dp]
+      response_occ(:, 1) = [0.13_dp, -0.21_dp, 0.09_dp, 0.31_dp, -0.17_dp, 0.05_dp]
+      response_occ(:, 2) = [-0.05_dp, 0.18_dp, 0.24_dp, -0.11_dp, 0.07_dp, -0.09_dp]
+      response_occ(:, 3) = [0.22_dp, 0.04_dp, -0.19_dp, 0.15_dp, -0.08_dp, 0.12_dp]
+      response_tether(:, 1) = [0.06_dp, -0.09_dp, 0.18_dp, 0.27_dp, -0.14_dp, 0.11_dp]
+      response_tether(:, 2) = [-0.12_dp, 0.21_dp, 0.05_dp, -0.08_dp, 0.16_dp, -0.03_dp]
+      response_tether(:, 3) = [0.19_dp, -0.02_dp, -0.11_dp, 0.23_dp, -0.04_dp, 0.08_dp]
+
+      CALL build_test_mixed_energy_block(channel_nmo, e_offset, response_occ, response_tether, h, b)
+      rhs(:, :) = b(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in dgesv", info
+         RETURN
+      END IF
+
+      projected_ok = .TRUE.
+      raw_occ_residual = 0.0_dp
+      raw_tether_residual = 0.0_dp
+      projected_occ_residual = 0.0_dp
+      projected_tether_residual = 0.0_dp
+      DO r = 1, nrot
+         raw_response(:) = rhs(:, r)
+         projected_response(:) = raw_response(:)
+         CALL dense_project_response_metric_distributed(projected_response, occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         projected_ok = projected_ok .AND. projected
+         raw_occ_residual = MAX(raw_occ_residual, ABS(DOT_PRODUCT(occ_curv, raw_response)))
+         raw_tether_residual = MAX(raw_tether_residual, &
+                                   dense_response_tether_residual(raw_response, tether_curv, channel_nmo, e_offset))
+         projected_occ_residual = MAX(projected_occ_residual, &
+                                      ABS(DOT_PRODUCT(occ_curv, projected_response)))
+         projected_tether_residual = MAX(projected_tether_residual, &
+                                         dense_response_tether_residual(projected_response, tether_curv, &
+                                                                        channel_nmo, e_offset))
+      END DO
+
+      err = MAX(projected_occ_residual, projected_tether_residual)
+      IF (err > tol .OR. .NOT. projected_ok .OR. raw_occ_residual < 1.0E-3_dp .OR. &
+          raw_tether_residual < 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with raw/projected occ/tether", raw_occ_residual, raw_tether_residual, &
+            projected_occ_residual, projected_tether_residual
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with raw/projected occ/tether", raw_occ_residual, raw_tether_residual, &
+            projected_occ_residual, projected_tether_residual
+      END IF
+
+   END SUBROUTINE check_mixed_fixed_n_tether_exact_projection
 
 ! **************************************************************************************************
 !> \brief Check exact energy-block elimination against the full augmented Schur system.
