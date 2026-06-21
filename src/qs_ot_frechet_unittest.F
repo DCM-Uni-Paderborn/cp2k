@@ -3891,7 +3891,8 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: ne = 5
 
-      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, null_norm, phys_norm, raw_norm
+      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, neg_norm, null_norm, &
+                                                            phys_norm, raw_norm
       REAL(KIND=dp), DIMENSION(ne)                       :: descent, gap_null, gap_phys, grad, projected
 
       grad(:) = [0.31_dp, -0.24_dp, 0.17_dp, -0.09_dp, 0.05_dp]
@@ -3913,13 +3914,25 @@ CONTAINS
       err = MAX(err, ABS(coeff - 0.23_dp))
       err = MAX(err, ABS(gdot - 0.23_dp*denom))
 
-      IF (err > tol .OR. null_norm < 1.0E-1_dp .OR. phys_norm >= raw_norm) THEN
+      gap_phys(:) = gap_null(:) - 0.17_dp*descent(:)
+      CALL dense_project_descent_response(gap_phys, descent, grad, projected, coeff, gdot, denom)
+      err = MAX(err, MAXVAL(ABS(projected(:))))
+      err = MAX(err, ABS(coeff))
+      err = MAX(err, ABS(gdot + 0.17_dp*denom))
+      CALL dense_project_descent_response(gap_phys, descent, grad, projected, coeff, gdot, denom, &
+                                          flip_negative=.TRUE.)
+      neg_norm = MAXVAL(ABS(projected(:)))
+      err = MAX(err, MAXVAL(ABS(projected(:) - 0.17_dp*descent(:))))
+      err = MAX(err, ABS(coeff - 0.17_dp))
+      err = MAX(err, ABS(gdot + 0.17_dp*denom))
+
+      IF (err > tol .OR. null_norm < 1.0E-1_dp .OR. phys_norm >= raw_norm .OR. neg_norm <= 0.0_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/null/raw/phys", err, null_norm, raw_norm, phys_norm
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/null/raw/phys/neg", err, null_norm, raw_norm, phys_norm, neg_norm
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/null/raw/phys", err, null_norm, raw_norm, phys_norm
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/null/raw/phys/neg", err, null_norm, raw_norm, phys_norm, neg_norm
       END IF
 
    END SUBROUTINE check_projector_density_descent_gap_projection
@@ -4909,18 +4922,25 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Project a density response onto the fixed-N Mermin descent direction.
 ! **************************************************************************************************
-   SUBROUTINE dense_project_descent_response(response_vec, descent_vec, grad_vec, projected_vec, coeff, gdot, denom)
+   SUBROUTINE dense_project_descent_response(response_vec, descent_vec, grad_vec, projected_vec, coeff, gdot, &
+                                             denom, flip_negative)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, descent_vec, grad_vec
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: projected_vec
       REAL(KIND=dp), INTENT(OUT)                          :: coeff, denom, gdot
+      LOGICAL, INTENT(IN), OPTIONAL                       :: flip_negative
 
       projected_vec(:) = 0.0_dp
       coeff = 0.0_dp
       gdot = DOT_PRODUCT(grad_vec, response_vec)
       denom = DOT_PRODUCT(grad_vec, descent_vec)
-      IF (gdot <= 0.0_dp .OR. denom <= EPSILON(denom)) RETURN
+      IF (denom <= EPSILON(denom)) RETURN
+      IF (gdot <= 0.0_dp) THEN
+         IF (.NOT. PRESENT(flip_negative)) RETURN
+         IF (.NOT. flip_negative) RETURN
+         IF (gdot >= -EPSILON(denom)) RETURN
+      END IF
 
-      coeff = gdot/denom
+      coeff = ABS(gdot)/denom
       projected_vec(:) = coeff*descent_vec(:)
 
    END SUBROUTINE dense_project_descent_response

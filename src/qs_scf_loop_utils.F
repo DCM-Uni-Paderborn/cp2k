@@ -8280,7 +8280,7 @@ CONTAINS
                                              CALL project_kpoint_ot_descent_response( &
                                                 density_gap_rx_e, z_exact_physical_trial, grad_e, &
                                                 density_gap_projected_e, density_descent_gap_coeff, &
-                                                density_gap_gdot, density_descent_gap_denom)
+                                                density_gap_gdot, density_descent_gap_denom, .TRUE.)
                                              density_descent_gap_projected_abs = MAXVAL(ABS(density_gap_projected_e))
                                              CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
                                              density_descent_gap_projected_weighted = &
@@ -11132,10 +11132,11 @@ CONTAINS
       END SUBROUTINE project_kpoint_ot_schur_response_metric
 
       SUBROUTINE project_kpoint_ot_descent_response(response_vec, descent_vec, grad_e, projected_vec, &
-                                                    coeff, gdot, denom)
+                                                    coeff, gdot, denom, flip_negative)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)           :: response_vec, descent_vec, grad_e
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)          :: projected_vec
       REAL(KIND=dp), INTENT(OUT)                        :: coeff, denom, gdot
+      LOGICAL, INTENT(IN), OPTIONAL                     :: flip_negative
 
          projected_vec(:) = 0.0_dp
          coeff = 0.0_dp
@@ -11143,9 +11144,14 @@ CONTAINS
          denom = DOT_PRODUCT(grad_e, descent_vec)
          CALL para_env_inter_kp%sum(gdot)
          CALL para_env_inter_kp%sum(denom)
-         IF (gdot <= 0.0_dp .OR. denom <= EPSILON(denom)) RETURN
+         IF (denom <= EPSILON(denom)) RETURN
+         IF (gdot <= 0.0_dp) THEN
+            IF (.NOT. PRESENT(flip_negative)) RETURN
+            IF (.NOT. flip_negative) RETURN
+            IF (gdot >= -EPSILON(denom)) RETURN
+         END IF
 
-         coeff = gdot/denom
+         coeff = ABS(gdot)/denom
          projected_vec(:) = coeff*descent_vec(:)
 
       END SUBROUTINE project_kpoint_ot_descent_response
