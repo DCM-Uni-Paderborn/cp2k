@@ -12944,9 +12944,10 @@ CONTAINS
 
       INTEGER                                             :: first, idx, last, n
       LOGICAL                                             :: needs_filter
-      REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
-                                                            occ_jump, pair_slope, pair_weight, physical_slope, &
-                                                            plateau, slope_cap, slope_pair
+      REAL(KIND=dp)                                      :: allowed_jump, cluster_sum, eval_center, fit_den, &
+                                                            fit_num, gap, occ_curv_sum, occ_jump, pair_slope, &
+                                                            pair_weight, physical_slope, plateau, shape_sum, &
+                                                            slope_cap, slope_pair, weighted_eval
 
          n = SIZE(evals)
          IF (n <= 1) RETURN
@@ -12966,7 +12967,8 @@ CONTAINS
                last = last + 1
             END DO
             IF (last > first .AND. needs_filter) THEN
-               plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
+               cluster_sum = SUM(occ_mono(first:last))
+               plateau = cluster_sum/REAL(last - first + 1, KIND=dp)
                eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
                slope_cap = HUGE(1.0_dp)
                fit_num = 0.0_dp
@@ -12989,9 +12991,36 @@ CONTAINS
                physical_slope = 0.0_dp
                IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
                physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
-               DO idx = first, last
-                  occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
-               END DO
+               IF (fit_den > EPSILON(fit_den) .OR. slope_cap <= EPSILON(slope_cap)) THEN
+                  DO idx = first, last
+                     occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
+                  END DO
+               ELSE
+                  ! With no clean pair slope inside a noisy near-degenerate
+                  ! component, retain the fixed-N Mermin curvature shape instead
+                  ! of collapsing the physical occupation response to a flat
+                  ! gauge plateau.
+                  occ_curv_sum = 0.0_dp
+                  weighted_eval = 0.0_dp
+                  DO idx = first, last
+                     occ_curv_sum = occ_curv_sum + MAX(0.0_dp, occ_curv_channel(idx))
+                     weighted_eval = weighted_eval + MAX(0.0_dp, occ_curv_channel(idx))*evals(idx)
+                  END DO
+                  IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+                     weighted_eval = weighted_eval/occ_curv_sum
+                     DO idx = first, last
+                        occ_mono(idx) = plateau - &
+                                        2.0_dp*MAX(0.0_dp, occ_curv_channel(idx))*(evals(idx) - weighted_eval)
+                     END DO
+                     shape_sum = SUM(occ_mono(first:last))
+                     occ_mono(first:last) = occ_mono(first:last) + &
+                                            (cluster_sum - shape_sum)/REAL(last - first + 1, KIND=dp)
+                  ELSE
+                     DO idx = first, last
+                        occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
+                     END DO
+                  END IF
+               END IF
             END IF
             first = last + 1
          END DO

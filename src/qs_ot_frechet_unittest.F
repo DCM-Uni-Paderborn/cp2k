@@ -146,6 +146,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
       "history-safe occupation-projector component filter", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_fixed_n_cluster_shape( &
+      "history-safe occupation-projector fixed-N cluster shape", 5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -6164,6 +6166,72 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_component_filter
 
 ! **************************************************************************************************
+!> \brief Check that a fully noisy near-degenerate cluster keeps fixed-N Mermin shape.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_fixed_n_cluster_shape(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, &
+                                                            occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, cluster_sum, err, occ_curv_sum, occ_tol, &
+                                                            shape_err, span, total_err, weighted_eval
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, occ_curv, occ_filtered, occ_scale
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, -0.009960_dp, 0.42_dp]
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(0.19_dp, -0.14_dp, KIND=dp)
+      dchc(3, 1) = CONJG(dchc(1, 3))
+
+      occ_scale(:) = [1.20_dp, 0.41_dp, 0.10_dp, 0.08_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_filtered)
+      cluster_sum = SUM(occ_filtered(1:3))
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_filtered)
+
+      occ_curv_sum = SUM(occ_curv(1:3))
+      weighted_eval = DOT_PRODUCT(occ_curv(1:3), evals(1:3))/occ_curv_sum
+      expected(1:3) = cluster_sum/3.0_dp - 2.0_dp*occ_curv(1:3)*(evals(1:3) - weighted_eval)
+      expected(4) = occ_scale(4)
+      total_err = ABS(SUM(occ_filtered(1:3)) - cluster_sum)
+      shape_err = MAXVAL(ABS(occ_filtered(1:3) - expected(1:3)))
+      span = MAXVAL(occ_filtered(1:3)) - MINVAL(occ_filtered(1:3))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      err = MAX(MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :))), shape_err)
+      active = MAXVAL(ABS(docc_safe(:, :)))
+
+      IF (err > tol .OR. total_err > tol .OR. active < active_tol .OR. span < 1.0E-7_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/total/span/active/shape", err, total_err, span, active, shape_err
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/total/span/active/shape", err, total_err, span, active, shape_err
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_fixed_n_cluster_shape
+
+! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
 ! **************************************************************************************************
    SUBROUTINE dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
@@ -6480,9 +6548,10 @@ CONTAINS
 
       INTEGER                                             :: first, idx, last, n
       LOGICAL                                             :: needs_filter
-      REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
-                                                            occ_jump, pair_slope, pair_weight, physical_slope, &
-                                                            plateau, slope_cap, slope_pair
+      REAL(KIND=dp)                                      :: allowed_jump, cluster_sum, eval_center, fit_den, &
+                                                            fit_num, gap, occ_curv_sum, occ_jump, pair_slope, &
+                                                            pair_weight, physical_slope, plateau, shape_sum, &
+                                                            slope_cap, slope_pair, weighted_eval
 
       n = SIZE(evals)
       IF (n <= 1) RETURN
@@ -6502,7 +6571,8 @@ CONTAINS
             last = last + 1
          END DO
          IF (last > first .AND. needs_filter) THEN
-            plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
+            cluster_sum = SUM(occ_mono(first:last))
+            plateau = cluster_sum/REAL(last - first + 1, KIND=dp)
             eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
             slope_cap = HUGE(1.0_dp)
             fit_num = 0.0_dp
@@ -6525,9 +6595,31 @@ CONTAINS
             physical_slope = 0.0_dp
             IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
             physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
-            DO idx = first, last
-               occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
-            END DO
+            IF (fit_den > EPSILON(fit_den) .OR. slope_cap <= EPSILON(slope_cap)) THEN
+               DO idx = first, last
+                  occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
+               END DO
+            ELSE
+               occ_curv_sum = 0.0_dp
+               weighted_eval = 0.0_dp
+               DO idx = first, last
+                  occ_curv_sum = occ_curv_sum + MAX(0.0_dp, occ_curv(idx))
+                  weighted_eval = weighted_eval + MAX(0.0_dp, occ_curv(idx))*evals(idx)
+               END DO
+               IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+                  weighted_eval = weighted_eval/occ_curv_sum
+                  DO idx = first, last
+                     occ_mono(idx) = plateau - 2.0_dp*MAX(0.0_dp, occ_curv(idx))*(evals(idx) - weighted_eval)
+                  END DO
+                  shape_sum = SUM(occ_mono(first:last))
+                  occ_mono(first:last) = occ_mono(first:last) + &
+                                         (cluster_sum - shape_sum)/REAL(last - first + 1, KIND=dp)
+               ELSE
+                  DO idx = first, last
+                     occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
+                  END DO
+               END IF
+            END IF
          END IF
          first = last + 1
       END DO
