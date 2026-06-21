@@ -153,6 +153,8 @@ registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", c
 registry["N_kpoints"] = GenericMatcher(
     r"BRILLOUIN\| List of Kpoints \[2 Pi/Bohr\]\s+([0-9]+)", col=1, regex=True
 )
+registry["Kpoint_weight_1"] = GenericMatcher(r"BRILLOUIN|     1", col=3)
+registry["Kpoint_weight_2"] = GenericMatcher(r"BRILLOUIN|     2", col=3)
 registry["M012"] = GenericMatcher(r"B2(T) =", col=4)
 registry["M013"] = GenericMatcher(r"sparseness function f2 =", col=5)
 registry["M014"] = GenericMatcher(r"CheckSum Shifts =", col=4)

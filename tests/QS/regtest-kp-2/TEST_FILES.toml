@@ -18,6 +18,17 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"}]
+"Al_kp_ot_added_auto_sym3.inp"          = [{matcher="E_total", tol=1.0E-10, ref=-7.18786506821077},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.18786506821077},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-2.5505891957E-4},
+                                           {matcher="N_kpoints", tol=0.0, ref=2},
+                                           {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
+                                           {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"}]
 # Slow/manual ADDED_MOS AUTO tail companion: run
 # Al_kp_ot_added_auto_converge.inp by hand. It is intentionally not listed
 # here, so the default regtest stays cheap while the adaptive AUTO grow path
