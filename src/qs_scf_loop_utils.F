@@ -12818,8 +12818,9 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, gap_tol, occ_jump, occ_tol, &
-                                                            physical_slope, projector_weight, scale, slope_cap
+      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, diag_response_shift, &
+                                                            gap_tol, occ_curv_sum, occ_jump, occ_tol, physical_slope, &
+                                                            projector_weight, scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -12840,10 +12841,29 @@ CONTAINS
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
             CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_slope)
+         diag_response_shift = 0.0_dp
+         IF (PRESENT(occ_curv_channel)) THEN
+            occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
+            IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+               DO i = 1, n
+                  diag_response_shift = diag_response_shift + &
+                                        MAX(0.0_dp, occ_curv_channel(i))*REAL(work(i, i), KIND=dp)
+               END DO
+               diag_response_shift = diag_response_shift/occ_curv_sum
+            END IF
+         END IF
          kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
-               IF (i == j) CYCLE
+               IF (i == j) THEN
+                  IF (PRESENT(occ_curv_channel)) THEN
+                     coeff = -2.0_dp*MAX(0.0_dp, occ_curv_channel(i))
+                     IF (ABS(coeff) > EPSILON(coeff)) &
+                        kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
+                                             0.0_dp, KIND=dp)
+                  END IF
+                  CYCLE
+               END IF
                denom = evals(i) - evals(j)
                physical_slope = 0.0_dp
                IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN

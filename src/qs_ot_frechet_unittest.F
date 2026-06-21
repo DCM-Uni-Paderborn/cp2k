@@ -138,6 +138,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_physical_fd( &
       "history-safe occupation-projector physical finite difference", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_diagonal_response( &
+      "history-safe occupation-projector diagonal response", 5.0E-14_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -5837,6 +5839,58 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_physical_fd
 
 ! **************************************************************************************************
+!> \brief Check the explicit diagonal Fermi response in the history-safe dP model.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_diagonal_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_safe, expected
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, err, occ_sum, offdiag, shift_mu
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, shift
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.22_dp, 0.47_dp]
+      occ_scale(:) = [1.18_dp, 0.41_dp, 0.23_dp, 0.08_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+      shift(:) = [0.11_dp, -0.07_dp, 0.03_dp, -0.02_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      occ_sum = SUM(occ_curv(:))
+      shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+         dchc(i, i) = CMPLX(shift(i), 0.0_dp, KIND=dp)
+         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                0.0_dp, KIND=dp)
+      END DO
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      err = MAXVAL(ABS(docc_safe(:, :) - expected(:, :)))
+      active = MAXVAL(ABS(expected(:, :)))
+      offdiag = MAXVAL(ABS(docc_safe(:, :) - &
+                           CMPLX(REAL(docc_safe(:, :), KIND=dp), 0.0_dp, KIND=dp)))
+
+      IF (err > tol .OR. active < active_tol .OR. offdiag > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/imag", err, active, offdiag
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/imag", err, active, offdiag
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_diagonal_response
+
+! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_cluster_slope_split(label, tol, nfail)
@@ -6178,8 +6232,9 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, gap_tol, occ_jump, occ_tol, &
-                                                            physical_slope, scale, slope_cap
+      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, diag_response_shift, &
+                                                            gap_tol, occ_curv_sum, occ_jump, occ_tol, physical_slope, &
+                                                            scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       n = SIZE(chc, 1)
@@ -6191,10 +6246,29 @@ CONTAINS
       gap_tol = SQRT(EPSILON(1.0_dp))*scale
       occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
       occ_work(:) = occ_scale(:)
+      diag_response_shift = 0.0_dp
+      IF (PRESENT(occ_curv)) THEN
+         occ_curv_sum = SUM(MAX(0.0_dp, occ_curv(:)))
+         IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+            DO i = 1, n
+               diag_response_shift = diag_response_shift + &
+                                     MAX(0.0_dp, occ_curv(i))*REAL(work(i, i), KIND=dp)
+            END DO
+            diag_response_shift = diag_response_shift/occ_curv_sum
+         END IF
+      END IF
       kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO j = 1, n
          DO i = 1, n
-            IF (i == j) CYCLE
+            IF (i == j) THEN
+               IF (PRESENT(occ_curv)) THEN
+                  coeff = -2.0_dp*MAX(0.0_dp, occ_curv(i))
+                  IF (ABS(coeff) > EPSILON(coeff)) &
+                     kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
+                                          0.0_dp, KIND=dp)
+               END IF
+               CYCLE
+            END IF
             denom = evals(i) - evals(j)
             physical_slope = 0.0_dp
             IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
