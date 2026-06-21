@@ -133,6 +133,9 @@ MODULE qs_scf_loop_utils
                                         ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_min = 50.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_max_attempts = 12
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_floor = 1.0E-10_dp, &
+                                        ot_kp_ref_overlap_guard_backtrack = 5.0E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
                                         ot_kp_schur_quality_max_ratio = 2.0_dp, &
                                         ot_kp_schur_quality_min_ratio = 1.0E-1_dp
@@ -558,21 +561,25 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_loop_do_ot_kp'
 
       INTEGER                                            :: first_channel, handle, ikpoint, ispin, &
-                                                            local_channel, local_kpoint, nkpoint, &
-                                                            nlocal_channels, nmo, nspin_ot
+                                                            local_channel, local_kpoint, max_ener_nmo, &
+                                                            nkpoint, nlocal_channels, nmo, nspin_ot, &
+                                                            ref_guard_attempt
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: fermi_window_guarded, use_real_wfn
+      LOGICAL                                            :: fermi_window_guarded, ref_guard_ok, ref_guarded, use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor
-      REAL(KIND=dp)                                      :: ener_nondiag, maxocc, mu
+      REAL(KIND=dp)                                      :: ener_nondiag, maxocc, mu, ref_guard_max, &
+                                                            ref_guard_min, ref_guard_scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: trial_mu
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ener_x_old
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, wkp
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: trial_eigenvalues, trial_occupation
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc, matrix_hc_im
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc, matrix_hc_im, matrix_x_old, &
+                                                            matrix_x_old_im, rot_mat_x_old, rot_mat_x_old_im
       TYPE(dbcsr_type)                                   :: density_hc_im, density_hc_re
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: density_target, rho_ao_kp
       TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
@@ -580,6 +587,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
@@ -589,9 +597,12 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, density_target, dft_control, eigenvalues, energy, fmwork, kpoints, local_ot_env, matrix_hc, &
-               matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, mo_coeff, &
+      NULLIFY (cell_to_index, density_target, dft_control, eigenvalues, energy, fmwork, kpoints, local_ot_env, logger, &
+               matrix_hc, &
+               matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, matrix_x_old, &
+               matrix_x_old_im, mo_coeff, &
                mo_coeff_im, occupation_numbers, para_env_inter_kp, rho, rho_ao_kp, sab_nl, wkp, xkp)
+      NULLIFY (rot_mat_x_old, rot_mat_x_old_im)
       added_mos_auto_grow = .FALSE.
 
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
@@ -629,9 +640,18 @@ CONTAINS
 
       ALLOCATE (matrix_hc(nlocal_channels))
       ALLOCATE (matrix_hc_im(nlocal_channels))
+      ALLOCATE (matrix_x_old(nlocal_channels))
+      ALLOCATE (matrix_x_old_im(nlocal_channels))
+      ALLOCATE (rot_mat_x_old(nlocal_channels))
+      ALLOCATE (rot_mat_x_old_im(nlocal_channels))
+      max_ener_nmo = 1
       DO local_channel = 1, nlocal_channels
          NULLIFY (matrix_hc(local_channel)%matrix)
          NULLIFY (matrix_hc_im(local_channel)%matrix)
+         NULLIFY (matrix_x_old(local_channel)%matrix)
+         NULLIFY (matrix_x_old_im(local_channel)%matrix)
+         NULLIFY (rot_mat_x_old(local_channel)%matrix)
+         NULLIFY (rot_mat_x_old_im(local_channel)%matrix)
          ALLOCATE (matrix_hc(local_channel)%matrix)
          ALLOCATE (matrix_hc_im(local_channel)%matrix)
          CALL dbcsr_copy(matrix_hc(local_channel)%matrix, local_ot_env(local_channel)%matrix_x, name="matrix_hc")
@@ -639,6 +659,31 @@ CONTAINS
                          name="matrix_hc_im")
          CALL dbcsr_set(matrix_hc(local_channel)%matrix, 0.0_dp)
          CALL dbcsr_set(matrix_hc_im(local_channel)%matrix, 0.0_dp)
+         ALLOCATE (matrix_x_old(local_channel)%matrix)
+         ALLOCATE (matrix_x_old_im(local_channel)%matrix)
+         CALL dbcsr_copy(matrix_x_old(local_channel)%matrix, local_ot_env(local_channel)%matrix_x, &
+                         name="ot_kp_ref_guard_x_old")
+         CALL dbcsr_copy(matrix_x_old_im(local_channel)%matrix, local_ot_env(local_channel)%matrix_x_im, &
+                         name="ot_kp_ref_guard_x_old_im")
+         IF (ASSOCIATED(local_ot_env(local_channel)%rot_mat_x)) THEN
+            ALLOCATE (rot_mat_x_old(local_channel)%matrix)
+            CALL dbcsr_copy(rot_mat_x_old(local_channel)%matrix, local_ot_env(local_channel)%rot_mat_x, &
+                            name="ot_kp_ref_guard_rot_old")
+         END IF
+         IF (ASSOCIATED(local_ot_env(local_channel)%rot_mat_x_im)) THEN
+            ALLOCATE (rot_mat_x_old_im(local_channel)%matrix)
+            CALL dbcsr_copy(rot_mat_x_old_im(local_channel)%matrix, local_ot_env(local_channel)%rot_mat_x_im, &
+                            name="ot_kp_ref_guard_rot_old_im")
+         END IF
+         IF (ASSOCIATED(local_ot_env(local_channel)%ener_x)) &
+            max_ener_nmo = MAX(max_ener_nmo, SIZE(local_ot_env(local_channel)%ener_x))
+      END DO
+      ALLOCATE (ener_x_old(max_ener_nmo, nlocal_channels))
+      ener_x_old(:, :) = 0.0_dp
+      DO local_channel = 1, nlocal_channels
+         IF (ASSOCIATED(local_ot_env(local_channel)%ener_x)) &
+            ener_x_old(1:SIZE(local_ot_env(local_channel)%ener_x), local_channel) = &
+            local_ot_env(local_channel)%ener_x(:)
       END DO
 
       ALLOCATE (matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im)
@@ -766,6 +811,53 @@ CONTAINS
 
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im, &
                    para_env_inter_kp=para_env_inter_kp)
+      ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                            xkp, cell_to_index, sab_nl, matrix_s, &
+                                                            matrix_s_re, matrix_s_im, para_env_inter_kp, &
+                                                            ref_guard_min, ref_guard_max)
+      ref_guarded = .FALSE.
+      ref_guard_scale = 1.0_dp
+      IF (.NOT. ref_guard_ok) THEN
+         DO ref_guard_attempt = 1, ot_kp_ref_overlap_guard_max_attempts
+            CALL qs_scf_loop_blend_ot_kp_ref_step(local_ot_env, matrix_x_old, matrix_x_old_im, &
+                                                  rot_mat_x_old, rot_mat_x_old_im, ener_x_old, &
+                                                  ot_kp_ref_overlap_guard_backtrack)
+            ref_guard_scale = ref_guard_scale*ot_kp_ref_overlap_guard_backtrack
+            ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, &
+                                                                  nspin_ot, xkp, cell_to_index, sab_nl, &
+                                                                  matrix_s, matrix_s_re, matrix_s_im, &
+                                                                  para_env_inter_kp, ref_guard_min, &
+                                                                  ref_guard_max)
+            IF (ref_guard_ok) EXIT
+         END DO
+         IF (.NOT. ref_guard_ok) THEN
+            CALL qs_scf_loop_blend_ot_kp_ref_step(local_ot_env, matrix_x_old, matrix_x_old_im, &
+                                                  rot_mat_x_old, rot_mat_x_old_im, ener_x_old, 0.0_dp)
+            ref_guard_scale = 0.0_dp
+            ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, &
+                                                                  nspin_ot, xkp, cell_to_index, sab_nl, &
+                                                                  matrix_s, matrix_s_re, matrix_s_im, &
+                                                                  para_env_inter_kp, ref_guard_min, &
+                                                                  ref_guard_max)
+         END IF
+         IF (.NOT. ref_guard_ok) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "K-point OT REF-overlap guard could not restore a positive overlap. "// &
+                          "Minimum/maximum eigenvalue: "// &
+                          TRIM(ADJUSTL(cp_to_string(ref_guard_min)))//" "// &
+                          TRIM(ADJUSTL(cp_to_string(ref_guard_max))))
+         END IF
+         ref_guarded = .TRUE.
+         CALL qs_scf_loop_reset_ot_kp_ref_guard_state(local_ot_env)
+      END IF
+      IF (ref_guarded) THEN
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I4,3(1X,ES16.8))') &
+               " OT k-point REF-overlap guard attempts scale min max:", &
+               ref_guard_attempt, ref_guard_scale, ref_guard_min, ref_guard_max
+         END IF
+      END IF
       CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta)
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
@@ -867,10 +959,23 @@ CONTAINS
       DO local_channel = 1, nlocal_channels
          CALL dbcsr_release(matrix_hc(local_channel)%matrix)
          CALL dbcsr_release(matrix_hc_im(local_channel)%matrix)
+         CALL dbcsr_release(matrix_x_old(local_channel)%matrix)
+         CALL dbcsr_release(matrix_x_old_im(local_channel)%matrix)
+         IF (ASSOCIATED(rot_mat_x_old(local_channel)%matrix)) THEN
+            CALL dbcsr_release(rot_mat_x_old(local_channel)%matrix)
+            DEALLOCATE (rot_mat_x_old(local_channel)%matrix)
+         END IF
+         IF (ASSOCIATED(rot_mat_x_old_im(local_channel)%matrix)) THEN
+            CALL dbcsr_release(rot_mat_x_old_im(local_channel)%matrix)
+            DEALLOCATE (rot_mat_x_old_im(local_channel)%matrix)
+         END IF
          DEALLOCATE (matrix_hc(local_channel)%matrix)
          DEALLOCATE (matrix_hc_im(local_channel)%matrix)
+         DEALLOCATE (matrix_x_old(local_channel)%matrix)
+         DEALLOCATE (matrix_x_old_im(local_channel)%matrix)
       END DO
-      DEALLOCATE (matrix_hc, matrix_hc_im)
+      DEALLOCATE (ener_x_old, matrix_hc, matrix_hc_im, matrix_x_old, matrix_x_old_im, &
+                  rot_mat_x_old, rot_mat_x_old_im)
 
       CALL dbcsr_deallocate_matrix(matrix_k_re)
       CALL dbcsr_deallocate_matrix(matrix_k_im)
@@ -908,6 +1013,234 @@ CONTAINS
       END DO
 
    END SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta
+
+! **************************************************************************************************
+!> \brief check the complex REF overlap spectrum after a k-point OT step
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param first_channel ...
+!> \param nspin_ot ...
+!> \param xkp ...
+!> \param cell_to_index ...
+!> \param sab_nl ...
+!> \param matrix_s ...
+!> \param matrix_s_re ...
+!> \param matrix_s_im ...
+!> \param para_env_inter_kp ...
+!> \param ref_overlap_min ...
+!> \param ref_overlap_max ...
+!> \return true if all local/global REF overlaps remain safely positive
+! **************************************************************************************************
+   FUNCTION qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                   xkp, cell_to_index, sab_nl, matrix_s, &
+                                                   matrix_s_re, matrix_s_im, para_env_inter_kp, &
+                                                   ref_overlap_min, ref_overlap_max) RESULT(ok)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
+      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         POINTER                                         :: sab_nl
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
+      TYPE(dbcsr_type), POINTER                          :: matrix_s_re, matrix_s_im
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      REAL(KIND=dp), INTENT(OUT)                         :: ref_overlap_min, ref_overlap_max
+      LOGICAL                                            :: ok
+
+      INTEGER                                            :: ikpoint, ispin, local_channel, local_kpoint
+      REAL(KIND=dp)                                      :: channel_max, channel_min
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      ref_overlap_min = HUGE(1.0_dp)
+      ref_overlap_max = -HUGE(1.0_dp)
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         CALL dbcsr_set(matrix_s_re, 0.0_dp)
+         CALL dbcsr_set(matrix_s_im, 0.0_dp)
+         CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s, &
+                             ispin=1, xkp=xkp(1:3, ikpoint), &
+                             cell_to_index=cell_to_index, sab_nl=sab_nl)
+         DO ispin = 1, nspin_ot
+            local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL qs_scf_loop_ot_ref_overlap_bounds(local_ot_env(local_channel), matrix_s_re, matrix_s_im, &
+                                                   channel_min, channel_max)
+            ref_overlap_min = MIN(ref_overlap_min, channel_min)
+            ref_overlap_max = MAX(ref_overlap_max, channel_max)
+         END DO
+      END DO
+      CALL para_env_inter_kp%min(ref_overlap_min)
+      CALL para_env_inter_kp%max(ref_overlap_max)
+      ok = ref_overlap_min > ot_kp_ref_overlap_guard_floor
+
+   END FUNCTION qs_scf_loop_ot_kp_ref_overlap_guard_ok
+
+! **************************************************************************************************
+!> \brief compute min/max eigenvalues of C(k)^H S(k) C(k) for one OT channel
+!> \param qs_ot_env ...
+!> \param matrix_s ...
+!> \param matrix_s_im ...
+!> \param ref_overlap_min ...
+!> \param ref_overlap_max ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_ot_ref_overlap_bounds(qs_ot_env, matrix_s, matrix_s_im, &
+                                                ref_overlap_min, ref_overlap_max)
+
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type), POINTER                          :: matrix_s, matrix_s_im
+      REAL(KIND=dp), INTENT(OUT)                         :: ref_overlap_min, ref_overlap_max
+
+      INTEGER                                            :: k, n
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eig
+      TYPE(dbcsr_type)                                   :: evec_im, evec_re
+      TYPE(dbcsr_type), POINTER                          :: c_im, c_re, f_re, p_im, p_re, sc_im, &
+                                                            sc_re, tmp
+
+      ref_overlap_min = 1.0_dp
+      ref_overlap_max = 1.0_dp
+      CPASSERT(qs_ot_env%has_complex_kpoint_state)
+      c_re => qs_ot_env%matrix_x
+      c_im => qs_ot_env%matrix_x_im
+      sc_re => qs_ot_env%matrix_sx
+      sc_im => qs_ot_env%matrix_sx_im
+      tmp => qs_ot_env%buf1_n_k
+      p_re => qs_ot_env%p_k_k_sym
+      p_im => qs_ot_env%buf1_k_k_sym
+      f_re => qs_ot_env%buf2_k_k_sym
+
+      CALL dbcsr_get_info(c_re, nfullrows_total=n, nfullcols_total=k)
+      IF (k == 0) RETURN
+
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s, c_re, 0.0_dp, sc_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s_im, c_im, 0.0_dp, tmp)
+      CALL dbcsr_add(sc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s, c_im, 0.0_dp, sc_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_s_im, c_re, 0.0_dp, tmp)
+      CALL dbcsr_add(sc_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, sc_re, 0.0_dp, p_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, sc_im, 0.0_dp, f_re)
+      CALL dbcsr_add(p_re, f_re, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, sc_im, 0.0_dp, p_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, sc_re, 0.0_dp, f_re)
+      CALL dbcsr_add(p_im, f_re, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      ALLOCATE (eig(k))
+      CALL dbcsr_copy(evec_re, p_re, name="ot_kp_ref_overlap_evec_re")
+      CALL dbcsr_copy(evec_im, p_im, name="ot_kp_ref_overlap_evec_im")
+      CALL cp_dbcsr_heevd(matrix_re=p_re, &
+                          matrix_im=p_im, &
+                          eigenvectors_re=evec_re, &
+                          eigenvectors_im=evec_im, &
+                          eigenvalues=eig, &
+                          para_env=qs_ot_env%para_env, &
+                          blacs_env=qs_ot_env%blacs_env)
+      ref_overlap_min = MINVAL(eig)
+      ref_overlap_max = MAXVAL(eig)
+      CALL dbcsr_release(evec_re)
+      CALL dbcsr_release(evec_im)
+      DEALLOCATE (eig)
+
+   END SUBROUTINE qs_scf_loop_ot_ref_overlap_bounds
+
+! **************************************************************************************************
+!> \brief blend an unsafe k-point OT step back toward the previous accepted state
+!> \param local_ot_env ...
+!> \param matrix_x_old ...
+!> \param matrix_x_old_im ...
+!> \param rot_mat_x_old ...
+!> \param rot_mat_x_old_im ...
+!> \param ener_x_old ...
+!> \param scale_new ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_blend_ot_kp_ref_step(local_ot_env, matrix_x_old, matrix_x_old_im, &
+                                               rot_mat_x_old, rot_mat_x_old_im, ener_x_old, scale_new)
+
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_x_old, matrix_x_old_im, &
+                                                            rot_mat_x_old, rot_mat_x_old_im
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: ener_x_old
+      REAL(KIND=dp), INTENT(IN)                          :: scale_new
+
+      INTEGER                                            :: local_channel, ncoef
+
+      DO local_channel = 1, SIZE(local_ot_env)
+         CALL dbcsr_add(local_ot_env(local_channel)%matrix_x, matrix_x_old(local_channel)%matrix, &
+                        alpha_scalar=scale_new, beta_scalar=1.0_dp - scale_new)
+         CALL dbcsr_add(local_ot_env(local_channel)%matrix_x_im, matrix_x_old_im(local_channel)%matrix, &
+                        alpha_scalar=scale_new, beta_scalar=1.0_dp - scale_new)
+         IF (ASSOCIATED(local_ot_env(local_channel)%rot_mat_x) .AND. &
+             ASSOCIATED(rot_mat_x_old(local_channel)%matrix)) THEN
+            CALL dbcsr_add(local_ot_env(local_channel)%rot_mat_x, rot_mat_x_old(local_channel)%matrix, &
+                           alpha_scalar=scale_new, beta_scalar=1.0_dp - scale_new)
+         END IF
+         IF (ASSOCIATED(local_ot_env(local_channel)%rot_mat_x_im) .AND. &
+             ASSOCIATED(rot_mat_x_old_im(local_channel)%matrix)) THEN
+            CALL dbcsr_add(local_ot_env(local_channel)%rot_mat_x_im, rot_mat_x_old_im(local_channel)%matrix, &
+                           alpha_scalar=scale_new, beta_scalar=1.0_dp - scale_new)
+         END IF
+         IF (ASSOCIATED(local_ot_env(local_channel)%ener_x)) THEN
+            ncoef = SIZE(local_ot_env(local_channel)%ener_x)
+            local_ot_env(local_channel)%ener_x(:) = &
+               scale_new*local_ot_env(local_channel)%ener_x(:) + &
+               (1.0_dp - scale_new)*ener_x_old(1:ncoef, local_channel)
+         END IF
+      END DO
+
+   END SUBROUTINE qs_scf_loop_blend_ot_kp_ref_step
+
+! **************************************************************************************************
+!> \brief invalidate k-point OT line-search and pending model state after REF-overlap backtracking
+!> \param local_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_reset_ot_kp_ref_guard_state(local_ot_env)
+
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+
+      INTEGER                                            :: local_channel
+
+      local_ot_env(1)%ot_pos(:) = 0.0_dp
+      local_ot_env(1)%ot_energy(:) = 0.0_dp
+      local_ot_env(1)%ot_grad(:) = 0.0_dp
+      local_ot_env(1)%line_search_left = -1
+      local_ot_env(1)%line_search_right = -1
+      local_ot_env(1)%line_search_mid = -1
+      local_ot_env(1)%line_search_count = 0
+      local_ot_env(1)%line_search_might_be_done = .FALSE.
+      local_ot_env(1)%energy_only = .FALSE.
+      local_ot_env(1)%ds_min = local_ot_env(1)%settings%ds_min
+      local_ot_env(1)%schur_model_pending = .FALSE.
+      local_ot_env(1)%schur_constrained_pending = .FALSE.
+      local_ot_env(1)%schur_split_shadow_pending = .FALSE.
+      local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+      local_ot_env(1)%schur_projector_mode_pending = .FALSE.
+      local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
+      local_ot_env(1)%schur_projector_response_pending = .FALSE.
+      local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
+      local_ot_env(1)%schur_projector_physical_pending = .FALSE.
+      local_ot_env(1)%schur_projector_mixed_direct_pending = .FALSE.
+      local_ot_env(1)%schur_projector_spectral_pending = .FALSE.
+      local_ot_env(1)%schur_projector_diagref_pending = .FALSE.
+      local_ot_env(1)%schur_projector_density_pending = .FALSE.
+      local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
+      local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
+      local_ot_env(1)%schur_projector_density_full_pending = .FALSE.
+      local_ot_env(1)%schur_history_mixed = .FALSE.
+      local_ot_env(1)%schur_model_attempt = 0
+      local_ot_env(1)%schur_model_flavor = 0
+      local_ot_env(1)%schur_model_drop = 0.0_dp
+      local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
+      local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
+      DO local_channel = 1, SIZE(local_ot_env)
+         local_ot_env(local_channel)%use_dx = .FALSE.
+         local_ot_env(local_channel)%use_gx_old = .FALSE.
+      END DO
+
+   END SUBROUTINE qs_scf_loop_reset_ot_kp_ref_guard_state
 
 ! **************************************************************************************************
 !> \brief request ADDED_MOS AUTO growth for a stalled metallic k-point OT tail
