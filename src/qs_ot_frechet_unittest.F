@@ -122,6 +122,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-13_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
+                                               5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
                                                   5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
@@ -4620,6 +4622,44 @@ CONTAINS
    END SUBROUTINE check_projector_direct_trace_compensation
 
 ! **************************************************************************************************
+!> \brief Check that Direct trace mismatch contributes even when projected response vectors match.
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_trace_model_gap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: scale = 0.74_dp, &
+                                                            trace_active = -0.23_dp, &
+                                                            trace_actual = 0.04_dp
+
+      REAL(KIND=dp)                                      :: err, expected_trace_gap, model_drop, &
+                                                            trace_gap, vector_gap
+      REAL(KIND=dp), DIMENSION(4)                        :: curv, response_actual, response_model
+
+      curv(:) = [0.55_dp, 0.23_dp, 0.12_dp, 0.07_dp]
+      response_actual(:) = [0.02_dp, -0.01_dp, 0.03_dp, -0.04_dp]
+      response_model(:) = response_actual(:)
+
+      vector_gap = 0.5_dp*scale*scale*SUM(curv(:)*(response_model(:) - response_actual(:))**2)
+      trace_gap = dense_direct_trace_model_gap_drop(trace_actual, trace_active, scale)
+      expected_trace_gap = 0.5_dp*scale*scale*ABS(trace_actual - trace_active)
+      model_drop = 1.0_dp
+
+      err = ABS(trace_gap - expected_trace_gap)
+      IF (err > tol .OR. vector_gap > tol .OR. trace_gap <= 0.0_dp .OR. &
+          trace_gap/model_drop <= 0.05_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/vector/trace/ratio", err, vector_gap, trace_gap, trace_gap/model_drop
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/vector/trace/ratio", err, vector_gap, trace_gap, trace_gap/model_drop
+      END IF
+
+   END SUBROUTINE check_projector_direct_trace_model_gap
+
+! **************************************************************************************************
 !> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
 ! **************************************************************************************************
    SUBROUTINE check_projector_modal_response_sign_model(label, tol, nfail)
@@ -4920,6 +4960,17 @@ CONTAINS
          compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - positive_reference))
 
    END FUNCTION dense_direct_trace_compensation
+
+! **************************************************************************************************
+!> \brief Dense mirror of the Direct trace model-gap term.
+! **************************************************************************************************
+   FUNCTION dense_direct_trace_model_gap_drop(trace_actual_quad, trace_model_quad, scale) RESULT(drop)
+      REAL(KIND=dp), INTENT(IN)                          :: trace_actual_quad, trace_model_quad, scale
+      REAL(KIND=dp)                                      :: drop
+
+      drop = 0.5_dp*scale*scale*ABS(trace_actual_quad - trace_model_quad)
+
+   END FUNCTION dense_direct_trace_model_gap_drop
 
 ! **************************************************************************************************
 !> \brief Project a density response onto the fixed-N Mermin descent direction.

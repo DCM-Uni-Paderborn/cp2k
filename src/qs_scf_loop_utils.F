@@ -1390,6 +1390,20 @@ CONTAINS
    END FUNCTION kpoint_ot_direct_trace_compensation
 
 ! **************************************************************************************************
+!> \brief quadratic model uncertainty from a mismatched Direct trace curvature
+!> \param trace_actual_quad ...
+!> \param trace_model_quad ...
+!> \param scale ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_direct_trace_model_gap_drop(trace_actual_quad, trace_model_quad, scale) RESULT(drop)
+      REAL(KIND=dp), INTENT(IN)                          :: trace_actual_quad, trace_model_quad, scale
+      REAL(KIND=dp)                                      :: drop
+
+      drop = 0.5_dp*scale*scale*ABS(trace_actual_quad - trace_model_quad)
+
+   END FUNCTION kpoint_ot_direct_trace_model_gap_drop
+
+! **************************************************************************************************
 !> \brief project k-point OT auxiliary energies onto the exact fixed-N Mermin subproblem
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
@@ -4825,6 +4839,7 @@ CONTAINS
          projector_physical_direct_metric_norm_energy, projector_physical_direct_metric_normp, &
          projector_physical_direct_trust_scale, projector_physical_direct_unit_abs_step, &
          projector_physical_direct_unit_model_gap, projector_physical_direct_unit_model_gap_drop, &
+         projector_physical_direct_unit_trace_gap_drop, &
          projector_physical_direct_unit_weighted_step, projector_physical_density_diag_abs_sum, &
          projector_physical_density_active_abs_avg, projector_physical_density_active_fraction, &
          projector_physical_density_full_abs_avg, projector_physical_density_gap_abs_avg, &
@@ -5479,6 +5494,7 @@ CONTAINS
             projector_physical_direct_unit_abs_step = 0.0_dp
             projector_physical_direct_unit_model_gap = 0.0_dp
             projector_physical_direct_unit_model_gap_drop = 0.0_dp
+            projector_physical_direct_unit_trace_gap_drop = 0.0_dp
             projector_physical_direct_unit_weighted_step = 0.0_dp
             projector_physical_direct_trace_active_actual_ratio = 0.0_dp
             projector_physical_direct_trace_active_diag_quad = 0.0_dp
@@ -8741,6 +8757,12 @@ CONTAINS
                                                 kpoint_ot_response_mismatch_drop(projector_physical_direct_rx_e, &
                                                                                  projector_physical_direct_model_e, curv, &
                                                                                  1.0_dp)
+                                             projector_physical_direct_unit_trace_gap_drop = 0.0_dp
+                                             IF (projector_physical_direct_mixed_enabled) &
+                                                projector_physical_direct_unit_trace_gap_drop = &
+                                                   kpoint_ot_direct_trace_model_gap_drop( &
+                                                      projector_physical_direct_trace_actual_quad, &
+                                                      projector_physical_direct_trace_active_quad, 1.0_dp)
                                              projector_physical_direct_trust_scale = 1.0_dp
                                              IF (response_trust > EPSILON(response_trust) .AND. &
                                                  projector_physical_direct_unit_weighted_step > &
@@ -10492,6 +10514,14 @@ CONTAINS
                         projector_physical_direct_trace_ratio, projector_physical_direct_trace_active_actual_ratio, &
                         projector_physical_direct_trace_actual_norm, projector_physical_direct_trace_full_norm, &
                         projector_physical_direct_trace_active_norm
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,4(1X,ES16.8))') &
+                        " OT Schur projector phys direct trace model-gap audit mixed unit scaled vector cdrop:", &
+                        projector_physical_direct_mixed_enabled, &
+                        projector_physical_direct_unit_trace_gap_drop, &
+                        projector_physical_direct_direction_scale*projector_physical_direct_direction_scale* &
+                        projector_physical_direct_unit_trace_gap_drop, &
+                        projector_physical_direct_unit_model_gap_drop, &
+                        projector_physical_direct_model_calibrated_drop
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct trace split actual_diag actual_free raw_diag raw_free "// &
                         "active_diag active_free:", &
