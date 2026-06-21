@@ -132,6 +132,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_physical_fd( &
       "history-safe occupation-projector physical finite difference", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_slope_split( &
+      "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
       "history-safe occupation-projector component filter", 5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -5557,6 +5559,80 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_physical_fd
 
 ! **************************************************************************************************
+!> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_slope_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_ref, &
+                                                            docc_safe, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: cluster_avg, cluster_center, err, fd_err, &
+                                                            physical_slope, raw_noise, retained
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_expected, occ_noisy
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, -0.009964_dp, 0.42_dp]
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.28_dp, -0.19_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(-0.16_dp, 0.13_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(0.10_dp, 0.07_dp, KIND=dp)
+      DO i = 2, n
+         dchc(i, 1:i - 1) = CONJG(dchc(1:i - 1, i))
+      END DO
+
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.032_dp, 0.006_dp]
+      cluster_center = SUM(evals(1:3))/3.0_dp
+      cluster_avg = 1.10_dp
+      physical_slope = -0.5_dp*dense_shared_occ_slope(occ_curv(2), occ_curv(3))
+      occ_expected(:) = [cluster_avg + physical_slope*(evals(1) - cluster_center), &
+                         cluster_avg + physical_slope*(evals(2) - cluster_center), &
+                         cluster_avg + physical_slope*(evals(3) - cluster_center), &
+                         0.18_dp]
+      occ_noisy(:) = occ_expected(:)
+      occ_noisy(1) = occ_noisy(1) + 0.23_dp
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_noisy, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_expected, docc_ref, &
+                                                       occ_curv, gauge_gap)
+      docc_ref(:, :) = projector_weight*docc_ref(:, :)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_raw)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_noisy, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_noisy, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+
+      err = MAXVAL(ABS(docc_safe(:, :) - docc_ref(:, :)))
+      fd_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
+      err = MAX(err, fd_err)
+      raw_noise = MAXVAL(ABS(projector_weight*docc_raw(:, :) - docc_ref(:, :)))
+      retained = MAXVAL(ABS(docc_safe(:, :)))
+
+      IF (err > tol .OR. raw_noise < active_tol .OR. retained < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/fderr/rawnoise/retained", err, fd_err, raw_noise, retained
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/fderr/rawnoise/retained", err, fd_err, raw_noise, retained
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_slope_split
+
+! **************************************************************************************************
 !> \brief Check that one noisy near-degenerate pair filters the full connected component.
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_component_filter(label, tol, nfail)
@@ -5927,7 +6003,8 @@ CONTAINS
       INTEGER                                             :: first, idx, last, n
       LOGICAL                                             :: needs_filter
       REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
-                                                            occ_jump, physical_slope, plateau, slope_cap
+                                                            occ_jump, pair_slope, pair_weight, physical_slope, &
+                                                            plateau, slope_cap, slope_pair
 
       n = SIZE(evals)
       IF (n <= 1) RETURN
@@ -5950,17 +6027,25 @@ CONTAINS
             plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
             eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
             slope_cap = HUGE(1.0_dp)
-            DO idx = first, last - 1
-               slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv(idx), occ_curv(idx + 1)))
-            END DO
             fit_num = 0.0_dp
             fit_den = 0.0_dp
-            DO idx = first, last
-               fit_num = fit_num + (evals(idx) - eval_center)*(occ_mono(idx) - plateau)
-               fit_den = fit_den + (evals(idx) - eval_center)**2
+            DO idx = first, last - 1
+               gap = ABS(evals(idx + 1) - evals(idx))
+               slope_pair = dense_shared_occ_slope(occ_curv(idx), occ_curv(idx + 1))
+               slope_cap = MIN(slope_cap, slope_pair)
+               allowed_jump = 4.0_dp*slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+               occ_jump = ABS(occ_mono(idx + 1) - occ_mono(idx))
+               IF (gap <= EPSILON(gap)) CYCLE
+               IF (occ_jump > allowed_jump) CYCLE
+               pair_slope = (occ_mono(idx + 1) - occ_mono(idx))/(evals(idx + 1) - evals(idx))
+               pair_slope = MIN(0.0_dp, pair_slope)
+               pair_slope = MAX(pair_slope, -MAX(0.0_dp, slope_pair))
+               pair_weight = gap*gap
+               fit_num = fit_num + pair_weight*pair_slope
+               fit_den = fit_den + pair_weight
             END DO
             physical_slope = 0.0_dp
-            IF (fit_den > EPSILON(fit_den)) physical_slope = MIN(0.0_dp, fit_num/fit_den)
+            IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
             physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
             DO idx = first, last
                occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)

@@ -12552,7 +12552,8 @@ CONTAINS
       INTEGER                                             :: first, idx, last, n
       LOGICAL                                             :: needs_filter
       REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
-                                                            occ_jump, physical_slope, plateau, slope_cap
+                                                            occ_jump, pair_slope, pair_weight, physical_slope, &
+                                                            plateau, slope_cap, slope_pair
 
          n = SIZE(evals)
          IF (n <= 1) RETURN
@@ -12575,19 +12576,25 @@ CONTAINS
                plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
                eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
                slope_cap = HUGE(1.0_dp)
-               DO idx = first, last - 1
-                  slope_cap = MIN(slope_cap, &
-                                  kpoint_ot_shared_occ_slope(occ_curv_channel(idx), &
-                                                             occ_curv_channel(idx + 1)))
-               END DO
                fit_num = 0.0_dp
                fit_den = 0.0_dp
-               DO idx = first, last
-                  fit_num = fit_num + (evals(idx) - eval_center)*(occ_mono(idx) - plateau)
-                  fit_den = fit_den + (evals(idx) - eval_center)**2
+               DO idx = first, last - 1
+                  gap = ABS(evals(idx + 1) - evals(idx))
+                  slope_pair = kpoint_ot_shared_occ_slope(occ_curv_channel(idx), occ_curv_channel(idx + 1))
+                  slope_cap = MIN(slope_cap, slope_pair)
+                  allowed_jump = 4.0_dp*slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+                  occ_jump = ABS(occ_mono(idx + 1) - occ_mono(idx))
+                  IF (gap <= EPSILON(gap)) CYCLE
+                  IF (occ_jump > allowed_jump) CYCLE
+                  pair_slope = (occ_mono(idx + 1) - occ_mono(idx))/(evals(idx + 1) - evals(idx))
+                  pair_slope = MIN(0.0_dp, pair_slope)
+                  pair_slope = MAX(pair_slope, -MAX(0.0_dp, slope_pair))
+                  pair_weight = gap*gap
+                  fit_num = fit_num + pair_weight*pair_slope
+                  fit_den = fit_den + pair_weight
                END DO
                physical_slope = 0.0_dp
-               IF (fit_den > EPSILON(fit_den)) physical_slope = MIN(0.0_dp, fit_num/fit_den)
+               IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
                physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
                DO idx = first, last
                   occ_mono(idx) = plateau + physical_slope*(evals(idx) - eval_center)
