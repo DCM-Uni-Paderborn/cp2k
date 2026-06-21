@@ -130,6 +130,7 @@ MODULE qs_scf_loop_utils
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
+                                        ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_min = 50.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_quality_ema_alpha = 0.30_dp, &
@@ -823,9 +824,6 @@ CONTAINS
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
                                     added_mos_auto_grow=added_mos_auto_grow)
-      IF (.NOT. added_mos_auto_grow) &
-         added_mos_auto_grow = qs_scf_loop_ot_kp_added_mos_auto_tail_grow(kpoints, scf_env, &
-                                                                          scf_control, nspin_ot)
       IF (.NOT. added_mos_auto_grow) THEN
          CALL qs_scf_loop_guard_ot_kp_fermi_window(kpoints, local_ot_env, first_channel, &
                                                    nspin_ot, kp_range, wkp, para_env_inter_kp, &
@@ -835,6 +833,9 @@ CONTAINS
                                           added_mos_auto=scf_control%added_mos_auto, &
                                           added_mos_auto_grow=added_mos_auto_grow)
          END IF
+         IF (.NOT. added_mos_auto_grow) &
+            added_mos_auto_grow = qs_scf_loop_ot_kp_added_mos_auto_tail_grow(kpoints, scf_env, &
+                                                                             scf_control, nspin_ot)
       END IF
       CALL qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp)
       IF (.NOT. added_mos_auto_grow) THEN
@@ -925,11 +926,16 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: nspin_ot
       LOGICAL                                            :: grow
 
-      INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo, trigger_step
-      LOGICAL                                            :: basis_limited, expandable
-      REAL(KIND=dp)                                      :: basis_signal, fractional_weight, grow_limit, max_fractional, &
-                                                            maxocc, occ_tail, weight
+      INTEGER                                            :: edge_start, edge_width, ikpoint, imo, ispin, local_kpoint, &
+                                                            nmo, trigger_step
+      LOGICAL                                            :: active_tail, basis_limited, basis_probe_limited, edge_limited, &
+                                                            expandable, residual_ready
+      REAL(KIND=dp)                                      :: basis_signal, edge_fractional_weight, edge_grow_limit, &
+                                                            fractional_weight, grow_limit, max_edge_fractional, &
+                                                            max_fractional, maxocc, occ_tail, edge_tail_occ_min, &
+                                                            tail_occ_min, weight
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers, wkp
+      TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
 
@@ -940,6 +946,7 @@ CONTAINS
       IF (scf_env%iter_delta <= scf_control%eps_scf) RETURN
       grow_limit = MAX(ot_kp_added_mos_auto_tail_eps_factor*scf_control%eps_scf, &
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
+      edge_grow_limit = MAX(grow_limit, ot_kp_added_mos_auto_edge_probe_factor*SQRT(scf_control%eps_scf))
 
       trigger_step = ot_kp_added_mos_auto_tail_min_steps
       IF (scf_env%iter_count < trigger_step) RETURN
@@ -954,10 +961,11 @@ CONTAINS
       END IF
       CALL para_env_inter_kp%max(basis_signal)
       basis_limited = basis_signal >= ot_kp_added_mos_auto_basis_signal_min
-      IF (scf_env%iter_delta > grow_limit .AND. .NOT. basis_limited) RETURN
 
       expandable = .FALSE.
+      edge_fractional_weight = 0.0_dp
       fractional_weight = 0.0_dp
+      max_edge_fractional = 0.0_dp
       max_fractional = 0.0_dp
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -970,19 +978,48 @@ CONTAINS
             IF (.NOT. ASSOCIATED(occupation_numbers)) CYCLE
             IF (ikpoint < 1 .OR. ikpoint > SIZE(wkp)) CYCLE
             weight = ABS(wkp(ikpoint))
+            edge_width = MAX(1, MIN(nmo, MAX(2, scf_control%added_mos(ispin)/2)))
+            edge_start = MAX(1, nmo - edge_width + 1)
             DO imo = 1, SIZE(occupation_numbers)
                occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
                fractional_weight = fractional_weight + weight*occ_tail
                max_fractional = MAX(max_fractional, occ_tail)
+               IF (imo >= edge_start) THEN
+                  edge_fractional_weight = edge_fractional_weight + weight*occ_tail
+                  max_edge_fractional = MAX(max_edge_fractional, occ_tail)
+               END IF
             END DO
          END DO
       END DO
+      CALL para_env_inter_kp%sum(edge_fractional_weight)
       CALL para_env_inter_kp%sum(fractional_weight)
+      CALL para_env_inter_kp%max(max_edge_fractional)
       CALL para_env_inter_kp%max(max_fractional)
 
+      tail_occ_min = 10.0_dp*MAX(scf_control%smear%eps_fermi_dirac, EPSILON(1.0_dp))
+      edge_tail_occ_min = MAX(ot_kp_fermi_window_min_frac, tail_occ_min)
+      active_tail = fractional_weight > ot_kp_fermi_window_min_frac .OR. max_fractional > tail_occ_min
+      edge_limited = edge_fractional_weight > ot_kp_fermi_window_min_frac .OR. &
+                     max_edge_fractional > edge_tail_occ_min
+      basis_probe_limited = basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
+                            scf_env%iter_delta <= edge_grow_limit
+      residual_ready = scf_env%iter_delta <= grow_limit
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES20.10E3),5(1X,L1))') &
+            " OT k-point ADDED_MOS AUTO tail:", &
+            scf_env%iter_count, scf_env%iter_delta, grow_limit, edge_grow_limit, basis_signal, &
+            fractional_weight, edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, &
+            edge_limited, basis_probe_limited, basis_limited, expandable
+      END IF
+
       IF (.NOT. expandable) RETURN
-      IF (fractional_weight <= ot_kp_fermi_window_min_frac .AND. &
-          max_fractional <= 10.0_dp*MAX(scf_control%smear%eps_fermi_dirac, EPSILON(1.0_dp))) RETURN
+      IF (.NOT. active_tail) RETURN
+      IF (.NOT. residual_ready .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited) THEN
+         IF (.NOT. edge_limited) RETURN
+         IF (scf_env%iter_delta > edge_grow_limit) RETURN
+      END IF
 
       grow = .TRUE.
 
