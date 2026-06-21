@@ -13,6 +13,7 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.25831321160179},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
+                                           {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
@@ -20,7 +21,9 @@
 # Slow/manual ADDED_MOS AUTO tail companion: run
 # Al_kp_ot_added_auto_converge.inp by hand. It is intentionally not listed
 # here, so the default regtest stays cheap while the adaptive AUTO grow path
-# can still be checked against the 1E-6 Mermin path.
+# can still be checked against the 1E-6 Mermin path. Expected final checks:
+# E_total = Mermin = -8.14585274158708 Ha, ADDED_MOS_AUTO = 4, AUTO grows
+# to 8 and 16, and no first/last-band or AUTO-exhausted warning is printed.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.76538616998703},
                                            {matcher="N_kpoints", tol=0.0, ref=1},

@@ -127,6 +127,11 @@ registry["Mermin_free_energy"] = GenericMatcher(
 registry["OT_SCF_convergence"] = GenericMatcher(
     r"^\s*\d+\s+OT\s+\S+\s+\S+\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
 )
+registry["ADDED_MOS_AUTO"] = GenericMatcher(
+    r"SCF smearing: automatically selected ADDED_MOS:\s+([0-9]+)",
+    col=1,
+    regex=True,
+)
 registry["Electronic_entropic_energy"] = GenericMatcher(
     r"Electronic entropic energy:", col=4
 )
