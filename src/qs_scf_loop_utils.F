@@ -11104,14 +11104,48 @@ CONTAINS
                         norm_rotation = DOT_PRODUCT(sol, sol)
                         gdotp = gdot_energy + gdot_rotation
                         normp = norm_energy + norm_rotation
-                        IF (gdotp > 0.0_dp .AND. normp > EPSILON(normp)) THEN
-                           direction_scale = gdotp/MAX(normp, EPSILON(normp))
-                           scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
-                           model_drop = 0.5_dp*direction_scale*gdotp
-                           response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
-                           CALL para_env_inter_kp%max(response_abs_step)
-                           response_weighted_step = direction_scale* &
+                        CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
+                                                            occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                            projector_physical_direct_metric_norm_energy)
+                        projector_physical_direct_metric_norm_energy = &
+                           MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
+                        projector_physical_direct_metric_norm_rotation = &
+                           MAX(0.0_dp, DOT_PRODUCT(sol, MATMUL(projector_physical_direct_schur_vec, sol)))
+                        projector_physical_direct_metric_normp = &
+                           projector_physical_direct_metric_norm_energy + &
+                           projector_physical_direct_metric_norm_rotation
+                        IF (gdotp > 0.0_dp .AND. &
+                            projector_physical_direct_metric_normp > &
+                            EPSILON(projector_physical_direct_metric_normp)) THEN
+                           projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
+                           CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                           projector_physical_direct_unit_weighted_step = &
                               kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                           projector_physical_direct_trust_scale = 1.0_dp
+                           IF (response_trust > EPSILON(response_trust) .AND. &
+                               projector_physical_direct_unit_weighted_step > &
+                               EPSILON(projector_physical_direct_unit_weighted_step)) &
+                              projector_physical_direct_trust_scale = &
+                                 MIN(projector_physical_direct_trust_scale, &
+                                     0.8_dp*response_trust/ &
+                                     projector_physical_direct_unit_weighted_step)
+                           IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                               projector_physical_direct_unit_abs_step > &
+                               EPSILON(projector_physical_direct_unit_abs_step)) &
+                              projector_physical_direct_trust_scale = &
+                                 MIN(projector_physical_direct_trust_scale, &
+                                     0.8_dp*response_abs_trust/ &
+                                     projector_physical_direct_unit_abs_step)
+                           direction_scale = MIN(1.0_dp, projector_physical_direct_trust_scale, &
+                                                 gdotp/MAX(projector_physical_direct_metric_normp, &
+                                                           EPSILON(projector_physical_direct_metric_normp)))
+                           scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
+                           model_drop = direction_scale*gdotp - &
+                                        0.5_dp*direction_scale*direction_scale* &
+                                        projector_physical_direct_metric_normp
+                           model_drop = MAX(0.0_dp, model_drop)
+                           response_abs_step = direction_scale*projector_physical_direct_unit_abs_step
+                           response_weighted_step = direction_scale*projector_physical_direct_unit_weighted_step
                            model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
                            model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
                            model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
@@ -11215,14 +11249,48 @@ CONTAINS
                         norm_rotation = DOT_PRODUCT(sol, sol)
                         gdotp = gdot_energy + gdot_rotation
                         normp = norm_energy + norm_rotation
-                        IF (gdotp > 0.0_dp .AND. normp > EPSILON(normp)) THEN
-                           direction_scale = gdotp/MAX(normp, EPSILON(normp))
-                           scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
-                           model_drop = 0.5_dp*direction_scale*gdotp
-                           response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
-                           CALL para_env_inter_kp%max(response_abs_step)
-                           response_weighted_step = direction_scale* &
+                        CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
+                                                            occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                            projector_physical_direct_metric_norm_energy)
+                        projector_physical_direct_metric_norm_energy = &
+                           MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
+                        projector_physical_direct_metric_norm_rotation = &
+                           MAX(0.0_dp, DOT_PRODUCT(sol, MATMUL(projector_physical_direct_schur_vec, sol)))
+                        projector_physical_direct_metric_normp = &
+                           projector_physical_direct_metric_norm_energy + &
+                           projector_physical_direct_metric_norm_rotation
+                        IF (gdotp > 0.0_dp .AND. &
+                            projector_physical_direct_metric_normp > &
+                            EPSILON(projector_physical_direct_metric_normp)) THEN
+                           projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
+                           CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                           projector_physical_direct_unit_weighted_step = &
                               kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                           projector_physical_direct_trust_scale = 1.0_dp
+                           IF (response_trust > EPSILON(response_trust) .AND. &
+                               projector_physical_direct_unit_weighted_step > &
+                               EPSILON(projector_physical_direct_unit_weighted_step)) &
+                              projector_physical_direct_trust_scale = &
+                                 MIN(projector_physical_direct_trust_scale, &
+                                     0.8_dp*response_trust/ &
+                                     projector_physical_direct_unit_weighted_step)
+                           IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                               projector_physical_direct_unit_abs_step > &
+                               EPSILON(projector_physical_direct_unit_abs_step)) &
+                              projector_physical_direct_trust_scale = &
+                                 MIN(projector_physical_direct_trust_scale, &
+                                     0.8_dp*response_abs_trust/ &
+                                     projector_physical_direct_unit_abs_step)
+                           direction_scale = MIN(1.0_dp, projector_physical_direct_trust_scale, &
+                                                 gdotp/MAX(projector_physical_direct_metric_normp, &
+                                                           EPSILON(projector_physical_direct_metric_normp)))
+                           scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
+                           model_drop = direction_scale*gdotp - &
+                                        0.5_dp*direction_scale*direction_scale* &
+                                        projector_physical_direct_metric_normp
+                           model_drop = MAX(0.0_dp, model_drop)
+                           response_abs_step = direction_scale*projector_physical_direct_unit_abs_step
+                           response_weighted_step = direction_scale*projector_physical_direct_unit_weighted_step
                            model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
                            model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
                            model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
@@ -11334,14 +11402,48 @@ CONTAINS
                            norm_rotation = DOT_PRODUCT(sol, sol)
                            gdotp = gdot_energy + gdot_rotation
                            normp = norm_energy + norm_rotation
-                           IF (gdotp > 0.0_dp .AND. normp > EPSILON(normp)) THEN
-                              direction_scale = gdotp/MAX(normp, EPSILON(normp))
-                              scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
-                              model_drop = 0.5_dp*direction_scale*gdotp
-                              response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
-                              CALL para_env_inter_kp%max(response_abs_step)
-                              response_weighted_step = direction_scale* &
+                           CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
+                                                               occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                               projector_physical_direct_metric_norm_energy)
+                           projector_physical_direct_metric_norm_energy = &
+                              MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
+                           projector_physical_direct_metric_norm_rotation = &
+                              MAX(0.0_dp, DOT_PRODUCT(sol, MATMUL(projector_physical_direct_schur_vec, sol)))
+                           projector_physical_direct_metric_normp = &
+                              projector_physical_direct_metric_norm_energy + &
+                              projector_physical_direct_metric_norm_rotation
+                           IF (gdotp > 0.0_dp .AND. &
+                               projector_physical_direct_metric_normp > &
+                               EPSILON(projector_physical_direct_metric_normp)) THEN
+                              projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
+                              CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                              projector_physical_direct_unit_weighted_step = &
                                  kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                              projector_physical_direct_trust_scale = 1.0_dp
+                              IF (response_trust > EPSILON(response_trust) .AND. &
+                                  projector_physical_direct_unit_weighted_step > &
+                                  EPSILON(projector_physical_direct_unit_weighted_step)) &
+                                 projector_physical_direct_trust_scale = &
+                                    MIN(projector_physical_direct_trust_scale, &
+                                        0.8_dp*response_trust/ &
+                                        projector_physical_direct_unit_weighted_step)
+                              IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                  projector_physical_direct_unit_abs_step > &
+                                  EPSILON(projector_physical_direct_unit_abs_step)) &
+                                 projector_physical_direct_trust_scale = &
+                                    MIN(projector_physical_direct_trust_scale, &
+                                        0.8_dp*response_abs_trust/ &
+                                        projector_physical_direct_unit_abs_step)
+                              direction_scale = MIN(1.0_dp, projector_physical_direct_trust_scale, &
+                                                    gdotp/MAX(projector_physical_direct_metric_normp, &
+                                                              EPSILON(projector_physical_direct_metric_normp)))
+                              scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
+                              model_drop = direction_scale*gdotp - &
+                                           0.5_dp*direction_scale*direction_scale* &
+                                           projector_physical_direct_metric_normp
+                              model_drop = MAX(0.0_dp, model_drop)
+                              response_abs_step = direction_scale*projector_physical_direct_unit_abs_step
+                              response_weighted_step = direction_scale*projector_physical_direct_unit_weighted_step
                               model_gap = direction_scale*MAXVAL(ABS(rx_model - rx_e))
                               model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
                               model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
