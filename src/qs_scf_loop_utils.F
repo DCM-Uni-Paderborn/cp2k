@@ -10104,16 +10104,6 @@ CONTAINS
                      projector_physical_direct_density_model_calibrated_drop* &
                      projector_physical_density_low_curv_fraction
                END IF
-               IF (density_full_model_calibrated_drop > EPSILON(density_full_model_calibrated_drop) .AND. &
-                   density_full_response_weighted_step <= response_trust .AND. &
-                   density_full_response_abs_step <= response_abs_trust) THEN
-                  local_ot_env(1)%schur_projector_density_pending = .TRUE.
-                  local_ot_env(1)%schur_projector_density_drop = &
-                     local_ot_env(1)%schur_projector_density_drop + density_full_model_calibrated_drop
-                  local_ot_env(1)%schur_projector_density_lowcurv = &
-                     local_ot_env(1)%schur_projector_density_lowcurv + &
-                     density_full_model_calibrated_drop*projector_physical_density_low_curv_fraction
-               END IF
                IF (density_descent_model_calibrated_drop > EPSILON(density_descent_model_calibrated_drop) .AND. &
                    density_descent_response_weighted_step <= response_trust .AND. &
                    density_descent_response_abs_step <= response_abs_trust) THEN
