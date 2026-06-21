@@ -3736,9 +3736,10 @@ CONTAINS
                                                             docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_bound_err, active_norm, active_weight, &
-                                                            full_err, full_norm, gauge_leak_err, gauge_norm, &
-                                                            gauge_shift, low_ratio_err, low_weight, occ_curv_max, &
-                                                            occ_sum
+                                                            active_shift, active_sum, fixed_n_leak, full_err, &
+                                                            full_norm, gauge_leak_err, gauge_norm, gauge_shift, &
+                                                            low_ratio_err, low_weight, occ_curv_max, occ_sum, &
+                                                            old_fixed_n_leak
       REAL(KIND=dp), DIMENSION(n)                        :: active_response, full_response, occ_curv, &
                                                             occ_plateau, occ_scale, reference_response, &
                                                             response_shifted, weight_response
@@ -3804,7 +3805,12 @@ CONTAINS
       occ_sum = SUM(occ_curv(:))
       gauge_shift = DOT_PRODUCT(occ_curv(:), full_response(:))/occ_sum
       response_shifted(:) = full_response(:) - gauge_shift
-      active_response(:) = weight_response(:)*response_shifted(:)
+      old_fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), weight_response(:)*response_shifted(:)))/occ_sum
+      active_sum = DOT_PRODUCT(occ_curv(:), weight_response(:))
+      active_shift = DOT_PRODUCT(occ_curv(:)*weight_response(:), full_response(:))/active_sum
+      response_shifted(:) = full_response(:) - active_shift
+      active_response(:) = weight_response(:)*(full_response(:) - active_shift)
+      fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), active_response(:)))/occ_sum
 
       full_err = MAXVAL(ABS(full_response(:) - reference_response(:)))
       active_bound_err = MAXVAL(MAX(0.0_dp, ABS(active_response(:)) - ABS(response_shifted(:))))
@@ -3817,16 +3823,17 @@ CONTAINS
       gauge_leak_err = MAXVAL(ABS(weight_response(:)*0.42_dp))
 
       IF (full_err > tol .OR. active_bound_err > tol .OR. low_ratio_err > tol .OR. &
+          fixed_n_leak > tol .OR. old_fixed_n_leak < active_tol .OR. &
           gauge_norm > tol .OR. gauge_leak_err < active_tol .OR. &
           full_norm < active_tol .OR. active_norm >= full_norm) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/bound/low/gauge/leak/full/active", full_err, active_bound_err, &
-            low_ratio_err, gauge_norm, gauge_leak_err, full_norm, active_norm
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/bound/low/fixed/old/gauge/leak/full/active", full_err, active_bound_err, &
+            low_ratio_err, fixed_n_leak, old_fixed_n_leak, gauge_norm, gauge_leak_err, full_norm, active_norm
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/bound/low/gauge/leak/full/active", full_err, active_bound_err, &
-            low_ratio_err, gauge_norm, gauge_leak_err, full_norm, active_norm
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/bound/low/fixed/old/gauge/leak/full/active", full_err, active_bound_err, &
+            low_ratio_err, fixed_n_leak, old_fixed_n_leak, gauge_norm, gauge_leak_err, full_norm, active_norm
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_response_filter

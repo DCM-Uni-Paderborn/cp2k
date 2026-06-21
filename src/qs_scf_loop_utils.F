@@ -12275,25 +12275,29 @@ CONTAINS
                      density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_weight_column(ie) = active_density_weight
-                     density_occ_curv_sum = density_occ_curv_sum + occ_curv_channel(ie)
+                     density_occ_curv_sum = density_occ_curv_sum + &
+                                            occ_curv_channel(ie)*active_density_weight
                      density_plateau_shift = density_plateau_shift + &
-                                             occ_curv_channel(ie)*density_plateau_column(ie)
+                                             occ_curv_channel(ie)*active_density_weight* &
+                                             density_plateau_column(ie)
                   END IF
                END DO
                IF (density_occ_curv_sum > EPSILON(density_occ_curv_sum)) &
                   density_plateau_shift = density_plateau_shift/density_occ_curv_sum
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
-                     ! Remove the fixed-N energy gauge before applying
-                     ! band-dependent active weights; otherwise a uniform
-                     ! response becomes an artificial density signal.
-                     density_plateau_response = density_plateau_column(ie) - density_plateau_shift
+                     ! Remove the fixed-N energy gauge after the active
+                     ! Fermi-window filter.  The filtered density-response
+                     ! model must remain orthogonal to the fixed-N chemical
+                     ! potential direction.
+                     density_plateau_response = density_weight_column(ie)* &
+                                                (density_plateau_column(ie) - density_plateau_shift)
                      density_response = density_full_column(ie)
                      response_density_full(first_energy + ie - 1, s) = density_response
                      response_density_physical(first_energy + ie - 1, s) = &
-                        density_weight_column(ie)*density_plateau_response
+                        density_plateau_response
                      response_density_plateau(first_energy + ie - 1, s) = &
-                        density_weight_column(ie)*density_plateau_response
+                        density_plateau_response
                      response_occ_physical(first_energy + ie - 1, s) = &
                         response_occ_physical(first_energy + ie - 1, s) - &
                         response_density_physical(first_energy + ie - 1, s)
