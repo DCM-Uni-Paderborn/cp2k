@@ -3761,14 +3761,15 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
                                                             docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_bound_err, active_norm, active_weight, &
-                                                            active_shift, active_sum, fixed_n_leak, full_err, &
-                                                            full_norm, gauge_leak_err, gauge_norm, gauge_shift, &
-                                                            low_ratio_err, low_weight, occ_curv_max, occ_sum, &
-                                                            old_fixed_n_leak
+      REAL(KIND=dp)                                      :: active_bound_err, active_norm, active_plateau_gap, &
+                                                            active_weight, active_shift, active_sum, fixed_n_leak, &
+                                                            full_err, full_norm, gauge_leak_err, gauge_norm, &
+                                                            gauge_shift, low_ratio_err, low_weight, occ_curv_max, &
+                                                            occ_sum, old_fixed_n_leak, plateau_fixed_n_leak, &
+                                                            plateau_norm, plateau_shift
       REAL(KIND=dp), DIMENSION(n)                        :: active_response, full_response, occ_curv, &
-                                                            occ_plateau, occ_scale, reference_response, &
-                                                            response_shifted, weight_response
+                                                            occ_plateau, occ_scale, plateau_response, &
+                                                            reference_response, response_shifted, weight_response
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -3829,19 +3830,23 @@ CONTAINS
          weight_response(i) = active_weight
       END DO
       occ_sum = SUM(occ_curv(:))
-      gauge_shift = DOT_PRODUCT(occ_curv(:), full_response(:))/occ_sum
-      response_shifted(:) = full_response(:) - gauge_shift
+      plateau_shift = DOT_PRODUCT(occ_curv(:), full_response(:))/occ_sum
+      plateau_response(:) = full_response(:) - plateau_shift
+      response_shifted(:) = plateau_response(:)
       old_fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), weight_response(:)*response_shifted(:)))/occ_sum
       active_sum = DOT_PRODUCT(occ_curv(:), weight_response(:))
       active_shift = DOT_PRODUCT(occ_curv(:)*weight_response(:), full_response(:))/active_sum
       response_shifted(:) = full_response(:) - active_shift
       active_response(:) = weight_response(:)*(full_response(:) - active_shift)
+      plateau_fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), plateau_response(:)))/occ_sum
       fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), active_response(:)))/occ_sum
 
       full_err = MAXVAL(ABS(full_response(:) - reference_response(:)))
       active_bound_err = MAXVAL(MAX(0.0_dp, ABS(active_response(:)) - ABS(response_shifted(:))))
       full_norm = MAXVAL(ABS(response_shifted(:)))
+      plateau_norm = MAXVAL(ABS(plateau_response(:)))
       active_norm = MAXVAL(ABS(active_response(:)))
+      active_plateau_gap = MAXVAL(ABS(plateau_response(:) - active_response(:)))
       low_weight = SQRT(occ_curv(n)/occ_curv_max)
       low_ratio_err = ABS(active_response(n)/response_shifted(n) - low_weight)
       gauge_shift = 0.42_dp
@@ -3849,17 +3854,22 @@ CONTAINS
       gauge_leak_err = MAXVAL(ABS(weight_response(:)*0.42_dp))
 
       IF (full_err > tol .OR. active_bound_err > tol .OR. low_ratio_err > tol .OR. &
-          fixed_n_leak > tol .OR. old_fixed_n_leak < active_tol .OR. &
+          fixed_n_leak > tol .OR. plateau_fixed_n_leak > tol .OR. old_fixed_n_leak < active_tol .OR. &
           gauge_norm > tol .OR. gauge_leak_err < active_tol .OR. &
-          full_norm < active_tol .OR. active_norm >= full_norm) THEN
+          full_norm < active_tol .OR. active_norm >= full_norm .OR. &
+          plateau_norm <= active_norm .OR. active_plateau_gap < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
-            "failed with error/bound/low/fixed/old/gauge/leak/full/active", full_err, active_bound_err, &
-            low_ratio_err, fixed_n_leak, old_fixed_n_leak, gauge_norm, gauge_leak_err, full_norm, active_norm
+         WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
+            "failed with error/bound/low/fixed/pfixed/old/gauge/leak/full/plateau/active/gap", &
+            full_err, active_bound_err, low_ratio_err, fixed_n_leak, plateau_fixed_n_leak, &
+            old_fixed_n_leak, gauge_norm, gauge_leak_err, full_norm, plateau_norm, active_norm, &
+            active_plateau_gap
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
-            "OK with error/bound/low/fixed/old/gauge/leak/full/active", full_err, active_bound_err, &
-            low_ratio_err, fixed_n_leak, old_fixed_n_leak, gauge_norm, gauge_leak_err, full_norm, active_norm
+         WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
+            "OK with error/bound/low/fixed/pfixed/old/gauge/leak/full/plateau/active/gap", &
+            full_err, active_bound_err, low_ratio_err, fixed_n_leak, plateau_fixed_n_leak, &
+            old_fixed_n_leak, gauge_norm, gauge_leak_err, full_norm, plateau_norm, active_norm, &
+            active_plateau_gap
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_response_filter

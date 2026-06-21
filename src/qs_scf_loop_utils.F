@@ -12767,7 +12767,9 @@ CONTAINS
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp)                                      :: active_density_weight, channel_occ_curv_max, &
-                                                            density_occ_curv_sum, density_plateau_shift, &
+                                                            density_occ_curv_sum, density_occ_curv_full_sum, &
+                                                            density_plateau_full_response, &
+                                                            density_plateau_full_shift, density_plateau_shift, &
                                                             density_plateau_response, density_response, &
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
@@ -12919,6 +12921,8 @@ CONTAINS
                density_plateau_column(:) = 0.0_dp
                density_weight_column(:) = 0.0_dp
                density_occ_curv_sum = 0.0_dp
+               density_occ_curv_full_sum = 0.0_dp
+               density_plateau_full_shift = 0.0_dp
                density_plateau_shift = 0.0_dp
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
@@ -12936,6 +12940,11 @@ CONTAINS
                      density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_weight_column(ie) = active_density_weight
+                     density_occ_curv_full_sum = density_occ_curv_full_sum + &
+                                                 occ_curv_channel(ie)
+                     density_plateau_full_shift = density_plateau_full_shift + &
+                                                  occ_curv_channel(ie)* &
+                                                  density_plateau_column(ie)
                      density_occ_curv_sum = density_occ_curv_sum + &
                                             occ_curv_channel(ie)*active_density_weight
                      density_plateau_shift = density_plateau_shift + &
@@ -12943,6 +12952,8 @@ CONTAINS
                                              density_plateau_column(ie)
                   END IF
                END DO
+               IF (density_occ_curv_full_sum > EPSILON(density_occ_curv_full_sum)) &
+                  density_plateau_full_shift = density_plateau_full_shift/density_occ_curv_full_sum
                IF (density_occ_curv_sum > EPSILON(density_occ_curv_sum)) &
                   density_plateau_shift = density_plateau_shift/density_occ_curv_sum
                DO ie = 1, nmo
@@ -12953,6 +12964,8 @@ CONTAINS
                      ! potential direction.
                      density_plateau_response = density_weight_column(ie)* &
                                                 (density_plateau_column(ie) - density_plateau_shift)
+                     density_plateau_full_response = density_plateau_column(ie) - &
+                                                     density_plateau_full_shift
                      density_response = density_full_column(ie)
                      IF (compute_density_full_audit) &
                         response_density_full_audit(first_energy + ie - 1, s) = density_response
@@ -12961,7 +12974,7 @@ CONTAINS
                         response_density_physical(first_energy + ie - 1, s) = &
                            density_plateau_response
                         response_density_plateau(first_energy + ie - 1, s) = &
-                           density_plateau_response
+                           density_plateau_full_response
                         response_occ_physical(first_energy + ie - 1, s) = &
                            response_occ_physical(first_energy + ie - 1, s) - &
                            response_density_physical(first_energy + ie - 1, s)
