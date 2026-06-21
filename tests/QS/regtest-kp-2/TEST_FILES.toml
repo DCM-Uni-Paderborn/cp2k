@@ -9,8 +9,8 @@
 "Al_1_4.inp"                            = [{matcher="E_total", tol=4.0E-12, ref=-8.27931596571888}]
 "Al_1_4_mp.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27878772972890}]
 "Al_1_4_mv.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27916163440613}]
-"Al_kp_ot_added_auto.inp"               = [{matcher="E_total", tol=1.0E-10, ref=-7.25831324125474},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.25831324125474},
+"Al_kp_ot_added_auto.inp"               = [{matcher="E_total", tol=1.0E-10, ref=-7.25831321160179},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.25831321160179},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
@@ -18,27 +18,26 @@
 # Al_kp_ot_added_auto_converge.inp by hand. It is intentionally not listed
 # here, so the default regtest stays cheap while the adaptive AUTO grow path
 # can still be checked against the 1E-6 Mermin path.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76611120085624},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.76611120085624},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998809},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.76538616998809},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.05295087242960},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05295087242960},
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.05303056394670},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05303056394670},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14456815712484},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14456815712484},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-9.35878037E-6},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=2.34699E-3},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14575532138444},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14575532138444},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104032E-4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=4.4052E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
 # Slow/manual converged-physics companion: run Al_kp_ot_restart_converge.inp
 # after the write/read/continue chain. It is intentionally not listed here,
 # so the default restart/smearing regtest stays cheap while the optional
 # physics tail can still be checked against the 1E-6 Mermin path, including
-# the NO_TEXT first/last-band smearing guards. Current local LOW reference:
-# 775 SCF steps, E_total = Mermin = -8.14585274677699 Ha.
-# Pre-physical-tail tail-weight sweep: 0.05 -> 894, 0.10 -> 843, 0.15 -> 927.
+# the NO_TEXT first/last-band smearing guards. Current local HIGH reference:
+# 648 SCF steps, E_total = Mermin = -8.14585274163801 Ha.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]

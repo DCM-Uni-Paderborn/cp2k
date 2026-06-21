@@ -6,7 +6,7 @@
 ! 79 restarted OT steps, then convergence in 28 restarted OT steps,
 ! E_total = Mermin = -8.14585274158705 Ha, with no first/last-band warnings.
 &GLOBAL
-  PRINT_LEVEL LOW
+  PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto
   RUN_TYPE ENERGY
 &END GLOBAL
