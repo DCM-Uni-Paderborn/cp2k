@@ -8292,9 +8292,12 @@ CONTAINS
                                              projector_physical_direct_density_gdotp = &
                                                 projector_physical_direct_density_gdot_energy + &
                                                 projector_physical_direct_density_gdot_rotation
+                                             CALL kpoint_ot_mixed_projected_term(projector_physical_direct_density_z_e, &
+                                                projector_physical_direct_density_z_e, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                projector_physical_direct_density_norm_energy)
                                              projector_physical_direct_density_norm_energy = &
-                                                DOT_PRODUCT(projector_physical_direct_density_z_e, &
-                                                            projector_physical_direct_density_z_e)
+                                                MAX(0.0_dp, projector_physical_direct_density_norm_energy)
                                              projector_physical_direct_density_norm_rotation = &
                                                 DOT_PRODUCT(projector_physical_direct_sol, projector_physical_direct_sol)
                                              projector_physical_direct_density_normp = &
@@ -8415,7 +8418,10 @@ CONTAINS
                                                 density_full_gdot_energy = DOT_PRODUCT(grad_e, density_full_z_e)
                                                 density_full_gdot_rotation = DOT_PRODUCT(grad_rot, density_full_sol)
                                                 density_full_gdotp = density_full_gdot_energy + density_full_gdot_rotation
-                                                density_full_norm_energy = DOT_PRODUCT(density_full_z_e, density_full_z_e)
+                                                CALL kpoint_ot_mixed_projected_term(density_full_z_e, &
+                                                   density_full_z_e, occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                   channel_nmo, e_offset, density_full_norm_energy)
+                                                density_full_norm_energy = MAX(0.0_dp, density_full_norm_energy)
                                                 density_full_norm_rotation = DOT_PRODUCT(density_full_sol, density_full_sol)
                                                 density_full_normp = density_full_norm_energy + density_full_norm_rotation
                                              END IF
@@ -8515,8 +8521,10 @@ CONTAINS
                                                 DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
                                              density_descent_gdotp = density_descent_gdot_energy + &
                                                                      density_descent_gdot_rotation
-                                             density_descent_norm_energy = &
-                                                DOT_PRODUCT(density_descent_z_e, density_descent_z_e)
+                                             CALL kpoint_ot_mixed_projected_term(density_descent_z_e, &
+                                                density_descent_z_e, occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                channel_nmo, e_offset, density_descent_norm_energy)
+                                             density_descent_norm_energy = MAX(0.0_dp, density_descent_norm_energy)
                                              density_descent_norm_rotation = &
                                                 DOT_PRODUCT(projector_physical_direct_sol, &
                                                             projector_physical_direct_sol)
@@ -8649,8 +8657,10 @@ CONTAINS
                                                                                          projector_physical_direct_sol)
                                              density_plateau_gdotp = density_plateau_gdot_energy + &
                                                                      density_plateau_gdot_rotation
-                                             density_plateau_norm_energy = DOT_PRODUCT(density_plateau_z_e, &
-                                                                                       density_plateau_z_e)
+                                             CALL kpoint_ot_mixed_projected_term(density_plateau_z_e, &
+                                                density_plateau_z_e, occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                channel_nmo, e_offset, density_plateau_norm_energy)
+                                             density_plateau_norm_energy = MAX(0.0_dp, density_plateau_norm_energy)
                                              density_plateau_norm_rotation = &
                                                 DOT_PRODUCT(projector_physical_direct_sol, &
                                                             projector_physical_direct_sol)

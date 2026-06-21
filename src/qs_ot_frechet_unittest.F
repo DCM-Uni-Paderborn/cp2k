@@ -114,6 +114,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density metric-descent recovery", 5.0E-13_dp, nfail)
    CALL check_projector_density_mixed_metric_descent_recovery( &
       "complex projector density mixed-metric descent recovery", 5.0E-13_dp, nfail)
+   CALL check_projector_density_mixed_metric_coupled_schur( &
+      "complex projector density mixed-metric coupled Schur", 5.0E-13_dp, nfail)
    CALL check_projector_density_metric_coupled_schur( &
       "complex projector density metric-coupled Schur", 5.0E-13_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
@@ -4141,6 +4143,114 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_mixed_metric_descent_recovery
+
+! **************************************************************************************************
+!> \brief Hidden density-gap response must enter the coupled mixed Mermin Schur curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_mixed_metric_coupled_schur(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nrot = 2, nchannel = 2
+
+      INTEGER                                            :: info, r, s
+      INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
+      INTEGER, DIMENSION(nrot)                           :: ipiv
+      REAL(KIND=dp)                                      :: blind_coeff, blind_denom, blind_gdot, curvature_gap, &
+                                                            drop_active, drop_full, drop_gap, err, metric_coeff, &
+                                                            metric_cross, metric_denom, metric_term, rhs_gap, &
+                                                            solution_gap
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, projected, tether_curv
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_gap, response_active, response_full, seed_gap
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_active, rhs_full, sol_active, sol_full
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_base, schur_active, schur_fact, schur_full
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.045_dp, 0.026_dp, 0.018_dp, 0.010_dp, 0.004_dp, 0.003_dp]
+      tether_curv(:) = [0.008_dp, 0.012_dp, 0.010_dp, 0.006_dp, 0.009_dp, 0.005_dp]
+      grad_e(:) = [0.33_dp, -0.23_dp, 0.13_dp, -0.07_dp, 0.03_dp, -0.015_dp]
+      grad_rot(:) = [0.12_dp, -0.09_dp]
+      response_active(:, 1) = [0.16_dp, -0.09_dp, 0.05_dp, -0.03_dp, 0.015_dp, -0.008_dp]
+      response_active(:, 2) = [-0.07_dp, 0.12_dp, -0.04_dp, 0.08_dp, -0.02_dp, 0.01_dp]
+      seed_gap(:, 1) = 3.0_dp*[0.05_dp, 0.14_dp, -0.09_dp, 0.03_dp, -0.02_dp, 0.012_dp]
+      seed_gap(:, 2) = 3.0_dp*[-0.02_dp, 0.08_dp, 0.11_dp, -0.06_dp, 0.04_dp, -0.03_dp]
+      rot_base(:, :) = RESHAPE([0.72_dp, 0.05_dp, &
+                                0.05_dp, 0.68_dp], [nrot, nrot])
+
+      density_gap(:, :) = seed_gap(:, :)
+      DO s = 1, nrot
+         density_gap(:, s) = density_gap(:, s) - &
+            DOT_PRODUCT(grad_e(:), density_gap(:, s))/DOT_PRODUCT(grad_e(:), grad_e(:))*grad_e(:)
+      END DO
+      response_full(:, :) = response_active(:, :) + density_gap(:, :)
+
+      schur_active(:, :) = rot_base(:, :)
+      schur_full(:, :) = rot_base(:, :)
+      DO s = 1, nrot
+         DO r = 1, nrot
+            CALL dense_projected_mixed_metric(response_active(:, r), response_active(:, s), occ_curv, &
+                                              tether_curv, channel_nmo, e_offset, metric_term)
+            schur_active(r, s) = schur_active(r, s) - metric_term
+            CALL dense_projected_mixed_metric(response_full(:, r), response_full(:, s), occ_curv, &
+                                              tether_curv, channel_nmo, e_offset, metric_term)
+            schur_full(r, s) = schur_full(r, s) - metric_term
+         END DO
+      END DO
+
+      rhs_active(:) = grad_rot(:) + MATMUL(TRANSPOSE(response_active), grad_e)
+      rhs_full(:) = grad_rot(:) + MATMUL(TRANSPOSE(response_full), grad_e)
+      CALL dense_project_descent_response(density_gap(:, 1), response_active(:, 1), grad_e, projected, &
+                                          blind_coeff, blind_gdot, blind_denom)
+      CALL dense_projected_mixed_metric(density_gap(:, 1), response_active(:, 1), occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, metric_cross)
+      CALL dense_projected_mixed_metric(response_active(:, 1), response_active(:, 1), occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, metric_denom)
+      metric_coeff = metric_cross/MAX(metric_denom, EPSILON(metric_denom))
+
+      sol_active(:) = rhs_active(:)
+      schur_fact(:, :) = schur_active(:, :)
+      CALL dgesv(nrot, 1, schur_fact, nrot, ipiv, sol_active, nrot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in active dgesv", info
+         RETURN
+      END IF
+
+      sol_full(:) = rhs_full(:)
+      schur_fact(:, :) = schur_full(:, :)
+      CALL dgesv(nrot, 1, schur_fact, nrot, ipiv, sol_full, nrot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in full dgesv", info
+         RETURN
+      END IF
+
+      rhs_gap = MAXVAL(ABS(rhs_full(:) - rhs_active(:)))
+      curvature_gap = MAXVAL(ABS(schur_full(:, :) - schur_active(:, :)))
+      solution_gap = MAXVAL(ABS(sol_full(:) - sol_active(:)))
+      drop_active = 0.5_dp*DOT_PRODUCT(rhs_active(:), sol_active(:))
+      drop_full = 0.5_dp*DOT_PRODUCT(rhs_full(:), sol_full(:))
+      drop_gap = ABS(drop_full - drop_active)
+      err = rhs_gap
+      err = MAX(err, MAXVAL(ABS(projected(:))))
+      err = MAX(err, ABS(blind_gdot), ABS(blind_coeff))
+
+      IF (err > tol .OR. curvature_gap <= 1.0E-4_dp .OR. solution_gap <= 1.0E-4_dp .OR. &
+          drop_gap <= 1.0E-5_dp .OR. metric_coeff <= 1.0E-2_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/curv/step/drop/mcoeff", err, curvature_gap, solution_gap, drop_gap, metric_coeff
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/curv/step/drop/mcoeff", err, curvature_gap, solution_gap, drop_gap, metric_coeff
+      END IF
+
+   END SUBROUTINE check_projector_density_mixed_metric_coupled_schur
 
 ! **************************************************************************************************
 !> \brief Hidden density-gap response must enter the coupled fixed-N Schur curvature.
