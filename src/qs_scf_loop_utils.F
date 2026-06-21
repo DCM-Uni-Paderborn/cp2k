@@ -152,6 +152,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
+                                        ot_kp_schur_projector_trace_active_max_weight = 9.5E-1_dp, &
                                         ot_kp_schur_projector_density_full_min_drop = 1.0E-12_dp, &
                                         ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
                                         ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
@@ -7725,8 +7726,14 @@ CONTAINS
                                              0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
                                           IF (projector_physical_direct_mixed_enabled) THEN
                                              projector_physical_direct_mixed_weight = &
-                                                MIN(0.75_dp, MAX(0.0_dp, &
-                                                    local_ot_env(1)%schur_projector_mixed_direct_weight_ema))
+                                                kpoint_ot_trace_active_mix_weight( &
+                                                   local_ot_env(1)%schur_projector_physical_trace_raw_ema, &
+                                                   local_ot_env(1)%schur_projector_physical_trace_active_ema, &
+                                                   local_ot_env(1)%schur_projector_mixed_direct_weight_ema, &
+                                                   local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
+                                                   local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
+                                                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                                                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples)
                                              projector_physical_direct_delta(:, :) = &
                                                 (1.0_dp - projector_physical_direct_mixed_weight)* &
                                                 projector_physical_direct_base_delta(:, :) + &
@@ -11992,6 +11999,44 @@ CONTAINS
          component_scale = SQRT(MIN(1.0_dp, quality_ratio))
 
       END FUNCTION kpoint_ot_trace_diag_component_scale
+
+!> \brief active-response Direct blend from accepted raw/active trace separation
+!> \param raw_trace_ema accepted raw finite Projector trace contribution
+!> \param active_trace_ema accepted active-window trace contribution
+!> \param history_weight accepted active-mix weight from the line-search shadow
+!> \param history_quality accepted-drop quality of the active-mix shadow
+!> \param samples number of accepted active-mix shadow samples
+!> \param selected_quality accepted-drop quality of actually selected Direct steps
+!> \param selected_samples number of actually selected Direct samples
+!> \return Direct Hessian active-window blend weight
+      FUNCTION kpoint_ot_trace_active_mix_weight(raw_trace_ema, active_trace_ema, history_weight, &
+                                                 history_quality, samples, selected_quality, &
+                                                 selected_samples) RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN)                         :: raw_trace_ema, active_trace_ema, &
+                                                            history_weight, history_quality, selected_quality
+      INTEGER, INTENT(IN)                               :: samples, selected_samples
+      REAL(KIND=dp)                                     :: active_fraction, gauge_fraction, mix_weight, &
+                                                            raw_abs, quality_weight
+
+         mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight))
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (history_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (selected_samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (selected_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         raw_abs = ABS(raw_trace_ema)
+         IF (raw_abs <= EPSILON(raw_abs)) RETURN
+
+         active_fraction = ABS(active_trace_ema)/raw_abs
+         active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+         gauge_fraction = 1.0_dp - active_fraction
+         quality_weight = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+
+         mix_weight = MAX(mix_weight, &
+                          ot_kp_schur_projector_trace_active_max_weight*gauge_fraction*quality_weight)
+         mix_weight = MIN(ot_kp_schur_projector_trace_active_max_weight, MAX(0.0_dp, mix_weight))
+
+      END FUNCTION kpoint_ot_trace_active_mix_weight
 
 !> \brief accepted-drop calibrated finite Projector-Hessian weight for the low residual tail
 !> \param residual_delta current OT residual

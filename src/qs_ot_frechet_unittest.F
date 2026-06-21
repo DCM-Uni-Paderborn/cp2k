@@ -134,6 +134,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-13_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
+                                                5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
@@ -5159,6 +5161,60 @@ CONTAINS
    END SUBROUTINE check_projector_direct_trace_compensation
 
 ! **************************************************************************************************
+!> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_active_mix_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: active_trace = -4.0E-3_dp, &
+                                                            history_weight = 0.25_dp, &
+                                                            poor_quality = 0.05_dp, &
+                                                            quality = 1.20_dp, raw_trace = -1.0_dp
+
+      REAL(KIND=dp)                                      :: err, expected_gauge, gauge_mix, mature_mix, &
+                                                            no_raw_mix, poor_mix, saturated_mix, selected_poor_mix, &
+                                                            young_mix
+
+      young_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
+                                                quality, 2, quality, 16)
+      poor_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
+                                               poor_quality, 16, quality, 16)
+      selected_poor_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
+                                                        quality, 16, poor_quality, 16)
+      gauge_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
+                                                quality, 16, quality, 16)
+      mature_mix = dense_trace_active_mix_weight(raw_trace, raw_trace, history_weight, &
+                                                 quality, 16, quality, 16)
+      saturated_mix = dense_trace_active_mix_weight(raw_trace, 0.0_dp, 0.90_dp, &
+                                                    quality, 16, quality, 16)
+      no_raw_mix = dense_trace_active_mix_weight(0.0_dp, active_trace, history_weight, &
+                                                quality, 16, quality, 16)
+
+      expected_gauge = 0.95_dp*(1.0_dp - ABS(active_trace/raw_trace))
+      err = ABS(young_mix - history_weight)
+      err = MAX(err, ABS(poor_mix - history_weight))
+      err = MAX(err, ABS(selected_poor_mix - history_weight))
+      err = MAX(err, ABS(gauge_mix - expected_gauge))
+      err = MAX(err, ABS(mature_mix - history_weight))
+      err = MAX(err, ABS(saturated_mix - 0.95_dp))
+      err = MAX(err, ABS(no_raw_mix - history_weight))
+
+      IF (err > tol .OR. gauge_mix <= history_weight .OR. saturated_mix > 0.95_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/poor/selpoor/gauge/mature/saturated", err, young_mix, poor_mix, &
+            selected_poor_mix, gauge_mix, mature_mix, saturated_mix
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/poor/selpoor/gauge/mature/saturated", err, young_mix, poor_mix, &
+            selected_poor_mix, gauge_mix, mature_mix, saturated_mix
+      END IF
+
+   END SUBROUTINE check_projector_trace_active_mix_weight
+
+! **************************************************************************************************
 !> \brief Check that Direct trace mismatch contributes even when projected response vectors match.
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_trace_model_gap(label, tol, nfail)
@@ -5511,6 +5567,37 @@ CONTAINS
          compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - positive_reference))
 
    END FUNCTION dense_direct_trace_compensation
+
+! **************************************************************************************************
+!> \brief Dense mirror of the trace-active Direct Hessian blend weight.
+! **************************************************************************************************
+   FUNCTION dense_trace_active_mix_weight(raw_trace_ema, active_trace_ema, history_weight, &
+                                          history_quality, samples, selected_quality, &
+                                          selected_samples) RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_trace_ema, active_trace_ema, &
+                                                            history_weight, history_quality, selected_quality
+      INTEGER, INTENT(IN)                                :: samples, selected_samples
+      REAL(KIND=dp)                                      :: active_fraction, gauge_fraction, mix_weight, &
+                                                            raw_abs, quality_weight
+
+      mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight))
+      IF (samples < 8) RETURN
+      IF (history_quality < 0.10_dp) RETURN
+      IF (selected_samples < 8) RETURN
+      IF (selected_quality < 0.10_dp) RETURN
+
+      raw_abs = ABS(raw_trace_ema)
+      IF (raw_abs <= EPSILON(raw_abs)) RETURN
+
+      active_fraction = ABS(active_trace_ema)/raw_abs
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      gauge_fraction = 1.0_dp - active_fraction
+      quality_weight = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+
+      mix_weight = MAX(mix_weight, 0.95_dp*gauge_fraction*quality_weight)
+      mix_weight = MIN(0.95_dp, MAX(0.0_dp, mix_weight))
+
+   END FUNCTION dense_trace_active_mix_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct trace model-gap term.
