@@ -7800,7 +7800,9 @@ CONTAINS
                                              projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        END IF
                                        projector_physical_direct_base_delta(:, :) = projector_physical_direct_delta(:, :)
-                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                       ! Promote mixed active/physical curvature from accepted-drop history, not
+                                       ! from an absolute residual tail threshold.
+                                       IF (projector_physical_direct_promoted .AND. &
                                            local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
                                            ot_kp_schur_projector_response_min_samples .AND. &
                                            local_ot_env(1)%schur_projector_mixed_direct_weight_ema > &
@@ -7814,13 +7816,25 @@ CONTAINS
                                                 ot_kp_schur_projector_response_min_samples, 0.0_dp, 0.0_dp, &
                                                 ot_kp_schur_projector_response_quality_max_ratio)
                                           projector_physical_direct_mixed_enabled = &
-                                             projector_physical_direct_mixed_quality >= 1.0_dp .AND. &
+                                             projector_physical_direct_mixed_quality >= &
+                                             ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality_ema >= &
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality >= &
                                              0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
                                           IF (projector_physical_direct_mixed_enabled) THEN
-                                             projector_physical_direct_mixed_weight = &
+                                             ! The accepted mixed-Direct shadow weight is the
+                                             ! conservative production baseline.  Selected-Direct
+                                             ! trace separation may raise it, but lack of selected
+                                             ! samples must not create a circular no-mix state.
+                                             projector_physical_direct_mixed_weight = MIN( &
+                                                ot_kp_schur_projector_trace_active_max_weight, &
+                                                MAX(0.0_dp, &
+                                                    local_ot_env(1)%schur_projector_mixed_direct_weight_ema)* &
+                                                MIN(1.0_dp, MAX(0.0_dp, &
+                                                    projector_physical_direct_mixed_quality)))
+                                             projector_physical_direct_mixed_weight = MAX( &
+                                                projector_physical_direct_mixed_weight, &
                                                 kpoint_ot_trace_active_mix_weight( &
                                                    local_ot_env(1)%schur_projector_physical_trace_raw_ema, &
                                                    local_ot_env(1)%schur_projector_physical_trace_active_ema, &
@@ -7828,7 +7842,7 @@ CONTAINS
                                                    local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
                                                    local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
                                                    local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
-                                                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples)
+                                                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples))
                                              projector_physical_direct_delta(:, :) = &
                                                 (1.0_dp - projector_physical_direct_mixed_weight)* &
                                                 projector_physical_direct_base_delta(:, :) + &

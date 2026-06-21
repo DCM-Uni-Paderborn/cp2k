@@ -5432,7 +5432,7 @@ CONTAINS
 
       REAL(KIND=dp)                                      :: err, expected_gauge, gauge_mix, mature_mix, &
                                                             no_raw_mix, poor_mix, saturated_mix, selected_poor_mix, &
-                                                            young_mix
+                                                            shadow_only_mix, young_mix
 
       young_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
                                                 quality, 2, quality, 16)
@@ -5440,6 +5440,8 @@ CONTAINS
                                                poor_quality, 16, quality, 16)
       selected_poor_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
                                                         quality, 16, poor_quality, 16)
+      shadow_only_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
+                                                      quality, 16, 0.0_dp, 0)
       gauge_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
                                                 quality, 16, quality, 16)
       mature_mix = dense_trace_active_mix_weight(raw_trace, raw_trace, history_weight, &
@@ -5453,6 +5455,7 @@ CONTAINS
       err = ABS(young_mix - history_weight)
       err = MAX(err, ABS(poor_mix - history_weight))
       err = MAX(err, ABS(selected_poor_mix - history_weight))
+      err = MAX(err, ABS(shadow_only_mix - history_weight))
       err = MAX(err, ABS(gauge_mix - expected_gauge))
       err = MAX(err, ABS(mature_mix - history_weight))
       err = MAX(err, ABS(saturated_mix - 0.95_dp))
