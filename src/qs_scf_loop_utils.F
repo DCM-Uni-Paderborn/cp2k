@@ -5063,7 +5063,7 @@ CONTAINS
                                                             z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
                                                             energy_cross, energy_cross_density, energy_cross_density_full, &
-                                                            energy_cross_density_full_audit, &
+                                                            energy_cross_density_full_audit, energy_cross_density_plateau, &
                                                             energy_cross_physical, &
                                                             energy_cross_raw, energy_hessian, response_coupled, response_exact, &
                                                             response_density_exact, response_density_physical, &
@@ -5217,7 +5217,7 @@ CONTAINS
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
                    energy_cross_density_full(ne, nrot), &
-                   energy_cross_density_full_audit(ne, nrot), &
+                   energy_cross_density_full_audit(ne, nrot), energy_cross_density_plateau(ne, nrot), &
                    energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
                    energy_hessian(ne, ne), response(ne, nrot), response_coupled(ne, nrot), &
                    response_density_exact(ne, nrot), response_density_physical(ne, nrot), &
@@ -5300,6 +5300,7 @@ CONTAINS
          energy_cross_density(:, :) = 0.0_dp
          energy_cross_density_full(:, :) = 0.0_dp
          energy_cross_density_full_audit(:, :) = 0.0_dp
+         energy_cross_density_plateau(:, :) = 0.0_dp
          energy_cross_physical(:, :) = 0.0_dp
          energy_cross_raw(:, :) = 0.0_dp
          energy_hessian(:, :) = 0.0_dp
@@ -6030,7 +6031,7 @@ CONTAINS
                                     var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_density_full, &
-                        energy_cross_density_full_audit, &
+                        energy_cross_density_full_audit, energy_cross_density_plateau, &
                         energy_cross_physical, energy_cross_raw, &
                         energy_hessian, response, response_coupled, response_density_exact, &
                         response_density_full, response_density_full_audit, &
@@ -6231,7 +6232,7 @@ CONTAINS
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_plateau, &
                                                           0.0_dp*response_density_plateau, 0.0_dp*grad_e, &
                                                           channel_nmo, e_offset, energy_hessian, &
-                                                          energy_cross_density, response_density_plateau_exact, &
+                                                          energy_cross_density_plateau, response_density_plateau_exact, &
                                                           z_density_plateau_trial, ipiv_energy, &
                                                           exact_density_plateau_response_ready, energy_gauge_weight)
          END IF
@@ -6480,27 +6481,31 @@ CONTAINS
          physical_response_gap_avg = physical_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
          CALL para_env_inter_kp%max(projector_response_gap_max)
          CALL para_env_inter_kp%max(physical_response_gap_max)
-         IF (exact_density_response_ready .AND. exact_density_plateau_response_ready) THEN
+         density_plateau_exact_gap_avg = 0.0_dp
+         density_plateau_exact_gap_max = 0.0_dp
+         density_plateau_raw_gap_avg = 0.0_dp
+         density_plateau_raw_gap_max = 0.0_dp
+         IF (exact_density_response_ready .AND. exact_density_full_response_ready) THEN
             DO r = 1, nrot
                physical_response_gap_norm = &
-                  DOT_PRODUCT(occ_curv(:)*(response_density_plateau(:, r) - response_density_physical(:, r)), &
-                              response_density_plateau(:, r) - response_density_physical(:, r))
+                  DOT_PRODUCT(occ_curv(:)*(response_density_full(:, r) - response_density_physical(:, r)), &
+                              response_density_full(:, r) - response_density_physical(:, r))
                CALL para_env_inter_kp%sum(physical_response_gap_norm)
                IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
                   density_plateau_raw_gap_avg = density_plateau_raw_gap_avg + &
                      SQRT(MAX(0.0_dp, physical_response_gap_norm/occ_curv_projection_sum))
                density_plateau_raw_gap_max = MAX(density_plateau_raw_gap_max, &
-                                                  MAXVAL(ABS(response_density_plateau(:, r) - &
+                                                  MAXVAL(ABS(response_density_full(:, r) - &
                                                              response_density_physical(:, r))))
                physical_response_gap_norm = &
-                  DOT_PRODUCT(curv(:)*(response_density_plateau_exact(:, r) - response_density_exact(:, r)), &
-                              response_density_plateau_exact(:, r) - response_density_exact(:, r))
+                  DOT_PRODUCT(curv(:)*(response_density_full_exact(:, r) - response_density_exact(:, r)), &
+                              response_density_full_exact(:, r) - response_density_exact(:, r))
                CALL para_env_inter_kp%sum(physical_response_gap_norm)
                IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                   density_plateau_exact_gap_avg = density_plateau_exact_gap_avg + &
                      SQRT(MAX(0.0_dp, physical_response_gap_norm/curv_projection_sum))
                density_plateau_exact_gap_max = MAX(density_plateau_exact_gap_max, &
-                                                    MAXVAL(ABS(response_density_plateau_exact(:, r) - &
+                                                    MAXVAL(ABS(response_density_full_exact(:, r) - &
                                                                response_density_exact(:, r))))
             END DO
             density_plateau_raw_gap_avg = density_plateau_raw_gap_avg/REAL(MAX(1, nrot), KIND=dp)
@@ -6998,11 +7003,7 @@ CONTAINS
                density_plateau_model_calibrated_drop = 0.0_dp
                density_plateau_model_drop = 0.0_dp
                density_plateau_model_gap_drop = 0.0_dp
-               density_plateau_exact_gap_avg = 0.0_dp
-               density_plateau_exact_gap_max = 0.0_dp
                density_plateau_norm_energy = 0.0_dp
-               density_plateau_raw_gap_avg = 0.0_dp
-               density_plateau_raw_gap_max = 0.0_dp
                density_plateau_norm_rotation = 0.0_dp
                density_plateau_normp = 0.0_dp
                density_plateau_response_abs_step = 0.0_dp
@@ -8985,13 +8986,13 @@ CONTAINS
                                                    projector_physical_direct_rx_e(:)
                                              END IF
                                              IF (projector_plateau_gap_model_enabled .AND. &
-                                                 exact_density_plateau_response_ready .AND. &
+                                                 exact_density_response_ready .AND. &
                                                  exact_density_full_response_ready) THEN
                                                 direct_pg_base_e(:) = projector_physical_direct_rx_e(:)
                                                 CALL audit_kpoint_ot_projector_response_modes( &
-                                                   rot_hessian_projector_physical_offdiag, &
-                                                   rot_hessian_projector_physical_offdiag_plateau, &
-                                                   projector_physical_direct_sol, response_density_plateau_exact, &
+                                                   rot_hessian_projector_physical_offdiag_active, &
+                                                   rot_hessian_projector_physical_offdiag_plateau_active, &
+                                                   projector_physical_direct_sol, response_density_exact, &
                                                    response_density_full_exact, curv, occ_curv, tether_curv, &
                                                    occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
                                                    projector_coupled_weight, &
@@ -11572,7 +11573,7 @@ CONTAINS
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_physical, &
                      energy_cross_raw, &
-                     energy_cross_density_full, energy_cross_density_full_audit, &
+                     energy_cross_density_full, energy_cross_density_full_audit, energy_cross_density_plateau, &
                      energy_hessian, response, response_coupled, response_density_exact, &
                      response_density_full, response_density_full_audit, &
                      response_density_full_audit_exact, response_density_full_exact, response_density_physical, &
