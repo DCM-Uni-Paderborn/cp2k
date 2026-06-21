@@ -118,6 +118,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density mixed-metric coupled Schur", 5.0E-13_dp, nfail)
    CALL check_projector_response_mixed_metric_scale( &
       "complex projector response mixed-metric scale", 5.0E-13_dp, nfail)
+   CALL check_projector_density_candidate_metric_model( &
+      "complex projector density candidate metric model", 5.0E-13_dp, nfail)
    CALL check_projector_density_metric_coupled_schur( &
       "complex projector density metric-coupled Schur", 5.0E-13_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
@@ -5044,6 +5046,67 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_candidate_total_response
+
+! **************************************************************************************************
+!> \brief Check the trust-limited Mermin quadratic used by density-response candidates.
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_candidate_metric_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 5, nchannels = 1, nrot = 2
+
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: curvature_scale, err, gdotp, legacy_drop, &
+                                                            metric_drop, norm_energy, norm_rotation, &
+                                                            normp, response_trust, trust_scale, unit_weighted_step
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, tether_curv, z_e
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_rot, sol
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: schur_metric
+
+      channel_nmo(:) = [ne]
+      e_offset(:) = [1]
+      occ_curv(:) = [0.47_dp, 0.23_dp, 0.11_dp, 0.07_dp, 0.03_dp]
+      tether_curv(:) = [0.19_dp, 0.13_dp, 0.05_dp, 0.02_dp, 0.01_dp]
+      z_e(:) = [0.31_dp, -0.22_dp, 0.18_dp, -0.07_dp, 0.11_dp]
+      grad_e(:) = [0.42_dp, -0.26_dp, 0.19_dp, -0.13_dp, 0.09_dp]
+      sol(:) = [0.34_dp, -0.21_dp]
+      grad_rot(:) = [0.57_dp, -0.36_dp]
+      schur_metric(:, :) = RESHAPE([1.80_dp, -0.14_dp, &
+                                   -0.14_dp, 1.35_dp], [nrot, nrot])
+
+      CALL dense_projected_mixed_metric(z_e, z_e, occ_curv, tether_curv, channel_nmo, e_offset, norm_energy)
+      rhs_rot(:) = MATMUL(schur_metric, sol)
+      norm_rotation = DOT_PRODUCT(rhs_rot, sol)
+      normp = norm_energy + norm_rotation
+      gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
+      unit_weighted_step = 0.92_dp
+      response_trust = 0.25_dp*unit_weighted_step
+      trust_scale = MIN(1.0_dp, 0.8_dp*response_trust/unit_weighted_step)
+      curvature_scale = gdotp/MAX(normp, EPSILON(normp))
+      metric_drop = MIN(trust_scale, curvature_scale)*gdotp - &
+                    0.5_dp*MIN(trust_scale, curvature_scale)**2*normp
+      legacy_drop = 0.5_dp*MIN(trust_scale, curvature_scale)*gdotp
+
+      err = ABS(norm_rotation - DOT_PRODUCT(sol, MATMUL(schur_metric, sol)))
+      err = MAX(err, ABS(metric_drop - &
+                         (MIN(trust_scale, curvature_scale)*gdotp - &
+                          0.5_dp*MIN(trust_scale, curvature_scale)**2*normp)))
+
+      IF (err > tol .OR. trust_scale >= curvature_scale .OR. metric_drop <= legacy_drop .OR. &
+          norm_rotation <= DOT_PRODUCT(sol, sol)) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with err/scale/curv/drop/legacy/rnorm", err, trust_scale, curvature_scale, metric_drop, &
+            legacy_drop, norm_rotation
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with err/scale/curv/drop/legacy/rnorm", err, trust_scale, curvature_scale, metric_drop, &
+            legacy_drop, norm_rotation
+      END IF
+
+   END SUBROUTINE check_projector_density_candidate_metric_model
 
 ! **************************************************************************************************
 !> \brief Check exact metric projection of coupled fixed-N and local tether response gauges.

@@ -8384,24 +8384,49 @@ CONTAINS
                                              projector_physical_direct_density_norm_energy = &
                                                 MAX(0.0_dp, projector_physical_direct_density_norm_energy)
                                              projector_physical_direct_density_norm_rotation = &
-                                                DOT_PRODUCT(projector_physical_direct_sol, projector_physical_direct_sol)
+                                                MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
                                              projector_physical_direct_density_normp = &
                                                 projector_physical_direct_density_norm_energy + &
                                                 projector_physical_direct_density_norm_rotation
                                              IF (projector_physical_direct_density_gdotp > 0.0_dp .AND. &
                                                  projector_physical_direct_density_normp > &
                                                  EPSILON(projector_physical_direct_density_normp)) THEN
+                                                projector_physical_direct_density_response_abs_step = &
+                                                   MAXVAL(ABS(projector_physical_direct_density_rx_e))
+                                                CALL para_env_inter_kp%max(projector_physical_direct_density_response_abs_step)
+                                                projector_physical_direct_density_response_weighted_step = &
+                                                   kpoint_ot_weighted_response_step( &
+                                                      projector_physical_direct_density_rx_e, curv, curv_projection_sum)
                                                 projector_physical_direct_density_direction_scale = &
-                                                   projector_physical_direct_density_gdotp/ &
-                                                   MAX(projector_physical_direct_density_normp, &
-                                                       EPSILON(projector_physical_direct_density_normp))
+                                                   MIN(1.0_dp, projector_physical_direct_density_gdotp/ &
+                                                       MAX(projector_physical_direct_density_normp, &
+                                                           EPSILON(projector_physical_direct_density_normp)))
+                                                IF (response_trust > EPSILON(response_trust) .AND. &
+                                                    projector_physical_direct_density_response_weighted_step > &
+                                                    EPSILON(projector_physical_direct_density_response_weighted_step)) &
+                                                   projector_physical_direct_density_direction_scale = &
+                                                      MIN(projector_physical_direct_density_direction_scale, &
+                                                          0.8_dp*response_trust/ &
+                                                          projector_physical_direct_density_response_weighted_step)
+                                                IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                    projector_physical_direct_density_response_abs_step > &
+                                                    EPSILON(projector_physical_direct_density_response_abs_step)) &
+                                                   projector_physical_direct_density_direction_scale = &
+                                                      MIN(projector_physical_direct_density_direction_scale, &
+                                                          0.8_dp*response_abs_trust/ &
+                                                          projector_physical_direct_density_response_abs_step)
                                                 projector_physical_direct_density_scale_quality = &
                                                    kpoint_ot_schur_scale_quality( &
                                                       projector_physical_direct_density_direction_scale, &
                                                       schur_min_coupled_scale)
-                                                projector_physical_direct_density_model_drop = 0.5_dp* &
+                                                projector_physical_direct_density_model_drop = &
                                                    projector_physical_direct_density_direction_scale* &
-                                                   projector_physical_direct_density_gdotp
+                                                   projector_physical_direct_density_gdotp - &
+                                                   0.5_dp*projector_physical_direct_density_direction_scale* &
+                                                   projector_physical_direct_density_direction_scale* &
+                                                   projector_physical_direct_density_normp
+                                                projector_physical_direct_density_model_drop = &
+                                                   MAX(0.0_dp, projector_physical_direct_density_model_drop)
                                                 projector_physical_direct_density_model_calibrated_drop = &
                                                    projector_physical_direct_density_model_drop
                                                 IF (projector_physical_direct_density_direction_scale < &
@@ -8411,12 +8436,10 @@ CONTAINS
                                                       projector_physical_direct_density_model_calibrated_drop
                                                 projector_physical_direct_density_response_abs_step = &
                                                    projector_physical_direct_density_direction_scale* &
-                                                   MAXVAL(ABS(projector_physical_direct_density_rx_e))
-                                                CALL para_env_inter_kp%max(projector_physical_direct_density_response_abs_step)
+                                                   projector_physical_direct_density_response_abs_step
                                                 projector_physical_direct_density_response_weighted_step = &
                                                    projector_physical_direct_density_direction_scale* &
-                                                   kpoint_ot_weighted_response_step( &
-                                                      projector_physical_direct_density_rx_e, curv, curv_projection_sum)
+                                                   projector_physical_direct_density_response_weighted_step
                                                 IF (response_trust > EPSILON(response_trust)) &
                                                    projector_physical_direct_density_response_weighted_trust_ratio = &
                                                       projector_physical_direct_density_response_weighted_step/response_trust
