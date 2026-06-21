@@ -132,6 +132,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_physical_fd( &
       "history-safe occupation-projector physical finite difference", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_component_filter( &
+      "history-safe occupation-projector component filter", 5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -5535,6 +5537,79 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_physical_fd
 
 ! **************************************************************************************************
+!> \brief Check that one noisy near-degenerate pair filters the full connected component.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_component_filter(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_legacy_fd, &
+                                                            docc_safe, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: component_err, component_span, eval_center, &
+                                                            legacy_err, legacy_span, occ_tol, pair_plateau, &
+                                                            pair_slope
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_component, occ_curv, occ_pair_local, &
+                                                            occ_scale
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evals(:) = [-0.010000_dp, -0.009982_dp, -0.009960_dp, 0.42_dp]
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(0.18_dp, -0.11_dp, KIND=dp)
+      dchc(3, 2) = CONJG(dchc(2, 3))
+
+      occ_scale(:) = [1.20_dp, 0.40_dp, 0.399999_dp, 0.11_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+
+      occ_component(:) = occ_scale(:)
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_component)
+
+      occ_pair_local(:) = occ_scale(:)
+      pair_plateau = 0.5_dp*(occ_pair_local(1) + occ_pair_local(2))
+      eval_center = 0.5_dp*(evals(1) + evals(2))
+      pair_slope = -dense_shared_occ_slope(occ_curv(1), occ_curv(2))
+      occ_pair_local(1) = pair_plateau + pair_slope*(evals(1) - eval_center)
+      occ_pair_local(2) = pair_plateau + pair_slope*(evals(2) - eval_center)
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_component, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_component, occ_mat_m)
+      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      component_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
+
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_pair_local, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_pair_local, occ_mat_m)
+      docc_legacy_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      legacy_err = MAXVAL(ABS(docc_safe(:, :) - docc_legacy_fd(:, :)))
+      component_span = MAXVAL(occ_component(1:3)) - MINVAL(occ_component(1:3))
+      legacy_span = MAXVAL(occ_pair_local(1:3)) - MINVAL(occ_pair_local(1:3))
+
+      IF (component_err > tol .OR. legacy_err < active_tol .OR. &
+          component_span >= 0.20_dp*legacy_span) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/legacy/span/legacy_span", component_err, legacy_err, &
+            component_span, legacy_span
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/legacy/span/legacy_span", component_err, legacy_err, &
+            component_span, legacy_span
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_component_filter
+
+! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
 ! **************************************************************************************************
    SUBROUTINE dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
@@ -5830,6 +5905,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: occ_mono
 
       INTEGER                                             :: first, idx, last, n
+      LOGICAL                                             :: needs_filter
       REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
                                                             occ_jump, physical_slope, plateau, slope_cap
 
@@ -5840,18 +5916,17 @@ CONTAINS
       first = 1
       DO WHILE (first < n)
          last = first
+         needs_filter = .FALSE.
          DO WHILE (last < n)
             gap = ABS(evals(last + 1) - evals(last))
+            IF (gap > gauge_gap) EXIT
             slope_cap = dense_shared_occ_slope(occ_curv(last), occ_curv(last + 1))
             allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
             occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
-            IF (gap <= gauge_gap .AND. occ_jump > allowed_jump) THEN
-               last = last + 1
-            ELSE
-               EXIT
-            END IF
+            IF (occ_jump > allowed_jump) needs_filter = .TRUE.
+            last = last + 1
          END DO
-         IF (last > first) THEN
+         IF (last > first .AND. needs_filter) THEN
             plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
             eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
             slope_cap = HUGE(1.0_dp)

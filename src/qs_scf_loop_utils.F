@@ -12544,6 +12544,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: occ_mono
 
       INTEGER                                             :: first, idx, last, n
+      LOGICAL                                             :: needs_filter
       REAL(KIND=dp)                                      :: allowed_jump, eval_center, fit_den, fit_num, gap, &
                                                             occ_jump, physical_slope, plateau, slope_cap
 
@@ -12554,18 +12555,17 @@ CONTAINS
          first = 1
          DO WHILE (first < n)
             last = first
+            needs_filter = .FALSE.
             DO WHILE (last < n)
                gap = ABS(evals(last + 1) - evals(last))
+               IF (gap > gauge_gap) EXIT
                slope_cap = kpoint_ot_shared_occ_slope(occ_curv_channel(last), occ_curv_channel(last + 1))
                allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
-               IF (gap <= gauge_gap .AND. occ_jump > allowed_jump) THEN
-                  last = last + 1
-               ELSE
-                  EXIT
-               END IF
+               IF (occ_jump > allowed_jump) needs_filter = .TRUE.
+               last = last + 1
             END DO
-            IF (last > first) THEN
+            IF (last > first .AND. needs_filter) THEN
                plateau = SUM(occ_mono(first:last))/REAL(last - first + 1, KIND=dp)
                eval_center = SUM(evals(first:last))/REAL(last - first + 1, KIND=dp)
                slope_cap = HUGE(1.0_dp)
