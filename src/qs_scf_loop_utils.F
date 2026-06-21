@@ -5120,10 +5120,6 @@ CONTAINS
                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
             END IF
             IF (.NOT. projector_physical_direct_promoted .AND. new_search_point .AND. &
-                local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
-                ot_kp_schur_projector_response_min_samples .AND. &
-                local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema >= &
-                ot_kp_schur_projector_response_quality_min_ratio .AND. &
                 local_ot_env(1)%schur_projector_physical_direct_quality_samples >= &
                 ot_kp_schur_projector_response_min_samples .AND. &
                 local_ot_env(1)%schur_projector_physical_direct_drop_sum > &
@@ -5138,8 +5134,14 @@ CONTAINS
                      ot_kp_schur_projector_response_min_samples, 0.0_dp, &
                      ot_kp_schur_projector_response_quality_min_ratio, &
                      ot_kp_schur_projector_response_quality_max_ratio)
+               ! Bootstrap the first selected direct-physical samples from its
+               ! shadow history.  Once selected samples exist the stricter
+               ! block above controls promotion.
                projector_physical_direct_promoted = &
-                  projector_physical_direct_shadow_quality_for_promotion >= &
+                  local_ot_env(1)%schur_projector_physical_direct_measured_sum/ &
+                  local_ot_env(1)%schur_projector_physical_direct_drop_sum >= &
+                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                  local_ot_env(1)%schur_projector_physical_direct_quality_shadow_ema >= &
                   ot_kp_schur_projector_response_quality_min_ratio .AND. &
                   local_ot_env(1)%schur_projector_physical_direct_quality >= &
                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
@@ -6860,6 +6862,11 @@ CONTAINS
             projector_mode_step_negative_fraction = 0.0_dp
                projector_mode_trust_quality = 1.0_dp
                projector_mode_response_weight = 0.0_dp
+               ! Projector candidates are built only by the coupled exact-response
+               ! attempt.  Keep them alive for the raw fallback attempt so the
+               ! fallback can be compared against the already formed physical
+               ! candidate instead of silently erasing it.
+               IF (schur_attempt <= 3) THEN
                projector_physical_candidate_ready = .FALSE.
                projector_physical_candidate_selected = .FALSE.
                projector_physical_direct_diagref_candidate_ready = .FALSE.
@@ -7111,11 +7118,12 @@ CONTAINS
                projector_physical_model_gap_ratio = 0.0_dp
                projector_physical_model_gap_trust = HUGE(1.0_dp)
                projector_response_candidate_ready = .FALSE.
-            projector_response_candidate_selected = .FALSE.
-            projector_response_expected_drop = 0.0_dp
-            projector_response_model_calibrated_drop = 0.0_dp
-            projector_response_model_drop = 0.0_dp
-            projector_response_model_gap_ratio = 0.0_dp
+               projector_response_candidate_selected = .FALSE.
+               projector_response_expected_drop = 0.0_dp
+               projector_response_model_calibrated_drop = 0.0_dp
+               projector_response_model_drop = 0.0_dp
+               projector_response_model_gap_ratio = 0.0_dp
+               END IF
             IF (exact_attempt_response) THEN
                z_e(:) = z_exact_trial(:)
             ELSE
@@ -9599,7 +9607,7 @@ CONTAINS
                split_schur_diag_min = schur_diag_min
                attempt_failed = .TRUE.
                reject_reason = reject_quality_gate
-            ELSE IF (schur_attempt == 3 .AND. split_candidate_ready) THEN
+            ELSE IF (schur_attempt >= 3 .AND. split_candidate_ready) THEN
                dense_direction_scale = direction_scale
                dense_gdot_energy = gdot_energy
                dense_gdot_rotation = gdot_rotation
@@ -9937,7 +9945,7 @@ CONTAINS
                END IF
             END IF
 
-            IF (schur_attempt == 3 .AND. .NOT. split_candidate_ready) THEN
+            IF (schur_attempt >= 3 .AND. .NOT. split_candidate_ready) THEN
                dense_direction_scale = direction_scale
                dense_gdot_energy = gdot_energy
                dense_gdot_rotation = gdot_rotation
