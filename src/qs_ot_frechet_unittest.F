@@ -130,6 +130,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_gauge_physical_split( &
       "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_physical_fd( &
+      "history-safe occupation-projector physical finite difference", 5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -5425,6 +5427,105 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_gauge_physical_split
+
+! **************************************************************************************************
+!> \brief Check that finite-difference history-safe dP keeps physical near-Fermi slopes.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_physical_fd(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
+                                                            docc_raw, docc_safe, occ_mat_m, occ_mat_p, q
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: err, gap, physical_active, physical_raw_err, &
+                                                            physical_slope, raw_gauge, safe_gauge
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_gauge, occ_physical
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.009982_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.23_dp, 0.0_dp, KIND=dp)
+      chc_eig(4, 4) = CMPLX(0.51_dp, 0.0_dp, KIND=dp)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.13_dp
+      x_re(1, 3) = -0.06_dp
+      x_re(2, 4) = 0.04_dp
+      x_re(3, 4) = -0.05_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.03_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(4, 4) = -0.01_dp
+      x_im(1, 2) = -0.04_dp
+      x_im(1, 4) = 0.03_dp
+      x_im(2, 3) = 0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.21_dp, -0.17_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+      occ_gauge(:) = [1.10_dp, 0.50_dp, 0.24_dp, 0.08_dp]
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_gauge, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_gauge, docc_raw)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_gauge, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_gauge, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
+      raw_gauge = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
+      safe_gauge = MAXVAL(ABS(docc_safe(:, :)))
+
+      gap = REAL(chc_eig(2, 2), KIND=dp) - REAL(chc_eig(1, 1), KIND=dp)
+      physical_slope = -0.5_dp*dense_shared_occ_slope(occ_curv(1), occ_curv(2))
+      occ_physical(:) = [1.10_dp, 0.0_dp, 0.24_dp, 0.08_dp]
+      occ_physical(2) = occ_physical(1) + physical_slope*gap
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_physical, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_physical, docc_raw)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_physical, &
+                                                     projector_weight, occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_physical, &
+                                                     projector_weight, occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      err = MAX(err, MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :))))
+      physical_raw_err = MAXVAL(ABS(docc_safe(:, :) - projector_weight*docc_raw(:, :)))
+      physical_active = MAXVAL(ABS(docc_safe(:, :)))
+
+      IF (err > tol .OR. physical_raw_err > tol .OR. raw_gauge < active_tol .OR. &
+          safe_gauge >= 0.20_dp*raw_gauge .OR. physical_active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/rawerr/rawgauge/safegauge/physical", err, physical_raw_err, &
+            raw_gauge, safe_gauge, physical_active
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/rawerr/rawgauge/safegauge/physical", err, physical_raw_err, &
+            raw_gauge, safe_gauge, physical_active
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_physical_fd
 
 ! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
