@@ -5119,6 +5119,10 @@ CONTAINS
                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
             END IF
             IF (.NOT. projector_physical_direct_promoted .AND. new_search_point .AND. &
+                local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
+                ot_kp_schur_projector_response_min_samples .AND. &
+                local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema >= &
+                ot_kp_schur_projector_response_quality_min_ratio .AND. &
                 local_ot_env(1)%schur_projector_physical_direct_quality_samples >= &
                 ot_kp_schur_projector_response_min_samples .AND. &
                 local_ot_env(1)%schur_projector_physical_direct_drop_sum > &
