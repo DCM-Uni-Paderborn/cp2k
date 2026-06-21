@@ -17,6 +17,10 @@
     &MGRID
       CUTOFF 40
     &END MGRID
+    &PRINT
+      &KPOINTS ON
+      &END KPOINTS
+    &END PRINT
     &QS
       EPS_DEFAULT 1.0E-8
     &END QS
