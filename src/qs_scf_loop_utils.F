@@ -6385,6 +6385,19 @@ CONTAINS
                               ot_kp_schur_projector_response_quality_min_ratio, &
                               ot_kp_schur_projector_response_quality_max_ratio)
                      projector_physical_direct_quality_for_selection = projector_physical_trace_split_quality
+                     IF (local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
+                         ot_kp_schur_calibration_min_samples) THEN
+                        projector_physical_direct_quality_for_selection = &
+                           kpoint_ot_schur_history_quality( &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples, &
+                              projector_physical_trace_split_quality, &
+                              ot_kp_schur_projector_response_quality_min_ratio, &
+                              ot_kp_schur_projector_response_quality_max_ratio)
+                     END IF
                      projector_physical_direct_density_audit_quality = &
                         kpoint_ot_density_audit_trust_quality( &
                            local_ot_env(1)%schur_projector_density_audit_lowcurv_ema, &
