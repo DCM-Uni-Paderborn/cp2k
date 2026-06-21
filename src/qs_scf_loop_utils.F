@@ -4773,7 +4773,10 @@ CONTAINS
             projector_physical_direct_delta_negative_norm, &
             projector_physical_direct_delta_positive_norm, &
             projector_physical_direct_expected_drop, &
+            projector_physical_direct_gdot_base_energy, &
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
+            projector_physical_direct_gdot_raw_response, &
+            projector_physical_direct_gdot_model_response, &
             projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
             projector_physical_direct_line_step_trust, &
             projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
@@ -5370,8 +5373,7 @@ CONTAINS
             projector_physical_direct_spectral_enabled = &
                projector_physical_direct_spectral_enabled .OR. &
                (projector_physical_shadow_enabled .AND. &
-                local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
-                residual_delta <= ot_kp_schur_projector_response_full_delta)
+                projector_physical_direct_shadow_enabled)
          residual_reference_quality = 0.0_dp
          density_projector_fraction = 0.0_dp
          physical_response_gap_avg = 0.0_dp
@@ -5639,7 +5641,10 @@ CONTAINS
             projector_physical_direct_direction_scale = 0.0_dp
             projector_physical_direct_euclidean_scale = 0.0_dp
             projector_physical_direct_expected_drop = 0.0_dp
+            projector_physical_direct_gdot_base_energy = 0.0_dp
             projector_physical_direct_gdot_energy = 0.0_dp
+            projector_physical_direct_gdot_model_response = 0.0_dp
+            projector_physical_direct_gdot_raw_response = 0.0_dp
             projector_physical_direct_gdot_rotation = 0.0_dp
             projector_physical_direct_gdotp = 0.0_dp
             projector_physical_direct_line_step = 0.0_dp
@@ -8486,14 +8491,11 @@ CONTAINS
                                                       projector_physical_direct_spectral_model_calibrated_drop, &
                                                       projector_physical_direct_spectral_quality_for_selection, &
                                                       projector_physical_direct_spectral_trust_quality)
-                                                projector_physical_direct_spectral_candidate_ready = &
-                                                   projector_physical_direct_spectral_model_calibrated_drop > &
-                                                   EPSILON(projector_physical_direct_spectral_model_drop) .AND. &
-                                                   projector_physical_direct_spectral_response_weighted_step <= &
-                                                   response_trust .AND. &
-                                                   projector_physical_direct_spectral_response_abs_step <= &
-                                                   response_abs_trust .AND. &
-                                                   projector_physical_direct_spectral_norm_ratio <= max_norm_ratio
+                                                ! Bootstrap the positive-subspace rescue as shadow-only.
+                                                ! Its current history compares spectral predictions against the
+                                                ! accepted dense/direct step; selected-spectral promotion needs a
+                                                ! separate accepted-step calibration before it can drive updates.
+                                                projector_physical_direct_spectral_candidate_ready = .FALSE.
                                                 IF (new_search_point .AND. &
                                                     projector_physical_direct_spectral_model_calibrated_drop > &
                                                     EPSILON(projector_physical_direct_spectral_model_calibrated_drop) .AND. &
@@ -9167,6 +9169,12 @@ CONTAINS
                                           END IF
                                           projector_physical_direct_z_e(:) = z_exact_physical_trial(:) + &
                                                                              projector_physical_direct_rx_e(:)
+                                          projector_physical_direct_gdot_base_energy = &
+                                             DOT_PRODUCT(grad_e, z_exact_physical_trial)
+                                          projector_physical_direct_gdot_raw_response = &
+                                             DOT_PRODUCT(grad_e, projector_physical_direct_rx_e)
+                                          projector_physical_direct_gdot_model_response = &
+                                             DOT_PRODUCT(grad_e, projector_physical_direct_model_e)
                                           projector_physical_direct_gdot_energy = &
                                              DOT_PRODUCT(grad_e, projector_physical_direct_z_e)
                                           projector_physical_direct_gdot_rotation = &
@@ -11121,9 +11129,9 @@ CONTAINS
                         projector_phys_direct_active_comp_trial, &
                         projector_physical_direct_basis_signal, &
                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,15(1X,ES16.8))') &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,18(1X,ES16.8))') &
                         " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr "// &
-                        "mratio nratio tq sq mnorm mrot:", &
+                        "mratio nratio tq sq mnorm mrot geb ger gem:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
                         projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
                         projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
@@ -11131,7 +11139,10 @@ CONTAINS
                         projector_physical_direct_norm_rotation, projector_physical_direct_metric_norm_ratio, &
                         projector_physical_direct_norm_ratio, &
                         projector_physical_direct_trust_quality, projector_physical_direct_scale_quality, &
-                        projector_physical_direct_metric_normp, projector_physical_direct_metric_norm_rotation
+                        projector_physical_direct_metric_normp, projector_physical_direct_metric_norm_rotation, &
+                        projector_physical_direct_gdot_base_energy, &
+                        projector_physical_direct_gdot_raw_response, &
+                        projector_physical_direct_gdot_model_response
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                         " OT Schur projector phys direct trace shadow actual raw active excess raw_ratio "// &
                         "active_actual actual_norm raw_norm active_norm:", &
