@@ -10519,7 +10519,7 @@ CONTAINS
                      projector_physical_offdiag_diag_avg, projector_physical_offdiag_abs_avg, &
                      projector_physical_offdiag_delta_max, projector_physical_offdiag_abs_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                     " OT Schur projector physical offdiag-dP plateau audit diag abs max gap_diag gap_avg gap_max:", &
+                     " OT Schur projector physical offdiag-dP raw audit diag abs max gap_diag gap_avg gap_max:", &
                      projector_physical_offdiag_plateau_diag_avg, projector_physical_offdiag_plateau_abs_avg, &
                      projector_physical_offdiag_plateau_delta_max, &
                      projector_physical_offdiag_plateau_gap_diag_avg, &
@@ -12727,7 +12727,10 @@ CONTAINS
                      END SELECT
                   END DO
                   IF (compute_projector_plateau_audit) THEN
-                     CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_plateau, &
+                     ! Keep the active Hessian plateau-filtered, but expose the
+                     ! raw off-diagonal projector response as an audit/candidate
+                     ! gap against that filtered physical model.
+                     CALL dense_ref_rotation_gradient(x_re, x_im, base, docc_mat, &
                                                       grad_p_re, grad_p_im, eps_p)
                      DO r = first_var, last_var
                         imo = var_i(r)

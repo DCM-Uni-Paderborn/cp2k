@@ -4427,7 +4427,8 @@ CONTAINS
       INTEGER                                            :: i, ivar, j
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: err, physical_active, physical_capped_norm, &
-                                                            physical_err, physical_raw_norm, plateau_norm, raw_norm
+                                                            physical_err, physical_raw_norm, plateau_norm, &
+                                                            raw_gap_norm, raw_norm
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_curv, occ_scale
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_physical_vec, grad_plateau_vec, grad_raw_vec
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_re
@@ -4496,6 +4497,7 @@ CONTAINS
       CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_plateau_vec)
       raw_norm = MAXVAL(ABS(grad_raw_vec(:)))
       plateau_norm = MAXVAL(ABS(grad_plateau_vec(:)))
+      raw_gap_norm = MAXVAL(ABS(grad_raw_vec(:) - grad_plateau_vec(:)))
 
       dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       dchc_eig(3, 4) = CMPLX(-0.17_dp, 0.12_dp, KIND=dp)
@@ -4518,14 +4520,15 @@ CONTAINS
       physical_active = MAXVAL(ABS(grad_plateau_vec(:)))
 
       err = MAX(plateau_norm, physical_err)
-      IF (err > tol .OR. raw_norm < active_tol .OR. physical_active < active_tol .OR. &
+      IF (err > tol .OR. raw_norm < active_tol .OR. raw_gap_norm < active_tol .OR. &
+          physical_active < active_tol .OR. &
           physical_capped_norm >= 0.5_dp*physical_raw_norm) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw/gap/plateau/physical", err, raw_norm, raw_gap_norm, plateau_norm, physical_active
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/raw/plateau/physical", err, raw_norm, plateau_norm, physical_active
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw/gap/plateau/physical", err, raw_norm, raw_gap_norm, plateau_norm, physical_active
       END IF
 
    END SUBROUTINE check_complex_projector_offdiag_gauge_plateau_hessian
