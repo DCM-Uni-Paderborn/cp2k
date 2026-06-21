@@ -12499,7 +12499,8 @@ CONTAINS
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
          CALL dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, &
-                                               local_ot_env(local_channel)%delta, occ_mat)
+                                               local_ot_env(local_channel)%delta, occ_mat, &
+                                               occ_curv_channel, ot_kp_projector_occupation_gauge_gap)
          occ_mat_coupled(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO imo = 1, nmo
             occ_mat_coupled(imo, imo) = CMPLX(2.0_dp*kpoint_weight*occupation_numbers(imo), 0.0_dp, KIND=dp)
@@ -12580,9 +12581,11 @@ CONTAINS
                   (1.0_dp - projector_weight)*raw_response + projector_weight*projector_response
             END DO
             CALL dense_history_safe_occ_projector(chc_p, occupation_numbers, kpoint_weight, &
-                                                  local_ot_env(local_channel)%delta, occ_mat_p)
+                                                  local_ot_env(local_channel)%delta, occ_mat_p, &
+                                                  occ_curv_channel, ot_kp_projector_occupation_gauge_gap)
             CALL dense_history_safe_occ_projector(chc_m, occupation_numbers, kpoint_weight, &
-                                                  local_ot_env(local_channel)%delta, occ_mat_m)
+                                                  local_ot_env(local_channel)%delta, occ_mat_m, &
+                                                  occ_curv_channel, ot_kp_projector_occupation_gauge_gap)
             CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat_p, grad_p_re, grad_p_im, eps_p)
             CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat_m, grad_m_re, grad_m_im, eps_m)
             DO r = first_var, last_var
@@ -12794,25 +12797,34 @@ CONTAINS
          DEALLOCATE (generator, evec, u, evals)
       END SUBROUTINE dense_rotated_chc
 
-      SUBROUTINE dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, delta, occ_mat)
+      SUBROUTINE dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, delta, occ_mat, &
+                                                  occ_curv_channel, gauge_gap)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
       INTEGER                                            :: i, n
-      REAL(KIND=dp)                                      :: projector_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale
+      REAL(KIND=dp)                                      :: occ_tol, projector_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_work
 
          n = SIZE(chc, 1)
-         ALLOCATE (evec(n, n), weighted_evec(n, n), evals(n), occ_scale(n))
+         ALLOCATE (evec(n, n), weighted_evec(n, n), evals(n), occ_scale(n), occ_work(n))
 
          occ_scale(:) = 2.0_dp*kpoint_weight*occupation_numbers(1:n)
          CALL diag_complex(chc, evec, evals)
+         occ_work(:) = occ_scale(:)
+         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
+            occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_work(:))))
+            CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_work)
+            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_work)
+         END IF
          weighted_evec(:, :) = evec(:, :)
          DO i = 1, n
-            weighted_evec(:, i) = occ_scale(i)*weighted_evec(:, i)
+            weighted_evec(:, i) = occ_work(i)*weighted_evec(:, i)
          END DO
          occ_mat(:, :) = MATMUL(weighted_evec, CONJG(TRANSPOSE(evec)))
 
@@ -12823,7 +12835,7 @@ CONTAINS
                                   (1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
          END DO
 
-         DEALLOCATE (evec, weighted_evec, evals, occ_scale)
+         DEALLOCATE (evec, weighted_evec, evals, occ_scale, occ_work)
       END SUBROUTINE dense_history_safe_occ_projector
 
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
