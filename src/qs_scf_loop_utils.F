@@ -2720,6 +2720,8 @@ CONTAINS
                                                                projector_physical_trace_active_free_quality, &
                                                                projector_spectral_predicted_drop, &
                                                                projector_spectral_quality_ratio, &
+                                                               projector_spectral_selected_predicted_drop, &
+                                                               projector_spectral_selected_quality_ratio, &
                                                                projector_diagref_predicted_drop, &
                                                                projector_diagref_correction_ratio, &
                                                                projector_diagref_quality_for_selection, &
@@ -3917,6 +3919,40 @@ CONTAINS
                local_ot_env(1)%schur_projector_spectral_measured_sum = &
                   local_ot_env(1)%schur_projector_spectral_measured_sum + measured_drop
             END IF
+            projector_spectral_selected_predicted_drop = 0.0_dp
+            projector_spectral_selected_quality_ratio = 0.0_dp
+            IF (local_ot_env(1)%schur_model_flavor == 36) THEN
+               projector_spectral_selected_predicted_drop = calibrated_predicted_drop
+               IF (projector_spectral_selected_predicted_drop <= &
+                   EPSILON(projector_spectral_selected_predicted_drop)) &
+                  projector_spectral_selected_predicted_drop = predicted_drop
+            END IF
+            IF (mermin_search .AND. local_ot_env(1)%schur_model_flavor == 36 .AND. &
+                projector_spectral_selected_predicted_drop > &
+                EPSILON(projector_spectral_selected_predicted_drop) .AND. &
+                measured_drop > 0.0_dp) THEN
+               projector_spectral_selected_quality_ratio = &
+                  measured_drop/projector_spectral_selected_predicted_drop
+               local_ot_env(1)%schur_projector_spectral_selected_quality = &
+                  projector_spectral_selected_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_spectral_selected_quality_samples + 1, &
+                             HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_spectral_selected_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_spectral_selected_quality_ema = &
+                     projector_spectral_selected_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_projector_spectral_selected_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_selected_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_spectral_selected_quality_ratio
+               END IF
+               local_ot_env(1)%schur_projector_spectral_selected_drop_sum = &
+                  local_ot_env(1)%schur_projector_spectral_selected_drop_sum + &
+                  projector_spectral_selected_predicted_drop
+               local_ot_env(1)%schur_projector_spectral_selected_measured_sum = &
+                  local_ot_env(1)%schur_projector_spectral_selected_measured_sum + measured_drop
+            END IF
             ! A too-large physical quality ratio means the shadow model is
             ! conservative, not unstable; selection still uses the clamped
             ! expected-drop quality below.
@@ -3928,16 +3964,16 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_quality >= &
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
             local_ot_env(1)%schur_projector_spectral_candidate_enabled = &
-               local_ot_env(1)%schur_projector_spectral_quality_samples >= &
+               local_ot_env(1)%schur_projector_spectral_selected_quality_samples >= &
                ot_kp_schur_projector_response_min_samples .AND. &
-               local_ot_env(1)%schur_projector_spectral_drop_sum > &
-               EPSILON(local_ot_env(1)%schur_projector_spectral_drop_sum) .AND. &
-               local_ot_env(1)%schur_projector_spectral_measured_sum > 0.0_dp .AND. &
+               local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
+               EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
+               local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
                local_ot_env(1)%schur_projector_spectral_dot_ema > 0.0_dp .AND. &
                local_ot_env(1)%schur_projector_spectral_norm_ema > 0.0_dp .AND. &
-               local_ot_env(1)%schur_projector_spectral_quality_ema >= &
+               local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
                ot_kp_schur_projector_response_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_projector_spectral_quality >= &
+               local_ot_env(1)%schur_projector_spectral_selected_quality >= &
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
 
             local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
@@ -4259,7 +4295,7 @@ CONTAINS
                   local_ot_env(1)%schur_projector_mixed_direct_weight_ema
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,13(1X,ES16.8),1X,L1)') &
                   " OT Schur LS projector spectral shadow n ratio ema pred meas latest dot dotema "// &
-                  "norm normema floor floorema emin eminema enabled:", &
+                  "norm normema floor floorema emin eminema selected_enabled:", &
                   local_ot_env(1)%schur_projector_spectral_quality_samples, &
                   local_ot_env(1)%schur_projector_spectral_quality, &
                   local_ot_env(1)%schur_projector_spectral_quality_ema, &
@@ -4274,6 +4310,14 @@ CONTAINS
                   local_ot_env(1)%schur_projector_spectral_emin, &
                   local_ot_env(1)%schur_projector_spectral_emin_ema, &
                   local_ot_env(1)%schur_projector_spectral_candidate_enabled
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
+                  " OT Schur LS projector spectral selected history n ratio ema pred meas latest:", &
+                  local_ot_env(1)%schur_projector_spectral_selected_quality_samples, &
+                  local_ot_env(1)%schur_projector_spectral_selected_quality, &
+                  local_ot_env(1)%schur_projector_spectral_selected_quality_ema, &
+                  local_ot_env(1)%schur_projector_spectral_selected_drop_sum, &
+                  local_ot_env(1)%schur_projector_spectral_selected_measured_sum, &
+                  projector_spectral_selected_predicted_drop
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,12(1X,ES16.8))') &
                   " OT Schur LS projector physical trace quality actual raw active aq rq hq aema rema hema aqema rqema hqema:", &
                   projector_physical_trace_actual_avg, projector_physical_trace_raw_avg, &
@@ -6662,10 +6706,11 @@ CONTAINS
             projector_mode_history_response_negative = &
                local_ot_env(1)%schur_projector_mode_response_negative_ema
             projector_physical_direct_spectral_quality_for_selection = &
-               kpoint_ot_schur_history_quality(local_ot_env(1)%schur_projector_spectral_drop_sum, &
-                                               local_ot_env(1)%schur_projector_spectral_measured_sum, &
-                                               local_ot_env(1)%schur_projector_spectral_quality_ema, &
-                                               local_ot_env(1)%schur_projector_spectral_quality_samples, &
+               kpoint_ot_schur_history_quality( &
+                                               local_ot_env(1)%schur_projector_spectral_selected_drop_sum, &
+                                               local_ot_env(1)%schur_projector_spectral_selected_measured_sum, &
+                                               local_ot_env(1)%schur_projector_spectral_selected_quality_ema, &
+                                               local_ot_env(1)%schur_projector_spectral_selected_quality_samples, &
                                                ot_kp_schur_projector_response_min_samples, &
                                                0.0_dp, &
                                                ot_kp_schur_projector_response_quality_min_ratio, &
@@ -8491,11 +8536,17 @@ CONTAINS
                                                       projector_physical_direct_spectral_model_calibrated_drop, &
                                                       projector_physical_direct_spectral_quality_for_selection, &
                                                       projector_physical_direct_spectral_trust_quality)
-                                                ! Bootstrap the positive-subspace rescue as shadow-only.
-                                                ! Its current history compares spectral predictions against the
-                                                ! accepted dense/direct step; selected-spectral promotion needs a
-                                                ! separate accepted-step calibration before it can drive updates.
-                                                projector_physical_direct_spectral_candidate_ready = .FALSE.
+                                                projector_physical_direct_spectral_candidate_ready = &
+                                                   local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
+                                                   projector_physical_direct_spectral_model_calibrated_drop > &
+                                                   EPSILON(projector_physical_direct_spectral_model_calibrated_drop) .AND. &
+                                                   projector_physical_direct_spectral_gdotp > 0.0_dp .AND. &
+                                                   projector_physical_direct_spectral_normp > &
+                                                   EPSILON(projector_physical_direct_spectral_normp) .AND. &
+                                                   projector_physical_direct_spectral_response_weighted_step <= &
+                                                   response_trust .AND. &
+                                                   projector_physical_direct_spectral_response_abs_step <= &
+                                                   response_abs_trust
                                                 IF (new_search_point .AND. &
                                                     projector_physical_direct_spectral_model_calibrated_drop > &
                                                     EPSILON(projector_physical_direct_spectral_model_calibrated_drop) .AND. &

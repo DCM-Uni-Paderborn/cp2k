@@ -271,6 +271,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_physical_direct_selected_quality_samples = 0
       INTEGER :: schur_projector_mixed_direct_quality_samples = 0
       INTEGER :: schur_projector_spectral_quality_samples = 0
+      INTEGER :: schur_projector_spectral_selected_quality_samples = 0
       INTEGER :: schur_projector_diagref_quality_samples = 0
       INTEGER :: schur_projector_density_quality_samples = 0
       INTEGER :: schur_projector_density_audit_samples = 0
@@ -487,6 +488,10 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_spectral_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_spectral_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_spectral_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_spectral_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_spectral_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_dot = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_dot_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_spectral_norm = 0.0_dp
@@ -771,6 +776,7 @@ CONTAINS
       qs_ot_env%schur_projector_physical_direct_selected_quality_samples = 0
       qs_ot_env%schur_projector_mixed_direct_quality_samples = 0
       qs_ot_env%schur_projector_spectral_quality_samples = 0
+      qs_ot_env%schur_projector_spectral_selected_quality_samples = 0
       qs_ot_env%schur_projector_diagref_quality_samples = 0
       qs_ot_env%schur_projector_density_quality_samples = 0
       qs_ot_env%schur_projector_density_audit_samples = 0
@@ -1001,6 +1007,10 @@ CONTAINS
       qs_ot_env%schur_projector_spectral_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_spectral_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_spectral_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_quality = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_spectral_dot = 0.0_dp
       qs_ot_env%schur_projector_spectral_dot_ema = 0.0_dp
       qs_ot_env%schur_projector_spectral_norm = 0.0_dp
