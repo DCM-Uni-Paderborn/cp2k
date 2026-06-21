@@ -1124,7 +1124,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_new_cg_direction'
 
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin, &
-                                                            schur_attempt, schur_last_attempt
+                                                            schur_attempt, schur_flavor, schur_last_attempt, &
+                                                            schur_last_flavor
       LOGICAL                                            :: do_ener, do_ks, negative_beta, reset_to_sd, &
                                                             schur_history_change, schur_history_mixed
       REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
@@ -1142,14 +1143,21 @@ CONTAINS
       negative_beta = .FALSE.
       reset_to_sd = .FALSE.
       schur_attempt = qs_ot_env(1)%schur_model_attempt
+      schur_flavor = qs_ot_env(1)%schur_model_flavor
       schur_last_attempt = qs_ot_env(1)%schur_cg_attempt
-      ! Expose Split/Dense Schur model changes next to CG beta without
-      ! changing the accepted line-search dynamics.
+      schur_last_flavor = qs_ot_env(1)%schur_cg_flavor
+      ! Expose Split/Dense Schur model changes next to CG beta.  Dense
+      ! sub-flavor changes are diagnosed here, but only explicitly mixed
+      ! sub-flavor windows suppress accepted-step quality calibration.
       schur_history_change = qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                              qs_ot_env(1)%settings%do_rotation .AND. &
-                             schur_attempt /= schur_last_attempt .AND. &
-                             schur_attempt /= 0 .AND. schur_last_attempt /= 0 .AND. &
-                             (schur_attempt <= 2 .OR. schur_last_attempt <= 2)
+                             (((schur_attempt /= schur_last_attempt) .AND. &
+                               schur_attempt /= 0 .AND. schur_last_attempt /= 0 .AND. &
+                               (schur_attempt <= 2 .OR. schur_last_attempt <= 2)) .OR. &
+                              (schur_attempt == 3 .AND. schur_last_attempt == 3 .AND. &
+                               schur_flavor /= schur_last_flavor .AND. &
+                               schur_flavor /= 0 .AND. schur_last_flavor /= 0 .AND. &
+                               (schur_flavor < 0 .OR. schur_last_flavor < 0)))
       schur_history_mixed = .FALSE.
 
       gnorm_matrix_re = 0.0_dp
@@ -1395,16 +1403,17 @@ CONTAINS
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),2(1X,I6),4(1X,L1))') &
-            " OT CG beta raw used gnorm old cross down schur_att last neg hist_change mixed reset:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),4(1X,I6),4(1X,L1))') &
+            " OT CG beta raw used gnorm old cross down schur_att last flavor last neg hist_change mixed reset:", &
             beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, &
-            schur_attempt, schur_last_attempt, negative_beta, schur_history_change, schur_history_mixed, &
-            reset_to_sd
+            schur_attempt, schur_last_attempt, schur_flavor, schur_last_flavor, negative_beta, &
+            schur_history_change, schur_history_mixed, reset_to_sd
       END IF
       ! since we change the direction we have to adjust the gradient
       qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm
       qs_ot_env(1)%gnorm_old = qs_ot_env(1)%gnorm
       qs_ot_env(1)%schur_cg_attempt = schur_attempt
+      qs_ot_env(1)%schur_cg_flavor = schur_flavor
 
       CALL timestop(handle)
 

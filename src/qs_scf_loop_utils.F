@@ -2779,6 +2779,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
+               local_ot_env(1)%schur_model_flavor = 0
             RETURN
          END IF
          quality_ratio = 0.0_dp
@@ -3855,6 +3856,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_density_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
+            local_ot_env(1)%schur_model_flavor = 0
 
          logger => cp_get_default_logger()
          projector_physical_weight_quality = 0.0_dp
@@ -4358,6 +4360,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
+            local_ot_env(1)%schur_model_flavor = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
             local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
@@ -4450,7 +4453,7 @@ CONTAINS
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
                                                             nchannels, ne, nmo, nrot, r, s, schur_attempt, &
-                                                            selected_attempt, split_selected_attempt, &
+                                                            selected_attempt, selected_flavor, split_selected_attempt, &
                                                             schur_used_attempt, constrained_reject_reason, &
                                                             coupled_reject_reason, dense_reject_reason, &
                                                             reject_reason
@@ -6267,6 +6270,7 @@ CONTAINS
          solved = .FALSE.
          trust_rejected = .FALSE.
          schur_used_attempt = 0
+         selected_flavor = 0
          ! Evaluate the split fixed-N/tether Schur model under HIGH audit, or
          ! after accepted Mermin line-search drops validate the model quality.
          split_candidate_enabled = new_search_point .AND. local_ot_env(1)%schur_split_candidate_enabled
@@ -9725,6 +9729,17 @@ CONTAINS
                selected_attempt = schur_attempt
                IF (split_candidate_selected) selected_attempt = split_selected_attempt
                schur_used_attempt = selected_attempt
+               selected_flavor = selected_attempt
+               IF (selected_attempt == 3) THEN
+                  selected_flavor = 30
+                  IF (projector_response_candidate_selected) selected_flavor = 31
+                  IF (projector_physical_direct_density_candidate_selected) selected_flavor = 32
+                  IF (density_descent_candidate_selected) selected_flavor = 33
+                  IF (projector_physical_candidate_selected) selected_flavor = 34
+                  IF (projector_physical_direct_candidate_selected) selected_flavor = 35
+                  IF (projector_physical_direct_spectral_candidate_selected) selected_flavor = 36
+                  IF (projector_offdiag_candidate_selected) selected_flavor = 37
+               END IF
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
                accepted_model_gap_ratio = model_gap_ratio
@@ -9804,8 +9819,12 @@ CONTAINS
          IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop)) THEN
             IF (.NOT. local_ot_env(1)%schur_model_pending) THEN
                local_ot_env(1)%schur_model_attempt = schur_used_attempt
+               local_ot_env(1)%schur_model_flavor = selected_flavor
             ELSE IF (local_ot_env(1)%schur_model_attempt /= schur_used_attempt) THEN
                local_ot_env(1)%schur_model_attempt = -1
+               local_ot_env(1)%schur_model_flavor = -1
+            ELSE IF (local_ot_env(1)%schur_model_flavor /= selected_flavor) THEN
+               local_ot_env(1)%schur_model_flavor = -1
             END IF
             local_ot_env(1)%schur_model_pending = .TRUE.
             local_ot_env(1)%schur_model_drop = local_ot_env(1)%schur_model_drop + accepted_model_drop
@@ -10498,12 +10517,12 @@ CONTAINS
                         projector_physical_model_calibrated_drop, projector_physical_model_gap, &
                         projector_physical_response_weighted_trust_ratio, &
                         projector_physical_response_abs_trust_ratio, projector_physical_response_weight
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),17(1X,ES16.8))') &
-                     " OT Schur candidate selection used split_used dense_code split_ready constr_selected "// &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),3(1X,L1),17(1X,ES16.8))') &
+                     " OT Schur candidate selection used flavor split_used dense_code split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
                      "split_tq dense_tq constr_tq exp_ratio dense_mgap dense_mdrop dense_mtrust dense_mratio "// &
                      "split_rq dense_rq:", &
-                     schur_used_attempt, split_selected_attempt, dense_reject_reason, &
+                     schur_used_attempt, selected_flavor, split_selected_attempt, dense_reject_reason, &
                      split_candidate_ready, constrained_candidate_selected, split_candidate_selected, &
                      split_expected_drop, dense_expected_drop, &
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
