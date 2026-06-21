@@ -4469,9 +4469,10 @@ CONTAINS
                                                                exact_energy_model_ready, exact_physical_response_ready, &
                                                                projector_physical_candidate_ready, &
                                                                projector_physical_candidate_selected, &
-                                                               projector_physical_direct_diagref_candidate_ready, &
+                                                                       projector_physical_direct_diagref_candidate_ready, &
                                                                        projector_physical_direct_candidate_ready, &
                                                                        projector_physical_direct_candidate_selected, &
+                                                                       projector_physical_direct_mixed_enabled, &
                                                                        projector_physical_direct_candidate_used, &
                                                                        projector_physical_direct_density_candidate_ready, &
                                                                        projector_physical_direct_density_candidate_selected, &
@@ -4597,6 +4598,7 @@ CONTAINS
             projector_phys_direct_active_comp_trial, &
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
+            projector_physical_direct_mixed_quality, projector_physical_direct_mixed_weight, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
             projector_physical_direct_diag_compensation_local_max, &
@@ -4903,6 +4905,7 @@ CONTAINS
                                                             response_density_full, response_density_plateau, &
                                                             response_density_full_exact, response_density_plateau_exact, &
                                                             response_exact_physical, response_exact_raw, response_occ, &
+                                                            projector_physical_direct_base_delta, &
                                                             projector_physical_direct_delta, response_occ_physical, &
                                                             projector_physical_direct_schur_vec, &
                                                             response_physical_model, &
@@ -5004,6 +5007,7 @@ CONTAINS
                    response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
+                   projector_physical_direct_base_delta(nrot, nrot), &
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
                    projector_physical_direct_schur_vec(nrot, nrot), &
                    rot_hessian_projector_physical(nrot, nrot), &
@@ -5095,6 +5099,7 @@ CONTAINS
          rot_hessian_projector_physical_diagref(:, :) = 0.0_dp
          rot_hessian_projector_physical_offdiag(:, :) = 0.0_dp
          rot_hessian_projector_physical_offdiag_plateau(:, :) = 0.0_dp
+         projector_physical_direct_base_delta(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = rotation_curvature_floor
@@ -5372,6 +5377,9 @@ CONTAINS
             projector_physical_direct_delta_diag_avg = 0.0_dp
             projector_physical_direct_trace_diag_scale = 1.0_dp
             projector_physical_direct_trace_free_scale = 1.0_dp
+            projector_physical_direct_mixed_enabled = .FALSE.
+            projector_physical_direct_mixed_quality = 0.0_dp
+            projector_physical_direct_mixed_weight = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -7466,6 +7474,60 @@ CONTAINS
                                           END DO
                                           projector_physical_direct_delta_diag_avg = &
                                              projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       END IF
+                                       projector_physical_direct_base_delta(:, :) = projector_physical_direct_delta(:, :)
+                                       IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                           local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
+                                           ot_kp_schur_projector_response_min_samples .AND. &
+                                           local_ot_env(1)%schur_projector_mixed_direct_weight_ema > &
+                                           EPSILON(local_ot_env(1)%schur_projector_mixed_direct_weight_ema)) THEN
+                                          projector_physical_direct_mixed_quality = &
+                                             kpoint_ot_schur_history_quality( &
+                                                local_ot_env(1)%schur_projector_mixed_direct_drop_sum, &
+                                                local_ot_env(1)%schur_projector_mixed_direct_measured_sum, &
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
+                                                ot_kp_schur_projector_response_min_samples, 0.0_dp, 0.0_dp, &
+                                                ot_kp_schur_projector_response_quality_max_ratio)
+                                          projector_physical_direct_mixed_enabled = &
+                                             projector_physical_direct_mixed_quality >= 1.0_dp .AND. &
+                                             local_ot_env(1)%schur_projector_mixed_direct_quality_ema >= &
+                                             ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                             local_ot_env(1)%schur_projector_mixed_direct_quality >= &
+                                             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+                                          IF (projector_physical_direct_mixed_enabled) THEN
+                                             projector_physical_direct_mixed_weight = &
+                                                MIN(0.75_dp, MAX(0.0_dp, &
+                                                    local_ot_env(1)%schur_projector_mixed_direct_weight_ema))
+                                             projector_physical_direct_delta(:, :) = &
+                                                (1.0_dp - projector_physical_direct_mixed_weight)* &
+                                                projector_physical_direct_base_delta(:, :) + &
+                                                projector_physical_direct_mixed_weight*0.5_dp* &
+                                                ((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
+                                                 TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
+                                                           rot_hessian(:, :)))
+                                             IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                                 projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
+                                                diag_shift = projector_physical_direct_mixed_weight* &
+                                                             projector_physical_direct_active_diag_compensation/ &
+                                                             projector_coupled_weight
+                                                DO r = 1, nrot
+                                                   projector_physical_direct_delta(r, r) = &
+                                                      projector_physical_direct_delta(r, r) + diag_shift
+                                                END DO
+                                             END IF
+                                             projector_physical_direct_quality_for_selection = &
+                                                MAX(projector_physical_direct_quality_for_selection, &
+                                                    MIN(1.0_dp, projector_physical_direct_mixed_quality))
+                                             projector_physical_direct_delta_diag_avg = 0.0_dp
+                                             DO r = 1, nrot
+                                                projector_physical_direct_delta_diag_avg = &
+                                                   projector_physical_direct_delta_diag_avg + &
+                                                   projector_physical_direct_delta(r, r)
+                                             END DO
+                                             projector_physical_direct_delta_diag_avg = &
+                                                projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                          END IF
                                        END IF
                                        schur(:, :) = rot_hessian_coupled(:, :) + &
                                                      projector_coupled_weight* &
@@ -10216,14 +10278,17 @@ CONTAINS
                         projector_physical_response_audit_eval_abs_avg, &
                         projector_physical_response_audit_positive_weight_sum, &
                         projector_physical_response_audit_negative_weight_sum
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),11(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected exp qsel qsplit pgq dq cdrop "// &
-                        "mgap rratio aratio comp applied_shift:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),13(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected mixed exp qsel qsplit pgq dq mixq mixw "// &
+                        "cdrop mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+                        projector_physical_direct_mixed_enabled, &
                         projector_physical_direct_expected_drop, projector_physical_direct_quality_for_selection, &
                         projector_physical_trace_split_quality, &
                         projector_plateau_gap_quality_for_selection, &
                         projector_physical_direct_density_audit_quality, &
+                        projector_physical_direct_mixed_quality, &
+                        projector_physical_direct_mixed_weight, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
                         projector_physical_direct_response_weighted_trust_ratio, &
                         projector_physical_direct_response_abs_trust_ratio, &
@@ -10680,7 +10745,7 @@ CONTAINS
                      DO ivar = 1, 3
                         z_weight = REAL(ivar, KIND=dp)/4.0_dp
                         projector_physical_direct_schur_vec(:, :) = &
-                           (1.0_dp - z_weight)*projector_physical_direct_delta(:, :) + &
+                           (1.0_dp - z_weight)*projector_physical_direct_base_delta(:, :) + &
                            z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
                                             TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
                                                       rot_hessian(:, :)))
@@ -10848,6 +10913,7 @@ CONTAINS
                      response_density_plateau, response_density_plateau_exact, &
                      response_exact, response_exact_physical, response_exact_raw, &
                      response_occ, response_occ_physical, response_physical_model, response_split, rot_hessian, &
+                     projector_physical_direct_base_delta, &
                      projector_physical_direct_delta, rot_hessian_coupled, rot_hessian_projector, &
                      projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
