@@ -122,6 +122,8 @@ PROGRAM qs_ot_frechet_unittest
                                                        5.0E-12_dp, nfail)
    CALL check_projector_physical_direct_density_shadow( &
       "complex projector physical-direct density shadow", 5.0E-12_dp, nfail)
+   CALL check_projector_density_candidate_total_response( &
+      "complex projector density candidate total response", 5.0E-12_dp, nfail)
    CALL check_projector_metric_response_projection("complex projector metric response projection", &
                                                    5.0E-13_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
@@ -4667,6 +4669,130 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_direct_density_shadow
+
+! **************************************************************************************************
+!> \brief Check that density-response candidates keep the physical response in the accepted z step.
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_candidate_total_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 2, ntot = ne + nrot
+
+      INTEGER                                            :: i, info, j, s
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      INTEGER, DIMENSION(nrot)                           :: ipiv_rot
+      INTEGER, DIMENSION(ntot)                           :: ipiv_aug
+      REAL(KIND=dp)                                      :: err, gap, occ_sum, shift
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, z_aug, z_base, z_density_only, z_total
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_total
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, &
+                                                            density_response, phys_response, rhs_density, &
+                                                            rhs_phys, rhs_total
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_metric, schur_total
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
+      REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
+
+      occ_curv(:) = [0.52_dp, 0.37_dp, 0.21_dp, 0.09_dp]
+      phys_response(:, 1) = [0.19_dp, -0.11_dp, 0.07_dp, -0.03_dp]
+      phys_response(:, 2) = [-0.05_dp, 0.14_dp, -0.08_dp, 0.04_dp]
+      density_response(:, 1) = [0.06_dp, -0.04_dp, 0.12_dp, -0.07_dp]
+      density_response(:, 2) = [-0.08_dp, 0.03_dp, 0.09_dp, 0.02_dp]
+      grad_e(:) = [0.15_dp, -0.08_dp, 0.05_dp, -0.04_dp]
+      grad_rot(:) = [0.17_dp, -0.13_dp]
+      rot_metric(:, :) = RESHAPE([0.74_dp, 0.06_dp, &
+                                  0.06_dp, 0.66_dp], [nrot, nrot])
+
+      h(:, :) = 0.0_dp
+      DO i = 1, ne
+         h(i, i) = occ_curv(i) + 0.03_dp*REAL(i, KIND=dp)
+      END DO
+      occ_sum = SUM(occ_curv)
+      DO j = 1, ne
+         DO i = 1, ne
+            h(i, j) = h(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+         END DO
+      END DO
+      h(:, :) = h(:, :) + MAXVAL(occ_curv(:))/REAL(ne, KIND=dp)
+      h_ref(:, :) = h(:, :)
+
+      DO s = 1, nrot
+         shift = DOT_PRODUCT(occ_curv, phys_response(:, s))/occ_sum
+         b_phys(:, s) = occ_curv(:)*(phys_response(:, s) - shift)
+         shift = DOT_PRODUCT(occ_curv, density_response(:, s))/occ_sum
+         b_density(:, s) = occ_curv(:)*(density_response(:, s) - shift)
+      END DO
+      b_total(:, :) = b_phys(:, :) + b_density(:, :)
+
+      rhs_phys(:, :) = b_phys(:, :)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs_phys, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in phys dgesv", info
+         RETURN
+      END IF
+
+      rhs_density(:, :) = b_density(:, :)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, nrot, h, ne, ipiv, rhs_density, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in density dgesv", info
+         RETURN
+      END IF
+      rhs_total(:, :) = rhs_phys(:, :) + rhs_density(:, :)
+
+      z_base(:) = grad_e(:)
+      h(:, :) = h_ref(:, :)
+      CALL dgesv(ne, 1, h, ne, ipiv, z_base, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in z dgesv", info
+         RETURN
+      END IF
+
+      schur_total(:, :) = rot_metric(:, :) - MATMUL(TRANSPOSE(b_total), rhs_total)
+      q_total(:) = grad_rot(:) + MATMUL(TRANSPOSE(rhs_total), grad_e)
+      CALL dgesv(nrot, 1, schur_total, nrot, ipiv_rot, q_total, nrot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in Schur dgesv", info
+         RETURN
+      END IF
+
+      z_total(:) = z_base(:) + MATMUL(rhs_total, q_total)
+      z_density_only(:) = z_base(:) + MATMUL(rhs_density, q_total)
+
+      aug(:, :) = 0.0_dp
+      aug(1:ne, 1:ne) = h_ref(:, :)
+      aug(1:ne, ne + 1:ntot) = -b_total(:, :)
+      aug(ne + 1:ntot, 1:ne) = -TRANSPOSE(b_total(:, :))
+      aug(ne + 1:ntot, ne + 1:ntot) = rot_metric(:, :)
+      rhs_aug(1:ne) = grad_e(:)
+      rhs_aug(ne + 1:ntot) = grad_rot(:)
+      CALL dgesv(ntot, 1, aug, ntot, ipiv_aug, rhs_aug, ntot, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed in augmented dgesv", info
+         RETURN
+      END IF
+      z_aug(:) = rhs_aug(1:ne)
+      q_aug(:) = rhs_aug(ne + 1:ntot)
+
+      err = MAX(MAXVAL(ABS(z_total(:) - z_aug(:))), MAXVAL(ABS(q_total(:) - q_aug(:))))
+      gap = MAXVAL(ABS(z_total(:) - z_density_only(:)))
+
+      IF (err > tol .OR. gap <= 1.0E-5_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/omitted_gap", err, gap
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/omitted_gap", err, gap
+      END IF
+
+   END SUBROUTINE check_projector_density_candidate_total_response
 
 ! **************************************************************************************************
 !> \brief Check exact metric projection of coupled fixed-N and local tether response gauges.

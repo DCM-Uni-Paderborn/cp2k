@@ -8267,10 +8267,13 @@ CONTAINS
                                           END IF
                                           ! Feed the low-rank density-response shadow in normal
                                           ! runs as well; only its printed diagnostics stay HIGH-only.
+                                          ! Its accepted step uses the same total physical+density
+                                          ! response that enters the Schur/RHS model.
                                           IF (exact_density_response_ready) THEN
                                              projector_physical_direct_density_sol(:) = &
                                                 projector_physical_direct_sol(:)
                                              projector_physical_direct_density_rx_e(:) = &
+                                                MATMUL(response_exact_physical, projector_physical_direct_sol) + &
                                                 MATMUL(response_density_exact, projector_physical_direct_sol)
                                              CALL project_kpoint_ot_schur_response(projector_physical_direct_density_rx_e, &
                                                 occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
@@ -8391,7 +8394,9 @@ CONTAINS
                                              density_full_sol(:) = rtd(:)
                                              CALL dgesv(nrot, 1, schur, nrot, ipiv, density_full_sol, nrot, info)
                                              IF (info == 0) THEN
-                                                density_full_rx_e(:) = MATMUL(response_density_full_exact, density_full_sol)
+                                                density_full_rx_e(:) = &
+                                                   MATMUL(response_exact_physical, density_full_sol) + &
+                                                   MATMUL(response_density_full_exact, density_full_sol)
                                                 CALL project_kpoint_ot_schur_response(density_full_rx_e, &
                                                    occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                                 density_full_z_e(:) = z_exact_physical_trial(:) + density_full_rx_e(:)
@@ -8620,6 +8625,7 @@ CONTAINS
                                           IF (projector_plateau_gap_model_enabled .AND. &
                                               exact_density_plateau_response_ready) THEN
                                              density_plateau_rx_e(:) = &
+                                                MATMUL(response_exact_physical, projector_physical_direct_sol) + &
                                                 MATMUL(response_density_plateau_exact, projector_physical_direct_sol)
                                              CALL project_kpoint_ot_schur_response(density_plateau_rx_e, &
                                                 occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
