@@ -1350,9 +1350,18 @@ CONTAINS
 !> \param first_fractional ...
 !> \param last_occupied ...
 !> \param last_occupied_spin ...
+!> \param first_fractional_spin ...
+!> \param first_fractional_kpoint ...
+!> \param last_occupied_spin_index ...
+!> \param last_occupied_kpoint ...
+!> \param first_fractional_measure ...
+!> \param last_occupied_measure ...
 ! **************************************************************************************************
    SUBROUTINE kpoint_smearing_edge_status(wocc, wkp, smear, nspin, has_weight, &
-                                          first_fractional, last_occupied, last_occupied_spin)
+                                          first_fractional, last_occupied, last_occupied_spin, &
+                                          first_fractional_spin, first_fractional_kpoint, &
+                                          last_occupied_spin_index, last_occupied_kpoint, &
+                                          first_fractional_measure, last_occupied_measure)
 
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: wocc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp
@@ -1361,15 +1370,28 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: has_weight, first_fractional, &
                                                             last_occupied
       LOGICAL, DIMENSION(:), INTENT(OUT), OPTIONAL       :: last_occupied_spin
+      INTEGER, INTENT(OUT), OPTIONAL                     :: first_fractional_spin, &
+                                                            first_fractional_kpoint, &
+                                                            last_occupied_spin_index, &
+                                                            last_occupied_kpoint
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: first_fractional_measure, &
+                                                            last_occupied_measure
 
       INTEGER                                            :: ik, ispin, nmo
-      LOGICAL                                            :: band_occupied
-      REAL(KIND=dp)                                      :: eps_occ, maxocc, weight, weight_threshold
+      LOGICAL                                            :: band_fractional, band_occupied
+      REAL(KIND=dp)                                      :: eps_occ, first_measure, last_measure, &
+                                                            maxocc, weight, weight_threshold
 
       has_weight = .FALSE.
       first_fractional = .FALSE.
       last_occupied = .FALSE.
       IF (PRESENT(last_occupied_spin)) last_occupied_spin(:) = .FALSE.
+      IF (PRESENT(first_fractional_spin)) first_fractional_spin = 0
+      IF (PRESENT(first_fractional_kpoint)) first_fractional_kpoint = 0
+      IF (PRESENT(last_occupied_spin_index)) last_occupied_spin_index = 0
+      IF (PRESENT(last_occupied_kpoint)) last_occupied_kpoint = 0
+      IF (PRESENT(first_fractional_measure)) first_fractional_measure = 0.0_dp
+      IF (PRESENT(last_occupied_measure)) last_occupied_measure = 0.0_dp
 
       IF (.NOT. smear%do_smear) RETURN
 
@@ -1386,12 +1408,30 @@ CONTAINS
             weight = ABS(wkp(ik))
             IF (weight <= weight_threshold) CYCLE
             has_weight = .TRUE.
-            first_fractional = first_fractional .OR. &
-                               weight*ABS(wocc(1, ik, ispin) - maxocc) > weight*eps_occ
-            band_occupied = weight*ABS(wocc(nmo, ik, ispin)) > weight*eps_occ
+            first_measure = weight*ABS(wocc(1, ik, ispin) - maxocc)
+            last_measure = weight*ABS(wocc(nmo, ik, ispin))
+            band_fractional = first_measure > weight*eps_occ
+            IF (band_fractional) THEN
+               first_fractional = .TRUE.
+               IF (PRESENT(first_fractional_measure)) THEN
+                  IF (first_measure > first_fractional_measure) THEN
+                     first_fractional_measure = first_measure
+                     IF (PRESENT(first_fractional_spin)) first_fractional_spin = ispin
+                     IF (PRESENT(first_fractional_kpoint)) first_fractional_kpoint = ik
+                  END IF
+               END IF
+            END IF
+            band_occupied = last_measure > weight*eps_occ
             last_occupied = last_occupied .OR. band_occupied
             IF (band_occupied .AND. PRESENT(last_occupied_spin)) THEN
                IF (ispin <= SIZE(last_occupied_spin)) last_occupied_spin(ispin) = .TRUE.
+            END IF
+            IF (band_occupied .AND. PRESENT(last_occupied_measure)) THEN
+               IF (last_measure > last_occupied_measure) THEN
+                  last_occupied_measure = last_measure
+                  IF (PRESENT(last_occupied_spin_index)) last_occupied_spin_index = ispin
+                  IF (PRESENT(last_occupied_kpoint)) last_occupied_kpoint = ik
+               END IF
             END IF
          END DO
       END DO
@@ -1419,10 +1459,13 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: nao
       LOGICAL, INTENT(OUT)                               :: added_mos_auto_grow
 
-      INTEGER                                            :: ispin, nmo
+      CHARACTER(LEN=256)                                 :: message
+      INTEGER                                            :: ispin, last_occupied_kpoint, &
+                                                            last_occupied_spin_index, nmo
       LOGICAL                                            :: first_fractional, has_weight, &
                                                             last_occupied
       LOGICAL, DIMENSION(nspin)                          :: last_occupied_spin
+      REAL(KIND=dp)                                      :: last_occupied_measure
 
       added_mos_auto_grow = .FALSE.
       IF (.NOT. ANY(added_mos_auto)) RETURN
@@ -1430,7 +1473,10 @@ CONTAINS
 
       CALL kpoint_smearing_edge_status(wocc, wkp, smear, nspin, has_weight, &
                                        first_fractional, last_occupied, &
-                                       last_occupied_spin=last_occupied_spin)
+                                       last_occupied_spin=last_occupied_spin, &
+                                       last_occupied_spin_index=last_occupied_spin_index, &
+                                       last_occupied_kpoint=last_occupied_kpoint, &
+                                       last_occupied_measure=last_occupied_measure)
       IF (.NOT. has_weight) RETURN
 
       nmo = SIZE(wocc, 1)
@@ -1438,9 +1484,12 @@ CONTAINS
          IF (.NOT. added_mos_auto(ispin)) CYCLE
          IF (.NOT. last_occupied_spin(ispin)) CYCLE
          IF (nmo >= nao) THEN
-            CALL cp_abort(__LOCATION__, &
-                          "K-point ADDED_MOS AUTO exhausted the AO basis but the highest band is still occupied. "// &
-                          "Use a larger basis or a lower electronic temperature.")
+            WRITE (message, '(A,I0,A,I0,A,ES12.5,A)') &
+               "K-point ADDED_MOS AUTO exhausted the AO basis but the highest band is still occupied"// &
+               " at spin ", last_occupied_spin_index, ", k-point ", last_occupied_kpoint, &
+               ", weighted occupation ", last_occupied_measure, &
+               ". Use a larger basis or a lower electronic temperature."
+            CALL cp_abort(__LOCATION__, TRIM(message))
          END IF
          added_mos_auto_grow = .TRUE.
          RETURN
@@ -1464,20 +1513,41 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_check_smearing_occupation'
 
-      INTEGER                                            :: handle
+      CHARACTER(LEN=256)                                 :: message
+      INTEGER                                            :: first_fractional_kpoint, &
+                                                            first_fractional_spin, handle, &
+                                                            last_occupied_kpoint, &
+                                                            last_occupied_spin
       LOGICAL                                            :: first_fractional, has_weight, &
                                                             last_occupied
+      REAL(KIND=dp)                                      :: first_fractional_measure, &
+                                                            last_occupied_measure
 
       CALL timeset(routineN, handle)
 
       CALL kpoint_smearing_edge_status(wocc, wkp, smear, nspin, has_weight, &
-                                       first_fractional, last_occupied)
+                                       first_fractional, last_occupied, &
+                                       first_fractional_spin=first_fractional_spin, &
+                                       first_fractional_kpoint=first_fractional_kpoint, &
+                                       last_occupied_spin_index=last_occupied_spin, &
+                                       last_occupied_kpoint=last_occupied_kpoint, &
+                                       first_fractional_measure=first_fractional_measure, &
+                                       last_occupied_measure=last_occupied_measure)
 
-      IF (has_weight .AND. first_fractional) &
-         CALL cp_warn(__LOCATION__, "K-point smearing includes the first band")
-      IF (has_weight .AND. last_occupied) &
-         CALL cp_warn(__LOCATION__, &
-                      "K-point smearing includes the last band => Add more MOs for proper smearing.")
+      IF (has_weight .AND. first_fractional) THEN
+         WRITE (message, '(A,I0,A,I0,A,ES12.5,A)') &
+            "K-point smearing includes the first band at spin ", first_fractional_spin, &
+            ", k-point ", first_fractional_kpoint, ", weighted deviation ", &
+            first_fractional_measure, "."
+         CALL cp_warn(__LOCATION__, TRIM(message))
+      END IF
+      IF (has_weight .AND. last_occupied) THEN
+         WRITE (message, '(A,I0,A,I0,A,ES12.5,A)') &
+            "K-point smearing includes the last band at spin ", last_occupied_spin, &
+            ", k-point ", last_occupied_kpoint, ", weighted occupation ", last_occupied_measure, &
+            " => Add more MOs for proper smearing."
+         CALL cp_warn(__LOCATION__, TRIM(message))
+      END IF
 
       CALL timestop(handle)
 
