@@ -4759,6 +4759,7 @@ CONTAINS
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
             projector_physical_direct_mixed_quality, projector_physical_direct_mixed_weight, &
+            projector_physical_direct_offdiag_mix_weight, &
             projector_physical_direct_shadow_weight, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
             projector_physical_direct_diag_compensation_local_fraction, &
@@ -5630,6 +5631,7 @@ CONTAINS
             projector_physical_direct_mixed_enabled = .FALSE.
             projector_physical_direct_mixed_quality = 0.0_dp
             projector_physical_direct_mixed_weight = 0.0_dp
+            projector_physical_direct_offdiag_mix_weight = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
             projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -7961,6 +7963,27 @@ CONTAINS
                                              projector_physical_direct_delta_diag_avg = &
                                                 projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                           END IF
+                                       END IF
+                                       IF (projector_offdiag_quality_for_selection > &
+                                           EPSILON(projector_offdiag_quality_for_selection)) THEN
+                                          projector_physical_direct_offdiag_mix_weight = MIN( &
+                                             ot_kp_schur_projector_trace_active_max_weight, &
+                                             projector_offdiag_quality_for_selection)
+                                          projector_physical_direct_delta(:, :) = &
+                                             projector_physical_direct_delta(:, :) + &
+                                             projector_physical_direct_offdiag_mix_weight* &
+                                             rot_hessian_projector_physical_offdiag_active(:, :)
+                                          projector_physical_direct_delta(:, :) = 0.5_dp* &
+                                             (projector_physical_direct_delta(:, :) + &
+                                              TRANSPOSE(projector_physical_direct_delta(:, :)))
+                                          projector_physical_direct_delta_diag_avg = 0.0_dp
+                                          DO r = 1, nrot
+                                             projector_physical_direct_delta_diag_avg = &
+                                                projector_physical_direct_delta_diag_avg + &
+                                                projector_physical_direct_delta(r, r)
+                                          END DO
+                                          projector_physical_direct_delta_diag_avg = &
+                                             projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        END IF
                                        schur(:, :) = rot_hessian_coupled(:, :) + &
                                                      projector_coupled_weight* &
@@ -10937,9 +10960,9 @@ CONTAINS
                         projector_physical_response_audit_eval_abs_avg, &
                         projector_physical_response_audit_positive_weight_sum, &
                         projector_physical_response_audit_negative_weight_sum
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),14(1X,ES16.8))') &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),15(1X,ES16.8))') &
                         " OT Schur projector phys direct ready selected dgate promoted mixed "// &
-                        "spromq exp qsel qsplit pgq dq mixq mixw cdrop mgap rratio aratio comp applied_shift:", &
+                        "spromq exp qsel qsplit pgq dq mixq mixw offmix cdrop mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                         projector_physical_direct_shadow_enabled, &
                         projector_physical_direct_promoted, &
@@ -10951,6 +10974,7 @@ CONTAINS
                         projector_physical_direct_density_audit_quality, &
                         projector_physical_direct_mixed_quality, &
                         projector_physical_direct_mixed_weight, &
+                        projector_physical_direct_offdiag_mix_weight, &
                         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_gap, &
                         projector_physical_direct_response_weighted_trust_ratio, &
                         projector_physical_direct_response_abs_trust_ratio, &
