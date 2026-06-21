@@ -147,7 +147,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_advantage_ratio = 1.10_dp, &
                                         ot_kp_schur_projector_response_floor_delta = 3.0E-6_dp, &
                                         ot_kp_schur_projector_response_full_delta = 1.2E-5_dp, &
-                                        ot_kp_schur_density_descent_history_max_scale = 1.75_dp, &
+                                        ot_kp_schur_density_descent_history_max_scale = 2.50_dp, &
                                         ot_kp_schur_projector_response_quality_max_ratio = 1.25_dp, &
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &

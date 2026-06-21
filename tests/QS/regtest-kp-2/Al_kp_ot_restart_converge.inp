@@ -1,8 +1,8 @@
 ! Slow/manual companion to the default k-point OT restart smoke test.
 ! Run after Al_kp_ot_restart_write/read/continue.inp; this input is not listed
 ! in TEST_FILES.toml so the default regtest stays cheap.
-! Local 2026-06 HIGH reference after the default restart smoke: 597 SCF steps,
-! E_total = Mermin = -8.14585274913198 Ha, with no first/last-band
+! Local 2026-06 HIGH reference after the default restart smoke: 504 SCF steps,
+! E_total = Mermin = -8.14585275092344 Ha, with no first/last-band
 ! smearing warnings.
 &GLOBAL
   PRINT_LEVEL HIGH
