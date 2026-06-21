@@ -12968,11 +12968,13 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
-      INTEGER                                            :: i, j, n
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
+      INTEGER                                            :: i, idx, j, n
+      LOGICAL                                            :: same_gauge_cluster, use_projector_fd
       REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, diag_response_shift, &
                                                             gap_tol, occ_curv_sum, occ_jump, occ_tol, physical_slope, &
-                                                            projector_weight, scale, slope_cap
+                                                            projector_fd_step, projector_weight, scale, slope_cap, &
+                                                            work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -12993,6 +12995,37 @@ CONTAINS
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
             CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_slope)
+         use_projector_fd = .FALSE.
+         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
+            work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(work(:, :))))
+            DO j = 1, n
+               DO i = 1, n
+                  same_gauge_cluster = i /= j
+                  IF (same_gauge_cluster) THEN
+                     DO idx = MIN(i, j), MAX(i, j) - 1
+                        IF (ABS(evals(idx + 1) - evals(idx)) > gauge_gap) &
+                           same_gauge_cluster = .FALSE.
+                     END DO
+                  END IF
+                  IF (same_gauge_cluster .AND. ABS(work(i, j)) > work_tol) &
+                     use_projector_fd = .TRUE.
+               END DO
+            END DO
+            IF (use_projector_fd) THEN
+               projector_fd_step = 1.0E-7_dp
+               DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
+               ALLOCATE (occ_mat_p(n, n), occ_mat_m(n, n))
+               CALL dense_history_safe_occ_projector(chc + projector_fd_step*dchc, occupation_numbers, &
+                                                     kpoint_weight, delta, occ_mat_p, occ_curv_channel, &
+                                                     gauge_gap)
+               CALL dense_history_safe_occ_projector(chc - projector_fd_step*dchc, occupation_numbers, &
+                                                     kpoint_weight, delta, occ_mat_m, occ_curv_channel, &
+                                                     gauge_gap)
+               docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
+               DEALLOCATE (occ_mat_p, occ_mat_m)
+               RETURN
+            END IF
+         END IF
          diag_response_shift = 0.0_dp
          IF (PRESENT(occ_curv_channel)) THEN
             occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
@@ -13068,7 +13101,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: allowed_jump, cluster_sum, eval_center, fit_den, &
                                                             fit_num, gap, occ_curv_sum, occ_jump, pair_slope, &
                                                             pair_weight, physical_slope, plateau, shape_sum, &
-                                                            slope_cap, slope_pair, weighted_eval
+                                                            slope_cap, slope_pair
 
          n = SIZE(evals)
          IF (n <= 1) RETURN
@@ -13118,20 +13151,21 @@ CONTAINS
                   END DO
                ELSE
                   ! With no clean pair slope inside a noisy near-degenerate
-                  ! component, retain the fixed-N Mermin curvature shape instead
-                  ! of collapsing the physical occupation response to a flat
-                  ! gauge plateau.
+                  ! component, build the fixed-N Mermin shape from adjacent
+                  ! shared Fermi slopes.  This keeps pure gauge jumps out while
+                  ! retaining a physical off-diagonal occupation response in the
+                  ! whole connected cluster.
                   occ_curv_sum = 0.0_dp
-                  weighted_eval = 0.0_dp
                   DO idx = first, last
                      occ_curv_sum = occ_curv_sum + MAX(0.0_dp, occ_curv_channel(idx))
-                     weighted_eval = weighted_eval + MAX(0.0_dp, occ_curv_channel(idx))*evals(idx)
                   END DO
                   IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
-                     weighted_eval = weighted_eval/occ_curv_sum
-                     DO idx = first, last
-                        occ_mono(idx) = plateau - &
-                                        2.0_dp*MAX(0.0_dp, occ_curv_channel(idx))*(evals(idx) - weighted_eval)
+                     occ_mono(first) = 0.0_dp
+                     DO idx = first + 1, last
+                        slope_pair = kpoint_ot_shared_occ_slope(occ_curv_channel(idx - 1), &
+                                                                 occ_curv_channel(idx))
+                        occ_mono(idx) = occ_mono(idx - 1) - &
+                                        slope_pair*(evals(idx) - evals(idx - 1))
                      END DO
                      shape_sum = SUM(occ_mono(first:last))
                      occ_mono(first:last) = occ_mono(first:last) + &

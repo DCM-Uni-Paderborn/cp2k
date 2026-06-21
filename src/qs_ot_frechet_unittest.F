@@ -6618,8 +6618,8 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, &
                                                             occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active, cluster_sum, err, occ_curv_sum, occ_tol, &
-                                                            shape_err, span, total_err, weighted_eval
+      REAL(KIND=dp)                                      :: active, cluster_sum, err, occ_tol, shape_err, &
+                                                            shape_sum, span, total_err
       REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, occ_curv, occ_filtered, occ_scale
 
       evals(:) = [-0.010000_dp, -0.009982_dp, -0.009960_dp, 0.42_dp]
@@ -6639,9 +6639,13 @@ CONTAINS
       cluster_sum = SUM(occ_filtered(1:3))
       CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_filtered)
 
-      occ_curv_sum = SUM(occ_curv(1:3))
-      weighted_eval = DOT_PRODUCT(occ_curv(1:3), evals(1:3))/occ_curv_sum
-      expected(1:3) = cluster_sum/3.0_dp - 2.0_dp*occ_curv(1:3)*(evals(1:3) - weighted_eval)
+      expected(1) = 0.0_dp
+      DO i = 2, 3
+         expected(i) = expected(i - 1) - &
+                       dense_shared_occ_slope(occ_curv(i - 1), occ_curv(i))*(evals(i) - evals(i - 1))
+      END DO
+      shape_sum = SUM(expected(1:3))
+      expected(1:3) = expected(1:3) + (cluster_sum - shape_sum)/3.0_dp
       expected(4) = occ_scale(4)
       total_err = ABS(SUM(occ_filtered(1:3)) - cluster_sum)
       shape_err = MAXVAL(ABS(occ_filtered(1:3) - expected(1:3)))
@@ -6952,8 +6956,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec
-      REAL(KIND=dp)                                      :: occ_tol
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, occ_mat_m, occ_mat_p, work
+      INTEGER                                            :: i, idx, j, n
+      LOGICAL                                            :: same_gauge_cluster, use_projector_fd
+      REAL(KIND=dp)                                      :: occ_tol, projector_fd_step, work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -6963,10 +6969,37 @@ CONTAINS
       occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
       CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_work)
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
-         ALLOCATE (evec(SIZE(occ_scale), SIZE(occ_scale)), evals(SIZE(occ_scale)))
+         n = SIZE(occ_scale)
+         ALLOCATE (evec(n, n), evals(n), work(n, n))
          CALL diag_complex(chc, evec, evals)
+         work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
+         use_projector_fd = .FALSE.
+         work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(work(:, :))))
+         DO j = 1, n
+            DO i = 1, n
+               same_gauge_cluster = i /= j
+               IF (same_gauge_cluster) THEN
+                  DO idx = MIN(i, j), MAX(i, j) - 1
+                     IF (ABS(evals(idx + 1) - evals(idx)) > gauge_gap) same_gauge_cluster = .FALSE.
+                  END DO
+               END IF
+               IF (same_gauge_cluster .AND. ABS(work(i, j)) > work_tol) &
+                  use_projector_fd = .TRUE.
+            END DO
+         END DO
+         IF (use_projector_fd) THEN
+            projector_fd_step = 1.0E-7_dp
+            ALLOCATE (occ_mat_p(n, n), occ_mat_m(n, n))
+            CALL dense_history_safe_occ_projector_from_chc(chc + projector_fd_step*dchc, occ_scale, &
+                                                           projector_weight, occ_mat_p, occ_curv, gauge_gap)
+            CALL dense_history_safe_occ_projector_from_chc(chc - projector_fd_step*dchc, occ_scale, &
+                                                           projector_weight, occ_mat_m, occ_curv, gauge_gap)
+            docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
+            DEALLOCATE (evec, evals, work, occ_mat_p, occ_mat_m, occ_work)
+            RETURN
+         END IF
          CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
-         DEALLOCATE (evec, evals)
+         DEALLOCATE (evec, evals, work)
       END IF
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap)
@@ -6988,7 +7021,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: allowed_jump, cluster_sum, eval_center, fit_den, &
                                                             fit_num, gap, occ_curv_sum, occ_jump, pair_slope, &
                                                             pair_weight, physical_slope, plateau, shape_sum, &
-                                                            slope_cap, slope_pair, weighted_eval
+                                                            slope_cap, slope_pair
 
       n = SIZE(evals)
       IF (n <= 1) RETURN
@@ -7038,15 +7071,14 @@ CONTAINS
                END DO
             ELSE
                occ_curv_sum = 0.0_dp
-               weighted_eval = 0.0_dp
                DO idx = first, last
                   occ_curv_sum = occ_curv_sum + MAX(0.0_dp, occ_curv(idx))
-                  weighted_eval = weighted_eval + MAX(0.0_dp, occ_curv(idx))*evals(idx)
                END DO
                IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
-                  weighted_eval = weighted_eval/occ_curv_sum
-                  DO idx = first, last
-                     occ_mono(idx) = plateau - 2.0_dp*MAX(0.0_dp, occ_curv(idx))*(evals(idx) - weighted_eval)
+                  occ_mono(first) = 0.0_dp
+                  DO idx = first + 1, last
+                     slope_pair = dense_shared_occ_slope(occ_curv(idx - 1), occ_curv(idx))
+                     occ_mono(idx) = occ_mono(idx - 1) - slope_pair*(evals(idx) - evals(idx - 1))
                   END DO
                   shape_sum = SUM(occ_mono(first:last))
                   occ_mono(first:last) = occ_mono(first:last) + &
