@@ -5267,7 +5267,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: err, gauge_err, mixed_err, mixed_safe, occ_tol, &
                                                             physical_active, physical_err, physical_near_err, &
                                                             raw_gauge, raw_mixed, raw_transitive, safe_gauge, &
-                                                            transitive_err
+                                                            transitive_err, value_err, value_raw
       REAL(KIND=dp), DIMENSION(n)                        :: occ_cluster, occ_curv, occ_curv_mixed, occ_mixed, &
                                                             occ_filtered, occ_near_physical, occ_plateau, &
                                                             occ_scale, evals_ref
@@ -5325,6 +5325,18 @@ CONTAINS
       gauge_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
       raw_gauge = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
       safe_gauge = MAXVAL(ABS(docc_safe(:, :)))
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      value_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_p)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_m)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      value_raw = MAXVAL(ABS(docc_fd(:, :)))
 
       occ_curv_mixed(:) = occ_curv(:)
       occ_curv_mixed(2) = 1.0E-5_dp
@@ -5395,21 +5407,21 @@ CONTAINS
       docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
       transitive_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
 
-      err = MAX(gauge_err, mixed_err, physical_err, physical_near_err, transitive_err)
+      err = MAX(gauge_err, mixed_err, physical_err, physical_near_err, transitive_err, value_err)
       IF (err > tol .OR. raw_gauge < active_tol .OR. raw_mixed < active_tol .OR. &
           raw_transitive < active_tol .OR. &
           safe_gauge >= 0.20_dp*raw_gauge .OR. mixed_safe >= 0.20_dp*raw_mixed .OR. &
-          physical_active < active_tol) THEN
+          physical_active < active_tol .OR. value_raw < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
-            "failed with error/gerr/raw/safe/merr/raw_mixed/mixed/physical/near/transitive", &
+         WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
+            "failed with error/gerr/raw/safe/merr/raw_mixed/mixed/physical/near/transitive/value/raw_value", &
             err, gauge_err, raw_gauge, safe_gauge, mixed_err, raw_mixed, mixed_safe, &
-            physical_active, physical_near_err, transitive_err
+            physical_active, physical_near_err, transitive_err, value_err, value_raw
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
-            "OK with error/gerr/raw/safe/merr/raw_mixed/mixed/physical/near/transitive", &
+         WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
+            "OK with error/gerr/raw/safe/merr/raw_mixed/mixed/physical/near/transitive/value/raw_value", &
             err, gauge_err, raw_gauge, safe_gauge, mixed_err, raw_mixed, mixed_safe, &
-            physical_active, physical_near_err, transitive_err
+            physical_active, physical_near_err, transitive_err, value_err, value_raw
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_gauge_physical_split
@@ -5525,6 +5537,47 @@ CONTAINS
       DEALLOCATE (evec, weighted_evec, evals)
 
    END SUBROUTINE dense_spectral_occ_projector_from_chc
+
+! **************************************************************************************************
+!> \brief Production-like history-safe occupation projector for one dense CHC fixture.
+! **************************************************************************************************
+   SUBROUTINE dense_history_safe_occ_projector_from_chc(chc, occ_scale, projector_weight, occ_mat, &
+                                                        occ_curv, gauge_gap)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
+      INTEGER                                            :: i, n
+      REAL(KIND=dp)                                      :: occ_tol
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
+
+      n = SIZE(chc, 1)
+      ALLOCATE (evec(n, n), weighted_evec(n, n), evals(n), occ_work(n))
+
+      CALL diag_complex(chc, evec, evals)
+      occ_work(:) = occ_scale(:)
+      IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
+         occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+         CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_work)
+         CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
+      END IF
+      weighted_evec(:, :) = evec(:, :)
+      DO i = 1, n
+         weighted_evec(:, i) = occ_work(i)*weighted_evec(:, i)
+      END DO
+      occ_mat(:, :) = projector_weight*MATMUL(weighted_evec, CONJG(TRANSPOSE(evec)))
+      DO i = 1, n
+         occ_mat(i, i) = CMPLX(REAL(occ_mat(i, i), KIND=dp) + &
+                               (1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+
+      DEALLOCATE (evec, weighted_evec, evals, occ_work)
+
+   END SUBROUTINE dense_history_safe_occ_projector_from_chc
 
 ! **************************************************************************************************
 !> \brief Shared pair slope for near-degenerate occupation-gauge filtering.
