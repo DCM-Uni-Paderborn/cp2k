@@ -116,6 +116,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density mixed-metric descent recovery", 5.0E-13_dp, nfail)
    CALL check_projector_density_mixed_metric_coupled_schur( &
       "complex projector density mixed-metric coupled Schur", 5.0E-13_dp, nfail)
+   CALL check_projector_response_mixed_metric_scale( &
+      "complex projector response mixed-metric scale", 5.0E-13_dp, nfail)
    CALL check_projector_density_metric_coupled_schur( &
       "complex projector density metric-coupled Schur", 5.0E-13_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
@@ -4251,6 +4253,66 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_mixed_metric_coupled_schur
+
+! **************************************************************************************************
+!> \brief Projector-response candidate scaling must ignore fixed-N/tether gauge energy shifts.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_response_mixed_metric_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nchannel = 2
+
+      INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: drop_euclidean, drop_mixed, err, gauge_dot, &
+                                                            gdotp, norm_energy_euclidean, norm_energy_mixed, &
+                                                            norm_euclidean, norm_mixed, rotation_gdot, &
+                                                            rotation_norm, scale_euclidean, scale_mixed
+      REAL(KIND=dp), DIMENSION(ne)                       :: gauge, grad_e, occ_curv, response, response_physical, &
+                                                            tether_curv
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.045_dp, 0.026_dp, 0.018_dp, 0.010_dp, 0.004_dp, 0.003_dp]
+      tether_curv(:) = [0.008_dp, 0.012_dp, 0.010_dp, 0.006_dp, 0.009_dp, 0.005_dp]
+      grad_e(:) = [0.24_dp, -0.14_dp, -0.10_dp, 0.11_dp, -0.04_dp, -0.07_dp]
+      response_physical(:) = [0.10_dp, -0.06_dp, -0.04_dp, 0.03_dp, -0.01_dp, -0.02_dp]
+      gauge(:) = 0.80_dp
+      response(:) = response_physical(:) + gauge(:)
+      rotation_gdot = 0.04_dp
+      rotation_norm = 0.20_dp
+
+      gauge_dot = DOT_PRODUCT(grad_e, gauge)
+      gdotp = DOT_PRODUCT(grad_e, response) + rotation_gdot
+      norm_energy_euclidean = DOT_PRODUCT(response, response)
+      CALL dense_projected_mixed_metric(response, response, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, norm_energy_mixed)
+      norm_energy_mixed = MAX(0.0_dp, norm_energy_mixed)
+      norm_euclidean = norm_energy_euclidean + rotation_norm
+      norm_mixed = norm_energy_mixed + rotation_norm
+      scale_euclidean = gdotp/MAX(norm_euclidean, EPSILON(norm_euclidean))
+      scale_mixed = gdotp/MAX(norm_mixed, EPSILON(norm_mixed))
+      drop_euclidean = 0.5_dp*scale_euclidean*gdotp
+      drop_mixed = 0.5_dp*scale_mixed*gdotp
+
+      err = ABS(gauge_dot)
+      IF (err > tol .OR. gdotp <= 0.0_dp .OR. norm_energy_mixed >= 0.05_dp*norm_energy_euclidean .OR. &
+          scale_mixed <= 8.0_dp*scale_euclidean .OR. drop_mixed <= 8.0_dp*drop_euclidean) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/enorm/mnorm/escale/mscale", err, norm_energy_euclidean, norm_energy_mixed, &
+            scale_euclidean, scale_mixed
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/enorm/mnorm/escale/mscale", err, norm_energy_euclidean, norm_energy_mixed, &
+            scale_euclidean, scale_mixed
+      END IF
+
+   END SUBROUTINE check_projector_response_mixed_metric_scale
 
 ! **************************************************************************************************
 !> \brief Hidden density-gap response must enter the coupled fixed-N Schur curvature.
