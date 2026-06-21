@@ -5207,19 +5207,22 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 3, nrot = 4
 
       INTEGER                                            :: i, imode
-      REAL(KIND=dp)                                      :: active, applied_weight_diag, applied_weight_ref, &
-                                                            applied_weight_rot, base_weight, c, cross_drop_diag, &
-                                                            cross_drop_rot, drop_diag, drop_ref, drop_rot, err, &
-                                                            eval_abs_avg, mode_norm, mode_weight, neg_balance, &
-                                                            neg_coeff_diag, neg_coeff_rot, neg_drop_diag, &
-                                                            neg_drop_rot, neg_fraction_diag, neg_fraction_ref, &
+      REAL(KIND=dp)                                      :: active, applied_weight_dead, applied_weight_diag, &
+                                                            applied_weight_ref, applied_weight_rot, base_weight, c, &
+                                                            cross_drop_dead, cross_drop_diag, cross_drop_rot, &
+                                                            dead_active, drop_dead, drop_diag, drop_ref, drop_rot, &
+                                                            err, eval_abs_avg, mode_norm, mode_weight, neg_balance, &
+                                                            neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, &
+                                                            neg_drop_dead, neg_drop_diag, neg_drop_rot, &
+                                                            neg_fraction_dead, neg_fraction_diag, neg_fraction_ref, &
                                                             neg_fraction_rot, neg_norm_diag, &
                                                             neg_weight_sum, pos_coeff_diag, pos_coeff_rot, &
-                                                            pos_drop_diag, pos_drop_rot, pos_weight_sum, &
+                                                            pos_coeff_dead, pos_drop_dead, pos_drop_diag, pos_drop_rot, &
+                                                            pos_weight_sum, raw_neg_fraction_dead, &
                                                             raw_neg_fraction_diag, raw_neg_fraction_ref, &
                                                             raw_neg_fraction_rot, raw_neg_sum, response_total_sum, &
                                                             s, spectral_weight, step_weight_sum, target_neg, target_pos
-      REAL(KIND=dp), DIMENSION(ne)                       :: cand_diag, cand_ref, cand_rot, corr_ref, curv, &
+      REAL(KIND=dp), DIMENSION(ne)                       :: cand_dead, cand_diag, cand_ref, cand_rot, corr_ref, curv, &
                                                             energy_base, grad_e, mode_rx, response_base, &
                                                             response_neg_ref, response_pos_ref
       REAL(KIND=dp), DIMENSION(nrot)                     :: eval_diag, step_diag, step_rot
@@ -5325,9 +5328,18 @@ CONTAINS
                                                     drop_rot, neg_fraction_rot, raw_neg_fraction_rot, &
                                                     pos_drop_rot, neg_drop_rot, cross_drop_rot, &
                                                     pos_coeff_rot, neg_coeff_rot)
+      CALL dense_projector_modal_response_candidate(rot_hessian, delta_diag, step_diag, response_exact_diag, &
+                                                    response_exact_diag, curv, grad_e, energy_base, &
+                                                    response_base, base_weight, cand_dead, applied_weight_dead, &
+                                                    drop_dead, neg_fraction_dead, raw_neg_fraction_dead, &
+                                                    pos_drop_dead, neg_drop_dead, cross_drop_dead, &
+                                                    pos_coeff_dead, neg_coeff_dead)
+      dead_active = MAXVAL(ABS(cand_dead(:) - response_base(:)))
 
       err = MAXVAL(ABS(cand_diag(:) - cand_ref(:)))
       err = MAX(err, MAXVAL(ABS(cand_rot(:) - cand_ref(:))))
+      err = MAX(err, dead_active, drop_dead, raw_neg_fraction_dead, &
+                neg_fraction_dead, pos_drop_dead, neg_drop_dead, cross_drop_dead)
       err = MAX(err, ABS(drop_diag - drop_ref), ABS(drop_rot - drop_ref))
       err = MAX(err, ABS(drop_diag - (pos_drop_diag + neg_drop_diag + cross_drop_diag)), &
                 ABS(drop_rot - (pos_drop_rot + neg_drop_rot + cross_drop_rot)))
@@ -5344,11 +5356,13 @@ CONTAINS
       IF (err > tol .OR. active < 1.0E-4_dp .OR. raw_neg_fraction_ref < 0.1_dp .OR. &
           raw_neg_fraction_ref > 0.9_dp .OR. neg_fraction_ref <= 0.0_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/active/rawneg/corrneg", err, active, raw_neg_fraction_ref, neg_fraction_ref
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/dead/rawneg/corrneg", &
+            err, active, dead_active, raw_neg_fraction_ref, neg_fraction_ref
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/active/rawneg/corrneg", err, active, raw_neg_fraction_ref, neg_fraction_ref
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/dead/rawneg/corrneg", err, active, dead_active, &
+            raw_neg_fraction_ref, neg_fraction_ref
       END IF
 
    END SUBROUTINE check_projector_modal_response_sign_model

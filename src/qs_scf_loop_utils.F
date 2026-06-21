@@ -8850,13 +8850,14 @@ CONTAINS
                                                    projector_physical_direct_rx_e(:)
                                              END IF
                                              IF (projector_plateau_gap_model_enabled .AND. &
-                                                 exact_density_plateau_response_ready) THEN
+                                                 exact_density_plateau_response_ready .AND. &
+                                                 exact_density_full_response_ready) THEN
                                                 direct_pg_base_e(:) = projector_physical_direct_rx_e(:)
                                                 CALL audit_kpoint_ot_projector_response_modes( &
                                                    rot_hessian_projector_physical_offdiag, &
                                                    rot_hessian_projector_physical_offdiag_plateau, &
-                                                   projector_physical_direct_sol, response_density_exact, &
-                                                   response_density_plateau_exact, curv, occ_curv, tether_curv, &
+                                                   projector_physical_direct_sol, response_density_plateau_exact, &
+                                                   response_density_full_exact, curv, occ_curv, tether_curv, &
                                                    occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
                                                    projector_coupled_weight, &
                                                    residual_delta, projector_mode_history_quality, &
