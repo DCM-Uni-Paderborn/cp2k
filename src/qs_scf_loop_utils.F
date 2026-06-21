@@ -4594,6 +4594,8 @@ CONTAINS
                                                                        projector_offdiag_candidate_ready, &
                                                                        projector_offdiag_candidate_selected, &
                                                                         projector_density_full_audit_enabled, &
+                                                                        projector_physical_direct_promoted, &
+                                                                        projector_physical_direct_shadow_enabled, &
                                                                         projector_physical_shadow_enabled, &
                                                                         projector_response_candidate_ready, &
                                                                         projector_response_candidate_selected, &
@@ -5056,6 +5058,26 @@ CONTAINS
                                                    local_ot_env(1)%schur_projector_physical_quality_samples > 0 .OR. &
                                                    local_ot_env(1)%schur_projector_mode_quality_samples >= &
                                                    ot_kp_schur_calibration_min_samples
+            projector_physical_direct_promoted = .FALSE.
+            IF (new_search_point .AND. &
+                local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
+                ot_kp_schur_calibration_min_samples .AND. &
+                local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum > &
+                EPSILON(local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum) .AND. &
+                local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum > 0.0_dp) THEN
+               projector_physical_direct_promoted = &
+                  local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum/ &
+                  local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum >= &
+                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                  local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema >= &
+                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                  local_ot_env(1)%schur_projector_physical_direct_selected_quality >= &
+                  0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+            END IF
+            projector_physical_direct_shadow_enabled = projector_physical_shadow_enabled
+            IF (new_search_point) &
+               projector_physical_direct_shadow_enabled = projector_physical_direct_shadow_enabled .OR. &
+                                                          projector_physical_direct_promoted
             projector_density_full_audit_enabled = projector_physical_shadow_enabled
             IF (logger%iter_info%print_level >= high_print_level) &
                projector_density_full_audit_enabled = .TRUE.
@@ -5254,7 +5276,9 @@ CONTAINS
          response_trust_factor = 1.0_dp
          CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_delta)
          residual_delta = MAX(residual_delta, 0.0_dp)
-         projector_plateau_gap_model_enabled = projector_physical_shadow_enabled .AND. &
+         projector_plateau_gap_model_enabled = &
+                                               (projector_physical_shadow_enabled .OR. &
+                                                projector_physical_direct_shadow_enabled) .AND. &
                                                residual_delta <= ot_kp_schur_projector_response_full_delta
          projector_physical_direct_spectral_enabled = .FALSE.
          IF (local_ot_env(1)%schur_projector_spectral_candidate_enabled) &
@@ -7435,7 +7459,7 @@ CONTAINS
                                              END IF
                                              IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
                                                  exact_physical_response_ready .AND. &
-                                                 projector_physical_shadow_enabled .AND. &
+                                                 projector_physical_direct_shadow_enabled .AND. &
                                                 projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                                                  projector_offdiag_history_quality >= &
                                                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
@@ -8734,7 +8758,7 @@ CONTAINS
                                                 projector_physical_direct_response_cross_drop, &
                                                 projector_physical_direct_response_positive_coeff, &
                                                 projector_physical_direct_response_negative_coeff)
-                                             IF (projector_physical_shadow_enabled) &
+                                             IF (projector_physical_direct_shadow_enabled) &
                                                 CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                    rot_hessian_projector_physical_diagref, &
                                                    projector_physical_direct_sol, response_exact_raw, &
@@ -9608,7 +9632,10 @@ CONTAINS
                      response_weighted_trust_ratio = density_full_response_weighted_trust_ratio
                      dense_expected_drop = density_full_expected_drop
                   END IF
-                  IF (.NOT. attempt_failed .AND. local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
+                  IF (.NOT. attempt_failed .AND. &
+                      (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
+                       (projector_physical_direct_candidate_used .AND. &
+                        projector_physical_direct_promoted)) .AND. &
                       projector_physical_candidate_ready .AND. &
                       projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                       projector_physical_expected_drop >= &
@@ -9943,7 +9970,10 @@ CONTAINS
                      response_weighted_trust_ratio = density_full_response_weighted_trust_ratio
                      dense_expected_drop = density_full_expected_drop
                   END IF
-                  IF (.NOT. attempt_failed .AND. local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
+                  IF (.NOT. attempt_failed .AND. &
+                      (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
+                       (projector_physical_direct_candidate_used .AND. &
+                        projector_physical_direct_promoted)) .AND. &
                       projector_physical_candidate_ready .AND. &
                       projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                       projector_physical_expected_drop >= &
@@ -10668,10 +10698,12 @@ CONTAINS
                         projector_physical_response_audit_eval_abs_avg, &
                         projector_physical_response_audit_positive_weight_sum, &
                         projector_physical_response_audit_negative_weight_sum
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),13(1X,ES16.8))') &
-                        " OT Schur projector phys direct ready selected mixed exp qsel qsplit pgq dq mixq mixw "// &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),13(1X,ES16.8))') &
+                        " OT Schur projector phys direct ready selected dgate promoted mixed exp qsel qsplit pgq dq mixq mixw "// &
                         "cdrop mgap rratio aratio comp applied_shift:", &
                         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+                        projector_physical_direct_shadow_enabled, &
+                        projector_physical_direct_promoted, &
                         projector_physical_direct_mixed_enabled, &
                         projector_physical_direct_expected_drop, projector_physical_direct_quality_for_selection, &
                         projector_physical_trace_split_quality, &
