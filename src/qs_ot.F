@@ -31,6 +31,7 @@ MODULE qs_ot
                                               dbcsr_scale_by_vector
    USE cp_dbcsr_diag,                   ONLY: cp_dbcsr_heevd,&
                                               cp_dbcsr_syevd
+   USE cp_log_handling,                 ONLY: cp_to_string
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
    USE preconditioner,                  ONLY: apply_preconditioner
@@ -892,9 +893,14 @@ CONTAINS
                              para_env=qs_ot_env%para_env, &
                              blacs_env=qs_ot_env%blacs_env)
 
+         IF (MINVAL(eig) <= 0.0_dp) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "Complex REF overlap not positive definite. "// &
+                          "Minimum/maximum eigenvalue: "// &
+                          TRIM(ADJUSTL(cp_to_string(MINVAL(eig))))//" "// &
+                          TRIM(ADJUSTL(cp_to_string(MAXVAL(eig)))))
+         END IF
          DO i = 1, k
-            IF (eig(i) <= 0.0_dp) &
-               CPABORT("Complex REF overlap not positive definite")
             IF (eig(i) < 1.0E-8_dp) THEN
                fun(i) = 0.0_dp
             ELSE
