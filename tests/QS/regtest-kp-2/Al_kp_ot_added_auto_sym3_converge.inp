@@ -2,11 +2,11 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-06 HIGH reference after the guarded AUTO tail trigger:
+! Local 2026-06 HIGH reference after the residual-aware AUTO tail trigger:
 ! initial AUTO buffer 4, grow to 8 after 347 OT steps, grow to 16 after another
-! 80 OT steps, then final convergence in 31 OT steps. Total
-! scf_env_do_scf_inner_loop calls: 458.
-! E_total = Mermin = -8.15998707495955 Ha, with no first/last-band warnings
+! 20 OT steps, then final convergence in 82 OT steps. Total
+! scf_env_do_scf_inner_loop calls: 449.
+! E_total = Mermin = -8.15998677735605 Ha, with no first/last-band warnings
 ! and no AUTO-exhausted warning.
 &GLOBAL
   PRINT_LEVEL HIGH

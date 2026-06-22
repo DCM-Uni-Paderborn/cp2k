@@ -127,12 +127,15 @@ MODULE qs_scf_loop_utils
                                         ot_kp_fermi_window_outer_factor = 8.0_dp, &
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 80, &
+                                  ot_kp_added_mos_auto_tail_probe_steps = 20, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
                                         ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_min = 50.0_dp, &
-                                        ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp
+                                        ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp, &
+                                        ot_kp_added_mos_auto_strong_tail_basis_frac = 2.0E-1_dp, &
+                                        ot_kp_added_mos_auto_strong_tail_frac = 2.5E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_max_attempts = 12
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_floor = 1.0E-10_dp, &
                                         ot_kp_ref_overlap_guard_backtrack = 5.0E-1_dp
@@ -1262,7 +1265,8 @@ CONTAINS
       INTEGER                                            :: edge_start, edge_width, ikpoint, imo, ispin, local_kpoint, &
                                                             nmo, trigger_step
       LOGICAL                                            :: active_tail, basis_limited, basis_probe_limited, edge_limited, &
-                                                            expandable, residual_ready
+                                                            expandable, residual_ready, residual_tail_limited, &
+                                                            strong_tail_limited
       REAL(KIND=dp)                                      :: basis_signal, edge_fractional_weight, edge_grow_limit, &
                                                             fractional_weight, grow_limit, max_edge_fractional, &
                                                             max_fractional, maxocc, occ_tail, edge_tail_occ_min, &
@@ -1281,8 +1285,9 @@ CONTAINS
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(scf_control%eps_scf))
       edge_grow_limit = MAX(grow_limit, ot_kp_added_mos_auto_edge_probe_factor*SQRT(scf_control%eps_scf))
 
-      trigger_step = ot_kp_added_mos_auto_tail_min_steps
+      trigger_step = MIN(ot_kp_added_mos_auto_tail_min_steps, ot_kp_added_mos_auto_tail_probe_steps)
       IF (scf_env%iter_count < trigger_step) RETURN
+      trigger_step = ot_kp_added_mos_auto_tail_min_steps
 
       NULLIFY (occupation_numbers, para_env_inter_kp, wkp)
       CALL get_kpoint_info(kpoints, wkp=wkp, para_env_inter_kp=para_env_inter_kp)
@@ -1337,6 +1342,17 @@ CONTAINS
       basis_probe_limited = basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
       residual_ready = scf_env%iter_delta <= grow_limit
+      residual_tail_limited = residual_ready .AND. &
+                              basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
+                              ot_kp_added_mos_auto_basis_signal_min
+      strong_tail_limited = max_fractional >= ot_kp_added_mos_auto_strong_tail_frac .AND. &
+                            basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
+                            ot_kp_added_mos_auto_basis_signal_min .AND. &
+                            scf_env%iter_delta <= edge_grow_limit
+      IF (basis_probe_limited .OR. strong_tail_limited) THEN
+         trigger_step = MIN(trigger_step, ot_kp_added_mos_auto_tail_probe_steps)
+      END IF
+      IF (scf_env%iter_count < trigger_step) RETURN
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -1349,7 +1365,8 @@ CONTAINS
 
       IF (.NOT. expandable) RETURN
       IF (.NOT. active_tail) RETURN
-      IF (.NOT. residual_ready .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited) THEN
+      IF (.NOT. residual_tail_limited .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited .AND. &
+          .NOT. strong_tail_limited) THEN
          IF (.NOT. edge_limited) RETURN
          IF (scf_env%iter_delta > edge_grow_limit) RETURN
       END IF
