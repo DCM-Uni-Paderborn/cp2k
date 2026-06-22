@@ -5419,6 +5419,8 @@ CONTAINS
                                                                        projector_plateau_gap_model_enabled, &
                                                                        projector_offdiag_candidate_ready, &
                                                                        projector_offdiag_candidate_selected, &
+                                                                       projector_offdiag_candidate_inactive, &
+                                                                       projector_inactive_offdiag_candidate_ready, &
                                                                         projector_density_full_audit_enabled, &
                                                                         projector_physical_direct_promoted, &
                                                                         projector_physical_direct_shadow_enabled, &
@@ -5528,10 +5530,40 @@ CONTAINS
                      projector_offdiag_reference_drop, projector_offdiag_expected_drop_ratio, &
                      projector_offdiag_response_abs_step, projector_offdiag_response_abs_trust_ratio, &
                      projector_offdiag_response_weighted_step, projector_offdiag_response_weighted_trust_ratio, &
+                     projector_inactive_offdiag_direction_scale, &
+                     projector_inactive_offdiag_expected_drop, &
+                     projector_inactive_offdiag_gdot_energy, &
+                     projector_inactive_offdiag_gdot_rotation, projector_inactive_offdiag_gdotp, &
                      projector_inactive_offdiag_history_quality, &
                      projector_inactive_offdiag_history_response_ratio, &
                      projector_inactive_offdiag_history_trust, &
                      projector_inactive_offdiag_quality_for_selection, &
+                     projector_inactive_offdiag_model_calibrated_drop, &
+                     projector_inactive_offdiag_model_drop, projector_inactive_offdiag_model_gap, &
+                     projector_inactive_offdiag_model_gap_drop, &
+                     projector_inactive_offdiag_model_gap_ratio, &
+                     projector_inactive_offdiag_model_gap_trust, &
+                     projector_inactive_offdiag_norm_energy, &
+                     projector_inactive_offdiag_norm_rotation, projector_inactive_offdiag_normp, &
+                     projector_inactive_offdiag_norm_ratio, &
+                     projector_inactive_offdiag_response_abs_step, &
+                     projector_inactive_offdiag_response_abs_trust_ratio, &
+                     projector_inactive_offdiag_response_weighted_step, &
+                     projector_inactive_offdiag_response_weighted_trust_ratio, &
+                     projector_inactive_offdiag_scale_quality, &
+                     projector_inactive_offdiag_trust_quality, &
+                     projector_inactive_offdiag_trust_scale, &
+                     projector_inactive_offdiag_unit_abs_step, &
+                     projector_inactive_offdiag_unit_weighted_step, &
+                     projector_inactive_offdiag_response_correction_drop, &
+                     projector_inactive_offdiag_response_correction_negative, &
+                     projector_inactive_offdiag_response_negative_coeff, &
+                     projector_inactive_offdiag_response_positive_coeff, &
+                     projector_inactive_offdiag_response_cross_drop, &
+                     projector_inactive_offdiag_response_negative_drop, &
+                     projector_inactive_offdiag_response_positive_drop, &
+                     projector_inactive_offdiag_response_raw_negative_fraction, &
+                     projector_inactive_offdiag_response_weight, &
                      projector_offdiag_scale_quality, projector_offdiag_trust_quality, &
                      projector_offdiag_trust_scale, projector_offdiag_unit_abs_step, &
                      projector_offdiag_unit_weighted_step, &
@@ -5925,11 +5957,14 @@ CONTAINS
                                                             projector_physical_direct_spectral_rx_e, &
                                                             projector_physical_direct_sol, &
                                                             projector_physical_direct_spectral_sol, &
-                                                                     projector_physical_direct_z_e, &
-                                                                     projector_physical_direct_spectral_z_e, &
-                                                                     projector_offdiag_rx_e, projector_offdiag_sol, &
-                                                                     projector_offdiag_z_e, &
-                                                                     projector_physical_model_e, projector_physical_rx_e, &
+                                                                             projector_physical_direct_z_e, &
+                                                                             projector_physical_direct_spectral_z_e, &
+                                                                             projector_offdiag_rx_e, projector_offdiag_sol, &
+                                                                             projector_offdiag_z_e, &
+                                                                             projector_inactive_offdiag_rx_e, &
+                                                                             projector_inactive_offdiag_sol, &
+                                                                             projector_inactive_offdiag_z_e, &
+                                                                             projector_physical_model_e, projector_physical_rx_e, &
                                                             projector_physical_sol, projector_physical_z_e, &
                                                             projector_response_rx_e, projector_response_sol, &
                                                             projector_response_z_e, rot_floor, row_floor_shift, rtd, &
@@ -6126,17 +6161,20 @@ CONTAINS
                                z_density_plateau_trial(ne), z_density_full_audit_trial(ne), &
                                z_density_full_global_trial(ne), &
                                z_density_full_trial(ne), z_density_trial(ne), &
-                               projector_physical_direct_z_e(ne), &
-                               projector_physical_direct_spectral_z_e(ne), &
-                               projector_offdiag_rx_e(ne), projector_offdiag_z_e(ne), &
-                               projector_physical_model_e(ne), projector_physical_rx_e(ne), &
+                                       projector_physical_direct_z_e(ne), &
+                                       projector_physical_direct_spectral_z_e(ne), &
+                                       projector_offdiag_rx_e(ne), projector_offdiag_z_e(ne), &
+                                       projector_inactive_offdiag_rx_e(ne), &
+                                       projector_inactive_offdiag_z_e(ne), &
+                                       projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                                projector_physical_z_e(ne), projector_response_rx_e(ne), &
                                projector_response_z_e(ne), split_z_e(ne))
             ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), accepted_sol(nrot), &
                                constrained_sol(nrot), &
-                               projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
-                               projector_physical_direct_spectral_sol(nrot), &
-                               projector_offdiag_sol(nrot), projector_response_sol(nrot), split_sol(nrot), &
+                                       projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
+                                       projector_physical_direct_spectral_sol(nrot), &
+                                       projector_offdiag_sol(nrot), projector_inactive_offdiag_sol(nrot), &
+                                       projector_response_sol(nrot), split_sol(nrot), &
                                var_projector_active_weight(nrot), &
                                var_projector_weight(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
@@ -6206,9 +6244,11 @@ CONTAINS
                               projector_physical_direct_spectral_model_e(:) = 0.0_dp
                               projector_physical_direct_spectral_rx_e(:) = 0.0_dp
                               projector_physical_direct_z_e(:) = 0.0_dp
-                              projector_physical_direct_spectral_z_e(:) = 0.0_dp
-                     projector_offdiag_rx_e(:) = 0.0_dp
-                     projector_offdiag_z_e(:) = 0.0_dp
+                                      projector_physical_direct_spectral_z_e(:) = 0.0_dp
+                             projector_offdiag_rx_e(:) = 0.0_dp
+                             projector_offdiag_z_e(:) = 0.0_dp
+                             projector_inactive_offdiag_rx_e(:) = 0.0_dp
+                             projector_inactive_offdiag_z_e(:) = 0.0_dp
                      projector_physical_direct_curv_eval(:) = 0.0_dp
             z_density_trial(:) = 0.0_dp
             z_density_plateau_trial(:) = 0.0_dp
@@ -6228,9 +6268,10 @@ CONTAINS
                               sol(:) = 0.0_dp
                               accepted_sol(:) = 0.0_dp
                               projector_physical_direct_sol(:) = 0.0_dp
-                              projector_physical_direct_spectral_sol(:) = 0.0_dp
-                              projector_physical_sol(:) = 0.0_dp
-                     projector_offdiag_sol(:) = 0.0_dp
+                                      projector_physical_direct_spectral_sol(:) = 0.0_dp
+                                      projector_physical_sol(:) = 0.0_dp
+                             projector_offdiag_sol(:) = 0.0_dp
+                             projector_inactive_offdiag_sol(:) = 0.0_dp
                      projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
          energy_cross_density(:, :) = 0.0_dp
@@ -6392,13 +6433,46 @@ CONTAINS
                   projector_offdiag_gdot_energy = 0.0_dp
                   projector_offdiag_gdot_rotation = 0.0_dp
                   projector_offdiag_gdotp = 0.0_dp
-                  projector_offdiag_history_quality = 0.0_dp
-                  projector_offdiag_history_response_ratio = 0.0_dp
-                  projector_offdiag_history_trust = 0.0_dp
-                  projector_inactive_offdiag_history_quality = 0.0_dp
-                  projector_inactive_offdiag_history_response_ratio = 0.0_dp
-                  projector_inactive_offdiag_history_trust = 0.0_dp
-                  projector_inactive_offdiag_quality_for_selection = 0.0_dp
+                          projector_offdiag_history_quality = 0.0_dp
+                          projector_offdiag_history_response_ratio = 0.0_dp
+                          projector_offdiag_history_trust = 0.0_dp
+                          projector_inactive_offdiag_direction_scale = 0.0_dp
+                          projector_inactive_offdiag_expected_drop = 0.0_dp
+                          projector_inactive_offdiag_gdot_energy = 0.0_dp
+                          projector_inactive_offdiag_gdot_rotation = 0.0_dp
+                          projector_inactive_offdiag_gdotp = 0.0_dp
+                          projector_inactive_offdiag_history_quality = 0.0_dp
+                          projector_inactive_offdiag_history_response_ratio = 0.0_dp
+                          projector_inactive_offdiag_history_trust = 0.0_dp
+                          projector_inactive_offdiag_quality_for_selection = 0.0_dp
+                          projector_inactive_offdiag_model_calibrated_drop = 0.0_dp
+                          projector_inactive_offdiag_model_drop = 0.0_dp
+                          projector_inactive_offdiag_model_gap = 0.0_dp
+                          projector_inactive_offdiag_model_gap_drop = 0.0_dp
+                          projector_inactive_offdiag_model_gap_ratio = 0.0_dp
+                          projector_inactive_offdiag_model_gap_trust = HUGE(1.0_dp)
+                          projector_inactive_offdiag_norm_energy = 0.0_dp
+                          projector_inactive_offdiag_norm_rotation = 0.0_dp
+                          projector_inactive_offdiag_normp = 0.0_dp
+                          projector_inactive_offdiag_norm_ratio = 0.0_dp
+                          projector_inactive_offdiag_response_abs_step = 0.0_dp
+                          projector_inactive_offdiag_response_abs_trust_ratio = 0.0_dp
+                          projector_inactive_offdiag_response_weighted_step = 0.0_dp
+                          projector_inactive_offdiag_response_weighted_trust_ratio = 0.0_dp
+                          projector_inactive_offdiag_scale_quality = 0.0_dp
+                          projector_inactive_offdiag_trust_quality = 1.0_dp
+                          projector_inactive_offdiag_trust_scale = 1.0_dp
+                          projector_inactive_offdiag_unit_abs_step = 0.0_dp
+                          projector_inactive_offdiag_unit_weighted_step = 0.0_dp
+                          projector_inactive_offdiag_response_correction_drop = 0.0_dp
+                          projector_inactive_offdiag_response_correction_negative = 0.0_dp
+                          projector_inactive_offdiag_response_negative_coeff = 0.0_dp
+                          projector_inactive_offdiag_response_positive_coeff = 0.0_dp
+                          projector_inactive_offdiag_response_cross_drop = 0.0_dp
+                          projector_inactive_offdiag_response_negative_drop = 0.0_dp
+                          projector_inactive_offdiag_response_positive_drop = 0.0_dp
+                          projector_inactive_offdiag_response_raw_negative_fraction = 0.0_dp
+                          projector_inactive_offdiag_response_weight = 0.0_dp
                   projector_offdiag_model_calibrated_drop = 0.0_dp
                   projector_offdiag_model_drop = 0.0_dp
                   projector_offdiag_model_gap = 0.0_dp
@@ -6877,10 +6951,12 @@ CONTAINS
                      projector_physical_direct_spectral_candidate_ready = .FALSE.
                      projector_physical_direct_spectral_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_probe_ready = .FALSE.
-                     projector_physical_direct_spectral_probe_selected = .FALSE.
-                     projector_offdiag_candidate_ready = .FALSE.
-                     projector_offdiag_candidate_selected = .FALSE.
-                     projector_response_candidate_ready = .FALSE.
+                             projector_physical_direct_spectral_probe_selected = .FALSE.
+                             projector_offdiag_candidate_ready = .FALSE.
+                             projector_offdiag_candidate_selected = .FALSE.
+                             projector_offdiag_candidate_inactive = .FALSE.
+                             projector_inactive_offdiag_candidate_ready = .FALSE.
+                             projector_response_candidate_ready = .FALSE.
             projector_response_candidate_selected = .FALSE.
          split_candidate_ready = .FALSE.
             split_candidate_selected = .FALSE.
@@ -7039,13 +7115,16 @@ CONTAINS
                            density_plateau_rx_e, density_plateau_z_e, &
                                     projector_physical_direct_rx_e, &
                                     projector_physical_direct_schur_eval, &
-                                    projector_physical_direct_z_e, projector_physical_model_e, &
-                                    projector_offdiag_rx_e, projector_offdiag_z_e, &
-                                    projector_physical_rx_e, projector_physical_z_e, &
+                                            projector_physical_direct_z_e, projector_physical_model_e, &
+                                            projector_offdiag_rx_e, projector_offdiag_z_e, &
+                                            projector_inactive_offdiag_rx_e, &
+                                            projector_inactive_offdiag_z_e, &
+                                            projector_physical_rx_e, projector_physical_z_e, &
                                     projector_response_rx_e, projector_response_z_e, split_z_e)
                         DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, constrained_sol, &
-                                    projector_physical_direct_sol, &
-                                    projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
+                                            projector_physical_direct_sol, &
+                                            projector_physical_sol, projector_offdiag_sol, &
+                                            projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                                     var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_density_full, &
@@ -8265,10 +8344,12 @@ CONTAINS
                projector_physical_direct_trace_full_diag_quad = 0.0_dp
                projector_physical_direct_trace_full_free_quad = 0.0_dp
                projector_physical_direct_trace_full_norm = 0.0_dp
-               projector_physical_direct_trace_full_quad = 0.0_dp
-               projector_physical_direct_trace_ratio = 0.0_dp
-               projector_offdiag_candidate_ready = .FALSE.
-                        projector_offdiag_direction_scale = 0.0_dp
+                       projector_physical_direct_trace_full_quad = 0.0_dp
+                       projector_physical_direct_trace_ratio = 0.0_dp
+                       projector_offdiag_candidate_ready = .FALSE.
+                       projector_offdiag_candidate_inactive = .FALSE.
+                       projector_inactive_offdiag_candidate_ready = .FALSE.
+                                projector_offdiag_direction_scale = 0.0_dp
                         projector_offdiag_expected_drop = 0.0_dp
                         projector_offdiag_gdot_energy = 0.0_dp
                         projector_offdiag_gdot_rotation = 0.0_dp
@@ -8298,9 +8379,42 @@ CONTAINS
                         projector_offdiag_response_positive_coeff = 0.0_dp
                         projector_offdiag_response_cross_drop = 0.0_dp
                         projector_offdiag_response_negative_drop = 0.0_dp
-                        projector_offdiag_response_positive_drop = 0.0_dp
-                        projector_offdiag_response_raw_negative_fraction = 0.0_dp
-                        projector_offdiag_response_weight = 0.0_dp
+                                projector_offdiag_response_positive_drop = 0.0_dp
+                                projector_offdiag_response_raw_negative_fraction = 0.0_dp
+                                projector_offdiag_response_weight = 0.0_dp
+                                projector_inactive_offdiag_direction_scale = 0.0_dp
+                                projector_inactive_offdiag_expected_drop = 0.0_dp
+                                projector_inactive_offdiag_gdot_energy = 0.0_dp
+                                projector_inactive_offdiag_gdot_rotation = 0.0_dp
+                                projector_inactive_offdiag_gdotp = 0.0_dp
+                                projector_inactive_offdiag_model_calibrated_drop = 0.0_dp
+                                projector_inactive_offdiag_model_drop = 0.0_dp
+                                projector_inactive_offdiag_model_gap = 0.0_dp
+                                projector_inactive_offdiag_model_gap_drop = 0.0_dp
+                                projector_inactive_offdiag_model_gap_ratio = 0.0_dp
+                                projector_inactive_offdiag_model_gap_trust = HUGE(1.0_dp)
+                                projector_inactive_offdiag_norm_energy = 0.0_dp
+                                projector_inactive_offdiag_norm_rotation = 0.0_dp
+                                projector_inactive_offdiag_normp = 0.0_dp
+                                projector_inactive_offdiag_norm_ratio = 0.0_dp
+                                projector_inactive_offdiag_response_abs_step = 0.0_dp
+                                projector_inactive_offdiag_response_abs_trust_ratio = 0.0_dp
+                                projector_inactive_offdiag_response_weighted_step = 0.0_dp
+                                projector_inactive_offdiag_response_weighted_trust_ratio = 0.0_dp
+                                projector_inactive_offdiag_scale_quality = 0.0_dp
+                                projector_inactive_offdiag_trust_quality = 1.0_dp
+                                projector_inactive_offdiag_trust_scale = 1.0_dp
+                                projector_inactive_offdiag_unit_abs_step = 0.0_dp
+                                projector_inactive_offdiag_unit_weighted_step = 0.0_dp
+                                projector_inactive_offdiag_response_correction_drop = 0.0_dp
+                                projector_inactive_offdiag_response_correction_negative = 0.0_dp
+                                projector_inactive_offdiag_response_negative_coeff = 0.0_dp
+                                projector_inactive_offdiag_response_positive_coeff = 0.0_dp
+                                projector_inactive_offdiag_response_cross_drop = 0.0_dp
+                                projector_inactive_offdiag_response_negative_drop = 0.0_dp
+                                projector_inactive_offdiag_response_positive_drop = 0.0_dp
+                                projector_inactive_offdiag_response_raw_negative_fraction = 0.0_dp
+                                projector_inactive_offdiag_response_weight = 0.0_dp
                         projector_physical_expected_drop = 0.0_dp
                projector_physical_model_calibrated_drop = 0.0_dp
                projector_physical_model_drop = 0.0_dp
@@ -8811,11 +8925,245 @@ CONTAINS
                                                 EPSILON(projector_physical_model_drop) .AND. &
                                                 projector_physical_response_weighted_step <= response_trust .AND. &
                                                 projector_physical_response_abs_step <= response_abs_trust
-                                          END IF
-                                                END IF
-                                             END IF
-                                             IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
-                                                 exact_physical_response_ready .AND. &
+                                                           END IF
+                                                        END IF
+                                                     END IF
+                                                     IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                                                         exact_physical_response_ready .AND. &
+                                                         projector_physical_direct_shadow_enabled .AND. &
+                                                         projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                                         projector_inactive_offdiag_quality_for_selection >= &
+                                                         ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                         projector_inactive_offdiag_history_trust > &
+                                                         EPSILON(projector_inactive_offdiag_history_trust)) THEN
+                                                        projector_physical_direct_delta(:, :) = rot_hessian(:, :) + &
+                                                           rot_hessian_projector_physical_offdiag(:, :) - &
+                                                           rot_hessian_projector_physical_offdiag_active(:, :)
+                                                        response_physical_model(:, :) = response_exact_physical(:, :)
+                                                        IF (exact_density_response_ready) &
+                                                           response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                                                          response_density_exact(:, :)
+                                                        projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
+                                                        CALL project_kpoint_ot_schur_response(projector_physical_model_e, &
+                                                           occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                                        CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
+                                                           projector_physical_direct_delta, sol, response_exact_raw, &
+                                                           response_physical_model, curv, occ_curv, tether_curv, &
+                                                           occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
+                                                           projector_coupled_weight, residual_delta, &
+                                                           projector_inactive_offdiag_history_quality, &
+                                                           projector_inactive_offdiag_history_trust, &
+                                                           projector_inactive_offdiag_history_response_ratio, grad_e, &
+                                                           z_e + rx_e, rx_e, projector_inactive_offdiag_rx_e, &
+                                                           projector_inactive_offdiag_response_weight, &
+                                                           projector_inactive_offdiag_response_correction_drop, &
+                                                           projector_inactive_offdiag_response_correction_negative, &
+                                                           projector_inactive_offdiag_response_raw_negative_fraction, &
+                                                           projector_inactive_offdiag_response_positive_drop, &
+                                                           projector_inactive_offdiag_response_negative_drop, &
+                                                           projector_inactive_offdiag_response_cross_drop, &
+                                                           projector_inactive_offdiag_response_positive_coeff, &
+                                                           projector_inactive_offdiag_response_negative_coeff)
+                                                        IF (projector_inactive_offdiag_response_weight > &
+                                                            EPSILON(projector_inactive_offdiag_response_weight)) THEN
+                                                           projector_inactive_offdiag_z_e(:) = &
+                                                              z_e(:) + projector_inactive_offdiag_rx_e(:)
+                                                           projector_inactive_offdiag_gdot_energy = &
+                                                              DOT_PRODUCT(grad_e, projector_inactive_offdiag_z_e)
+                                                           projector_inactive_offdiag_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
+                                                           projector_inactive_offdiag_norm_energy = &
+                                                              DOT_PRODUCT(projector_inactive_offdiag_z_e, &
+                                                                          projector_inactive_offdiag_z_e)
+                                                           projector_inactive_offdiag_norm_rotation = DOT_PRODUCT(sol, sol)
+                                                           projector_inactive_offdiag_gdotp = &
+                                                              projector_inactive_offdiag_gdot_energy + &
+                                                              projector_inactive_offdiag_gdot_rotation
+                                                           projector_inactive_offdiag_normp = &
+                                                              projector_inactive_offdiag_norm_energy + &
+                                                              projector_inactive_offdiag_norm_rotation
+                                                           projector_inactive_offdiag_norm_ratio = &
+                                                              projector_inactive_offdiag_normp/MAX(gnorm, EPSILON(1.0_dp))
+                                                           IF (projector_inactive_offdiag_gdotp > 0.0_dp .AND. &
+                                                               projector_inactive_offdiag_normp > &
+                                                               EPSILON(projector_inactive_offdiag_normp) .AND. &
+                                                               projector_inactive_offdiag_norm_ratio <= max_norm_ratio) THEN
+                                                              projector_inactive_offdiag_unit_abs_step = &
+                                                                 MAXVAL(ABS(projector_inactive_offdiag_rx_e))
+                                                              CALL para_env_inter_kp%max(projector_inactive_offdiag_unit_abs_step)
+                                                              projector_inactive_offdiag_unit_weighted_step = &
+                                                                 kpoint_ot_weighted_response_step( &
+                                                                    projector_inactive_offdiag_rx_e, curv, curv_projection_sum)
+                                                              projector_inactive_offdiag_trust_scale = 1.0_dp
+                                                              IF (response_trust > EPSILON(response_trust) .AND. &
+                                                                  projector_inactive_offdiag_unit_weighted_step > &
+                                                                  EPSILON(projector_inactive_offdiag_unit_weighted_step)) &
+                                                                 projector_inactive_offdiag_trust_scale = &
+                                                                    MIN(projector_inactive_offdiag_trust_scale, &
+                                                                        0.8_dp*response_trust/ &
+                                                                        projector_inactive_offdiag_unit_weighted_step)
+                                                              IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                                  projector_inactive_offdiag_unit_abs_step > &
+                                                                  EPSILON(projector_inactive_offdiag_unit_abs_step)) &
+                                                                 projector_inactive_offdiag_trust_scale = &
+                                                                    MIN(projector_inactive_offdiag_trust_scale, &
+                                                                        0.8_dp*response_abs_trust/ &
+                                                                        projector_inactive_offdiag_unit_abs_step)
+                                                              projector_inactive_offdiag_direction_scale = &
+                                                                 MIN(1.0_dp, projector_inactive_offdiag_trust_scale, &
+                                                                     projector_inactive_offdiag_gdotp/ &
+                                                                     MAX(projector_inactive_offdiag_normp, &
+                                                                         EPSILON(projector_inactive_offdiag_normp)))
+                                                              projector_inactive_offdiag_scale_quality = &
+                                                                 kpoint_ot_schur_scale_quality( &
+                                                                    projector_inactive_offdiag_direction_scale, &
+                                                                    schur_min_coupled_scale)
+                                                              projector_inactive_offdiag_z_e(:) = &
+                                                                 projector_inactive_offdiag_direction_scale* &
+                                                                 projector_inactive_offdiag_z_e(:)
+                                                              projector_inactive_offdiag_sol(:) = &
+                                                                 projector_inactive_offdiag_direction_scale*sol(:)
+                                                              projector_inactive_offdiag_model_drop = &
+                                                                 projector_inactive_offdiag_direction_scale* &
+                                                                 projector_inactive_offdiag_gdotp - &
+                                                                 0.5_dp*projector_inactive_offdiag_direction_scale* &
+                                                                 projector_inactive_offdiag_direction_scale* &
+                                                                 projector_inactive_offdiag_normp
+                                                              projector_inactive_offdiag_response_abs_step = &
+                                                                 projector_inactive_offdiag_direction_scale* &
+                                                                 projector_inactive_offdiag_unit_abs_step
+                                                              projector_inactive_offdiag_response_weighted_step = &
+                                                                 projector_inactive_offdiag_direction_scale* &
+                                                                 projector_inactive_offdiag_unit_weighted_step
+                                                              projector_inactive_offdiag_model_gap = &
+                                                                 projector_inactive_offdiag_direction_scale* &
+                                                                 MAXVAL(ABS(projector_physical_model_e - &
+                                                                            projector_inactive_offdiag_rx_e))
+                                                              projector_inactive_offdiag_model_gap_drop = &
+                                                                 kpoint_ot_response_mismatch_drop( &
+                                                                    projector_inactive_offdiag_rx_e, &
+                                                                    projector_physical_model_e, curv, &
+                                                                    projector_inactive_offdiag_direction_scale)
+                                                              projector_inactive_offdiag_model_calibrated_drop = &
+                                                                 MAX(0.0_dp, projector_inactive_offdiag_model_drop - &
+                                                                             projector_inactive_offdiag_model_gap_drop)
+                                                              projector_inactive_offdiag_model_gap_trust = &
+                                                                 schur_model_gap_factor*response_trust
+                                                              IF (projector_inactive_offdiag_model_gap_trust > &
+                                                                  EPSILON(projector_inactive_offdiag_model_gap_trust)) &
+                                                                 projector_inactive_offdiag_model_gap_ratio = &
+                                                                    projector_inactive_offdiag_model_gap/ &
+                                                                    projector_inactive_offdiag_model_gap_trust
+                                                              IF (response_trust > EPSILON(response_trust)) &
+                                                                 projector_inactive_offdiag_response_weighted_trust_ratio = &
+                                                                    projector_inactive_offdiag_response_weighted_step/ &
+                                                                    response_trust
+                                                              IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                                                 projector_inactive_offdiag_response_abs_trust_ratio = &
+                                                                    projector_inactive_offdiag_response_abs_step/ &
+                                                                    response_abs_trust
+                                                              projector_inactive_offdiag_trust_quality = &
+                                                                 kpoint_ot_schur_trust_quality( &
+                                                                    projector_inactive_offdiag_response_weighted_trust_ratio, &
+                                                                    projector_inactive_offdiag_response_abs_trust_ratio, &
+                                                                    projector_inactive_offdiag_model_gap_ratio)
+                                                              IF (projector_inactive_offdiag_direction_scale < &
+                                                                  schur_min_coupled_scale) &
+                                                                 projector_inactive_offdiag_model_calibrated_drop = &
+                                                                    projector_inactive_offdiag_scale_quality* &
+                                                                    projector_inactive_offdiag_model_calibrated_drop
+                                                              projector_inactive_offdiag_expected_drop = &
+                                                                 kpoint_ot_schur_expected_drop( &
+                                                                    projector_inactive_offdiag_model_calibrated_drop, &
+                                                                    projector_inactive_offdiag_quality_for_selection, &
+                                                                    projector_inactive_offdiag_trust_quality)
+                                                              projector_inactive_offdiag_candidate_ready = &
+                                                                 projector_inactive_offdiag_model_calibrated_drop > &
+                                                                 EPSILON(projector_inactive_offdiag_model_drop) .AND. &
+                                                                 projector_inactive_offdiag_response_weighted_step <= &
+                                                                 response_trust .AND. &
+                                                                 projector_inactive_offdiag_response_abs_step <= &
+                                                                 response_abs_trust
+                                                           END IF
+                                                        END IF
+                                                        IF (projector_inactive_offdiag_candidate_ready .AND. &
+                                                            projector_inactive_offdiag_expected_drop > &
+                                                            EPSILON(projector_inactive_offdiag_expected_drop) .AND. &
+                                                            (.NOT. projector_offdiag_candidate_ready .OR. &
+                                                             projector_inactive_offdiag_expected_drop > &
+                                                             projector_offdiag_expected_drop)) THEN
+                                                           projector_offdiag_candidate_ready = .TRUE.
+                                                           projector_offdiag_candidate_inactive = .TRUE.
+                                                           projector_offdiag_direction_scale = &
+                                                              projector_inactive_offdiag_direction_scale
+                                                           projector_offdiag_expected_drop = &
+                                                              projector_inactive_offdiag_expected_drop
+                                                           projector_offdiag_gdot_energy = &
+                                                              projector_inactive_offdiag_gdot_energy
+                                                           projector_offdiag_gdot_rotation = &
+                                                              projector_inactive_offdiag_gdot_rotation
+                                                           projector_offdiag_gdotp = projector_inactive_offdiag_gdotp
+                                                           projector_offdiag_model_calibrated_drop = &
+                                                              projector_inactive_offdiag_model_calibrated_drop
+                                                           projector_offdiag_model_drop = &
+                                                              projector_inactive_offdiag_model_drop
+                                                           projector_offdiag_model_gap = &
+                                                              projector_inactive_offdiag_model_gap
+                                                           projector_offdiag_model_gap_drop = &
+                                                              projector_inactive_offdiag_model_gap_drop
+                                                           projector_offdiag_model_gap_ratio = &
+                                                              projector_inactive_offdiag_model_gap_ratio
+                                                           projector_offdiag_model_gap_trust = &
+                                                              projector_inactive_offdiag_model_gap_trust
+                                                           projector_offdiag_norm_energy = &
+                                                              projector_inactive_offdiag_norm_energy
+                                                           projector_offdiag_norm_rotation = &
+                                                              projector_inactive_offdiag_norm_rotation
+                                                           projector_offdiag_normp = projector_inactive_offdiag_normp
+                                                           projector_offdiag_norm_ratio = &
+                                                              projector_inactive_offdiag_norm_ratio
+                                                           projector_offdiag_response_abs_step = &
+                                                              projector_inactive_offdiag_response_abs_step
+                                                           projector_offdiag_response_abs_trust_ratio = &
+                                                              projector_inactive_offdiag_response_abs_trust_ratio
+                                                           projector_offdiag_response_weighted_step = &
+                                                              projector_inactive_offdiag_response_weighted_step
+                                                           projector_offdiag_response_weighted_trust_ratio = &
+                                                              projector_inactive_offdiag_response_weighted_trust_ratio
+                                                           projector_offdiag_scale_quality = &
+                                                              projector_inactive_offdiag_scale_quality
+                                                           projector_offdiag_trust_quality = &
+                                                              projector_inactive_offdiag_trust_quality
+                                                           projector_offdiag_trust_scale = &
+                                                              projector_inactive_offdiag_trust_scale
+                                                           projector_offdiag_unit_abs_step = &
+                                                              projector_inactive_offdiag_unit_abs_step
+                                                           projector_offdiag_unit_weighted_step = &
+                                                              projector_inactive_offdiag_unit_weighted_step
+                                                           projector_offdiag_response_correction_drop = &
+                                                              projector_inactive_offdiag_response_correction_drop
+                                                           projector_offdiag_response_correction_negative = &
+                                                              projector_inactive_offdiag_response_correction_negative
+                                                           projector_offdiag_response_negative_coeff = &
+                                                              projector_inactive_offdiag_response_negative_coeff
+                                                           projector_offdiag_response_positive_coeff = &
+                                                              projector_inactive_offdiag_response_positive_coeff
+                                                           projector_offdiag_response_cross_drop = &
+                                                              projector_inactive_offdiag_response_cross_drop
+                                                           projector_offdiag_response_negative_drop = &
+                                                              projector_inactive_offdiag_response_negative_drop
+                                                           projector_offdiag_response_positive_drop = &
+                                                              projector_inactive_offdiag_response_positive_drop
+                                                           projector_offdiag_response_raw_negative_fraction = &
+                                                              projector_inactive_offdiag_response_raw_negative_fraction
+                                                           projector_offdiag_response_weight = &
+                                                              projector_inactive_offdiag_response_weight
+                                                           projector_offdiag_rx_e(:) = projector_inactive_offdiag_rx_e(:)
+                                                           projector_offdiag_z_e(:) = projector_inactive_offdiag_z_e(:)
+                                                           projector_offdiag_sol(:) = projector_inactive_offdiag_sol(:)
+                                                        END IF
+                                                     END IF
+                                                     IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                                                         exact_physical_response_ready .AND. &
                                                  projector_physical_direct_shadow_enabled .AND. &
                                                 projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                                                  projector_offdiag_history_quality >= &
@@ -12158,6 +12506,8 @@ CONTAINS
                   IF (projector_physical_direct_candidate_selected) selected_flavor = 35
                   IF (projector_physical_direct_spectral_candidate_selected) selected_flavor = 36
                   IF (projector_offdiag_candidate_selected) selected_flavor = 37
+                  IF (projector_offdiag_candidate_selected .AND. &
+                      projector_offdiag_candidate_inactive) selected_flavor = 41
                END IF
                accepted_model_drop = model_drop
                accepted_model_calibrated_drop = model_calibrated_drop
@@ -12797,23 +13147,30 @@ CONTAINS
                      plateau_gap_mode_quad_abs_ratio, &
                      plateau_gap_mode_positive_quad, &
                      plateau_gap_mode_negative_quad
-                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),17(1X,ES16.8))') &
-                              " OT Schur projector offdiag-dP response ready selected direct exp refdrop eratio qsel "// &
-                              "hq htrust hrratio cdrop mgap "// &
-                              "rratio aratio weight sneg rneg pdrop ndrop xdrop:", &
-                              projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
-                              projector_physical_direct_candidate_selected, &
-                              projector_offdiag_expected_drop, projector_offdiag_reference_drop, &
-                              projector_offdiag_expected_drop_ratio, &
-                              projector_offdiag_quality_for_selection, projector_offdiag_history_quality, &
-                              projector_offdiag_history_trust, projector_offdiag_history_response_ratio, &
-                              projector_offdiag_model_calibrated_drop, projector_offdiag_model_gap, &
-                              projector_offdiag_response_weighted_trust_ratio, &
-                              projector_offdiag_response_abs_trust_ratio, projector_offdiag_response_weight, &
-                              projector_offdiag_response_correction_negative, &
-                              projector_offdiag_response_raw_negative_fraction, &
-                              projector_offdiag_response_positive_drop, projector_offdiag_response_negative_drop, &
-                              projector_offdiag_response_cross_drop
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),22(1X,ES16.8))') &
+                     " OT Schur projector offdiag-dP response ready selected direct inactive iready "// &
+                     "exp refdrop eratio qsel "// &
+                     "hq htrust hrratio cdrop mgap "// &
+                     "rratio aratio weight sneg rneg pdrop ndrop xdrop iqsel ihq ihtrust ihrratio iexp:", &
+                     projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
+                     projector_physical_direct_candidate_selected, &
+                     projector_offdiag_candidate_inactive, projector_inactive_offdiag_candidate_ready, &
+                     projector_offdiag_expected_drop, projector_offdiag_reference_drop, &
+                     projector_offdiag_expected_drop_ratio, &
+                     projector_offdiag_quality_for_selection, projector_offdiag_history_quality, &
+                     projector_offdiag_history_trust, projector_offdiag_history_response_ratio, &
+                     projector_offdiag_model_calibrated_drop, projector_offdiag_model_gap, &
+                     projector_offdiag_response_weighted_trust_ratio, &
+                     projector_offdiag_response_abs_trust_ratio, projector_offdiag_response_weight, &
+                     projector_offdiag_response_correction_negative, &
+                     projector_offdiag_response_raw_negative_fraction, &
+                     projector_offdiag_response_positive_drop, projector_offdiag_response_negative_drop, &
+                     projector_offdiag_response_cross_drop, &
+                     projector_inactive_offdiag_quality_for_selection, &
+                     projector_inactive_offdiag_history_quality, &
+                     projector_inactive_offdiag_history_trust, &
+                     projector_inactive_offdiag_history_response_ratio, &
+                     projector_inactive_offdiag_expected_drop
                            WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                               " OT Schur projector physical diag-ref Hessian diag delta_diag abs_avg delta_max "// &
                      "gap_diag gap_avg gap_max trace_balance:", &
@@ -13842,14 +14199,17 @@ CONTAINS
                                           projector_physical_direct_spectral_rx_e, &
                                           projector_physical_direct_z_e, &
                                           projector_physical_direct_spectral_z_e, &
-                                          projector_offdiag_rx_e, projector_offdiag_z_e, &
-                                 projector_physical_model_e, projector_physical_rx_e, &
+                                                  projector_offdiag_rx_e, projector_offdiag_z_e, &
+                                                  projector_inactive_offdiag_rx_e, &
+                                                  projector_inactive_offdiag_z_e, &
+                                         projector_physical_model_e, projector_physical_rx_e, &
                                  projector_physical_z_e, &
                                  projector_response_rx_e, projector_response_z_e, split_z_e)
                               DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, constrained_sol, &
                                           projector_physical_direct_sol, &
-                                          projector_physical_direct_spectral_sol, &
-                                          projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
+                                                  projector_physical_direct_spectral_sol, &
+                                                  projector_physical_sol, projector_offdiag_sol, &
+                                                  projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                                  var_projector_active_weight, var_projector_weight)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_physical, &
