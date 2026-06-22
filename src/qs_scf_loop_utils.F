@@ -155,8 +155,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
                                         ot_kp_schur_projector_response_advantage_ratio = 1.10_dp, &
-                                        ot_kp_schur_projector_spectral_probe_advantage_ratio = 1.10_dp, &
-                                        ot_kp_schur_projector_spectral_probe_quality_min = 3.0E-1_dp, &
+                                        ot_kp_schur_projector_spectral_probe_quality_min = 1.0E-1_dp, &
                                         ot_kp_schur_projector_spectral_probe_trust_fraction = 7.5E-1_dp, &
                                         ot_kp_schur_projector_response_floor_delta = 3.0E-6_dp, &
                                         ot_kp_schur_projector_response_full_delta = 1.2E-5_dp, &
@@ -9840,36 +9839,34 @@ CONTAINS
                                        IF (info == 0) THEN
                                           IF (projector_physical_direct_spectral_enabled) THEN
                                              projected_term = DOT_PRODUCT(rtd, projector_physical_direct_sol)
-                                             IF (projected_term <= 0.0_dp .OR. projected_term /= projected_term) THEN
-                                                row_floor = MAX(0.0_dp, projector_physical_direct_rot_floor_min)
-                                                row_floor = MAX(row_floor, SQRT(EPSILON(1.0_dp))* &
-                                                                 MAX(1.0_dp, &
-                                                                     MAXVAL(ABS(projector_physical_direct_schur_eval))))
-                                                rhs(:) = 0.0_dp
-                                                DO r = 1, nrot
-                                                   IF (projector_physical_direct_schur_eval(r) <= row_floor) CYCLE
-                                                   rx_shift = DOT_PRODUCT(projector_physical_direct_schur_vec(:, r), rtd)
-                                                   rhs(:) = rhs(:) + &
-                                                      (rx_shift/projector_physical_direct_schur_eval(r))* &
-                                                      projector_physical_direct_schur_vec(:, r)
-                                                END DO
-                                                projector_physical_direct_spectral_dot = DOT_PRODUCT(rtd, rhs)
-                                                projector_physical_direct_spectral_norm = DOT_PRODUCT(rhs, rhs)
-                                                projector_physical_direct_spectral_ready = &
-                                                   projector_physical_direct_spectral_dot > &
-                                                   EPSILON(projector_physical_direct_spectral_dot) .AND. &
-                                                   projector_physical_direct_spectral_norm > &
-                                                   EPSILON(projector_physical_direct_spectral_norm)
-                                                IF (projector_physical_direct_spectral_ready) &
-                                                   projector_physical_direct_spectral_sol(:) = rhs(:)
-                                                IF (logger%iter_info%print_level >= high_print_level) &
-                                                   WRITE (cp_logger_get_default_unit_nr(logger), &
-                                                          '(A,5(1X,ES16.8))') &
-                                                      " OT Schur projector phys direct spectral rescue dot fdot norm floor emin:", &
-                                                      projected_term, projector_physical_direct_spectral_dot, &
-                                                      projector_physical_direct_spectral_norm, row_floor, &
-                                                      projector_physical_direct_schur_eval_min
-                                             END IF
+                                             row_floor = MAX(0.0_dp, projector_physical_direct_rot_floor_min)
+                                             row_floor = MAX(row_floor, SQRT(EPSILON(1.0_dp))* &
+                                                              MAX(1.0_dp, &
+                                                                  MAXVAL(ABS(projector_physical_direct_schur_eval))))
+                                             rhs(:) = 0.0_dp
+                                             DO r = 1, nrot
+                                                IF (projector_physical_direct_schur_eval(r) <= row_floor) CYCLE
+                                                rx_shift = DOT_PRODUCT(projector_physical_direct_schur_vec(:, r), rtd)
+                                                rhs(:) = rhs(:) + &
+                                                   (rx_shift/projector_physical_direct_schur_eval(r))* &
+                                                   projector_physical_direct_schur_vec(:, r)
+                                             END DO
+                                             projector_physical_direct_spectral_dot = DOT_PRODUCT(rtd, rhs)
+                                             projector_physical_direct_spectral_norm = DOT_PRODUCT(rhs, rhs)
+                                             projector_physical_direct_spectral_ready = &
+                                                projector_physical_direct_spectral_dot > &
+                                                EPSILON(projector_physical_direct_spectral_dot) .AND. &
+                                                projector_physical_direct_spectral_norm > &
+                                                EPSILON(projector_physical_direct_spectral_norm)
+                                             IF (projector_physical_direct_spectral_ready) &
+                                                projector_physical_direct_spectral_sol(:) = rhs(:)
+                                             IF (logger%iter_info%print_level >= high_print_level) &
+                                                WRITE (cp_logger_get_default_unit_nr(logger), &
+                                                       '(A,5(1X,ES16.8))') &
+                                                   " OT Schur projector phys direct spectral subspace dot fdot norm floor emin:", &
+                                                   projected_term, projector_physical_direct_spectral_dot, &
+                                                   projector_physical_direct_spectral_norm, row_floor, &
+                                                   projector_physical_direct_schur_eval_min
                                           END IF
                                           projector_physical_direct_sol(:) = &
                                              projector_physical_direct_history_scale*projector_physical_direct_sol(:)
@@ -10220,7 +10217,8 @@ CONTAINS
                                                    0.5_dp*ot_kp_schur_projector_spectral_probe_quality_min .AND. &
                                                    local_ot_env(1)%schur_projector_spectral_dot_ema > 0.0_dp .AND. &
                                                    local_ot_env(1)%schur_projector_spectral_norm_ema > 0.0_dp .AND. &
-                                                   local_ot_env(1)%schur_projector_spectral_emin_ema < 0.0_dp .AND. &
+                                                   local_ot_env(1)%schur_projector_spectral_floor_ema > &
+                                                   EPSILON(local_ot_env(1)%schur_projector_spectral_floor_ema) .AND. &
                                                    projector_physical_direct_spectral_response_weighted_step <= &
                                                    ot_kp_schur_projector_spectral_probe_trust_fraction*response_trust .AND. &
                                                    projector_physical_direct_spectral_response_abs_step <= &
@@ -12125,10 +12123,7 @@ CONTAINS
                         projector_physical_direct_spectral_expected_drop >= &
                         ot_kp_schur_projector_response_advantage_ratio* &
                         MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .OR. &
-                       (projector_physical_direct_spectral_probe_ready .AND. &
-                        projector_physical_direct_spectral_expected_drop >= &
-                        ot_kp_schur_projector_spectral_probe_advantage_ratio* &
-                        MAX(dense_expected_drop, EPSILON(dense_expected_drop))))) THEN
+                       projector_physical_direct_spectral_probe_ready)) THEN
                      projector_physical_direct_spectral_candidate_selected = .TRUE.
                      projector_physical_direct_spectral_probe_selected = &
                         projector_physical_direct_spectral_probe_ready .AND. &
@@ -12564,10 +12559,7 @@ CONTAINS
                         projector_physical_direct_spectral_expected_drop >= &
                         ot_kp_schur_projector_response_advantage_ratio* &
                         MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .OR. &
-                       (projector_physical_direct_spectral_probe_ready .AND. &
-                        projector_physical_direct_spectral_expected_drop >= &
-                        ot_kp_schur_projector_spectral_probe_advantage_ratio* &
-                        MAX(dense_expected_drop, EPSILON(dense_expected_drop))))) THEN
+                       projector_physical_direct_spectral_probe_ready)) THEN
                      projector_physical_direct_spectral_candidate_selected = .TRUE.
                      projector_physical_direct_spectral_probe_selected = &
                         projector_physical_direct_spectral_probe_ready .AND. &
