@@ -202,6 +202,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector component filter", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_fixed_n_cluster_shape( &
       "history-safe occupation-projector fixed-N cluster shape", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_covariant_fd( &
+      "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -8982,6 +8984,140 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_fixed_n_cluster_shape
+
+! **************************************************************************************************
+!> \brief Check that the history-safe dP model is covariant under a complex REF-basis gauge.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_covariant_fd(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, &
+                                                            docc_back, docc_fd, docc_ref, &
+                                                            docc_rot, docc_raw, occ_mat_m, &
+                                                            occ_mat_p, q
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, cov_err, diag_gap, fd_err, &
+                                                            occ_sum, raw_noise, ref_fd_err, &
+                                                            shift_mu
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected_diag, occ_curv, &
+                                                            occ_scale, shift
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, -0.009960_dp, 0.39_dp]
+      occ_scale(:) = [1.22_dp, 0.47_dp, 0.13_dp, 0.05_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.032_dp, 0.006_dp]
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc_eig(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc_eig(1, 1) = CMPLX(0.19_dp, 0.0_dp, KIND=dp)
+      dchc_eig(2, 2) = CMPLX(-0.07_dp, 0.0_dp, KIND=dp)
+      dchc_eig(3, 3) = CMPLX(0.04_dp, 0.0_dp, KIND=dp)
+      dchc_eig(4, 4) = CMPLX(0.02_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.24_dp, -0.18_dp, KIND=dp)
+      dchc_eig(2, 3) = CMPLX(-0.16_dp, 0.11_dp, KIND=dp)
+      dchc_eig(1, 3) = CMPLX(0.09_dp, 0.08_dp, KIND=dp)
+      dchc_eig(2, 4) = CMPLX(-0.04_dp, 0.03_dp, KIND=dp)
+      DO i = 2, n
+         dchc_eig(i, 1:i - 1) = CONJG(dchc_eig(1:i - 1, i))
+      END DO
+      DO i = 1, n
+         shift(i) = REAL(dchc_eig(i, i), KIND=dp)
+      END DO
+      occ_sum = SUM(occ_curv(:))
+      shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
+      DO i = 1, n
+         expected_diag(i) = -2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu)
+      END DO
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.21_dp
+      x_re(1, 3) = -0.11_dp
+      x_re(2, 3) = 0.07_dp
+      x_re(1, 4) = 0.03_dp
+      x_re(2, 4) = -0.02_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.03_dp
+      x_im(2, 2) = -0.02_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(4, 4) = -0.01_dp
+      x_im(1, 2) = -0.04_dp
+      x_im(1, 3) = 0.02_dp
+      x_im(2, 3) = 0.03_dp
+      x_im(3, 4) = -0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc_eig, dchc_eig, occ_scale, &
+                                                           projector_weight, docc_ref, &
+                                                           occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, &
+                                                           projector_weight, docc_rot, &
+                                                           occ_curv, gauge_gap)
+      docc_back(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc_rot, q))
+      cov_err = MAXVAL(ABS(docc_back(:, :) - docc_ref(:, :)))
+
+      CALL dense_history_safe_occ_projector_from_chc(chc_eig + fd_step*dchc_eig, occ_scale, &
+                                                     projector_weight, occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc_eig - fd_step*dchc_eig, occ_scale, &
+                                                     projector_weight, occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      diag_gap = 0.0_dp
+      DO i = 1, n
+         diag_gap = MAX(diag_gap, ABS(docc_fd(i, i) - CMPLX(expected_diag(i), 0.0_dp, KIND=dp)))
+         docc_fd(i, i) = CMPLX(expected_diag(i), 0.0_dp, KIND=dp)
+      END DO
+      ref_fd_err = MAXVAL(ABS(docc_ref(:, :) - docc_fd(:, :)))
+
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      docc_back(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc_fd, q))
+      DO i = 1, n
+         docc_back(i, i) = CMPLX(expected_diag(i), 0.0_dp, KIND=dp)
+      END DO
+      fd_err = MAXVAL(ABS(docc_ref(:, :) - docc_back(:, :)))
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc_eig, dchc_eig, occ_scale, docc_raw)
+      raw_noise = MAXVAL(ABS(projector_weight*docc_raw(:, :) - docc_ref(:, :)))
+      active = MAXVAL(ABS(docc_ref(:, :)))
+
+      IF (cov_err > tol .OR. fd_err > tol .OR. ref_fd_err > tol .OR. &
+          diag_gap < active_tol .OR. raw_noise < active_tol .OR. active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with cov/fd/reffd/diaggap/rawnoise/active", cov_err, fd_err, ref_fd_err, &
+            diag_gap, raw_noise, active
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with cov/fd/reffd/diaggap/rawnoise/active", cov_err, fd_err, ref_fd_err, &
+            diag_gap, raw_noise, active
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_covariant_fd
 
 ! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
