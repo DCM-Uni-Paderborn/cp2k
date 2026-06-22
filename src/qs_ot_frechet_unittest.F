@@ -106,6 +106,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
    CALL check_complex_projector_active_density_response_filter( &
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
+   CALL check_complex_projector_active_density_safe_inverse( &
+      "complex projector active density safe inverse", 5.0E-14_dp, nfail)
    CALL check_projector_active_density_total_invariant( &
       "complex projector active density total invariant", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_raw_audit_split( &
@@ -3963,6 +3965,64 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_response_filter
+
+! **************************************************************************************************
+!> \brief Check that the active density response does not amplify low-curvature projector noise.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_active_density_safe_inverse(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            response_ratio_gate = 2.0E-2_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active_floor, active_shift, active_sum, &
+                                                            err, fixed_n_leak, low_suppression, old_shift, &
+                                                            old_sum
+      REAL(KIND=dp), DIMENSION(n)                        :: active_response, active_weight, docc_diag, &
+                                                            occ_curv, old_response, raw_column, safe_column
+
+      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 1.0E-3_dp, 4.0E-8_dp]
+      docc_diag(:) = [-8.0E-3_dp, 2.4E-3_dp, -2.0E-4_dp, 1.6E-5_dp]
+      active_floor = response_ratio_gate*MAXVAL(occ_curv(:))
+
+      active_weight(:) = 0.0_dp
+      raw_column(:) = 0.0_dp
+      safe_column(:) = 0.0_dp
+      DO i = 1, n
+         raw_column(i) = 0.5_dp*docc_diag(i)/occ_curv(i)
+         safe_column(i) = 0.5_dp*docc_diag(i)/MAX(occ_curv(i), active_floor)
+         active_weight(i) = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/MAXVAL(occ_curv(:)))))
+      END DO
+
+      active_sum = DOT_PRODUCT(occ_curv(:), active_weight(:))
+      active_shift = DOT_PRODUCT(occ_curv(:)*active_weight(:), safe_column(:))/active_sum
+      active_response(:) = active_weight(:)*(safe_column(:) - active_shift)
+
+      old_sum = DOT_PRODUCT(occ_curv(:), active_weight(:))
+      old_shift = DOT_PRODUCT(occ_curv(:)*active_weight(:), raw_column(:))/old_sum
+      old_response(:) = active_weight(:)*(raw_column(:) - old_shift)
+
+      fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), active_response(:)))
+      low_suppression = ABS(active_response(n))/MAX(ABS(old_response(n)), EPSILON(1.0_dp))
+      err = fixed_n_leak
+
+      IF (err > tol .OR. MAXVAL(ABS(active_response(1:2))) < active_tol .OR. &
+          ABS(old_response(n)) < active_tol .OR. low_suppression > 2.5E-2_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/oldlow/suppress", err, MAXVAL(ABS(active_response(1:2))), &
+            ABS(old_response(n)), low_suppression
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/oldlow/suppress", err, MAXVAL(ABS(active_response(1:2))), &
+            ABS(old_response(n)), low_suppression
+      END IF
+
+   END SUBROUTINE check_complex_projector_active_density_safe_inverse
 
 ! **************************************************************************************************
 !> \brief Check that the active density split preserves the finite physical response.

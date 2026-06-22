@@ -13631,14 +13631,16 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: active_density_weight, channel_occ_curv_max, &
-                                                            density_occ_curv_sum, density_occ_curv_full_sum, &
-                                                            density_plateau_full_response, &
+      REAL(KIND=dp)                                      :: active_density_denom, active_density_floor, &
+                                                            active_density_weight, &
+                                                            channel_occ_curv_max, density_occ_curv_sum, &
+                                                            density_occ_curv_full_sum, density_plateau_full_response, &
                                                             density_plateau_full_shift, density_plateau_shift, &
                                                             density_plateau_response, density_response, &
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
-                                                            projector_evals_p, density_full_column, &
+                                                            projector_evals_p, density_active_column, &
+                                                            density_full_column, &
                                                             density_plateau_column, density_weight_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
@@ -13662,7 +13664,8 @@ CONTAINS
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
-         ALLOCATE (density_full_column(nmo), density_plateau_column(nmo), density_weight_column(nmo))
+         ALLOCATE (density_active_column(nmo), density_full_column(nmo), density_plateau_column(nmo), &
+                   density_weight_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -13783,8 +13786,10 @@ CONTAINS
                ! near-degenerate projector-gauge motion does not enter the
                ! finite complex Mermin curvature.
                density_full_column(:) = 0.0_dp
+               density_active_column(:) = 0.0_dp
                density_plateau_column(:) = 0.0_dp
                density_weight_column(:) = 0.0_dp
+               active_density_floor = ot_kp_schur_projector_response_ratio_gate*channel_occ_curv_max
                density_occ_curv_sum = 0.0_dp
                density_occ_curv_full_sum = 0.0_dp
                density_plateau_full_shift = 0.0_dp
@@ -13800,8 +13805,12 @@ CONTAINS
                      ! motion before the Schur candidates are built.
                      active_density_weight = kpoint_ot_active_density_response_weight( &
                         occ_curv_channel(ie), channel_occ_curv_max)
+                     active_density_denom = MAX(occ_curv_channel(ie), active_density_floor)
                      density_plateau_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                  occ_curv_channel(ie)
+                     IF (active_density_denom > EPSILON(active_density_denom)) &
+                        density_active_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
+                                                    active_density_denom
                      density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_weight_column(ie) = active_density_weight
@@ -13814,7 +13823,7 @@ CONTAINS
                                             occ_curv_channel(ie)*active_density_weight
                      density_plateau_shift = density_plateau_shift + &
                                              occ_curv_channel(ie)*active_density_weight* &
-                                             density_plateau_column(ie)
+                                             density_active_column(ie)
                   END IF
                END DO
                IF (density_occ_curv_full_sum > EPSILON(density_occ_curv_full_sum)) &
@@ -13828,7 +13837,7 @@ CONTAINS
                      ! model must remain orthogonal to the fixed-N chemical
                      ! potential direction.
                      density_plateau_response = density_weight_column(ie)* &
-                                                (density_plateau_column(ie) - density_plateau_shift)
+                                                (density_active_column(ie) - density_plateau_shift)
                      density_plateau_full_response = density_plateau_column(ie) - &
                                                      density_plateau_full_shift
                      density_response = density_full_column(ie)
@@ -13925,7 +13934,7 @@ CONTAINS
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
-         DEALLOCATE (density_full_column, density_plateau_column, density_weight_column)
+         DEALLOCATE (density_active_column, density_full_column, density_plateau_column, density_weight_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
