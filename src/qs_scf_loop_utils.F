@@ -5226,7 +5226,8 @@ CONTAINS
             projector_phys_direct_active_comp_trial, &
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
-            projector_physical_direct_mixed_quality, projector_physical_direct_mixed_weight, &
+            projector_physical_direct_mixed_drop_ratio, projector_physical_direct_mixed_quality, &
+            projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight, &
             projector_physical_direct_offdiag_mix_weight, &
             projector_physical_direct_shadow_weight, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
@@ -6137,7 +6138,9 @@ CONTAINS
             projector_physical_direct_trace_diag_scale = 1.0_dp
             projector_physical_direct_trace_free_scale = 1.0_dp
             projector_physical_direct_mixed_enabled = .FALSE.
+            projector_physical_direct_mixed_drop_ratio = 0.0_dp
             projector_physical_direct_mixed_quality = 0.0_dp
+            projector_physical_direct_mixed_step_scale = 0.0_dp
             projector_physical_direct_mixed_weight = 0.0_dp
             projector_physical_direct_offdiag_mix_weight = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
@@ -8481,13 +8484,34 @@ CONTAINS
                                                 local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
                                                 ot_kp_schur_projector_response_min_samples, 0.0_dp, 0.0_dp, &
                                                 ot_kp_schur_projector_response_quality_max_ratio)
+                                          projector_physical_direct_mixed_drop_ratio = 0.0_dp
+                                          IF (local_ot_env(1)%schur_projector_mixed_direct_drop_sum > &
+                                              EPSILON(local_ot_env(1)%schur_projector_mixed_direct_drop_sum)) &
+                                             projector_physical_direct_mixed_drop_ratio = &
+                                                local_ot_env(1)%schur_projector_mixed_direct_measured_sum/ &
+                                                local_ot_env(1)%schur_projector_mixed_direct_drop_sum
+                                          projector_physical_direct_mixed_step_scale = &
+                                             kpoint_ot_direct_history_step_scale( &
+                                                projector_physical_direct_mixed_quality, &
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
+                                                ot_kp_schur_projector_response_min_samples)
                                           projector_physical_direct_mixed_enabled = &
+                                             local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
+                                             2*ot_kp_schur_projector_response_min_samples .AND. &
+                                             projector_physical_direct_mixed_drop_ratio >= &
+                                             ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                             projector_physical_direct_mixed_drop_ratio <= &
+                                             ot_kp_schur_projector_response_quality_max_ratio .AND. &
                                              projector_physical_direct_mixed_quality >= &
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality_ema >= &
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                             local_ot_env(1)%schur_projector_mixed_direct_quality_ema <= &
+                                             ot_kp_schur_projector_response_quality_max_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality >= &
-                                             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+                                             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                             local_ot_env(1)%schur_projector_mixed_direct_quality <= &
+                                             2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
                                           IF (projector_physical_direct_mixed_enabled) THEN
                                              ! The accepted mixed-Direct shadow weight is the
                                              ! conservative production baseline.  Selected-Direct
@@ -8498,7 +8522,8 @@ CONTAINS
                                                 MAX(0.0_dp, &
                                                     local_ot_env(1)%schur_projector_mixed_direct_weight_ema)* &
                                                 MIN(1.0_dp, MAX(0.0_dp, &
-                                                    projector_physical_direct_mixed_quality)))
+                                                    projector_physical_direct_mixed_quality))* &
+                                                projector_physical_direct_mixed_step_scale)
                                              projector_physical_direct_mixed_weight = MAX( &
                                                 projector_physical_direct_mixed_weight, &
                                                 kpoint_ot_trace_active_mix_weight( &
@@ -12360,6 +12385,127 @@ CONTAINS
                            projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
                      END DO
                   END IF
+               END IF
+            END IF
+            IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop)) THEN
+               projector_physical_direct_shadow_weight = &
+                  MAX(projector_coupled_weight, &
+                      MAX(projector_physical_response_weight, projector_physical_direct_response_weight))
+               IF (projector_physical_shadow_enabled .AND. exact_physical_response_ready .AND. &
+                   projector_physical_direct_shadow_weight > &
+                   EPSILON(projector_physical_direct_shadow_weight) .AND. &
+                   (local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                    ot_kp_schur_calibration_min_samples .OR. &
+                    projector_physical_direct_promoted)) THEN
+                  DO ivar = 1, 3
+                     z_weight = REAL(ivar, KIND=dp)/4.0_dp
+                     projector_physical_direct_schur_vec(:, :) = &
+                        (1.0_dp - z_weight)*projector_physical_direct_base_delta(:, :) + &
+                        z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
+                                         TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
+                                                   rot_hessian(:, :)))
+                     IF (projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
+                        diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
+                                     projector_physical_direct_shadow_weight
+                        DO r = 1, nrot
+                           projector_physical_direct_schur_vec(r, r) = &
+                              projector_physical_direct_schur_vec(r, r) + diag_shift
+                        END DO
+                     END IF
+                     schur(:, :) = rot_hessian_coupled(:, :) + &
+                                   projector_physical_direct_shadow_weight* &
+                                   projector_physical_direct_schur_vec(:, :)
+                     DO s = 1, nrot
+                        DO r = 1, nrot
+                           projected_term = 0.5_dp* &
+                              (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
+                               DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
+                           IF (exact_density_response_ready) &
+                              projected_term = projected_term + 0.5_dp* &
+                                 (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
+                                  DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                           schur(r, s) = schur(r, s) - projected_term
+                        END DO
+                     END DO
+                     DO r = 1, nrot
+                        row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
+                           rot_hessian(r, r) + projector_physical_direct_schur_vec(r, r), rot_floor(r))
+                        schur(r, r) = schur(r, r) + MAX(0.0_dp, row_floor - schur(r, r))
+                     END DO
+                     projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                     CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
+                     DO r = 1, nrot
+                        rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
+                        IF (exact_density_response_ready) &
+                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
+                     END DO
+                     sol(:) = rhs(:)
+                     CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
+                     IF (info /= 0) CYCLE
+                     rx_e(:) = MATMUL(response_exact_raw, sol)
+                     rx_model(:) = MATMUL(response_exact_physical, sol)
+                     IF (exact_density_response_ready) rx_model(:) = rx_model(:) + MATMUL(response_density_exact, sol)
+                     CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
+                                                           occ_curv_projection_sum, channel_nmo, e_offset)
+                     CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
+                                                           occ_curv_projection_sum, channel_nmo, e_offset)
+                     z_e(:) = z_exact_physical_trial(:) + rx_e(:)
+                     gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
+                     CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
+                                                         occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                         projector_physical_direct_metric_norm_energy)
+                     projector_physical_direct_metric_norm_energy = &
+                        MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
+                     projector_physical_direct_metric_norm_rotation = &
+                        kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                                                 projector_physical_direct_schur_eval, sol)
+                     projector_physical_direct_metric_normp = &
+                        projector_physical_direct_metric_norm_energy + &
+                        projector_physical_direct_metric_norm_rotation
+                     IF (gdotp <= 0.0_dp .OR. &
+                         projector_physical_direct_metric_normp <= &
+                         EPSILON(projector_physical_direct_metric_normp)) CYCLE
+                     projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
+                     CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                     projector_physical_direct_unit_weighted_step = &
+                        kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                     projector_physical_direct_trust_scale = 1.0_dp
+                     IF (response_trust > EPSILON(response_trust) .AND. &
+                         projector_physical_direct_unit_weighted_step > &
+                         EPSILON(projector_physical_direct_unit_weighted_step)) &
+                        projector_physical_direct_trust_scale = &
+                           MIN(projector_physical_direct_trust_scale, &
+                               0.8_dp*response_trust/projector_physical_direct_unit_weighted_step)
+                     IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                         projector_physical_direct_unit_abs_step > &
+                         EPSILON(projector_physical_direct_unit_abs_step)) &
+                        projector_physical_direct_trust_scale = &
+                           MIN(projector_physical_direct_trust_scale, &
+                               0.8_dp*response_abs_trust/projector_physical_direct_unit_abs_step)
+                     direction_scale = MIN(1.0_dp, projector_physical_direct_trust_scale, &
+                                           gdotp/MAX(projector_physical_direct_metric_normp, &
+                                                     EPSILON(projector_physical_direct_metric_normp)))
+                     scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
+                     model_drop = direction_scale*gdotp - &
+                                  0.5_dp*direction_scale*direction_scale* &
+                                  projector_physical_direct_metric_normp
+                     model_drop = MAX(0.0_dp, model_drop)
+                     model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
+                     model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+                     IF (direction_scale < schur_min_coupled_scale) &
+                        model_calibrated_drop = scale_quality*model_calibrated_drop
+                     IF (model_calibrated_drop > local_ot_env(1)%schur_projector_mixed_direct_drop .AND. &
+                         model_calibrated_drop <= ot_kp_schur_calibrated_quality_max_ratio* &
+                         MAX(accepted_model_calibrated_drop, EPSILON(accepted_model_calibrated_drop))) THEN
+                        local_ot_env(1)%schur_projector_mixed_direct_pending = .TRUE.
+                        local_ot_env(1)%schur_projector_mixed_direct_drop = model_calibrated_drop
+                        local_ot_env(1)%schur_projector_mixed_direct_weight = z_weight
+                     END IF
+                  END DO
                END IF
             END IF
          END IF
