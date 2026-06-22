@@ -156,6 +156,8 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_coupled_tail_weight("complex projector coupled tail weight", &
+                                            5.0E-14_dp, nfail)
    CALL check_projector_direct_delta_eigen_copy("complex projector Direct delta eigen copy", &
                                                 5.0E-13_dp, nfail)
    CALL check_projector_active_residual_filter("complex projector active residual filter", &
@@ -5960,6 +5962,64 @@ CONTAINS
    END SUBROUTINE check_projector_direct_history_step_scale
 
 ! **************************************************************************************************
+!> \brief Check accepted-drop mismatch weighting of the finite Projector-Hessian tail.
+! **************************************************************************************************
+   SUBROUTINE check_projector_coupled_tail_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: density_fraction = 0.80_dp, &
+                                                            diag_avg = 0.50_dp, diag_delta = 0.25_dp
+
+      REAL(KIND=dp)                                      :: above_tail_weight, diag_damped_weight, err, &
+                                                            expected_mismatch_weight, expected_saturated_weight, &
+                                                            good_weight, high_weight, low_weight, scaled_weight, &
+                                                            saturated_weight, young_weight
+
+      above_tail_weight = dense_projector_coupled_tail_weight(2.0E-4_dp, 1.0_dp, 0, &
+                                                              density_fraction, diag_avg, diag_delta)
+      young_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 0.50_dp, 3, &
+                                                         density_fraction, diag_avg, diag_delta)
+      good_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 1.0_dp, 4, &
+                                                        density_fraction, diag_avg, diag_delta)
+      low_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 0.625_dp, 4, &
+                                                       density_fraction, diag_avg, diag_delta)
+      high_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 1.75_dp, 4, &
+                                                        density_fraction, diag_avg, diag_delta)
+      saturated_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 10.0_dp, 4, &
+                                                             density_fraction, diag_avg, diag_delta)
+      diag_damped_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 1.75_dp, 4, &
+                                                               density_fraction, diag_avg, 1.50_dp)
+      scaled_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 1.75_dp, 4, &
+                                                          0.5_dp*density_fraction, diag_avg, diag_delta)
+
+      expected_mismatch_weight = 0.10_dp*0.50_dp*density_fraction/1.50_dp
+      expected_saturated_weight = 0.10_dp*density_fraction/1.50_dp
+
+      err = ABS(above_tail_weight - 1.0_dp)
+      err = MAX(err, ABS(young_weight))
+      err = MAX(err, ABS(good_weight))
+      err = MAX(err, ABS(low_weight - expected_mismatch_weight))
+      err = MAX(err, ABS(high_weight - expected_mismatch_weight))
+      err = MAX(err, ABS(saturated_weight - expected_saturated_weight))
+      err = MAX(err, ABS(scaled_weight - 0.5_dp*expected_mismatch_weight))
+
+      IF (err > tol .OR. high_weight <= good_weight .OR. low_weight <= good_weight .OR. &
+          saturated_weight < high_weight .OR. diag_damped_weight >= high_weight) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/above/young/good/low/high/saturated/diag", err, above_tail_weight, &
+            young_weight, good_weight, low_weight, high_weight, saturated_weight, diag_damped_weight
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/above/young/good/low/high/saturated/diag", err, above_tail_weight, &
+            young_weight, good_weight, low_weight, high_weight, saturated_weight, diag_damped_weight
+      END IF
+
+   END SUBROUTINE check_projector_coupled_tail_weight
+
+! **************************************************************************************************
 !> \brief Check that Direct-Delta eigenspaces do not overwrite the production curvature matrix.
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_delta_eigen_copy(label, tol, nfail)
@@ -6588,6 +6648,41 @@ CONTAINS
       step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
 
    END FUNCTION dense_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief Dense mirror of the low-residual finite Projector-Hessian tail weight.
+! **************************************************************************************************
+   FUNCTION dense_projector_coupled_tail_weight(residual_delta, history_quality, samples, &
+                                                density_projector_fraction, projector_diag_avg, &
+                                                projector_delta_diag_avg) RESULT(projector_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
+                                                            density_projector_fraction, projector_diag_avg, &
+                                                            projector_delta_diag_avg
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: clipped_quality, diag_ratio, projector_weight, &
+                                                            quality_weight
+
+      IF (residual_delta > 1.0E-4_dp) THEN
+         projector_weight = 1.0_dp
+         RETURN
+      END IF
+
+      projector_weight = 0.0_dp
+      IF (samples < 4) RETURN
+
+      IF (history_quality <= 1.0_dp) THEN
+         clipped_quality = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+         quality_weight = (1.0_dp - clipped_quality)/MAX(EPSILON(1.0_dp), 1.0_dp - 0.25_dp)
+      ELSE
+         clipped_quality = MIN(2.5_dp, history_quality)
+         quality_weight = (clipped_quality - 1.0_dp)/MAX(EPSILON(1.0_dp), 2.5_dp - 1.0_dp)
+      END IF
+      quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
+      diag_ratio = ABS(projector_delta_diag_avg)/MAX(ABS(projector_diag_avg), EPSILON(1.0_dp))
+      projector_weight = 0.10_dp*quality_weight*MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))/ &
+                         MAX(1.0_dp, 1.0_dp + diag_ratio)
+
+   END FUNCTION dense_projector_coupled_tail_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct trace model-gap term.
