@@ -7853,8 +7853,8 @@ CONTAINS
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
-                                                            docc_raw, docc_safe, occ_mat_m, &
-                                                            occ_mat_p, q
+                                                            docc_raw, docc_ref, docc_safe, &
+                                                            occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
       REAL(KIND=dp) :: err, gauge_err, mixed_err, mixed_safe, occ_tol, physical_active, &
          physical_err, physical_near_err, raw_gauge, raw_mixed, raw_transitive, safe_gauge, &
@@ -7992,10 +7992,10 @@ CONTAINS
                                                            docc_safe, occ_curv, gauge_gap)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
       raw_transitive = MAXVAL(ABS(projector_weight*docc_raw(:, :)))
-      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_cluster, occ_mat_p)
-      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_cluster, occ_mat_m)
-      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
-      transitive_err = MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :)))
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_cluster, docc_ref, &
+                                                       occ_curv, gauge_gap)
+      docc_ref(:, :) = projector_weight*docc_ref(:, :)
+      transitive_err = MAXVAL(ABS(docc_safe(:, :) - docc_ref(:, :)))
 
       err = MAX(gauge_err, mixed_err, physical_err, physical_near_err, transitive_err, value_err)
       IF (err > tol .OR. raw_gauge < active_tol .OR. raw_mixed < active_tol .OR. &
@@ -8209,11 +8209,12 @@ CONTAINS
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_adaptive, docc_fd, &
-                                                            docc_old, occ_mat_m, occ_mat_p
+                                                            docc_old, docc_ref, occ_mat_m, &
+                                                            occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: adaptive_step, err, old_gap, scale, &
-                                                            step_ratio, work_norm
-      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale
+      REAL(KIND=dp)                                      :: adaptive_step, err, occ_tol, old_gap, &
+                                                            scale, step_ratio, work_norm
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_filtered, occ_scale
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.34_dp]
       occ_scale(:) = [1.20_dp, 0.37_dp, 0.08_dp]
@@ -8234,6 +8235,12 @@ CONTAINS
 
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_adaptive, occ_curv, gauge_gap)
+      occ_filtered(:) = occ_scale(:)
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_filtered(:))))
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_filtered)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_filtered, docc_ref, &
+                                                       occ_curv, gauge_gap)
+      docc_ref(:, :) = projector_weight*docc_ref(:, :)
       CALL dense_history_safe_occ_projector_from_chc(chc + adaptive_step*dchc, occ_scale, &
                                                      projector_weight, occ_mat_p, occ_curv, gauge_gap)
       CALL dense_history_safe_occ_projector_from_chc(chc - adaptive_step*dchc, occ_scale, &
@@ -8246,7 +8253,7 @@ CONTAINS
                                                      occ_mat_m, occ_curv, gauge_gap)
       docc_old(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*old_fd_step)
 
-      err = MAXVAL(ABS(docc_adaptive(:, :) - docc_fd(:, :)))
+      err = MAXVAL(ABS(docc_adaptive(:, :) - docc_ref(:, :)))
       old_gap = MAXVAL(ABS(docc_old(:, :) - docc_adaptive(:, :)))
       step_ratio = adaptive_step/old_fd_step
 
@@ -8725,7 +8732,7 @@ CONTAINS
                                                             gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, &
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_ref, docc_safe, &
                                                             occ_mat_m, occ_mat_p
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active, cluster_sum, err, occ_tol, &
@@ -8764,15 +8771,19 @@ CONTAINS
 
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_safe, occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_filtered, docc_ref, &
+                                                       occ_curv, gauge_gap)
+      docc_ref(:, :) = projector_weight*docc_ref(:, :)
       CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
                                                      occ_mat_p, occ_curv, gauge_gap)
       CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, projector_weight, &
                                                      occ_mat_m, occ_curv, gauge_gap)
       docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
-      err = MAX(MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :))), shape_err)
+      err = MAX(MAXVAL(ABS(docc_safe(:, :) - docc_ref(:, :))), shape_err)
       active = MAXVAL(ABS(docc_safe(:, :)))
 
-      IF (err > tol .OR. total_err > tol .OR. active < active_tol .OR. span < 1.0E-7_dp) THEN
+      IF (err > tol .OR. total_err > tol .OR. active < active_tol .OR. &
+          MAXVAL(ABS(docc_fd(:, :) - docc_ref(:, :))) < active_tol .OR. span < 1.0E-7_dp) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
             "failed with error/total/span/active/shape", err, total_err, span, active, shape_err
@@ -9113,10 +9124,8 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
       LOGICAL                                            :: same_gauge_cluster, use_projector_fd
-      REAL(KIND=dp)                                      :: coeff, diag_response_shift, &
-                                                            occ_curv_sum, occ_tol, &
-                                                            projector_fd_step, scale, work_norm, &
-                                                            work_tol
+      REAL(KIND=dp) :: coeff, denom, diag_response_shift, gap_tol, occ_curv_sum, occ_tol, &
+         projector_fd_step, scale, slope_cap, work_norm, work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -9133,6 +9142,8 @@ CONTAINS
          use_projector_fd = .FALSE.
          work_norm = MAXVAL(ABS(work(:, :)))
          work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, work_norm)
+         scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+         gap_tol = SQRT(EPSILON(1.0_dp))*scale
          DO j = 1, n
             DO i = 1, n
                same_gauge_cluster = i /= j
@@ -9145,10 +9156,10 @@ CONTAINS
                   use_projector_fd = .TRUE.
             END DO
          END DO
+         CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
          IF (use_projector_fd) THEN
             projector_fd_step = 1.0E-7_dp
             IF (work_norm > EPSILON(work_norm)) THEN
-               scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
                projector_fd_step = MIN(projector_fd_step, 1.0E-2_dp*gauge_gap/work_norm)
                projector_fd_step = MAX(projector_fd_step, &
                                        10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, scale)/work_norm)
@@ -9173,6 +9184,32 @@ CONTAINS
                coeff = -2.0_dp*projector_weight*MAX(0.0_dp, occ_curv(i))
                kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
                                     0.0_dp, KIND=dp)
+            END DO
+            DO j = 1, n
+               DO i = 1, n
+                  IF (i == j) CYCLE
+                  same_gauge_cluster = .TRUE.
+                  DO idx = MIN(i, j), MAX(i, j) - 1
+                     IF (ABS(evals(idx + 1) - evals(idx)) > gauge_gap) same_gauge_cluster = .FALSE.
+                  END DO
+                  IF (.NOT. same_gauge_cluster) CYCLE
+                  denom = evals(i) - evals(j)
+                  IF (ABS(denom) > gap_tol) THEN
+                     coeff = (occ_work(i) - occ_work(j))/denom
+                  ELSE IF (ABS(occ_work(i) - occ_work(j)) <= occ_tol) THEN
+                     coeff = 0.0_dp
+                  ELSE
+                     coeff = (occ_work(i) - occ_work(j))/SIGN(gap_tol, denom)
+                  END IF
+                  coeff = MIN(0.0_dp, coeff)
+                  slope_cap = dense_shared_occ_slope(occ_curv(i), occ_curv(j))
+                  IF (slope_cap > EPSILON(slope_cap)) THEN
+                     coeff = MAX(coeff, -slope_cap)
+                  ELSE
+                     coeff = 0.0_dp
+                  END IF
+                  kernel(i, j) = projector_weight*coeff*work(i, j)
+               END DO
             END DO
             docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
             docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))

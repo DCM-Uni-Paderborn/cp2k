@@ -14647,6 +14647,38 @@ CONTAINS
                   kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
                                        0.0_dp, KIND=dp)
                END DO
+               ! The finite-difference projector value still contains the
+               ! arbitrary eigenvector gauge inside a near-degenerate cluster.
+               ! Replace only those cluster off-diagonals by the fixed-N
+               ! Mermin plateau derivative; non-cluster entries retain the
+               ! smooth finite-difference projector response.
+               DO j = 1, n
+                  DO i = 1, n
+                     IF (i == j) CYCLE
+                     same_gauge_cluster = .TRUE.
+                     DO idx = MIN(i, j), MAX(i, j) - 1
+                        IF (ABS(evals(idx + 1) - evals(idx)) > gauge_gap) &
+                           same_gauge_cluster = .FALSE.
+                     END DO
+                     IF (.NOT. same_gauge_cluster) CYCLE
+                     denom = evals(i) - evals(j)
+                     IF (ABS(denom) > gap_tol) THEN
+                        coeff = (occ_slope(i) - occ_slope(j))/denom
+                     ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN
+                        coeff = 0.0_dp
+                     ELSE
+                        coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
+                     END IF
+                     coeff = MIN(0.0_dp, coeff)
+                     slope_cap = kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(j))
+                     IF (slope_cap > EPSILON(slope_cap)) THEN
+                        coeff = MAX(coeff, -slope_cap)
+                     ELSE
+                        coeff = 0.0_dp
+                     END IF
+                     kernel(i, j) = projector_weight*coeff*work(i, j)
+                  END DO
+               END DO
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
                docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
                DEALLOCATE (occ_mat_p, occ_mat_m)
