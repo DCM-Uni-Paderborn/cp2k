@@ -12346,12 +12346,10 @@ CONTAINS
                                  dense_trust_quality*projector_physical_direct_density_audit_quality)
                            END IF
                         END IF
-                        IF (new_search_point .AND. model_calibrated_drop > &
-                            local_ot_env(1)%schur_projector_mixed_direct_drop) THEN
-                           local_ot_env(1)%schur_projector_mixed_direct_pending = .TRUE.
-                           local_ot_env(1)%schur_projector_mixed_direct_drop = model_calibrated_drop
-                           local_ot_env(1)%schur_projector_mixed_direct_weight = z_weight
-                        END IF
+                        ! Keep this HIGH-only active/full Direct probe diagnostic.
+                        ! Promotion must be learned from print-level-neutral
+                        ! accepted steps, otherwise PRINT_LEVEL changes the
+                        ! k-point OT minimizer path.
                         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1(1X,L1),13(1X,ES16.8))') &
                            " OT Schur projector mixed direct shadow solved wactive exp cdrop mgap rratio aratio "// &
                            "scale dsum dmax dmin wactive_comp emin emax:", &
