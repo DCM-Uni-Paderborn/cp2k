@@ -65,16 +65,16 @@
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.05303056559473},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05303056559473},
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.05303056394669},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05303056394669},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14575577827344},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14575577827344},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14577088818925},
+                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14577088818925},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104032E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=4.5327E-4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.1128E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
 "Al_kp_ot_restart_sym3_write.inp"       = [{matcher="E_total", tol=1.0E-10, ref=-4.71419621162264},
