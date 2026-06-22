@@ -78,6 +78,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-11_dp, nfail)
    CALL check_indefinite_schur_spectral_fallback("indefinite Schur spectral fallback", &
                                                  5.0E-12_dp, nfail)
+   CALL check_indefinite_schur_absolute_metric("indefinite Schur absolute metric", &
+                                               5.0E-12_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -2405,6 +2407,63 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_indefinite_schur_spectral_fallback
+
+! **************************************************************************************************
+!> \brief Check that indefinite Schur model norms use modal absolute curvature.
+! **************************************************************************************************
+   SUBROUTINE check_indefinite_schur_absolute_metric(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: abs_metric, err, signed_metric
+      REAL(KIND=dp), DIMENSION(n)                        :: coeff, eval, step
+      REAL(KIND=dp), DIMENSION(n, n)                     :: q, schur, schur_modes
+
+      schur(:, :) = 0.0_dp
+      schur(1, 1) = 2.0_dp
+      schur(2, 2) = -1.8_dp
+      schur(3, 3) = 0.25_dp
+      schur(4, 4) = -0.22_dp
+      q(:, :) = 0.0_dp
+      DO i = 1, n
+         q(i, i) = 1.0_dp
+      END DO
+      q(1, 1) = COS(0.31_dp)
+      q(2, 2) = q(1, 1)
+      q(1, 2) = -SIN(0.31_dp)
+      q(2, 1) = -q(1, 2)
+      q(3, 3) = COS(-0.27_dp)
+      q(4, 4) = q(3, 3)
+      q(3, 4) = -SIN(-0.27_dp)
+      q(4, 3) = -q(3, 4)
+      schur(:, :) = MATMUL(q, MATMUL(schur, TRANSPOSE(q)))
+      step(:) = MATMUL(q, [0.70_dp, 0.72_dp, -0.31_dp, -0.33_dp])
+
+      signed_metric = DOT_PRODUCT(step, MATMUL(schur, step))
+      schur_modes(:, :) = schur(:, :)
+      CALL diamat_all(schur_modes, eval)
+      coeff(:) = MATMUL(TRANSPOSE(schur_modes), step)
+      abs_metric = 0.0_dp
+      DO i = 1, n
+         abs_metric = abs_metric + ABS(eval(i))*coeff(i)*coeff(i)
+      END DO
+
+      err = ABS(abs_metric - SUM(ABS(eval(:))*coeff(:)*coeff(:)))
+      IF (err > tol .OR. ABS(signed_metric) > 0.30_dp*abs_metric .OR. &
+          abs_metric <= 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/signed/abs", err, signed_metric, abs_metric
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/signed/abs", err, signed_metric, abs_metric
+      END IF
+
+   END SUBROUTINE check_indefinite_schur_absolute_metric
 
 ! **************************************************************************************************
 !> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.

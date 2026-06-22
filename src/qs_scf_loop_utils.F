@@ -6592,7 +6592,8 @@ CONTAINS
                         response_density_plateau, response_density_plateau_exact, &
                         response_exact, response_exact_physical, &
                         response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
-                        projector_physical_direct_base_delta, projector_physical_direct_delta, &
+                        projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
+                        projector_physical_direct_delta, &
                         rot_hessian_coupled, rot_hessian_projector, &
                         projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
                         rot_hessian_projector_physical, &
@@ -12408,7 +12409,8 @@ CONTAINS
                      response_density_plateau, response_density_plateau_exact, &
                      response_exact, response_exact_physical, response_exact_raw, &
                      response_occ, response_occ_physical, response_physical_model, response_split, rot_hessian, &
-                     projector_physical_direct_base_delta, projector_physical_direct_delta, &
+                     projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
+                     projector_physical_direct_delta, &
                      rot_hessian_coupled, rot_hessian_projector, &
                      projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
