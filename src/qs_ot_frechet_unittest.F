@@ -26,6 +26,7 @@ PROGRAM qs_ot_frechet_unittest
    IMPLICIT NONE
 
    INTEGER                                            :: io_unit, mynode, nfail
+   REAL(KIND=dp), PARAMETER                           :: projector_response_negative_balance_floor = 1.5E-1_dp
    TYPE(mp_comm_type)                                 :: mp_comm
 
    nfail = 0
@@ -182,6 +183,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
                                                   5.0E-12_dp, nfail)
+   CALL check_projector_modal_response_negative_floor( &
+      "complex projector modal response negative-only floor", 5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_history_safe_occ_projector_derivative("history-safe occupation-projector derivative", &
@@ -7134,6 +7137,7 @@ CONTAINS
       END DO
       raw_neg_fraction_ref = raw_neg_sum/response_total_sum
       neg_balance = SQRT((response_total_sum - raw_neg_sum)/raw_neg_sum)
+      neg_balance = MAX(neg_balance, projector_response_negative_balance_floor)
       neg_balance = MIN(1.0_dp, MAX(0.0_dp, neg_balance))
 
       step_weight_sum = DOT_PRODUCT(step_diag(:), step_diag(:))
@@ -7243,6 +7247,91 @@ CONTAINS
    END SUBROUTINE check_projector_modal_response_sign_model
 
 ! **************************************************************************************************
+!> \brief Negative-only Projector modes must not be suppressed to zero.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_modal_response_negative_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                      :: label
+      REAL(KIND=dp), INTENT(IN)                         :: tol
+      INTEGER, INTENT(INOUT)                            :: nfail
+
+      INTEGER, PARAMETER                                :: ne = 2, nrot = 3
+      INTEGER                                           :: i, imode
+      REAL(KIND=dp)                                     :: active, applied_weight, applied_weight_ref, &
+                                                            base_weight, correction_drop, correction_drop_ref, &
+                                                            err, eval_abs_avg, mode_weight, negative_fraction, &
+                                                            negative_fraction_ref, negative_weight_sum, raw_negative, &
+                                                            spectral_weight, step_weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                      :: candidate, candidate_ref, curv, energy_base, grad_e, &
+                                                            mode_rx, response_base, response_neg_ref
+      REAL(KIND=dp), DIMENSION(ne, nrot)                :: response_delta, response_raw
+      REAL(KIND=dp), DIMENSION(nrot)                    :: evals, step_rot
+      REAL(KIND=dp), DIMENSION(nrot, nrot)              :: delta, rot_hessian
+      REAL(KIND=dp)                                     :: cross_drop, negative_coeff, negative_drop, &
+                                                            positive_coeff, positive_drop
+
+      base_weight = 0.35_dp
+      curv(:) = [0.60_dp, 0.90_dp]
+      energy_base(:) = [0.02_dp, -0.01_dp]
+      response_base(:) = [0.01_dp, -0.03_dp]
+      evals(:) = [-0.40_dp, -0.18_dp, -0.07_dp]
+      step_rot(:) = [0.32_dp, -0.24_dp, 0.19_dp]
+      response_delta(:, 1) = [0.15_dp, -0.04_dp]
+      response_delta(:, 2) = [-0.08_dp, 0.11_dp]
+      response_delta(:, 3) = [0.05_dp, 0.07_dp]
+      response_raw(:, :) = 0.0_dp
+
+      response_neg_ref(:) = 0.0_dp
+      eval_abs_avg = SUM(ABS(evals(:)))/REAL(nrot, KIND=dp)
+      step_weight_sum = DOT_PRODUCT(step_rot(:), step_rot(:))
+      negative_weight_sum = 0.0_dp
+      DO imode = 1, nrot
+         spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(evals(imode))/eval_abs_avg)
+         spectral_weight = spectral_weight*projector_response_negative_balance_floor
+         mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
+         mode_rx(:) = step_rot(imode)*response_delta(:, imode)
+         response_neg_ref(:) = response_neg_ref(:) + mode_weight*mode_rx(:)
+         negative_weight_sum = negative_weight_sum + mode_weight*step_rot(imode)*step_rot(imode)
+      END DO
+      candidate_ref(:) = response_base(:) - response_neg_ref(:)
+      grad_e(:) = curv(:)*energy_base(:) - curv(:)*response_neg_ref(:)
+      correction_drop_ref = 0.5_dp*DOT_PRODUCT(curv(:)*response_neg_ref(:), response_neg_ref(:))
+      negative_fraction_ref = 1.0_dp
+      applied_weight_ref = negative_weight_sum/step_weight_sum
+
+      rot_hessian(:, :) = 0.0_dp
+      delta(:, :) = 0.0_dp
+      DO i = 1, nrot
+         delta(i, i) = evals(i)
+      END DO
+      CALL dense_projector_modal_response_candidate(rot_hessian, delta, step_rot, response_raw, &
+                                                    response_delta, curv, grad_e, energy_base, response_base, &
+                                                    base_weight, candidate, applied_weight, correction_drop, &
+                                                    negative_fraction, raw_negative, positive_drop, negative_drop, &
+                                                    cross_drop, positive_coeff, negative_coeff)
+
+      active = MAXVAL(ABS(candidate(:) - response_base(:)))
+      err = MAXVAL(ABS(candidate(:) - candidate_ref(:)))
+      err = MAX(err, ABS(applied_weight - applied_weight_ref))
+      err = MAX(err, ABS(correction_drop - correction_drop_ref))
+      err = MAX(err, ABS(negative_fraction - negative_fraction_ref))
+      err = MAX(err, ABS(raw_negative - 1.0_dp), ABS(positive_drop), ABS(cross_drop), &
+                ABS(positive_coeff - 1.0_dp), ABS(negative_coeff - 1.0_dp))
+
+      IF (err > tol .OR. active < 1.0E-5_dp .OR. negative_drop <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/drop/rawneg", err, active, negative_drop, raw_negative
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/drop/rawneg", err, active, negative_drop, raw_negative
+      END IF
+
+   END SUBROUTINE check_projector_modal_response_negative_floor
+
+! **************************************************************************************************
 !> \brief Dense copy of the finite Projector-Hessian modal response algebra.
 !> \param rot_hessian ...
 !> \param rot_hessian_projector ...
@@ -7330,6 +7419,8 @@ CONTAINS
       positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
       negative_balance = 0.0_dp
       IF (raw_negative_sum > EPSILON(raw_negative_sum)) negative_balance = SQRT(positive_sum/raw_negative_sum)
+      IF (raw_negative_sum > EPSILON(raw_negative_sum)) &
+         negative_balance = MAX(negative_balance, projector_response_negative_balance_floor)
       negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
 
       step_weight_sum = DOT_PRODUCT(mode_coeff(:), mode_coeff(:))

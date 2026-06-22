@@ -164,6 +164,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_quality_max_ratio = 1.25_dp, &
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
+                                        ot_kp_schur_projector_negative_balance_floor = 1.5E-1_dp, &
                                         ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
                                         ot_kp_schur_projector_trace_active_max_weight = 9.5E-1_dp, &
                                         ot_kp_schur_projector_density_full_min_drop = 1.0E-12_dp, &
@@ -5450,6 +5451,7 @@ CONTAINS
             projector_physical_direct_mixed_drop_ratio, projector_physical_direct_mixed_quality, &
             projector_physical_direct_mixed_consistency_scale, &
             projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight, &
+            projector_physical_direct_inactive_offdiag_weight, &
             projector_physical_direct_offdiag_mix_weight, &
             projector_physical_direct_shadow_weight, &
             projector_physical_direct_diag_compensation, projector_physical_direct_diag_compensation_local_avg, &
@@ -6466,6 +6468,7 @@ CONTAINS
             projector_physical_direct_mixed_consistency_scale = 0.0_dp
             projector_physical_direct_mixed_step_scale = 0.0_dp
             projector_physical_direct_mixed_weight = 0.0_dp
+            projector_physical_direct_inactive_offdiag_weight = 0.0_dp
             projector_physical_direct_offdiag_mix_weight = 0.0_dp
             projector_physical_direct_diag_shift_avg = 0.0_dp
             projector_physical_direct_diag_shift_max = 0.0_dp
@@ -8514,11 +8517,22 @@ CONTAINS
                      ! curvature and the fixed-N density response, not only the
                      ! tiny projector-basis gauge remainder.  The diagonal density
                      ! response is represented in response_physical_model below;
-                     ! add only the gauge-filtered off-diagonal projector Hessian
-                     ! to the rotational metric used for the modal response audit.
+                     ! add the gauge-filtered off-diagonal projector Hessian to
+                     ! the rotational metric used for the modal response audit.
+                     projector_physical_direct_inactive_offdiag_weight = 0.0_dp
+                     IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                        projector_physical_direct_inactive_offdiag_weight = &
+                           projector_coupled_weight*ot_kp_schur_projector_negative_balance_floor* &
+                           MIN(1.0_dp, MAX(0.0_dp, projector_mode_history_quality))* &
+                           MIN(1.0_dp, MAX(0.0_dp, local_ot_env(1)%schur_projector_mode_trust_ema))/ &
+                           SQRT(MAX(1.0_dp, projector_mode_history_response_ratio/ &
+                                         ot_kp_schur_projector_response_ratio_gate))
                      projector_physical_direct_delta(:, :) = &
                         rot_hessian_projector_physical(:, :) + &
-                        rot_hessian_projector_physical_offdiag_active(:, :)
+                        rot_hessian_projector_physical_offdiag_active(:, :) + &
+                        projector_physical_direct_inactive_offdiag_weight* &
+                        (rot_hessian_projector_physical_offdiag(:, :) - &
+                         rot_hessian_projector_physical_offdiag_active(:, :))
                      projector_physical_direct_delta(:, :) = &
                         0.5_dp*(projector_physical_direct_delta(:, :) + &
                                 TRANSPOSE(projector_physical_direct_delta(:, :)))
@@ -12993,13 +13007,15 @@ CONTAINS
                         projector_physical_direct_delta_negative_norm, &
                         projector_physical_direct_delta_positive_norm, &
                         projector_physical_direct_delta_negative_fraction
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
-                        " OT Schur projector physical candidate ready selected exp qsel cdrop mgap rratio aratio weight:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
+                        " OT Schur projector physical candidate ready selected exp qsel cdrop mgap rratio aratio "// &
+                        "weight ioffw:", &
                         projector_physical_candidate_ready, projector_physical_candidate_selected, &
                         projector_physical_expected_drop, projector_physical_quality_for_selection, &
                         projector_physical_model_calibrated_drop, projector_physical_model_gap, &
                         projector_physical_response_weighted_trust_ratio, &
-                        projector_physical_response_abs_trust_ratio, projector_physical_response_weight
+                        projector_physical_response_abs_trust_ratio, projector_physical_response_weight, &
+                        projector_physical_direct_inactive_offdiag_weight
                      dense_print_model_gap = dense_model_gap
                      dense_print_model_gap_drop = dense_model_gap_drop
                      dense_print_model_gap_trust = dense_model_gap_trust
@@ -14680,10 +14696,10 @@ CONTAINS
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp)                                      :: base_weight, coeff_det, coeff_negative, coeff_positive, &
                                                             eval_abs_avg, h12, h11, h22, g1, g2, mode_norm, mode_sign, &
-                                                            mode_weight, negative_balance, negative_norm, &
-                                                            negative_weight_sum, positive_sum, positive_weight_sum, &
-                                                            raw_negative_sum, response_total_sum, residual_weight, &
-                                                            spectral_weight, step_weight, step_weight_sum
+                                                            mode_weight, negative_balance, negative_balance_floor, &
+                                                            negative_norm, negative_weight_sum, positive_sum, &
+                                                            positive_weight_sum, raw_negative_sum, response_total_sum, &
+                                                            residual_weight, spectral_weight, step_weight, step_weight_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, mode_rx, &
                                                             response_corr, response_neg, response_pos
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
@@ -14766,8 +14782,16 @@ CONTAINS
             raw_negative_fraction = raw_negative_sum/response_total_sum
          positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
          negative_balance = 0.0_dp
-         IF (raw_negative_sum > EPSILON(raw_negative_sum)) &
+         negative_balance_floor = 0.0_dp
+         IF (raw_negative_sum > EPSILON(raw_negative_sum)) THEN
             negative_balance = SQRT(positive_sum/raw_negative_sum)
+            negative_balance_floor = ot_kp_schur_projector_negative_balance_floor* &
+                                     MIN(1.0_dp, MAX(0.0_dp, history_quality))* &
+                                     MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
+                                     SQRT(MAX(1.0_dp, history_response_ratio/ &
+                                                   ot_kp_schur_projector_response_ratio_gate))
+            negative_balance = MAX(negative_balance, negative_balance_floor)
+         END IF
          negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
 
          step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
