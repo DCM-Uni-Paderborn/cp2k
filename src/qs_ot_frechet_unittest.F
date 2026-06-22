@@ -6584,8 +6584,8 @@ CONTAINS
                                                             scale_floor = 0.25_dp
 
       REAL(KIND=dp) :: capped_growth_scale, err, floor_scale, good_scale, growth_scale, &
-         mature_floor_scale, mature_ratio_scale, over_scale, ratio_scale, young_growth_scale, &
-         young_scale
+         mature_floor_scale, mature_ratio_scale, over_scale, ratio_scale, recent_growth_scale, &
+         recent_scale, selection_limited_growth_scale, young_growth_scale, young_scale
 
       young_scale = dense_direct_history_step_scale(4.0_dp, 1.0_dp, 0.25_dp, 3, 4, &
                                                     8, scale_floor, max_quality)
@@ -6601,10 +6601,17 @@ CONTAINS
                                                    8, scale_floor, max_quality)
       over_scale = dense_direct_history_step_scale(10.0_dp, 20.0_dp, 1.20_dp, 4, 4, &
                                                    8, scale_floor, max_quality)
+      recent_scale = dense_direct_history_step_scale(10.0_dp, 4.0_dp, 1.20_dp, 16, 4, &
+                                                     8, scale_floor, max_quality)
       young_growth_scale = dense_direct_history_growth_scale(4.0_dp, 1.0_dp, 0.25_dp, 3, 4, &
                                                              8, max_quality)
       growth_scale = dense_direct_history_growth_scale(10.0_dp, 20.0_dp, 1.20_dp, 4, 4, &
                                                        8, max_quality)
+      selection_limited_growth_scale = dense_direct_history_growth_scale(10.0_dp, 4.0_dp, &
+                                                                         0.40_dp, 16, 4, &
+                                                                         8, max_quality)
+      recent_growth_scale = dense_direct_history_growth_scale(10.0_dp, 4.0_dp, 1.20_dp, &
+                                                              16, 4, 8, max_quality)
       capped_growth_scale = dense_direct_history_growth_scale(1.0_dp, 10.0_dp, 5.0_dp, 16, 4, &
                                                               8, max_quality)
 
@@ -6617,24 +6624,32 @@ CONTAINS
       err = MAX(err, ABS(mature_floor_scale - SQRT(scale_floor)))
       err = MAX(err, ABS(good_scale - 1.0_dp))
       err = MAX(err, ABS(over_scale - 1.0_dp))
+      err = MAX(err, ABS(recent_scale - 1.0_dp))
       err = MAX(err, ABS(young_growth_scale - 1.0_dp))
       err = MAX(err, ABS(growth_scale - &
                          (1.0_dp + (1.0_dp/13.0_dp)*(SQRT(max_quality) - 1.0_dp))))
+      err = MAX(err, ABS(selection_limited_growth_scale - 1.0_dp))
+      err = MAX(err, ABS(recent_growth_scale - SQRT(1.20_dp)))
       err = MAX(err, ABS(capped_growth_scale - SQRT(max_quality)))
 
       IF (err > tol .OR. ratio_scale >= 1.0_dp .OR. floor_scale >= ratio_scale .OR. &
           mature_ratio_scale >= ratio_scale .OR. mature_floor_scale >= floor_scale .OR. &
-          growth_scale <= 1.0_dp .OR. capped_growth_scale <= growth_scale) THEN
+          recent_scale < 1.0_dp .OR. &
+          growth_scale <= selection_limited_growth_scale .OR. &
+          recent_growth_scale <= selection_limited_growth_scale .OR. &
+          capped_growth_scale <= growth_scale) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
-            "failed with error/young/ratio/floor/mratio/mfloor/good/over/ygrow/grow/cgrow", &
+         WRITE (*, '(A,1X,A,14(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/ratio/floor/mratio/mfloor/good/over/recent/ygrow/grow/selgrow/rgrow/cgrow", &
             err, young_scale, ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, &
-            good_scale, over_scale, young_growth_scale, growth_scale, capped_growth_scale
+            good_scale, over_scale, recent_scale, young_growth_scale, growth_scale, &
+            selection_limited_growth_scale, recent_growth_scale, capped_growth_scale
       ELSE
-         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
-            "OK with error/young/ratio/floor/mratio/mfloor/good/over/ygrow/grow/cgrow", &
+         WRITE (*, '(A,1X,A,14(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/ratio/floor/mratio/mfloor/good/over/recent/ygrow/grow/selgrow/rgrow/cgrow", &
             err, young_scale, ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, &
-            good_scale, over_scale, young_growth_scale, growth_scale, capped_growth_scale
+            good_scale, over_scale, recent_scale, young_growth_scale, growth_scale, &
+            selection_limited_growth_scale, recent_growth_scale, capped_growth_scale
       END IF
 
    END SUBROUTINE check_projector_direct_history_step_scale
@@ -7635,6 +7650,7 @@ CONTAINS
       IF (samples >= min_samples) THEN
          IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
             history_quality = measured_sum/predicted_sum
+            IF (ema_quality > 0.0_dp) history_quality = MAX(history_quality, ema_quality)
          ELSE IF (ema_quality > 0.0_dp) THEN
             history_quality = ema_quality
          END IF
@@ -7677,6 +7693,7 @@ CONTAINS
       history_quality = 1.0_dp
       IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
          history_quality = measured_sum/predicted_sum
+         IF (ema_quality > 0.0_dp) history_quality = MAX(history_quality, ema_quality)
       ELSE IF (ema_quality > 0.0_dp) THEN
          history_quality = ema_quality
       END IF

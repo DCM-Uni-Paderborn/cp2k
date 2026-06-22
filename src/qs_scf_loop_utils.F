@@ -5716,6 +5716,7 @@ CONTAINS
             density_full_direct_gdot_energy, &
             density_full_direct_gdot_rotation, &
             density_full_direct_gdotp, &
+            density_full_direct_history_quality, &
             density_full_direct_history_scale, &
             density_full_direct_model_calibrated_drop, &
             density_full_direct_model_drop, &
@@ -8255,6 +8256,7 @@ CONTAINS
                density_full_direct_gdot_energy = 0.0_dp
                density_full_direct_gdot_rotation = 0.0_dp
                density_full_direct_gdotp = 0.0_dp
+               density_full_direct_history_quality = 1.0_dp
                density_full_direct_history_scale = 1.0_dp
                density_full_direct_model_calibrated_drop = 0.0_dp
                density_full_direct_model_drop = 0.0_dp
@@ -10463,9 +10465,16 @@ CONTAINS
                                                          ot_kp_schur_projector_response_min_samples, 1.0_dp, &
                                                          ot_kp_schur_projector_response_quality_min_ratio, &
                                                          ot_kp_schur_projector_response_quality_max_ratio)
+                                                   density_full_direct_history_quality = &
+                                                      kpoint_ot_direct_history_quality( &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_drop_sum, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_measured_sum, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                         ot_kp_schur_projector_response_min_samples)
                                                    density_full_direct_history_scale = &
                                                       kpoint_ot_direct_history_growth_scale( &
-                                                         density_full_direct_quality_for_selection, &
+                                                         density_full_direct_history_quality, &
                                                          local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
                                                          ot_kp_schur_projector_response_min_samples)
                                                 END IF
@@ -14956,6 +14965,7 @@ CONTAINS
 
          IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
             quality = measured_sum/predicted_sum
+            IF (ema_quality > 0.0_dp) quality = MAX(quality, ema_quality)
          ELSE IF (ema_quality > 0.0_dp) THEN
             quality = ema_quality
          END IF
