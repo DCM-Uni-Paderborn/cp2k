@@ -182,6 +182,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector diagonal response", 5.0E-14_dp, nfail)
    CALL check_history_safe_occ_projector_fd_diagonal_response( &
       "history-safe occupation-projector fd diagonal response", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_fd_mixed_response( &
+      "history-safe occupation-projector fd mixed response", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -7642,6 +7644,84 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_fd_diagonal_response
+
+! **************************************************************************************************
+!> \brief Check the mixed gauge/physical finite-difference projector dP branch.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_fd_mixed_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_safe, &
+                                                            expected, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: charge_leak, diagonal_fix, err, gauge_pair, &
+                                                            occ_sum, physical_pair, raw_gauge, shift_mu
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, shift
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.18_dp, 0.37_dp]
+      occ_scale(:) = [1.20_dp, 0.40_dp, 0.23_dp, 0.06_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp, 0.006_dp]
+      shift(:) = [0.81_dp, -0.49_dp, 0.23_dp, -0.08_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+         dchc(i, i) = CMPLX(shift(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 2) = CMPLX(0.24_dp, -0.18_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+      dchc(3, 4) = CMPLX(-0.19_dp, 0.11_dp, KIND=dp)
+      dchc(4, 3) = CONJG(dchc(3, 4))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      expected(:, :) = docc_fd(:, :)
+
+      occ_sum = SUM(occ_curv(:))
+      shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
+      DO i = 1, n
+         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                0.0_dp, KIND=dp)
+      END DO
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+      err = MAXVAL(ABS(docc_safe(:, :) - expected(:, :)))
+      diagonal_fix = MAXVAL(ABS(docc_fd(:, :) - expected(:, :)))
+      raw_gauge = MAX(ABS(projector_weight*docc_raw(1, 2)), ABS(projector_weight*docc_raw(2, 1)))
+      gauge_pair = MAX(ABS(docc_safe(1, 2)), ABS(docc_safe(2, 1)))
+      physical_pair = MAX(ABS(docc_safe(3, 4)), ABS(docc_safe(4, 3)))
+      charge_leak = 0.0_dp
+      DO i = 1, n
+         charge_leak = charge_leak + REAL(expected(i, i), KIND=dp)
+      END DO
+      charge_leak = ABS(charge_leak)
+
+      IF (err > tol .OR. diagonal_fix < active_tol .OR. raw_gauge < active_tol .OR. &
+          gauge_pair >= 0.01_dp*raw_gauge .OR. physical_pair < active_tol .OR. charge_leak > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/diagfix/rawgauge/gauge/physical/charge", err, diagonal_fix, &
+            raw_gauge, gauge_pair, physical_pair, charge_leak
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/diagfix/rawgauge/gauge/physical/charge", err, diagonal_fix, &
+            raw_gauge, gauge_pair, physical_pair, charge_leak
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_fd_mixed_response
 
 ! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
