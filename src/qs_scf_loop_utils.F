@@ -12347,8 +12347,10 @@ CONTAINS
                         dense_trust_quality = 1.0_dp
                         IF (solved) THEN
                            rx_e(:) = MATMUL(response_exact_raw, sol)
-                           rx_model(:) = MATMUL(response_exact_physical, sol)
-                           IF (exact_density_response_ready) rx_model(:) = rx_model(:) + MATMUL(response_density_exact, sol)
+                           rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, sol) + &
+                                         z_weight*MATMUL(response_exact_physical, sol)
+                           IF (exact_density_response_ready) &
+                              rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, sol)
                            CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                                  occ_curv_projection_sum, channel_nmo, e_offset)
                            CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
@@ -12495,9 +12497,10 @@ CONTAINS
                      projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
                      CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
                      rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
-                     rx_model(:) = MATMUL(response_exact_physical, accepted_sol)
+                     rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, accepted_sol) + &
+                                   z_weight*MATMUL(response_exact_physical, accepted_sol)
                      IF (exact_density_response_ready) &
-                        rx_model(:) = rx_model(:) + MATMUL(response_density_exact, accepted_sol)
+                        rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, accepted_sol)
                      CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                            occ_curv_projection_sum, channel_nmo, e_offset)
                      CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &

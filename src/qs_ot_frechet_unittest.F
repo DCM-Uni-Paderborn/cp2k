@@ -168,6 +168,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
                                                5.0E-14_dp, nfail)
+   CALL check_projector_mixed_direct_response_blend("complex projector mixed Direct response blend", &
+                                                    5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
                                                   5.0E-12_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
@@ -6654,6 +6656,69 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_trace_model_gap
+
+! **************************************************************************************************
+!> \brief Check that mixed Direct response diagnostics use the same blend as the Hessian.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_mixed_direct_response_blend(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
+      REAL(KIND=dp), PARAMETER                           :: z_weight = 0.35_dp
+
+      REAL(KIND=dp)                                      :: err, full_err, legacy_gap, mixed_gap, &
+                                                            zero_err
+      REAL(KIND=dp), DIMENSION(ne)                       :: actual, curv, expected, model_full, &
+                                                            model_mixed, model_zero
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density, physical, raw
+      REAL(KIND=dp), DIMENSION(nrot)                     :: step
+
+      curv(:) = [0.42_dp, 0.18_dp, 0.31_dp, 0.07_dp]
+      step(:) = [0.27_dp, -0.34_dp, 0.18_dp]
+      raw(:, :) = RESHAPE([ &
+                          0.08_dp, -0.03_dp, 0.02_dp, -0.01_dp, &
+                          -0.04_dp, 0.06_dp, -0.02_dp, 0.03_dp, &
+                          0.01_dp, -0.05_dp, 0.04_dp, 0.02_dp], [ne, nrot])
+      physical(:, :) = raw(:, :)
+      physical(:, 1) = physical(:, 1) + [0.18_dp, -0.09_dp, 0.04_dp, -0.06_dp]
+      physical(:, 2) = physical(:, 2) + [-0.07_dp, 0.13_dp, 0.08_dp, -0.02_dp]
+      physical(:, 3) = physical(:, 3) + [0.05_dp, 0.02_dp, -0.11_dp, 0.09_dp]
+      density(:, :) = RESHAPE([ &
+                              -0.03_dp, 0.06_dp, -0.02_dp, 0.04_dp, &
+                              0.07_dp, -0.01_dp, 0.05_dp, -0.03_dp, &
+                              -0.02_dp, 0.04_dp, -0.06_dp, 0.01_dp], [ne, nrot])
+
+      model_zero(:) = MATMUL(raw, step)
+      model_full(:) = MATMUL(physical, step) + MATMUL(density, step)
+      expected(:) = (1.0_dp - z_weight)*MATMUL(raw, step) + &
+                    z_weight*MATMUL(physical, step) + z_weight*MATMUL(density, step)
+      model_mixed(:) = expected(:)
+      actual(:) = expected(:)
+
+      err = MAXVAL(ABS(model_mixed(:) - expected(:)))
+      zero_err = MAXVAL(ABS(model_zero(:) - MATMUL(raw, step)))
+      full_err = MAXVAL(ABS(model_full(:) - MATMUL(physical, step) - MATMUL(density, step)))
+      mixed_gap = 0.5_dp*SUM(curv(:)*(model_mixed(:) - actual(:))**2)
+      legacy_gap = 0.5_dp*SUM(curv(:)*(model_full(:) - actual(:))**2)
+
+      IF (err > tol .OR. zero_err > tol .OR. full_err > tol .OR. mixed_gap > tol .OR. &
+          legacy_gap < 1.0E-6_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/zero/full/mixedgap/legacygap", &
+            err, zero_err, full_err, mixed_gap, legacy_gap
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/zero/full/mixedgap/legacygap", &
+            err, zero_err, full_err, mixed_gap, legacy_gap
+      END IF
+
+   END SUBROUTINE check_projector_mixed_direct_response_blend
 
 ! **************************************************************************************************
 !> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
