@@ -5506,6 +5506,7 @@ CONTAINS
          accepted_projector_plateau_gap_step, accepted_projector_plateau_gap_weight
       REAL(KIND=dp) :: projector_plateau_gap_quality_for_selection
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: curv, grad_e, grad_rot, occ_curv, rhs, &
+                                                            accepted_sol, accepted_z_e, &
                                                             constrained_sol, constrained_z_e, &
                                                             projector_physical_direct_curv_eval, z_density_trial, &
                                                             projector_physical_direct_model_e, &
@@ -5697,7 +5698,8 @@ CONTAINS
                " OT Schur active subspace group ne nrot full max occ ewin:", &
                target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_occ_min, schur_energy_window
 
-         ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_exact_raw_trial(ne), &
+         ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), accepted_z_e(ne), &
+                      z_exact_raw_trial(ne), &
                       z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
                       constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                       projector_physical_direct_model_e(ne), &
@@ -5726,7 +5728,8 @@ CONTAINS
                                projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                                projector_physical_z_e(ne), projector_response_rx_e(ne), &
                                projector_response_z_e(ne), split_z_e(ne))
-            ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), constrained_sol(nrot), &
+            ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), accepted_sol(nrot), &
+                               constrained_sol(nrot), &
                                projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
                                projector_physical_direct_spectral_sol(nrot), &
                                projector_offdiag_sol(nrot), projector_response_sol(nrot), split_sol(nrot), &
@@ -5767,6 +5770,7 @@ CONTAINS
          occ_curv(:) = 0.0_dp
          tether_curv(:) = 0.0_dp
          z_e(:) = 0.0_dp
+         accepted_z_e(:) = 0.0_dp
          z_exact_physical_trial(:) = 0.0_dp
          z_exact_raw_trial(:) = 0.0_dp
          z_exact_trial(:) = 0.0_dp
@@ -5812,6 +5816,7 @@ CONTAINS
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
                               sol(:) = 0.0_dp
+                              accepted_sol(:) = 0.0_dp
                               projector_physical_direct_sol(:) = 0.0_dp
                               projector_physical_direct_spectral_sol(:) = 0.0_dp
                               projector_physical_sol(:) = 0.0_dp
@@ -6558,7 +6563,7 @@ CONTAINS
 
             CPASSERT(ivar == nrot)
             IF (failed) THEN
-               DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_density_plateau_trial, &
+               DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
                            z_density_full_audit_trial, &
                            z_density_full_trial, z_density_trial, &
                            z_exact_physical_trial, z_exact_raw_trial, &
@@ -6582,7 +6587,8 @@ CONTAINS
                                     projector_offdiag_rx_e, projector_offdiag_z_e, &
                                     projector_physical_rx_e, projector_physical_z_e, &
                                     projector_response_rx_e, projector_response_z_e, split_z_e)
-                        DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
+                        DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, constrained_sol, &
+                                    projector_physical_direct_sol, &
                                     projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
                                     var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
@@ -11056,6 +11062,8 @@ CONTAINS
                accepted_occgap_shadow_drop = occgap_shadow_drop
                accepted_occgap_shadow_gap_ratio = occgap_shadow_gap_ratio
                accepted_projector_coupled_weight = projector_coupled_weight
+               accepted_z_e(:) = z_e(:)
+               accepted_sol(:) = sol(:)
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
                IF (logger%iter_info%print_level >= high_print_level .OR. projector_physical_shadow_enabled) THEN
                   CALL audit_kpoint_ot_hessian_delta_modes(rot_hessian_projector_physical_offdiag_active, sol, &
@@ -12387,7 +12395,10 @@ CONTAINS
                   END IF
                END IF
             END IF
-            IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop)) THEN
+            IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop) .AND. &
+                (projector_physical_direct_candidate_selected .OR. &
+                 projector_physical_direct_density_candidate_selected .OR. &
+                 projector_physical_direct_spectral_candidate_selected)) THEN
                projector_physical_direct_shadow_weight = &
                   MAX(projector_coupled_weight, &
                       MAX(projector_physical_response_weight, projector_physical_direct_response_weight))
@@ -12438,66 +12449,34 @@ CONTAINS
                      END DO
                      projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
                      CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
-                     DO r = 1, nrot
-                        rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
-                        IF (exact_density_response_ready) &
-                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
-                     END DO
-                     sol(:) = rhs(:)
-                     CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
-                     IF (info /= 0) CYCLE
-                     rx_e(:) = MATMUL(response_exact_raw, sol)
-                     rx_model(:) = MATMUL(response_exact_physical, sol)
-                     IF (exact_density_response_ready) rx_model(:) = rx_model(:) + MATMUL(response_density_exact, sol)
+                     rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
+                     rx_model(:) = MATMUL(response_exact_physical, accepted_sol)
+                     IF (exact_density_response_ready) &
+                        rx_model(:) = rx_model(:) + MATMUL(response_density_exact, accepted_sol)
                      CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                            occ_curv_projection_sum, channel_nmo, e_offset)
                      CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
                                                            occ_curv_projection_sum, channel_nmo, e_offset)
-                     z_e(:) = z_exact_physical_trial(:) + rx_e(:)
-                     gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, sol)
-                     CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
+                     gdotp = DOT_PRODUCT(grad_e, accepted_z_e) + DOT_PRODUCT(grad_rot, accepted_sol)
+                     CALL kpoint_ot_mixed_projected_term(accepted_z_e, accepted_z_e, occ_curv, tether_curv, &
                                                          occ_curv_projection_sum, channel_nmo, e_offset, &
                                                          projector_physical_direct_metric_norm_energy)
                      projector_physical_direct_metric_norm_energy = &
                         MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                      projector_physical_direct_metric_norm_rotation = &
                         kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
-                                                 projector_physical_direct_schur_eval, sol)
+                                                 projector_physical_direct_schur_eval, accepted_sol)
                      projector_physical_direct_metric_normp = &
                         projector_physical_direct_metric_norm_energy + &
                         projector_physical_direct_metric_norm_rotation
                      IF (gdotp <= 0.0_dp .OR. &
                          projector_physical_direct_metric_normp <= &
                          EPSILON(projector_physical_direct_metric_normp)) CYCLE
-                     projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
-                     CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
-                     projector_physical_direct_unit_weighted_step = &
-                        kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
-                     projector_physical_direct_trust_scale = 1.0_dp
-                     IF (response_trust > EPSILON(response_trust) .AND. &
-                         projector_physical_direct_unit_weighted_step > &
-                         EPSILON(projector_physical_direct_unit_weighted_step)) &
-                        projector_physical_direct_trust_scale = &
-                           MIN(projector_physical_direct_trust_scale, &
-                               0.8_dp*response_trust/projector_physical_direct_unit_weighted_step)
-                     IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
-                         projector_physical_direct_unit_abs_step > &
-                         EPSILON(projector_physical_direct_unit_abs_step)) &
-                        projector_physical_direct_trust_scale = &
-                           MIN(projector_physical_direct_trust_scale, &
-                               0.8_dp*response_abs_trust/projector_physical_direct_unit_abs_step)
-                     direction_scale = MIN(1.0_dp, projector_physical_direct_trust_scale, &
-                                           gdotp/MAX(projector_physical_direct_metric_normp, &
-                                                     EPSILON(projector_physical_direct_metric_normp)))
-                     scale_quality = kpoint_ot_schur_scale_quality(direction_scale, schur_min_coupled_scale)
-                     model_drop = direction_scale*gdotp - &
-                                  0.5_dp*direction_scale*direction_scale* &
-                                  projector_physical_direct_metric_normp
+                     model_drop = gdotp - 0.5_dp*projector_physical_direct_metric_normp
                      model_drop = MAX(0.0_dp, model_drop)
-                     model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, direction_scale)
+                     IF (model_drop <= EPSILON(model_drop)) CYCLE
+                     model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, 1.0_dp)
                      model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
-                     IF (direction_scale < schur_min_coupled_scale) &
-                        model_calibrated_drop = scale_quality*model_calibrated_drop
                      IF (model_calibrated_drop > local_ot_env(1)%schur_projector_mixed_direct_drop .AND. &
                          model_calibrated_drop >= &
                          MAX(accepted_model_calibrated_drop/ot_kp_schur_calibrated_quality_max_ratio, &
@@ -12513,7 +12492,7 @@ CONTAINS
             END IF
          END IF
 
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, z_density_plateau_trial, &
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
                         z_density_full_audit_trial, &
                         z_density_full_trial, z_density_trial, &
                         z_exact_physical_trial, z_exact_raw_trial, &
@@ -12542,7 +12521,8 @@ CONTAINS
                                  projector_physical_model_e, projector_physical_rx_e, &
                                  projector_physical_z_e, &
                                  projector_response_rx_e, projector_response_z_e, split_z_e)
-                              DEALLOCATE (grad_rot, rhs, rtd, sol, constrained_sol, projector_physical_direct_sol, &
+                              DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, constrained_sol, &
+                                          projector_physical_direct_sol, &
                                           projector_physical_direct_spectral_sol, &
                                           projector_physical_sol, projector_offdiag_sol, projector_response_sol, split_sol, &
                                  var_projector_active_weight, var_projector_weight)
