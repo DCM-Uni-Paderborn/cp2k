@@ -2,10 +2,10 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-06 HIGH reference after local fixed-N trace-gauge Direct damping:
-! 160 SCF steps / 382 inner k-point OT calls.  E_total = Mermin =
-! -8.15998707501324 Ha, with no first/last-band warnings and no
-! AUTO-exhausted warning.
+! Local 2026-06 HIGH reference after accepted-drop calibrated density response:
+! 124 SCF steps / 399 inner k-point OT calls.  E_total = Mermin =
+! -8.15998707851509 Ha, with AUTO growth to 8 and 16, no first/last-band
+! warnings, and no AUTO-exhausted warning.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge

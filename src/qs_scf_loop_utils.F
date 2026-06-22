@@ -14635,13 +14635,16 @@ CONTAINS
                occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
                IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                   DO i = 1, n
-                     diag_response_shift = diag_response_shift + REAL(kernel(i, i), KIND=dp)
+                     diag_response_shift = diag_response_shift + &
+                                           MAX(0.0_dp, occ_curv_channel(i))*REAL(work(i, i), KIND=dp)
                   END DO
                   diag_response_shift = diag_response_shift/occ_curv_sum
                END IF
+               ! Keep gauge-sensitive finite differences for off-diagonal projector response only.
+               ! The density response is the analytic fixed-N Mermin diagonal in the CHC basis.
                DO i = 1, n
-                  coeff = MAX(0.0_dp, occ_curv_channel(i))
-                  kernel(i, i) = CMPLX(REAL(kernel(i, i), KIND=dp) - coeff*diag_response_shift, &
+                  coeff = -2.0_dp*projector_weight*MAX(0.0_dp, occ_curv_channel(i))
+                  kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
                                        0.0_dp, KIND=dp)
                END DO
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))

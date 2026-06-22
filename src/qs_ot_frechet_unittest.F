@@ -190,6 +190,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector fd diagonal response", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_fd_mixed_response( &
       "history-safe occupation-projector fd mixed response", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_fd_fixed_n_trace( &
+      "history-safe occupation-projector fd fixed-N trace", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -8367,16 +8369,8 @@ CONTAINS
       occ_sum = SUM(occ_curv(:))
       shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
       DO i = 1, n
-         expected_old(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
-                                    0.0_dp, KIND=dp)
-      END DO
-      shift_mu = 0.0_dp
-      DO i = 1, n
-         shift_mu = shift_mu + REAL(expected(i, i), KIND=dp)
-      END DO
-      shift_mu = shift_mu/occ_sum
-      DO i = 1, n
-         expected(i, i) = CMPLX(REAL(expected(i, i), KIND=dp) - occ_curv(i)*shift_mu, 0.0_dp, KIND=dp)
+         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                0.0_dp, KIND=dp)
       END DO
 
       err = MAXVAL(ABS(docc_safe(:, :) - expected(:, :)))
@@ -8453,16 +8447,8 @@ CONTAINS
       occ_sum = SUM(occ_curv(:))
       shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
       DO i = 1, n
-         expected_old(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
-                                    0.0_dp, KIND=dp)
-      END DO
-      shift_mu = 0.0_dp
-      DO i = 1, n
-         shift_mu = shift_mu + REAL(expected(i, i), KIND=dp)
-      END DO
-      shift_mu = shift_mu/occ_sum
-      DO i = 1, n
-         expected(i, i) = CMPLX(REAL(expected(i, i), KIND=dp) - occ_curv(i)*shift_mu, 0.0_dp, KIND=dp)
+         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                0.0_dp, KIND=dp)
       END DO
 
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
@@ -8490,6 +8476,81 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_fd_mixed_response
+
+! **************************************************************************************************
+!> \brief Check that the finite-difference projector dP branch uses the fixed-N curvature metric.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_fd_fixed_n_trace(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 5
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, dchc_diag, docc_ref, &
+                                                            docc_safe, uniform_expected
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: charge_leak, diag_err, occ_sum, &
+                                                            shift_mu, uniform_gap, uniform_shift
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, shift
+
+      evals(:) = [-0.012000_dp, -0.011982_dp, 0.045000_dp, 0.045030_dp, 0.29_dp]
+      occ_scale(:) = [1.22_dp, 0.38_dp, 0.31_dp, 0.27_dp, 0.04_dp]
+      occ_curv(:) = [0.041_dp, 0.019_dp, 0.013_dp, 0.007_dp, 0.002_dp]
+      shift(:) = [0.61_dp, -0.27_dp, 0.42_dp, -0.19_dp, 0.08_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_diag(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+         dchc(i, i) = CMPLX(shift(i), 0.0_dp, KIND=dp)
+         dchc_diag(i, i) = dchc(i, i)
+      END DO
+      dchc(1, 2) = CMPLX(0.33_dp, -0.25_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+      dchc(3, 4) = CMPLX(-0.29_dp, 0.17_dp, KIND=dp)
+      dchc(4, 3) = CONJG(dchc(3, 4))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc_diag, occ_scale, projector_weight, &
+                                                           docc_ref, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      uniform_expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      occ_sum = SUM(occ_curv(:))
+      shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
+      uniform_shift = -2.0_dp*projector_weight*DOT_PRODUCT(occ_curv(:), shift(:))/REAL(n, KIND=dp)
+      DO i = 1, n
+         uniform_expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*shift(i) - &
+                                        uniform_shift, 0.0_dp, KIND=dp)
+      END DO
+
+      diag_err = 0.0_dp
+      charge_leak = 0.0_dp
+      DO i = 1, n
+         diag_err = MAX(diag_err, ABS(docc_safe(i, i) - docc_ref(i, i)))
+         charge_leak = charge_leak + REAL(docc_safe(i, i), KIND=dp)
+      END DO
+      uniform_gap = MAXVAL(ABS(uniform_expected(:, :) - docc_ref(:, :)))
+      charge_leak = ABS(charge_leak)
+
+      IF (diag_err > tol .OR. uniform_gap < active_tol .OR. charge_leak > tol .OR. &
+          ABS(shift_mu) < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with diagerr/mugap/uniformgap/charge", diag_err, ABS(shift_mu), uniform_gap, charge_leak
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with diagerr/mugap/uniformgap/charge", diag_err, ABS(shift_mu), uniform_gap, charge_leak
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_fd_fixed_n_trace
 
 ! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
@@ -9103,13 +9164,14 @@ CONTAINS
             occ_curv_sum = SUM(MAX(0.0_dp, occ_curv(:)))
             IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                DO i = 1, n
-                  diag_response_shift = diag_response_shift + REAL(kernel(i, i), KIND=dp)
+                  diag_response_shift = diag_response_shift + &
+                                        MAX(0.0_dp, occ_curv(i))*REAL(work(i, i), KIND=dp)
                END DO
                diag_response_shift = diag_response_shift/occ_curv_sum
             END IF
             DO i = 1, n
-               coeff = MAX(0.0_dp, occ_curv(i))
-               kernel(i, i) = CMPLX(REAL(kernel(i, i), KIND=dp) - coeff*diag_response_shift, &
+               coeff = -2.0_dp*projector_weight*MAX(0.0_dp, occ_curv(i))
+               kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
                                     0.0_dp, KIND=dp)
             END DO
             docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
