@@ -110,6 +110,31 @@ class TextAbsenceMatcher(Matcher):
 
 
 # ======================================================================================
+class IntSequenceMatcher(Matcher):
+    def __init__(self, pattern: str):
+        self.regex = re.compile(pattern)
+
+    def run(self, output: str, **kwargs: Any) -> MatchResult:
+        ref = kwargs["ref"]
+        if isinstance(ref, str):
+            expected = [int(item.strip()) for item in ref.split(",") if item.strip()]
+        elif isinstance(ref, list) or isinstance(ref, tuple):
+            expected = [int(item) for item in ref]
+        else:
+            expected = [int(ref)]
+
+        values = [int(match.group(1)) for match in self.regex.finditer(output)]
+        if values != expected:
+            return MatchResult(
+                "WRONG RESULT",
+                f"Sequence mismatch: value {values}, expected {expected}.\n",
+                value=float(values[-1]) if values else None,
+            )
+
+        return MatchResult("OK", error=None, value=float(values[-1]) if values else None)
+
+
+# ======================================================================================
 class MatcherRegistry(Dict[str, Matcher]):
     def __setitem__(self, key: str, value: Matcher) -> None:
         assert key not in self  # check for name collisions
@@ -131,6 +156,9 @@ registry["ADDED_MOS_AUTO"] = GenericMatcher(
     r"SCF smearing: automatically selected ADDED_MOS:\s+([0-9]+)",
     col=1,
     regex=True,
+)
+registry["ADDED_MOS_AUTO_GROW_SEQUENCE"] = IntSequenceMatcher(
+    r"K-point ADDED_MOS AUTO: growing virtual-space buffer to:\s+([0-9]+)"
 )
 registry["Electronic_entropic_energy"] = GenericMatcher(
     r"Electronic entropic energy:", col=4
