@@ -13951,7 +13951,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, diag_response_shift, &
                                                             gap_tol, occ_curv_sum, occ_jump, occ_tol, physical_slope, &
                                                             projector_fd_step, projector_weight, scale, slope_cap, &
-                                                            work_tol
+                                                            work_norm, work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_scale, occ_slope
 
          n = SIZE(chc, 1)
@@ -13974,7 +13974,8 @@ CONTAINS
             CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_slope)
          use_projector_fd = .FALSE.
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
-            work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(work(:, :))))
+            work_norm = MAXVAL(ABS(work(:, :)))
+            work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, work_norm)
             DO j = 1, n
                DO i = 1, n
                   same_gauge_cluster = i /= j
@@ -13990,6 +13991,11 @@ CONTAINS
             END DO
             IF (use_projector_fd) THEN
                projector_fd_step = 1.0E-7_dp
+               IF (work_norm > EPSILON(work_norm)) THEN
+                  projector_fd_step = MIN(projector_fd_step, 1.0E-2_dp*gauge_gap/work_norm)
+                  projector_fd_step = MAX(projector_fd_step, &
+                                          10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, scale)/work_norm)
+               END IF
                DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
                ALLOCATE (occ_mat_p(n, n), occ_mat_m(n, n))
                CALL dense_history_safe_occ_projector(chc + projector_fd_step*dchc, occupation_numbers, &

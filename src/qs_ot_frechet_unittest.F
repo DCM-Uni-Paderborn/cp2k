@@ -156,6 +156,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_physical_fd( &
       "history-safe occupation-projector physical finite difference", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_adaptive_fd( &
+      "history-safe occupation-projector adaptive finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_diagonal_response( &
       "history-safe occupation-projector diagonal response", 5.0E-14_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
@@ -6734,6 +6736,72 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_physical_fd
 
 ! **************************************************************************************************
+!> \brief Check that the gauge-cluster finite-difference probe stays inside the cluster.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_adaptive_fd(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, old_fd_step = 1.0E-7_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_adaptive, docc_fd, &
+                                                            docc_old, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: adaptive_step, err, old_gap, scale, step_ratio, &
+                                                            work_norm
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.34_dp]
+      occ_scale(:) = [1.20_dp, 0.37_dp, 0.08_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.006_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 2) = CMPLX(2.0E4_dp, -1.5E4_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      work_norm = MAXVAL(ABS(dchc(:, :)))
+      scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+      adaptive_step = MIN(old_fd_step, 1.0E-2_dp*gauge_gap/work_norm)
+      adaptive_step = MAX(adaptive_step, 10.0_dp*EPSILON(1.0_dp)*scale/work_norm)
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_adaptive, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc + adaptive_step*dchc, occ_scale, &
+                                                     projector_weight, occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - adaptive_step*dchc, occ_scale, &
+                                                     projector_weight, occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*adaptive_step)
+
+      CALL dense_history_safe_occ_projector_from_chc(chc + old_fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - old_fd_step*dchc, occ_scale, projector_weight, &
+                                                     occ_mat_m, occ_curv, gauge_gap)
+      docc_old(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*old_fd_step)
+
+      err = MAXVAL(ABS(docc_adaptive(:, :) - docc_fd(:, :)))
+      old_gap = MAXVAL(ABS(docc_old(:, :) - docc_adaptive(:, :)))
+      step_ratio = adaptive_step/old_fd_step
+
+      IF (err > tol .OR. old_gap < active_tol .OR. step_ratio >= 0.1_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/oldgap/ratio", err, old_gap, step_ratio
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/oldgap/ratio", err, old_gap, step_ratio
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_adaptive_fd
+
+! **************************************************************************************************
 !> \brief Check the explicit diagonal Fermi response in the history-safe dP model.
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_diagonal_response(label, tol, nfail)
@@ -7289,7 +7357,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
       LOGICAL                                            :: same_gauge_cluster, use_projector_fd
-      REAL(KIND=dp)                                      :: occ_tol, projector_fd_step, work_tol
+      REAL(KIND=dp)                                      :: occ_tol, projector_fd_step, scale, work_norm, work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -7304,7 +7372,8 @@ CONTAINS
          CALL diag_complex(chc, evec, evals)
          work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
          use_projector_fd = .FALSE.
-         work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(work(:, :))))
+         work_norm = MAXVAL(ABS(work(:, :)))
+         work_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, work_norm)
          DO j = 1, n
             DO i = 1, n
                same_gauge_cluster = i /= j
@@ -7319,6 +7388,12 @@ CONTAINS
          END DO
          IF (use_projector_fd) THEN
             projector_fd_step = 1.0E-7_dp
+            IF (work_norm > EPSILON(work_norm)) THEN
+               scale = MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+               projector_fd_step = MIN(projector_fd_step, 1.0E-2_dp*gauge_gap/work_norm)
+               projector_fd_step = MAX(projector_fd_step, &
+                                       10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, scale)/work_norm)
+            END IF
             ALLOCATE (occ_mat_p(n, n), occ_mat_m(n, n))
             CALL dense_history_safe_occ_projector_from_chc(chc + projector_fd_step*dchc, occ_scale, &
                                                            projector_weight, occ_mat_p, occ_curv, gauge_gap)
