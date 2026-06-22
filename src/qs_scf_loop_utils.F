@@ -13190,8 +13190,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                         :: trace_diag_ema, trace_free_ema, &
                                                             trace_diag_quality_ema, trace_free_quality_ema
       INTEGER, INTENT(IN)                               :: samples
-      REAL(KIND=dp)                                     :: component_scale, diag_abs, diag_quality, &
-                                                            free_abs, free_quality, quality_ratio
+      REAL(KIND=dp)                                     :: balance_scale, component_scale, diag_abs, diag_quality, &
+                                                            free_abs, free_quality, quality_ratio, trace_balance, &
+                                                            trace_norm
 
          component_scale = 1.0_dp
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
@@ -13203,11 +13204,16 @@ CONTAINS
          diag_quality = ABS(trace_diag_quality_ema)/diag_abs
          free_quality = ABS(trace_free_quality_ema)/free_abs
          IF (free_quality <= EPSILON(free_quality)) RETURN
+         trace_norm = diag_abs + free_abs
+         trace_balance = ABS(trace_diag_ema + trace_free_ema)/MAX(trace_norm, EPSILON(trace_norm))
+         trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
+         balance_scale = SQRT(MAX(ot_kp_schur_projector_response_quality_min_ratio, trace_balance))
+         component_scale = MIN(component_scale, balance_scale)
          IF (diag_quality >= free_quality) RETURN
 
          quality_ratio = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
                              diag_quality/free_quality)
-         component_scale = SQRT(MIN(1.0_dp, quality_ratio))
+         component_scale = MIN(component_scale, SQRT(MIN(1.0_dp, quality_ratio)))
 
       END FUNCTION kpoint_ot_trace_diag_component_scale
 

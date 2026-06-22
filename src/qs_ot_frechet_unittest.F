@@ -154,6 +154,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
+   CALL check_projector_trace_diag_component_scale("complex projector trace-diag Direct scale", &
+                                                   5.0E-14_dp, nfail)
    CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
                                                   5.0E-14_dp, nfail)
    CALL check_projector_coupled_tail_weight("complex projector coupled tail weight", &
@@ -5909,6 +5911,45 @@ CONTAINS
    END SUBROUTINE check_projector_trace_active_mix_weight
 
 ! **************************************************************************************************
+!> \brief Check fixed-N trace-balance damping of the Direct trace diagonal component.
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_diag_component_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: balanced_scale, err, expected_gauge, gauge_scale, &
+                                                            no_samples_scale, poor_diag_scale, zero_free_scale
+
+      no_samples_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 1.0_dp, 2)
+      zero_free_scale = dense_trace_diag_component_scale(-1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 16)
+      balanced_scale = dense_trace_diag_component_scale(0.75_dp, 0.25_dp, 1.0_dp, 0.1_dp, 16)
+      gauge_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 0.8_dp, 16)
+      poor_diag_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 0.08_dp, 0.8_dp, 16)
+
+      expected_gauge = SQRT(0.25_dp/1.75_dp)
+      expected_gauge = SQRT(MAX(0.10_dp, expected_gauge*expected_gauge))
+      err = ABS(no_samples_scale - 1.0_dp)
+      err = MAX(err, ABS(zero_free_scale - 1.0_dp))
+      err = MAX(err, ABS(balanced_scale - 1.0_dp))
+      err = MAX(err, ABS(gauge_scale - expected_gauge))
+      err = MAX(err, ABS(poor_diag_scale - SQRT(0.10_dp)))
+
+      IF (err > tol .OR. gauge_scale >= balanced_scale .OR. &
+          poor_diag_scale > gauge_scale) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/free/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
+            balanced_scale, gauge_scale, poor_diag_scale
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/free/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
+            balanced_scale, gauge_scale, poor_diag_scale
+      END IF
+
+   END SUBROUTINE check_projector_trace_diag_component_scale
+
+! **************************************************************************************************
 !> \brief Check accepted-drop scaling of the physical Direct candidate.
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_history_step_scale(label, tol, nfail)
@@ -6618,6 +6659,40 @@ CONTAINS
       mix_weight = MIN(0.95_dp, MAX(0.0_dp, mix_weight))
 
    END FUNCTION dense_trace_active_mix_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of trace-bearing Direct curvature component scaling.
+! **************************************************************************************************
+   FUNCTION dense_trace_diag_component_scale(trace_diag_ema, trace_free_ema, trace_diag_quality_ema, &
+                                             trace_free_quality_ema, samples) RESULT(component_scale)
+      REAL(KIND=dp), INTENT(IN)                          :: trace_diag_ema, trace_free_ema, &
+                                                            trace_diag_quality_ema, trace_free_quality_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: balance_scale, component_scale, diag_abs, diag_quality, &
+                                                            free_abs, free_quality, quality_ratio, trace_balance, &
+                                                            trace_norm
+
+      component_scale = 1.0_dp
+      IF (samples < 8) RETURN
+
+      diag_abs = ABS(trace_diag_ema)
+      free_abs = ABS(trace_free_ema)
+      IF (diag_abs <= EPSILON(diag_abs) .OR. free_abs <= EPSILON(free_abs)) RETURN
+
+      diag_quality = ABS(trace_diag_quality_ema)/diag_abs
+      free_quality = ABS(trace_free_quality_ema)/free_abs
+      IF (free_quality <= EPSILON(free_quality)) RETURN
+      trace_norm = diag_abs + free_abs
+      trace_balance = ABS(trace_diag_ema + trace_free_ema)/MAX(trace_norm, EPSILON(trace_norm))
+      trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
+      balance_scale = SQRT(MAX(0.10_dp, trace_balance))
+      component_scale = MIN(component_scale, balance_scale)
+      IF (diag_quality >= free_quality) RETURN
+
+      quality_ratio = MAX(0.10_dp, diag_quality/free_quality)
+      component_scale = MIN(component_scale, SQRT(MIN(1.0_dp, quality_ratio)))
+
+   END FUNCTION dense_trace_diag_component_scale
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected-history Direct step scaling.
