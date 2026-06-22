@@ -3,10 +3,10 @@
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-06 HIGH reference after direct-history calibration: 91 SCF
-! steps.  E_total = Mermin = -8.15998707636986 Ha, with AUTO growth from 4
+! steps.  E_total = Mermin = -8.15998707638814 Ha, with AUTO growth from 4
 ! to 8 and 16, no first/last-band warnings, and no AUTO-exhausted warning.
-! The remaining tail is dominated by conservative physical projector/density
-! response curvature, matching the full-grid companion.
+! The gauge-free eigenvalue-density response remains active in the tail,
+! matching the full-grid companion.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge

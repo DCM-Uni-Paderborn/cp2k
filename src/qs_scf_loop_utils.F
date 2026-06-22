@@ -15932,7 +15932,6 @@ CONTAINS
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp)                                      :: active_density_denom, active_density_floor, &
-                                                            active_density_weight, &
                                                             channel_occ_curv_max, density_occ_curv_sum, &
                                                             density_plateau_full_response, &
                                                             density_mix_weight, density_plateau_shift, &
@@ -16104,8 +16103,6 @@ CONTAINS
                      ! only for raw audits/off-diagonal Hessian terms so
                      ! projector-basis gauge motion cannot masquerade as a huge
                      ! auxiliary-energy response in the Schur model.
-                     active_density_weight = kpoint_ot_active_density_response_weight( &
-                        occ_curv_channel(ie), channel_occ_curv_max)
                      active_density_denom = MAX(occ_curv_channel(ie), active_density_floor)
                      density_plateau_column(ie) = density_projector_column(ie)
                      IF (active_density_denom > EPSILON(active_density_denom)) &
@@ -16118,12 +16115,15 @@ CONTAINS
                      density_mixed_column(ie) = density_active_column(ie) + &
                                                 density_mix_weight*(density_plateau_column(ie) - &
                                                                     density_active_column(ie))
-                     density_weight_column(ie) = active_density_weight
+                     ! The eigenvalue-density response is already projector-gauge
+                     ! filtered.  Keep the active floor as a low-curvature
+                     ! denominator cap, but do not apply the extra Fermi-window
+                     ! weight used for raw dP diagonal audits.
+                     density_weight_column(ie) = 1.0_dp
                      density_occ_curv_sum = density_occ_curv_sum + &
-                                            occ_curv_channel(ie)*active_density_weight
+                                            occ_curv_channel(ie)
                      density_plateau_shift = density_plateau_shift + &
-                                             occ_curv_channel(ie)*active_density_weight* &
-                                             density_mixed_column(ie)
+                                             occ_curv_channel(ie)*density_mixed_column(ie)
                   END IF
                END DO
                IF (density_occ_curv_sum > EPSILON(density_occ_curv_sum)) &

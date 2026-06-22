@@ -121,6 +121,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density raw-audit split", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_eigen_response_split( &
       "complex projector density eigen-response split", 2.0E-8_dp, nfail)
+   CALL check_complex_projector_density_eigen_floor_filter( &
+      "complex projector density eigen floor filter", 5.0E-14_dp, nfail)
    CALL check_projector_active_rotation_pair_weight( &
       "complex projector active rotation pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
@@ -4838,6 +4840,78 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_eigen_response_split
+
+! **************************************************************************************************
+!> \brief Check that gauge-free eigenvalue density response is floor-limited but not active-weight damped.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_eigen_floor_filter(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, response_ratio_gate = 2.0E-2_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp) :: active_floor, fixed_n_leak, full_norm, full_shift, mix_weight, new_shift, &
+         new_sum, old_shift, old_sum, recovery, weight
+      REAL(KIND=dp), DIMENSION(n)                        :: active_column, eig_column, &
+                                                            full_response, mixed_column, &
+                                                            new_response, occ_curv, old_response
+
+      occ_curv(:) = [4.0E-2_dp, 2.0E-2_dp, 4.0E-4_dp, 4.0E-5_dp]
+      eig_column(:) = [3.0E-3_dp, -2.0E-3_dp, 1.5E-3_dp, -1.0E-3_dp]
+      active_floor = response_ratio_gate*MAXVAL(occ_curv(:))
+
+      active_column(:) = 0.0_dp
+      mixed_column(:) = 0.0_dp
+      DO i = 1, n
+         active_column(i) = eig_column(i)*occ_curv(i)/MAX(occ_curv(i), active_floor)
+         mix_weight = occ_curv(i)/MAX(occ_curv(i), active_floor)
+         mix_weight = MIN(1.0_dp, MAX(0.0_dp, mix_weight))
+         mixed_column(i) = active_column(i) + mix_weight*(eig_column(i) - active_column(i))
+      END DO
+
+      full_shift = DOT_PRODUCT(occ_curv(:), eig_column(:))/SUM(occ_curv(:))
+      full_response(:) = eig_column(:) - full_shift
+      full_norm = MAXVAL(ABS(full_response(:)))
+
+      new_sum = SUM(occ_curv(:))
+      new_shift = DOT_PRODUCT(occ_curv(:), mixed_column(:))/new_sum
+      new_response(:) = mixed_column(:) - new_shift
+      fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), new_response(:)))/new_sum
+
+      old_sum = 0.0_dp
+      old_shift = 0.0_dp
+      DO i = 1, n
+         weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/MAXVAL(occ_curv(:)))))
+         old_sum = old_sum + occ_curv(i)*weight
+         old_shift = old_shift + occ_curv(i)*weight*mixed_column(i)
+      END DO
+      old_shift = old_shift/old_sum
+      DO i = 1, n
+         weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/MAXVAL(occ_curv(:)))))
+         old_response(i) = weight*(mixed_column(i) - old_shift)
+      END DO
+
+      recovery = MAXVAL(ABS(new_response(3:4)))/MAX(MAXVAL(ABS(old_response(3:4))), EPSILON(1.0_dp))
+
+      IF (fixed_n_leak > tol .OR. full_norm < active_tol .OR. &
+          MAXVAL(ABS(new_response(:))) > full_norm + active_tol .OR. recovery < 2.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with fixed/full/new/recovery", fixed_n_leak, full_norm, &
+            MAXVAL(ABS(new_response(:))), recovery
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with fixed/full/new/recovery", fixed_n_leak, full_norm, &
+            MAXVAL(ABS(new_response(:))), recovery
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_eigen_floor_filter
 
    ! **************************************************************************************************
    !> \brief Check that active rotation weights require both bands to be in the Fermi window.

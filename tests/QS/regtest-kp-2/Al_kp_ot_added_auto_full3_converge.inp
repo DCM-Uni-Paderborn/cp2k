@@ -6,10 +6,9 @@
 ! Local 2026-06 HIGH reference after direct-history calibration: AUTO grows
 ! to 8 and 16; the last AUTO tail reaches index 82 before the final grow and
 ! then converges in one restarted SCF step.  E_total = Mermin =
-! -8.15998558777130 Ha, with no first/last-band warnings and no
-! AUTO-exhausted warning.  The remaining tail is dominated by conservative
-! physical projector/density response curvature, matching the symmetry-reduced
-! companion.
+! -8.15998623270682 Ha, with no first/last-band warnings and no
+! AUTO-exhausted warning.  The gauge-free eigenvalue-density response remains
+! active in the tail, matching the symmetry-reduced companion.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge
