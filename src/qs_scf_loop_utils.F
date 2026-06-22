@@ -134,6 +134,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_min = 50.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp, &
+                                        ot_kp_added_mos_auto_residual_spike_factor = 8.0_dp, &
                                         ot_kp_added_mos_auto_strong_tail_basis_frac = 2.0E-1_dp, &
                                         ot_kp_added_mos_auto_strong_tail_frac = 2.5E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_max_attempts = 12
@@ -1265,12 +1266,12 @@ CONTAINS
       INTEGER                                            :: edge_start, edge_width, ikpoint, imo, ispin, local_kpoint, &
                                                             nmo, trigger_step
       LOGICAL                                            :: active_tail, basis_limited, basis_probe_limited, edge_limited, &
-                                                            expandable, residual_ready, residual_tail_limited, &
+                                                            expandable, residual_ready, residual_spike, residual_tail_limited, &
                                                             strong_tail_limited
       REAL(KIND=dp)                                      :: basis_signal, edge_fractional_weight, edge_grow_limit, &
                                                             fractional_weight, grow_limit, max_edge_fractional, &
                                                             max_fractional, maxocc, occ_tail, edge_tail_occ_min, &
-                                                            tail_occ_min, weight
+                                                            residual_model_delta, tail_occ_min, weight
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers, wkp
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -1291,6 +1292,10 @@ CONTAINS
 
       NULLIFY (occupation_numbers, para_env_inter_kp, wkp)
       CALL get_kpoint_info(kpoints, wkp=wkp, para_env_inter_kp=para_env_inter_kp)
+      residual_model_delta = scf_env%iter_delta
+      IF (ASSOCIATED(scf_env%qs_ot_env)) &
+         residual_model_delta = kpoint_ot_canonical_density_projector_delta(scf_env%qs_ot_env(1), scf_env%iter_delta)
+      CALL para_env_inter_kp%max(residual_model_delta)
       basis_signal = 0.0_dp
       IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
          DO ispin = 1, SIZE(scf_env%qs_ot_env)
@@ -1345,6 +1350,9 @@ CONTAINS
       residual_tail_limited = residual_ready .AND. &
                               basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
                               ot_kp_added_mos_auto_basis_signal_min
+      residual_spike = scf_env%iter_delta > &
+                       ot_kp_added_mos_auto_residual_spike_factor* &
+                       MAX(residual_model_delta, scf_control%eps_scf)
       strong_tail_limited = max_fractional >= ot_kp_added_mos_auto_strong_tail_frac .AND. &
                             basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
                             ot_kp_added_mos_auto_basis_signal_min .AND. &
@@ -1356,15 +1364,16 @@ CONTAINS
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES20.10E3),5(1X,L1))') &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES20.10E3),6(1X,L1))') &
             " OT k-point ADDED_MOS AUTO tail:", &
-            scf_env%iter_count, scf_env%iter_delta, grow_limit, edge_grow_limit, basis_signal, &
+            scf_env%iter_count, scf_env%iter_delta, residual_model_delta, grow_limit, edge_grow_limit, basis_signal, &
             fractional_weight, edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, &
-            edge_limited, basis_probe_limited, basis_limited, expandable
+            edge_limited, basis_probe_limited, basis_limited, residual_spike, expandable
       END IF
 
       IF (.NOT. expandable) RETURN
       IF (.NOT. active_tail) RETURN
+      IF (residual_spike) RETURN
       IF (.NOT. residual_tail_limited .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited .AND. &
           .NOT. strong_tail_limited) THEN
          IF (.NOT. edge_limited) RETURN
@@ -5637,6 +5646,9 @@ CONTAINS
          END DO
 
          IF (ne == 0 .OR. nrot == 0 .OR. nrot > max_schur_rot) THEN
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8))') &
+                  " OT Schur skipped group ne nrot max:", target_group, ne, nrot, max_schur_rot
             DEALLOCATE (channel_nmo, e_offset)
             RETURN
          END IF
