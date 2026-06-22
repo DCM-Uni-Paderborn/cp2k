@@ -5392,10 +5392,14 @@ CONTAINS
             projector_physical_density_abs_avg, projector_physical_density_delta_max, &
             projector_physical_density_diag_avg, projector_physical_offdiag_abs_avg, &
             projector_physical_offdiag_abs_ratio, projector_physical_offdiag_delta_max, &
+            projector_physical_offdiag_active_abs_avg, &
+            projector_physical_offdiag_inactive_abs_avg, &
             projector_physical_offdiag_diag_avg, projector_physical_offdiag_plateau_abs_avg, &
             projector_physical_offdiag_plateau_delta_max, projector_physical_offdiag_plateau_diag_avg, &
             projector_physical_offdiag_plateau_gap_abs_avg, &
+            projector_physical_offdiag_plateau_gap_active_abs_avg, &
             projector_physical_offdiag_plateau_gap_delta_max, &
+            projector_physical_offdiag_plateau_gap_inactive_abs_avg, &
             projector_physical_offdiag_plateau_gap_diag_avg, &
             projector_physical_offdiag_mode_abs_quad, &
             projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
@@ -6213,14 +6217,18 @@ CONTAINS
          projector_physical_density_rhs_abs_max = 0.0_dp
          projector_physical_offdiag_abs_avg = 0.0_dp
          projector_physical_offdiag_abs_ratio = 0.0_dp
+         projector_physical_offdiag_active_abs_avg = 0.0_dp
          projector_physical_offdiag_delta_max = 0.0_dp
          projector_physical_offdiag_diag_avg = 0.0_dp
+         projector_physical_offdiag_inactive_abs_avg = 0.0_dp
          projector_physical_offdiag_plateau_abs_avg = 0.0_dp
          projector_physical_offdiag_plateau_delta_max = 0.0_dp
          projector_physical_offdiag_plateau_diag_avg = 0.0_dp
          projector_physical_offdiag_plateau_gap_abs_avg = 0.0_dp
+         projector_physical_offdiag_plateau_gap_active_abs_avg = 0.0_dp
          projector_physical_offdiag_plateau_gap_delta_max = 0.0_dp
          projector_physical_offdiag_plateau_gap_diag_avg = 0.0_dp
+         projector_physical_offdiag_plateau_gap_inactive_abs_avg = 0.0_dp
          plateau_gap_mode_abs_quad = 0.0_dp
          plateau_gap_mode_eval_max = 0.0_dp
          plateau_gap_mode_eval_min = 0.0_dp
@@ -7019,6 +7027,19 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_plateau_active(:, :) = 0.5_dp* &
             (rot_hessian_projector_physical_offdiag_plateau_active(:, :) + &
              TRANSPOSE(rot_hessian_projector_physical_offdiag_plateau_active(:, :)))
+         projector_physical_offdiag_active_abs_avg = &
+            SUM(ABS(rot_hessian_projector_physical_offdiag_active(:, :)))
+         projector_physical_offdiag_inactive_abs_avg = &
+            SUM(ABS(rot_hessian_projector_physical_offdiag(:, :) - &
+                    rot_hessian_projector_physical_offdiag_active(:, :)))
+         projector_physical_offdiag_plateau_gap_active_abs_avg = &
+            SUM(ABS(rot_hessian_projector_physical_offdiag_plateau_active(:, :) - &
+                    rot_hessian_projector_physical_offdiag_active(:, :)))
+         projector_physical_offdiag_plateau_gap_inactive_abs_avg = &
+            SUM(ABS((rot_hessian_projector_physical_offdiag_plateau(:, :) - &
+                     rot_hessian_projector_physical_offdiag(:, :)) - &
+                    (rot_hessian_projector_physical_offdiag_plateau_active(:, :) - &
+                     rot_hessian_projector_physical_offdiag_active(:, :))))
          rot_hessian_projector_physical_diagref(:, :) = 0.0_dp
          DO s = 1, nrot
             DO r = 1, nrot
@@ -7290,6 +7311,10 @@ CONTAINS
             projector_physical_offdiag_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_offdiag_abs_avg = &
             projector_physical_offdiag_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_offdiag_active_abs_avg = &
+            projector_physical_offdiag_active_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_offdiag_inactive_abs_avg = &
+            projector_physical_offdiag_inactive_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          projector_physical_offdiag_plateau_diag_avg = &
             projector_physical_offdiag_plateau_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_offdiag_plateau_abs_avg = &
@@ -7298,6 +7323,10 @@ CONTAINS
             projector_physical_offdiag_plateau_gap_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          projector_physical_offdiag_plateau_gap_abs_avg = &
             projector_physical_offdiag_plateau_gap_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_offdiag_plateau_gap_active_abs_avg = &
+            projector_physical_offdiag_plateau_gap_active_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
+         projector_physical_offdiag_plateau_gap_inactive_abs_avg = &
+            projector_physical_offdiag_plateau_gap_inactive_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          IF (projector_physical_abs_avg > EPSILON(projector_physical_abs_avg)) &
             projector_physical_offdiag_abs_ratio = &
                projector_physical_offdiag_abs_avg/projector_physical_abs_avg
@@ -12492,6 +12521,12 @@ CONTAINS
                      projector_physical_offdiag_plateau_gap_diag_avg, &
                      projector_physical_offdiag_plateau_gap_abs_avg, &
                      projector_physical_offdiag_plateau_gap_delta_max
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                     " OT Schur projector physical offdiag-dP active split active inactive gap_active gap_inactive:", &
+                     projector_physical_offdiag_active_abs_avg, &
+                     projector_physical_offdiag_inactive_abs_avg, &
+                     projector_physical_offdiag_plateau_gap_active_abs_avg, &
+                     projector_physical_offdiag_plateau_gap_inactive_abs_avg
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
                      " OT Schur projector physical offdiag-dP modes neg stepneg emin emax quad absq "// &
                      "qratio aratio pquad nquad:", &
