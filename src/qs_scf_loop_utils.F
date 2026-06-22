@@ -14617,18 +14617,14 @@ CONTAINS
                occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
                IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                   DO i = 1, n
-                     diag_response_shift = diag_response_shift + &
-                                           MAX(0.0_dp, occ_curv_channel(i))*REAL(work(i, i), KIND=dp)
+                     diag_response_shift = diag_response_shift + REAL(kernel(i, i), KIND=dp)
                   END DO
                   diag_response_shift = diag_response_shift/occ_curv_sum
                END IF
                DO i = 1, n
-                  coeff = -2.0_dp*MAX(0.0_dp, occ_curv_channel(i))
-                  kernel(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-                  IF (ABS(coeff) > EPSILON(coeff)) &
-                     kernel(i, i) = CMPLX(projector_weight*coeff* &
-                                          (REAL(work(i, i), KIND=dp) - diag_response_shift), &
-                                          0.0_dp, KIND=dp)
+                  coeff = MAX(0.0_dp, occ_curv_channel(i))
+                  kernel(i, i) = CMPLX(REAL(kernel(i, i), KIND=dp) - coeff*diag_response_shift, &
+                                       0.0_dp, KIND=dp)
                END DO
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
                docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))

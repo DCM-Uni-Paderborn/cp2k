@@ -8268,7 +8268,7 @@ CONTAINS
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, expected, &
-                                                            occ_mat_m, occ_mat_p
+                                                            expected_old, occ_mat_m, occ_mat_p
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: charge_leak, err, missing, occ_sum, &
                                                             shift_mu
@@ -8297,19 +8297,28 @@ CONTAINS
                                                      projector_weight, occ_mat_m, occ_curv, gauge_gap)
       docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
       expected(:, :) = docc_fd(:, :)
+      expected_old(:, :) = docc_fd(:, :)
 
       occ_sum = SUM(occ_curv(:))
       shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
       DO i = 1, n
-         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
-                                0.0_dp, KIND=dp)
+         expected_old(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                    0.0_dp, KIND=dp)
+      END DO
+      shift_mu = 0.0_dp
+      DO i = 1, n
+         shift_mu = shift_mu + REAL(expected(i, i), KIND=dp)
+      END DO
+      shift_mu = shift_mu/occ_sum
+      DO i = 1, n
+         expected(i, i) = CMPLX(REAL(expected(i, i), KIND=dp) - occ_curv(i)*shift_mu, 0.0_dp, KIND=dp)
       END DO
 
       err = MAXVAL(ABS(docc_safe(:, :) - expected(:, :)))
-      missing = MAXVAL(ABS(expected(:, :) - docc_fd(:, :)))
+      missing = MAXVAL(ABS(expected(:, :) - expected_old(:, :)))
       charge_leak = 0.0_dp
       DO i = 1, n
-         charge_leak = charge_leak + REAL(expected(i, i) - docc_fd(i, i), KIND=dp)
+         charge_leak = charge_leak + REAL(expected(i, i), KIND=dp)
       END DO
       charge_leak = ABS(charge_leak)
 
@@ -8342,7 +8351,8 @@ CONTAINS
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_safe, &
-                                                            expected, occ_mat_m, occ_mat_p
+                                                            expected, expected_old, occ_mat_m, &
+                                                            occ_mat_p
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: charge_leak, diagonal_fix, err, &
                                                             gauge_pair, occ_sum, physical_pair, &
@@ -8373,17 +8383,26 @@ CONTAINS
                                                      occ_mat_m, occ_curv, gauge_gap)
       docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
       expected(:, :) = docc_fd(:, :)
+      expected_old(:, :) = docc_fd(:, :)
 
       occ_sum = SUM(occ_curv(:))
       shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
       DO i = 1, n
-         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
-                                0.0_dp, KIND=dp)
+         expected_old(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                    0.0_dp, KIND=dp)
+      END DO
+      shift_mu = 0.0_dp
+      DO i = 1, n
+         shift_mu = shift_mu + REAL(expected(i, i), KIND=dp)
+      END DO
+      shift_mu = shift_mu/occ_sum
+      DO i = 1, n
+         expected(i, i) = CMPLX(REAL(expected(i, i), KIND=dp) - occ_curv(i)*shift_mu, 0.0_dp, KIND=dp)
       END DO
 
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
       err = MAXVAL(ABS(docc_safe(:, :) - expected(:, :)))
-      diagonal_fix = MAXVAL(ABS(docc_fd(:, :) - expected(:, :)))
+      diagonal_fix = MAXVAL(ABS(expected_old(:, :) - expected(:, :)))
       raw_gauge = MAX(ABS(projector_weight*docc_raw(1, 2)), ABS(projector_weight*docc_raw(2, 1)))
       gauge_pair = MAX(ABS(docc_safe(1, 2)), ABS(docc_safe(2, 1)))
       physical_pair = MAX(ABS(docc_safe(3, 4)), ABS(docc_safe(4, 3)))
@@ -9019,18 +9038,14 @@ CONTAINS
             occ_curv_sum = SUM(MAX(0.0_dp, occ_curv(:)))
             IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                DO i = 1, n
-                  diag_response_shift = diag_response_shift + &
-                                        MAX(0.0_dp, occ_curv(i))*REAL(work(i, i), KIND=dp)
+                  diag_response_shift = diag_response_shift + REAL(kernel(i, i), KIND=dp)
                END DO
                diag_response_shift = diag_response_shift/occ_curv_sum
             END IF
             DO i = 1, n
-               coeff = -2.0_dp*MAX(0.0_dp, occ_curv(i))
-               kernel(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-               IF (ABS(coeff) > EPSILON(coeff)) &
-                  kernel(i, i) = CMPLX(projector_weight*coeff* &
-                                       (REAL(work(i, i), KIND=dp) - diag_response_shift), &
-                                       0.0_dp, KIND=dp)
+               coeff = MAX(0.0_dp, occ_curv(i))
+               kernel(i, i) = CMPLX(REAL(kernel(i, i), KIND=dp) - coeff*diag_response_shift, &
+                                    0.0_dp, KIND=dp)
             END DO
             docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
             docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
