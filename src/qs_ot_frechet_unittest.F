@@ -152,6 +152,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density-descent selected rotation", 5.0E-14_dp, nfail)
    CALL check_projector_metric_response_projection("complex projector metric response projection", &
                                                    5.0E-13_dp, nfail)
+   CALL check_projector_density_global_fixed_n_projection( &
+      "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
@@ -6226,6 +6228,65 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_metric_response_projection
+
+! **************************************************************************************************
+!> \brief Check that full-density response keeps global fixed-N k-point charge transfer.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_fixed_n_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 4
+
+      INTEGER                                            :: first_energy, local_channel, nmo
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: projected
+      REAL(KIND=dp)                                      :: charge, err, local_gap, local_norm, shift, &
+                                                            weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                       :: global_projected, local_projected, &
+                                                            occ_curv, raw_response, tether_curv
+
+      channel_nmo(:) = [2, 2]
+      e_offset(:) = [1, 3]
+      occ_curv(:) = [0.60_dp, 0.40_dp, 0.25_dp, 0.75_dp]
+      tether_curv(:) = 0.0_dp
+      raw_response(:) = [1.0_dp, 1.0_dp, -1.0_dp, -1.0_dp]
+
+      global_projected(:) = raw_response(:)
+      CALL dense_project_response_metric_distributed(global_projected, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, projected)
+
+      local_projected(:) = raw_response(:)
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+         shift = DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1), &
+                             local_projected(first_energy:first_energy + nmo - 1))/weight_sum
+         local_projected(first_energy:first_energy + nmo - 1) = &
+            local_projected(first_energy:first_energy + nmo - 1) - shift
+      END DO
+
+      err = MAXVAL(ABS(global_projected(:) - raw_response(:)))
+      charge = ABS(DOT_PRODUCT(occ_curv(:), global_projected(:)))
+      local_gap = MAXVAL(ABS(raw_response(:) - local_projected(:)))
+      local_norm = MAXVAL(ABS(local_projected(:)))
+
+      IF (.NOT. projected .OR. err > tol .OR. charge > tol .OR. local_gap < 0.5_dp .OR. &
+          local_norm > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/charge/localgap/localnorm", err, charge, local_gap, local_norm
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/charge/localgap/localnorm", err, charge, local_gap, local_norm
+      END IF
+
+   END SUBROUTINE check_projector_density_global_fixed_n_projection
 
 ! **************************************************************************************************
 !> \brief Check that Direct trace compensation follows the selected delta model.
