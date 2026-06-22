@@ -1228,6 +1228,7 @@ CONTAINS
       local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
       local_ot_env(1)%schur_projector_mode_pending = .FALSE.
       local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
+      local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
       local_ot_env(1)%schur_projector_response_pending = .FALSE.
       local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
       local_ot_env(1)%schur_projector_physical_pending = .FALSE.
@@ -3132,6 +3133,12 @@ CONTAINS
                                                                projector_offdiag_quality_ratio, &
                                                                projector_offdiag_signed_ratio, &
                                                                projector_offdiag_step_negative, &
+                                                               projector_inactive_offdiag_abs_ratio, &
+                                                               projector_inactive_offdiag_negative, &
+                                                               projector_inactive_offdiag_predicted_drop, &
+                                                               projector_inactive_offdiag_quality_ratio, &
+                                                               projector_inactive_offdiag_signed_ratio, &
+                                                               projector_inactive_offdiag_step_negative, &
                                                                projector_plateau_gap_predicted_drop, &
                                                                projector_plateau_gap_quality_ratio, &
                                                                projector_physical_predicted_drop, &
@@ -3252,6 +3259,7 @@ CONTAINS
                local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
                local_ot_env(1)%schur_projector_mode_pending = .FALSE.
                local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
+               local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
                local_ot_env(1)%schur_projector_response_pending = .FALSE.
                local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
@@ -3572,6 +3580,77 @@ CONTAINS
                local_ot_env(1)%schur_projector_offdiag_drop_sum + projector_offdiag_predicted_drop
             local_ot_env(1)%schur_projector_offdiag_measured_sum = &
                local_ot_env(1)%schur_projector_offdiag_measured_sum + measured_drop
+         END IF
+
+         projector_inactive_offdiag_predicted_drop = &
+            local_ot_env(1)%schur_projector_inactive_offdiag_drop
+         projector_inactive_offdiag_quality_ratio = 0.0_dp
+         projector_inactive_offdiag_signed_ratio = 0.0_dp
+         projector_inactive_offdiag_abs_ratio = 0.0_dp
+         projector_inactive_offdiag_negative = 0.0_dp
+         projector_inactive_offdiag_step_negative = 0.0_dp
+         IF (projector_inactive_offdiag_predicted_drop > &
+             EPSILON(projector_inactive_offdiag_predicted_drop)) THEN
+            projector_inactive_offdiag_signed_ratio = &
+               local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio/ &
+               projector_inactive_offdiag_predicted_drop
+            projector_inactive_offdiag_abs_ratio = &
+               local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio/ &
+               projector_inactive_offdiag_predicted_drop
+            projector_inactive_offdiag_negative = &
+               local_ot_env(1)%schur_projector_inactive_offdiag_negative/ &
+               projector_inactive_offdiag_predicted_drop
+            projector_inactive_offdiag_step_negative = &
+               local_ot_env(1)%schur_projector_inactive_offdiag_step_negative/ &
+               projector_inactive_offdiag_predicted_drop
+         END IF
+         IF (mermin_search .AND. local_ot_env(1)%schur_projector_inactive_offdiag_pending .AND. &
+             projector_inactive_offdiag_predicted_drop > &
+             EPSILON(projector_inactive_offdiag_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
+            projector_inactive_offdiag_quality_ratio = measured_drop/projector_inactive_offdiag_predicted_drop
+            local_ot_env(1)%schur_projector_inactive_offdiag_quality = &
+               projector_inactive_offdiag_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples + 1, &
+                          HUGE(samples) - 1)
+            local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_projector_inactive_offdiag_quality_ema = &
+                  projector_inactive_offdiag_quality_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio_ema = &
+                  projector_inactive_offdiag_signed_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema = &
+                  projector_inactive_offdiag_abs_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_negative_ema = &
+                  projector_inactive_offdiag_negative
+               local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema = &
+                  projector_inactive_offdiag_step_negative
+            ELSE
+               local_ot_env(1)%schur_projector_inactive_offdiag_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_inactive_offdiag_quality_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_inactive_offdiag_signed_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_inactive_offdiag_abs_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_negative_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_negative_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_inactive_offdiag_negative
+               local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_inactive_offdiag_step_negative
+            END IF
+            local_ot_env(1)%schur_projector_inactive_offdiag_drop_sum = &
+               local_ot_env(1)%schur_projector_inactive_offdiag_drop_sum + &
+               projector_inactive_offdiag_predicted_drop
+            local_ot_env(1)%schur_projector_inactive_offdiag_measured_sum = &
+               local_ot_env(1)%schur_projector_inactive_offdiag_measured_sum + measured_drop
          END IF
 
          projector_response_predicted_drop = local_ot_env(1)%schur_projector_response_drop
@@ -4578,6 +4657,7 @@ CONTAINS
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
+            local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
             local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
             local_ot_env(1)%schur_projector_physical_pending = .FALSE.
@@ -4725,6 +4805,22 @@ CONTAINS
                local_ot_env(1)%schur_projector_offdiag_negative_ema, &
                projector_offdiag_step_negative, &
                local_ot_env(1)%schur_projector_offdiag_step_negative_ema
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,12(1X,ES16.8))') &
+               " OT Schur LS projector inactive-offdiag-dP modes n ratio ema pred meas signed sema abs "// &
+               "aema neg nema step sema:", &
+               local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_quality, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_quality_ema, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_drop_sum, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_measured_sum, &
+               projector_inactive_offdiag_signed_ratio, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio_ema, &
+               projector_inactive_offdiag_abs_ratio, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema, &
+               projector_inactive_offdiag_negative, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_negative_ema, &
+               projector_inactive_offdiag_step_negative, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8),1X,L1)') &
                " OT Schur LS projector response n ratio ema pred meas weight wema neg enabled:", &
                local_ot_env(1)%schur_projector_response_quality_samples, &
@@ -5146,6 +5242,7 @@ CONTAINS
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
+            local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_response_pending = .FALSE.
             local_ot_env(1)%schur_projector_plateau_gap_pending = .FALSE.
                local_ot_env(1)%schur_projector_physical_pending = .FALSE.
@@ -5183,6 +5280,11 @@ CONTAINS
             local_ot_env(1)%schur_projector_offdiag_abs_ratio = 0.0_dp
             local_ot_env(1)%schur_projector_offdiag_negative = 0.0_dp
             local_ot_env(1)%schur_projector_offdiag_step_negative = 0.0_dp
+            local_ot_env(1)%schur_projector_inactive_offdiag_drop = 0.0_dp
+            local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio = 0.0_dp
+            local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio = 0.0_dp
+            local_ot_env(1)%schur_projector_inactive_offdiag_negative = 0.0_dp
+            local_ot_env(1)%schur_projector_inactive_offdiag_step_negative = 0.0_dp
             local_ot_env(1)%schur_projector_response_drop = 0.0_dp
                local_ot_env(1)%schur_projector_response_weight = 0.0_dp
                local_ot_env(1)%schur_projector_response_correction_drop = 0.0_dp
@@ -5380,6 +5482,9 @@ CONTAINS
          accepted_projector_mode_trust_quality, accepted_projector_offdiag_abs_ratio, &
          accepted_projector_offdiag_drop, accepted_projector_offdiag_negative, &
          accepted_projector_offdiag_signed_ratio, accepted_projector_offdiag_step_negative, &
+         accepted_projector_inactive_offdiag_abs_ratio, accepted_projector_inactive_offdiag_drop, &
+         accepted_projector_inactive_offdiag_negative, accepted_projector_inactive_offdiag_signed_ratio, &
+         accepted_projector_inactive_offdiag_step_negative, &
          projector_mode_history_quality, &
             projector_mode_history_response_negative, projector_mode_history_response_ratio, &
             accepted_projector_response_drop, accepted_projector_response_negative, &
@@ -5423,6 +5528,10 @@ CONTAINS
                      projector_offdiag_reference_drop, projector_offdiag_expected_drop_ratio, &
                      projector_offdiag_response_abs_step, projector_offdiag_response_abs_trust_ratio, &
                      projector_offdiag_response_weighted_step, projector_offdiag_response_weighted_trust_ratio, &
+                     projector_inactive_offdiag_history_quality, &
+                     projector_inactive_offdiag_history_response_ratio, &
+                     projector_inactive_offdiag_history_trust, &
+                     projector_inactive_offdiag_quality_for_selection, &
                      projector_offdiag_scale_quality, projector_offdiag_trust_quality, &
                      projector_offdiag_trust_scale, projector_offdiag_unit_abs_step, &
                      projector_offdiag_unit_weighted_step, &
@@ -6286,6 +6395,10 @@ CONTAINS
                   projector_offdiag_history_quality = 0.0_dp
                   projector_offdiag_history_response_ratio = 0.0_dp
                   projector_offdiag_history_trust = 0.0_dp
+                  projector_inactive_offdiag_history_quality = 0.0_dp
+                  projector_inactive_offdiag_history_response_ratio = 0.0_dp
+                  projector_inactive_offdiag_history_trust = 0.0_dp
+                  projector_inactive_offdiag_quality_for_selection = 0.0_dp
                   projector_offdiag_model_calibrated_drop = 0.0_dp
                   projector_offdiag_model_drop = 0.0_dp
                   projector_offdiag_model_gap = 0.0_dp
@@ -6372,6 +6485,11 @@ CONTAINS
          accepted_projector_offdiag_negative = 0.0_dp
          accepted_projector_offdiag_signed_ratio = 0.0_dp
          accepted_projector_offdiag_step_negative = 0.0_dp
+         accepted_projector_inactive_offdiag_abs_ratio = 0.0_dp
+         accepted_projector_inactive_offdiag_drop = 0.0_dp
+         accepted_projector_inactive_offdiag_negative = 0.0_dp
+         accepted_projector_inactive_offdiag_signed_ratio = 0.0_dp
+         accepted_projector_inactive_offdiag_step_negative = 0.0_dp
          accepted_projector_response_drop = 0.0_dp
          accepted_projector_response_negative = 0.0_dp
          accepted_projector_response_weight = 0.0_dp
@@ -7756,10 +7874,43 @@ CONTAINS
                                             MAX(0.0_dp, &
                                                 local_ot_env(1)%schur_projector_offdiag_step_negative_ema)))* &
                            ot_kp_schur_projector_response_ratio_gate
-                        projector_offdiag_quality_for_selection = &
-                           projector_offdiag_history_quality*projector_offdiag_history_trust
-                     END IF
-                     split_quality_for_selection = &
+                     projector_offdiag_quality_for_selection = &
+                        projector_offdiag_history_quality*projector_offdiag_history_trust
+                  END IF
+                  IF (local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples >= &
+                      ot_kp_schur_projector_response_min_samples) THEN
+                     projector_inactive_offdiag_history_quality = &
+                        kpoint_ot_schur_history_quality( &
+                           local_ot_env(1)%schur_projector_inactive_offdiag_drop_sum, &
+                           local_ot_env(1)%schur_projector_inactive_offdiag_measured_sum, &
+                           local_ot_env(1)%schur_projector_inactive_offdiag_quality_ema, &
+                           local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples, &
+                           ot_kp_schur_projector_response_min_samples, &
+                           0.0_dp, &
+                           ot_kp_schur_projector_response_quality_min_ratio, &
+                           ot_kp_schur_projector_response_quality_max_ratio)
+                     IF (local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema > &
+                         EPSILON(local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema)) &
+                        projector_inactive_offdiag_history_trust = &
+                           MAX(0.0_dp, &
+                               -local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio_ema/ &
+                               local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio_ema)
+                     projector_inactive_offdiag_history_trust = &
+                        MIN(1.0_dp, projector_inactive_offdiag_history_trust)* &
+                        MIN(1.0_dp, MAX(0.0_dp, &
+                                        local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema))
+                     projector_inactive_offdiag_history_response_ratio = &
+                        MAX(0.0_dp, &
+                            1.0_dp - &
+                            MIN(1.0_dp, &
+                                MAX(0.0_dp, &
+                                    local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema)))* &
+                        ot_kp_schur_projector_response_ratio_gate
+                     projector_inactive_offdiag_quality_for_selection = &
+                        projector_inactive_offdiag_history_quality* &
+                        projector_inactive_offdiag_history_trust
+                  END IF
+                  split_quality_for_selection = &
                      kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
                                             local_ot_env(1)%schur_split_measured_sum, &
                                             local_ot_env(1)%schur_split_calibrated_quality_ema, &
@@ -8520,13 +8671,24 @@ CONTAINS
                      ! add the gauge-filtered off-diagonal projector Hessian to
                      ! the rotational metric used for the modal response audit.
                      projector_physical_direct_inactive_offdiag_weight = 0.0_dp
-                     IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
-                        projector_physical_direct_inactive_offdiag_weight = &
-                           projector_coupled_weight*ot_kp_schur_projector_negative_balance_floor* &
-                           MIN(1.0_dp, MAX(0.0_dp, projector_mode_history_quality))* &
-                           MIN(1.0_dp, MAX(0.0_dp, local_ot_env(1)%schur_projector_mode_trust_ema))/ &
-                           SQRT(MAX(1.0_dp, projector_mode_history_response_ratio/ &
-                                         ot_kp_schur_projector_response_ratio_gate))
+                     IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+                        IF (projector_inactive_offdiag_quality_for_selection > &
+                            EPSILON(projector_inactive_offdiag_quality_for_selection)) THEN
+                           projector_physical_direct_inactive_offdiag_weight = &
+                              projector_coupled_weight*ot_kp_schur_projector_negative_balance_floor* &
+                              MIN(1.0_dp, MAX(0.0_dp, projector_inactive_offdiag_history_quality))* &
+                              MIN(1.0_dp, MAX(0.0_dp, projector_inactive_offdiag_history_trust))/ &
+                              SQRT(MAX(1.0_dp, projector_inactive_offdiag_history_response_ratio/ &
+                                            ot_kp_schur_projector_response_ratio_gate))
+                        ELSE
+                           projector_physical_direct_inactive_offdiag_weight = &
+                              projector_coupled_weight*ot_kp_schur_projector_negative_balance_floor* &
+                              MIN(1.0_dp, MAX(0.0_dp, projector_mode_history_quality))* &
+                              MIN(1.0_dp, MAX(0.0_dp, local_ot_env(1)%schur_projector_mode_trust_ema))/ &
+                              SQRT(MAX(1.0_dp, projector_mode_history_response_ratio/ &
+                                            ot_kp_schur_projector_response_ratio_gate))
+                        END IF
+                     END IF
                      projector_physical_direct_delta(:, :) = &
                         rot_hessian_projector_physical(:, :) + &
                         rot_hessian_projector_physical_offdiag_active(:, :) + &
@@ -12059,6 +12221,15 @@ CONTAINS
                   accepted_projector_offdiag_step_negative = &
                      projector_physical_offdiag_mode_step_negative_fraction
                END IF
+               IF (projector_physical_shadow_enabled .AND. inactive_offdiag_mode_abs_quad > &
+                   EPSILON(inactive_offdiag_mode_abs_quad)) THEN
+                  accepted_projector_inactive_offdiag_drop = 0.5_dp*inactive_offdiag_mode_abs_quad
+                  accepted_projector_inactive_offdiag_signed_ratio = inactive_offdiag_mode_quad_signed_ratio
+                  accepted_projector_inactive_offdiag_abs_ratio = inactive_offdiag_mode_quad_abs_ratio
+                  accepted_projector_inactive_offdiag_negative = inactive_offdiag_mode_negative_fraction
+                  accepted_projector_inactive_offdiag_step_negative = &
+                     inactive_offdiag_mode_step_negative_fraction
+               END IF
                IF (selected_attempt == 3 .AND. projector_coupled_weight > 0.0_dp .AND. &
                    (projector_mode_response_drop > 0.0_dp .OR. &
                     projector_mode_response_drop_ratio > 0.0_dp)) THEN
@@ -12144,6 +12315,29 @@ CONTAINS
                local_ot_env(1)%schur_projector_offdiag_step_negative = &
                   local_ot_env(1)%schur_projector_offdiag_step_negative + &
                   accepted_projector_offdiag_step_negative*accepted_projector_offdiag_drop
+            END IF
+            IF (accepted_projector_inactive_offdiag_drop > &
+                EPSILON(accepted_projector_inactive_offdiag_drop)) THEN
+               local_ot_env(1)%schur_projector_inactive_offdiag_pending = .TRUE.
+               local_ot_env(1)%schur_projector_inactive_offdiag_drop = &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_drop + &
+                  accepted_projector_inactive_offdiag_drop
+               local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio = &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_signed_ratio + &
+                  accepted_projector_inactive_offdiag_signed_ratio* &
+                  accepted_projector_inactive_offdiag_drop
+               local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio = &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_abs_ratio + &
+                  accepted_projector_inactive_offdiag_abs_ratio* &
+                  accepted_projector_inactive_offdiag_drop
+               local_ot_env(1)%schur_projector_inactive_offdiag_negative = &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_negative + &
+                  accepted_projector_inactive_offdiag_negative* &
+                  accepted_projector_inactive_offdiag_drop
+               local_ot_env(1)%schur_projector_inactive_offdiag_step_negative = &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_step_negative + &
+                  accepted_projector_inactive_offdiag_step_negative* &
+                  accepted_projector_inactive_offdiag_drop
             END IF
             IF (accepted_projector_response_drop > EPSILON(accepted_projector_response_drop)) THEN
                local_ot_env(1)%schur_projector_response_pending = .TRUE.

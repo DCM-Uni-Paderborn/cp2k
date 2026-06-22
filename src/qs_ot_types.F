@@ -240,6 +240,7 @@ MODULE qs_ot_types
       LOGICAL :: schur_occgap_shadow_pending = .FALSE.
       LOGICAL :: schur_projector_mode_pending = .FALSE.
       LOGICAL :: schur_projector_offdiag_pending = .FALSE.
+      LOGICAL :: schur_projector_inactive_offdiag_pending = .FALSE.
       LOGICAL :: schur_projector_response_pending = .FALSE.
       LOGICAL :: schur_projector_response_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_plateau_gap_pending = .FALSE.
@@ -267,6 +268,7 @@ MODULE qs_ot_types
       INTEGER :: schur_split_shadow_quality_samples = 0
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
+      INTEGER :: schur_projector_inactive_offdiag_quality_samples = 0
       INTEGER :: schur_projector_response_quality_samples = 0
       INTEGER :: schur_projector_plateau_gap_quality_samples = 0
       INTEGER :: schur_projector_physical_quality_samples = 0
@@ -346,6 +348,19 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_offdiag_negative_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_step_negative = 0.0_dp
       REAL(KIND=dp) :: schur_projector_offdiag_step_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_signed_ratio = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_signed_ratio_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_abs_ratio = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_abs_ratio_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_negative = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_step_negative = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_step_negative_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_quality_ema = 0.0_dp
@@ -767,6 +782,7 @@ CONTAINS
       qs_ot_env%schur_occgap_shadow_pending = .FALSE.
       qs_ot_env%schur_projector_mode_pending = .FALSE.
       qs_ot_env%schur_projector_offdiag_pending = .FALSE.
+      qs_ot_env%schur_projector_inactive_offdiag_pending = .FALSE.
       qs_ot_env%schur_projector_response_pending = .FALSE.
       qs_ot_env%schur_projector_response_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_plateau_gap_pending = .FALSE.
@@ -800,6 +816,7 @@ CONTAINS
       qs_ot_env%schur_occgap_shadow_quality_samples = 0
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
+      qs_ot_env%schur_projector_inactive_offdiag_quality_samples = 0
       qs_ot_env%schur_projector_response_quality_samples = 0
       qs_ot_env%schur_projector_plateau_gap_quality_samples = 0
       qs_ot_env%schur_projector_physical_quality_samples = 0
@@ -893,6 +910,19 @@ CONTAINS
       qs_ot_env%schur_projector_offdiag_negative_ema = 0.0_dp
       qs_ot_env%schur_projector_offdiag_step_negative = 0.0_dp
       qs_ot_env%schur_projector_offdiag_step_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_drop = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_quality = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_signed_ratio = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_signed_ratio_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_abs_ratio = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_abs_ratio_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_negative = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_step_negative = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_step_negative_ema = 0.0_dp
       qs_ot_env%schur_projector_response_drop = 0.0_dp
       qs_ot_env%schur_projector_response_quality = 0.0_dp
       qs_ot_env%schur_projector_response_quality_ema = 0.0_dp
