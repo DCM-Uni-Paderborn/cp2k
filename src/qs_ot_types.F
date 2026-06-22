@@ -269,6 +269,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
       INTEGER :: schur_projector_inactive_offdiag_quality_samples = 0
+      INTEGER :: schur_projector_inactive_offdiag_selected_quality_samples = 0
       INTEGER :: schur_projector_response_quality_samples = 0
       INTEGER :: schur_projector_plateau_gap_quality_samples = 0
       INTEGER :: schur_projector_physical_quality_samples = 0
@@ -361,6 +362,11 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_negative_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_step_negative = 0.0_dp
       REAL(KIND=dp) :: schur_projector_inactive_offdiag_step_negative_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_selected = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_inactive_offdiag_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_response_quality_ema = 0.0_dp
@@ -629,6 +635,7 @@ CONTAINS
 !> \param nspin ...
 !> \param nkpoint ...
 !> \param restricted ...
+!> \return ...
 ! **************************************************************************************************
    INTEGER FUNCTION qs_ot_number_of_channels(nspin, nkpoint, restricted)
       INTEGER, INTENT(IN)                                :: nspin
@@ -655,6 +662,7 @@ CONTAINS
 !> \param ispin ...
 !> \param ikpoint ...
 !> \param nspin ...
+!> \return ...
 ! **************************************************************************************************
    INTEGER FUNCTION qs_ot_channel_index(ispin, ikpoint, nspin)
       INTEGER, INTENT(IN)                                :: ispin, ikpoint, nspin
@@ -817,6 +825,7 @@ CONTAINS
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
       qs_ot_env%schur_projector_inactive_offdiag_quality_samples = 0
+      qs_ot_env%schur_projector_inactive_offdiag_selected_quality_samples = 0
       qs_ot_env%schur_projector_response_quality_samples = 0
       qs_ot_env%schur_projector_plateau_gap_quality_samples = 0
       qs_ot_env%schur_projector_physical_quality_samples = 0
@@ -923,6 +932,11 @@ CONTAINS
       qs_ot_env%schur_projector_inactive_offdiag_negative_ema = 0.0_dp
       qs_ot_env%schur_projector_inactive_offdiag_step_negative = 0.0_dp
       qs_ot_env%schur_projector_inactive_offdiag_step_negative_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_selected = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_selected_quality = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_selected_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_selected_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_inactive_offdiag_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_response_drop = 0.0_dp
       qs_ot_env%schur_projector_response_quality = 0.0_dp
       qs_ot_env%schur_projector_response_quality_ema = 0.0_dp
