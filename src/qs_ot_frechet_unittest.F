@@ -6633,9 +6633,9 @@ CONTAINS
                                                             diag_avg = 0.50_dp, &
                                                             diag_delta = 0.25_dp
 
-      REAL(KIND=dp) :: above_tail_weight, diag_damped_weight, err, expected_mismatch_weight, &
-         expected_saturated_weight, good_weight, high_weight, low_weight, saturated_weight, &
-         scaled_weight, young_weight
+      REAL(KIND=dp) :: above_tail_weight, curvature_floor_weight, diag_damped_weight, err, &
+         expected_curvature_floor_weight, expected_mismatch_weight, expected_saturated_weight, &
+         good_weight, high_weight, low_weight, saturated_weight, scaled_weight, young_weight
 
       above_tail_weight = dense_projector_coupled_tail_weight(2.0E-4_dp, 1.0_dp, 0, &
                                                               density_fraction, diag_avg, diag_delta)
@@ -6653,9 +6653,12 @@ CONTAINS
                                                                density_fraction, diag_avg, 1.50_dp)
       scaled_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 1.75_dp, 4, &
                                                           0.5_dp*density_fraction, diag_avg, diag_delta)
+      curvature_floor_weight = dense_projector_coupled_tail_weight(5.0E-5_dp, 1.75_dp, 4, &
+                                                                   1.0E-3_dp, diag_avg, diag_delta)
 
       expected_mismatch_weight = 0.10_dp*0.50_dp*density_fraction/1.50_dp
       expected_saturated_weight = 0.10_dp*density_fraction/1.50_dp
+      expected_curvature_floor_weight = 0.10_dp*0.50_dp*(0.25_dp*(0.50_dp/1.50_dp))/1.50_dp
 
       err = ABS(above_tail_weight - 1.0_dp)
       err = MAX(err, ABS(young_weight))
@@ -6664,17 +6667,21 @@ CONTAINS
       err = MAX(err, ABS(high_weight - expected_mismatch_weight))
       err = MAX(err, ABS(saturated_weight - expected_saturated_weight))
       err = MAX(err, ABS(scaled_weight - 0.5_dp*expected_mismatch_weight))
+      err = MAX(err, ABS(curvature_floor_weight - expected_curvature_floor_weight))
 
       IF (err > tol .OR. high_weight <= good_weight .OR. low_weight <= good_weight .OR. &
-          saturated_weight < high_weight .OR. diag_damped_weight >= high_weight) THEN
+          saturated_weight < high_weight .OR. diag_damped_weight >= high_weight .OR. &
+          curvature_floor_weight <= scaled_weight*1.0E-3_dp/density_fraction) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "failed with error/above/young/good/low/high/saturated/diag", err, above_tail_weight, &
-            young_weight, good_weight, low_weight, high_weight, saturated_weight, diag_damped_weight
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/above/young/good/low/high/saturated/diag/curv", err, above_tail_weight, &
+            young_weight, good_weight, low_weight, high_weight, saturated_weight, diag_damped_weight, &
+            curvature_floor_weight
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "OK with error/above/young/good/low/high/saturated/diag", err, above_tail_weight, &
-            young_weight, good_weight, low_weight, high_weight, saturated_weight, diag_damped_weight
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/above/young/good/low/high/saturated/diag/curv", err, above_tail_weight, &
+            young_weight, good_weight, low_weight, high_weight, saturated_weight, diag_damped_weight, &
+            curvature_floor_weight
       END IF
 
    END SUBROUTINE check_projector_coupled_tail_weight
@@ -7519,8 +7526,8 @@ CONTAINS
                                                             projector_delta_diag_avg
       REAL(KIND=dp)                                      :: projector_weight
 
-      REAL(KIND=dp)                                      :: clipped_quality, diag_ratio, &
-                                                            quality_weight
+      REAL(KIND=dp)                                      :: clipped_quality, curvature_fraction, &
+                                                            density_fraction, diag_ratio, quality_weight
 
       IF (residual_delta > 1.0E-4_dp) THEN
          projector_weight = 1.0_dp
@@ -7539,7 +7546,10 @@ CONTAINS
       END IF
       quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
       diag_ratio = ABS(projector_delta_diag_avg)/MAX(ABS(projector_diag_avg), EPSILON(1.0_dp))
-      projector_weight = 0.10_dp*quality_weight*MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))/ &
+      curvature_fraction = diag_ratio/MAX(1.0_dp, 1.0_dp + diag_ratio)
+      density_fraction = MAX(MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction)), &
+                             0.25_dp*curvature_fraction)
+      projector_weight = 0.10_dp*quality_weight*density_fraction/ &
                          MAX(1.0_dp, 1.0_dp + diag_ratio)
 
    END FUNCTION dense_projector_coupled_tail_weight

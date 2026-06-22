@@ -14499,7 +14499,8 @@ CONTAINS
                                                             density_projector_fraction, projector_diag_avg, &
                                                             projector_delta_diag_avg
       INTEGER, INTENT(IN)                               :: samples
-      REAL(KIND=dp)                                     :: clipped_quality, diag_ratio, projector_weight, &
+      REAL(KIND=dp)                                     :: clipped_quality, curvature_fraction, &
+                                                            density_fraction, diag_ratio, projector_weight, &
                                                             quality_weight
 
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) THEN
@@ -14521,8 +14522,11 @@ CONTAINS
          END IF
          quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
          diag_ratio = ABS(projector_delta_diag_avg)/MAX(ABS(projector_diag_avg), EPSILON(1.0_dp))
+         curvature_fraction = diag_ratio/MAX(1.0_dp, 1.0_dp + diag_ratio)
+         density_fraction = MAX(MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction)), &
+                                0.25_dp*curvature_fraction)
          projector_weight = ot_kp_schur_projector_coupled_tail_max_weight* &
-                            quality_weight*MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))/ &
+                            quality_weight*density_fraction/ &
                             MAX(1.0_dp, 1.0_dp + diag_ratio)
 
       END FUNCTION kpoint_ot_projector_coupled_weight
