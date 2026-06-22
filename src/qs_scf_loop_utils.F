@@ -1237,6 +1237,7 @@ CONTAINS
       local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
       local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
       local_ot_env(1)%schur_projector_density_full_pending = .FALSE.
+      local_ot_env(1)%schur_projector_density_full_direct_pending = .FALSE.
       local_ot_env(1)%schur_history_mixed = .FALSE.
       local_ot_env(1)%schur_model_attempt = 0
       local_ot_env(1)%schur_model_flavor = 0
@@ -3187,6 +3188,8 @@ CONTAINS
                                                                projector_density_descent_selected_predicted_drop, &
                                                                projector_density_descent_selected_quality_ratio, &
                                                                projector_density_descent_support, &
+                                                               projector_density_full_direct_predicted_drop, &
+                                                               projector_density_full_direct_quality_ratio, &
                                                                projector_density_full_min_drop, &
                                                                projector_density_full_predicted_drop, &
                                                                projector_density_full_quality_ratio, &
@@ -3255,6 +3258,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_full_pending = .FALSE.
+               local_ot_env(1)%schur_projector_density_full_direct_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
                local_ot_env(1)%schur_model_flavor = 0
             RETURN
@@ -3805,6 +3809,67 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_quality_ema >= &
                ot_kp_schur_projector_response_quality_min_ratio .AND. &
                local_ot_env(1)%schur_projector_density_full_quality >= &
+               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+            projector_density_full_direct_predicted_drop = &
+               local_ot_env(1)%schur_projector_density_full_direct_drop
+            projector_density_full_direct_quality_ratio = 0.0_dp
+            IF (mermin_search .AND. &
+                local_ot_env(1)%schur_projector_density_full_direct_pending .AND. &
+                projector_density_full_direct_predicted_drop > &
+                projector_density_full_min_drop .AND. measured_drop > 0.0_dp) THEN
+               projector_density_full_direct_quality_ratio = &
+                  measured_drop/projector_density_full_direct_predicted_drop
+               local_ot_env(1)%schur_projector_density_full_direct_quality = &
+                  projector_density_full_direct_quality_ratio
+               samples = MIN(local_ot_env(1)%schur_projector_density_full_direct_quality_samples + 1, &
+                             HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_density_full_direct_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_density_full_direct_quality_ema = &
+                     projector_density_full_direct_quality_ratio
+                  local_ot_env(1)%schur_projector_density_full_direct_trust_ema = &
+                     local_ot_env(1)%schur_projector_density_full_direct_trust
+                  local_ot_env(1)%schur_projector_density_full_direct_weighted_trust_ema = &
+                     local_ot_env(1)%schur_projector_density_full_direct_weighted_trust
+                  local_ot_env(1)%schur_projector_density_full_direct_abs_trust_ema = &
+                     local_ot_env(1)%schur_projector_density_full_direct_abs_trust
+               ELSE
+                  local_ot_env(1)%schur_projector_density_full_direct_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_full_direct_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*projector_density_full_direct_quality_ratio
+                  local_ot_env(1)%schur_projector_density_full_direct_trust_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_full_direct_trust_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     local_ot_env(1)%schur_projector_density_full_direct_trust
+                  local_ot_env(1)%schur_projector_density_full_direct_weighted_trust_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_full_direct_weighted_trust_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     local_ot_env(1)%schur_projector_density_full_direct_weighted_trust
+                  local_ot_env(1)%schur_projector_density_full_direct_abs_trust_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_full_direct_abs_trust_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     local_ot_env(1)%schur_projector_density_full_direct_abs_trust
+               END IF
+               local_ot_env(1)%schur_projector_density_full_direct_drop_sum = &
+                  local_ot_env(1)%schur_projector_density_full_direct_drop_sum + &
+                  projector_density_full_direct_predicted_drop
+               local_ot_env(1)%schur_projector_density_full_direct_measured_sum = &
+                  local_ot_env(1)%schur_projector_density_full_direct_measured_sum + measured_drop
+            END IF
+            local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled = &
+               local_ot_env(1)%schur_projector_density_full_direct_quality_samples >= &
+               ot_kp_schur_projector_response_min_samples .AND. &
+               projector_density_full_direct_predicted_drop > &
+               ot_kp_schur_projector_density_full_min_drop .AND. &
+               local_ot_env(1)%schur_projector_density_full_direct_drop_sum > &
+               ot_kp_schur_projector_density_full_min_drop .AND. &
+               local_ot_env(1)%schur_projector_density_full_direct_quality_ema >= &
+               ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               local_ot_env(1)%schur_projector_density_full_direct_quality >= &
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
             projector_density_descent_predicted_drop = &
                local_ot_env(1)%schur_projector_density_descent_drop
@@ -4468,6 +4533,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
             local_ot_env(1)%schur_projector_density_full_pending = .FALSE.
+            local_ot_env(1)%schur_projector_density_full_direct_pending = .FALSE.
             local_ot_env(1)%schur_model_flavor = 0
 
          logger => cp_get_default_logger()
@@ -4664,6 +4730,19 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_weighted_trust, &
                   local_ot_env(1)%schur_projector_density_full_abs_trust, &
                   local_ot_env(1)%schur_projector_density_full_candidate_enabled
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
+                  " OT Schur LS projector full-density direct n ratio ema pred meas latest trust tema wtr atr enabled:", &
+                  local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                  local_ot_env(1)%schur_projector_density_full_direct_quality, &
+                  local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_direct_drop_sum, &
+                  local_ot_env(1)%schur_projector_density_full_direct_measured_sum, &
+                  projector_density_full_direct_predicted_drop, &
+                  local_ot_env(1)%schur_projector_density_full_direct_trust, &
+                  local_ot_env(1)%schur_projector_density_full_direct_trust_ema, &
+                  local_ot_env(1)%schur_projector_density_full_direct_weighted_trust, &
+                  local_ot_env(1)%schur_projector_density_full_direct_abs_trust, &
+                  local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
                   " OT Schur LS projector density audit n lowcurv lcema lcqema amp aema aqema q:", &
                   local_ot_env(1)%schur_projector_density_audit_samples, &
@@ -5009,6 +5088,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_audit_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_descent_pending = .FALSE.
                local_ot_env(1)%schur_projector_density_full_pending = .FALSE.
+               local_ot_env(1)%schur_projector_density_full_direct_pending = .FALSE.
                local_ot_env(1)%schur_history_mixed = .FALSE.
             local_ot_env(1)%schur_model_attempt = 0
             local_ot_env(1)%schur_model_flavor = 0
@@ -5057,6 +5137,10 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_trust = 1.0_dp
                local_ot_env(1)%schur_projector_density_full_weighted_trust = 0.0_dp
                local_ot_env(1)%schur_projector_density_full_abs_trust = 0.0_dp
+               local_ot_env(1)%schur_projector_density_full_direct_drop = 0.0_dp
+               local_ot_env(1)%schur_projector_density_full_direct_trust = 1.0_dp
+               local_ot_env(1)%schur_projector_density_full_direct_weighted_trust = 0.0_dp
+               local_ot_env(1)%schur_projector_density_full_direct_abs_trust = 0.0_dp
                local_ot_env(1)%schur_projector_physical_drop = 0.0_dp
                local_ot_env(1)%schur_projector_physical_metric = 0.0_dp
                local_ot_env(1)%schur_projector_physical_weight = 0.0_dp
@@ -5129,6 +5213,8 @@ CONTAINS
                                                             exact_density_response_ready, new_search_point, &
                                                             density_full_candidate_ready, &
                                                             density_full_candidate_selected, &
+                                                            density_full_direct_candidate_ready, &
+                                                            density_full_direct_candidate_selected, &
                                                             density_descent_candidate_ready, &
                                                             density_descent_candidate_selected, &
                                                             response_model_available, solved, &
@@ -5362,6 +5448,7 @@ CONTAINS
             density_full_direct_response_abs_trust_ratio, &
             density_full_direct_response_weighted_step, &
             density_full_direct_response_weighted_trust_ratio, &
+            density_full_direct_quality_for_selection, &
             density_full_direct_scale_quality, &
             density_full_direct_trust_quality, &
             density_full_expected_drop, &
@@ -6503,6 +6590,8 @@ CONTAINS
             exact_density_full_response_ready = .FALSE.
             density_full_candidate_ready = .FALSE.
             density_full_candidate_selected = .FALSE.
+            density_full_direct_candidate_ready = .FALSE.
+            density_full_direct_candidate_selected = .FALSE.
             density_descent_candidate_ready = .FALSE.
             density_descent_candidate_selected = .FALSE.
             exact_physical_response_ready = .FALSE.
@@ -7677,6 +7766,7 @@ CONTAINS
                density_full_direct_response_abs_trust_ratio = 0.0_dp
                density_full_direct_response_weighted_step = 0.0_dp
                density_full_direct_response_weighted_trust_ratio = 0.0_dp
+               density_full_direct_quality_for_selection = 0.0_dp
                density_full_direct_scale_quality = 0.0_dp
                density_full_direct_trust_quality = 1.0_dp
                density_full_expected_drop = 0.0_dp
@@ -9543,6 +9633,11 @@ CONTAINS
                                                    density_full_quality_for_selection = &
                                                       MIN(1.0_dp, MAX(0.0_dp, &
                                                           local_ot_env(1)%schur_projector_density_full_quality_ema))
+                                                IF (local_ot_env(1)%schur_projector_density_full_direct_quality_samples >= &
+                                                    ot_kp_schur_projector_response_min_samples) &
+                                                   density_full_direct_quality_for_selection = &
+                                                      MIN(1.0_dp, MAX(0.0_dp, &
+                                                          local_ot_env(1)%schur_projector_density_full_direct_quality_ema))
                                                 density_full_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &
                                                       density_full_model_calibrated_drop, &
@@ -9558,7 +9653,8 @@ CONTAINS
                                                    density_full_response_weighted_step <= response_trust .AND. &
                                                    density_full_response_abs_step <= response_abs_trust
                                              END IF
-                                             IF (projector_physical_direct_candidate_ready) THEN
+                                             IF (DOT_PRODUCT(projector_physical_direct_sol, &
+                                                            projector_physical_direct_sol) > EPSILON(1.0_dp)) THEN
                                                 rx_e(:) = MATMUL(response_exact_physical, &
                                                                  projector_physical_direct_sol) + &
                                                           MATMUL(response_density_full_exact, &
@@ -9643,43 +9739,17 @@ CONTAINS
                                                    density_full_direct_expected_drop = &
                                                       kpoint_ot_schur_expected_drop( &
                                                          density_full_direct_model_calibrated_drop, &
-                                                         density_full_quality_for_selection, &
+                                                         density_full_direct_quality_for_selection, &
                                                          density_full_direct_trust_quality* &
                                                          projector_physical_direct_density_audit_quality)
-                                                   IF (density_full_direct_expected_drop > density_full_expected_drop .AND. &
-                                                       density_full_direct_model_calibrated_drop > &
-                                                       ot_kp_schur_projector_density_full_min_drop) THEN
-                                                      density_full_rx_e(:) = rx_e(:)
-                                                      density_full_sol(:) = projector_physical_direct_sol(:)
-                                                      density_full_z_e(:) = z_density_full_trial(:)
-                                                      density_full_direction_scale = density_full_direct_direction_scale
-                                                      density_full_expected_drop = density_full_direct_expected_drop
-                                                      density_full_gdot_energy = density_full_direct_gdot_energy
-                                                      density_full_gdot_rotation = density_full_direct_gdot_rotation
-                                                      density_full_gdotp = density_full_direct_gdotp
-                                                      density_full_model_calibrated_drop = &
-                                                         density_full_direct_model_calibrated_drop
-                                                      density_full_model_drop = density_full_direct_model_drop
-                                                      density_full_norm_energy = density_full_direct_norm_energy
-                                                      density_full_norm_rotation = density_full_direct_norm_rotation
-                                                      density_full_normp = density_full_direct_normp
-                                                      density_full_response_abs_step = &
-                                                         density_full_direct_response_abs_step
-                                                      density_full_response_abs_trust_ratio = &
-                                                         density_full_direct_response_abs_trust_ratio
-                                                      density_full_response_weighted_step = &
-                                                         density_full_direct_response_weighted_step
-                                                      density_full_response_weighted_trust_ratio = &
-                                                         density_full_direct_response_weighted_trust_ratio
-                                                      density_full_scale_quality = density_full_direct_scale_quality
-                                                      density_full_trust_quality = density_full_direct_trust_quality
-                                                      density_full_candidate_ready = &
-                                                         local_ot_env(1)%schur_projector_density_full_candidate_enabled .AND. &
-                                                         density_full_expected_drop > &
-                                                         ot_kp_schur_projector_density_full_min_drop .AND. &
-                                                         density_full_response_weighted_step <= response_trust .AND. &
-                                                         density_full_response_abs_step <= response_abs_trust
-                                                   END IF
+                                                   density_full_direct_candidate_ready = &
+                                                      local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled .AND. &
+                                                      density_full_direct_expected_drop > &
+                                                      ot_kp_schur_projector_density_full_min_drop .AND. &
+                                                      density_full_direct_model_calibrated_drop > &
+                                                      ot_kp_schur_projector_density_full_min_drop .AND. &
+                                                      density_full_direct_response_weighted_step <= response_trust .AND. &
+                                                      density_full_direct_response_abs_step <= response_abs_trust
                                                 END IF
                                              END IF
                                           END IF
@@ -10814,6 +10884,8 @@ CONTAINS
                      projector_physical_candidate_selected = .FALSE.
                      projector_physical_direct_candidate_selected = .FALSE.
                      projector_physical_direct_density_candidate_selected = .FALSE.
+                     density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = density_descent_direction_scale*density_descent_z_e(:)
                      sol(:) = density_descent_direction_scale*projector_physical_direct_sol(:)
@@ -10849,6 +10921,7 @@ CONTAINS
                      projector_physical_candidate_selected = .FALSE.
                      projector_physical_direct_candidate_selected = .FALSE.
                      projector_physical_direct_density_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = density_full_direction_scale*density_full_z_e(:)
                      sol(:) = density_full_direction_scale*density_full_sol(:)
@@ -10874,6 +10947,42 @@ CONTAINS
                      response_weighted_trust_ratio = density_full_response_weighted_trust_ratio
                      dense_expected_drop = density_full_expected_drop
                   END IF
+                  IF (.NOT. attempt_failed .AND. density_full_direct_candidate_ready .AND. &
+                      density_full_direct_expected_drop > EPSILON(density_full_direct_expected_drop) .AND. &
+                      density_full_direct_expected_drop >= &
+                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                         EPSILON(dense_expected_drop))) THEN
+                     density_full_direct_candidate_selected = .TRUE.
+                     density_full_candidate_selected = .FALSE.
+                     density_descent_candidate_selected = .FALSE.
+                     projector_physical_candidate_selected = .FALSE.
+                     projector_physical_direct_candidate_selected = .FALSE.
+                     projector_physical_direct_density_candidate_selected = .FALSE.
+                     projector_response_candidate_selected = .FALSE.
+                     z_e(:) = density_full_direct_direction_scale*z_density_full_trial(:)
+                     sol(:) = density_full_direct_direction_scale*projector_physical_direct_sol(:)
+                     direction_scale = density_full_direct_direction_scale
+                     gdotp = density_full_direct_gdotp
+                     gdot_energy = density_full_direct_gdot_energy
+                     gdot_rotation = density_full_direct_gdot_rotation
+                     norm_energy = density_full_direct_norm_energy
+                     norm_rotation = density_full_direct_norm_rotation
+                     normp = density_full_direct_normp
+                     norm_ratio = density_full_direct_direction_scale*density_full_direct_direction_scale* &
+                                  normp/MAX(gnorm, EPSILON(1.0_dp))
+                     scale_quality = density_full_direct_scale_quality
+                     model_drop = density_full_direct_model_drop
+                     model_calibrated_drop = density_full_direct_model_calibrated_drop
+                     model_gap = 0.0_dp
+                     model_gap_drop = 0.0_dp
+                     model_gap_ratio = 0.0_dp
+                     model_gap_trust = response_trust
+                     response_abs_step = density_full_direct_response_abs_step
+                     response_abs_trust_ratio = density_full_direct_response_abs_trust_ratio
+                     response_weighted_step = density_full_direct_response_weighted_step
+                     response_weighted_trust_ratio = density_full_direct_response_weighted_trust_ratio
+                     dense_expected_drop = density_full_direct_expected_drop
+                  END IF
                   IF (.NOT. attempt_failed .AND. &
                       (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                        (projector_physical_direct_candidate_used .AND. &
@@ -10887,6 +10996,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
                      density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = projector_physical_z_e(:)
                      sol(:) = projector_physical_sol(:)
@@ -10938,6 +11048,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
                      density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = projector_physical_direct_spectral_direction_scale* &
                               projector_physical_direct_spectral_z_e(:)
@@ -10984,6 +11095,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
                      density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_probe_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
@@ -11028,6 +11140,7 @@ CONTAINS
                      projector_physical_direct_candidate_selected = .FALSE.
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_offdiag_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_probe_selected = .FALSE.
@@ -11221,6 +11334,42 @@ CONTAINS
                      response_weighted_trust_ratio = density_full_response_weighted_trust_ratio
                      dense_expected_drop = density_full_expected_drop
                   END IF
+                  IF (.NOT. attempt_failed .AND. density_full_direct_candidate_ready .AND. &
+                      density_full_direct_expected_drop > EPSILON(density_full_direct_expected_drop) .AND. &
+                      density_full_direct_expected_drop >= &
+                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                         EPSILON(dense_expected_drop))) THEN
+                     density_full_direct_candidate_selected = .TRUE.
+                     density_full_candidate_selected = .FALSE.
+                     density_descent_candidate_selected = .FALSE.
+                     projector_physical_candidate_selected = .FALSE.
+                     projector_physical_direct_candidate_selected = .FALSE.
+                     projector_physical_direct_density_candidate_selected = .FALSE.
+                     projector_response_candidate_selected = .FALSE.
+                     z_e(:) = density_full_direct_direction_scale*z_density_full_trial(:)
+                     sol(:) = density_full_direct_direction_scale*projector_physical_direct_sol(:)
+                     direction_scale = density_full_direct_direction_scale
+                     gdotp = density_full_direct_gdotp
+                     gdot_energy = density_full_direct_gdot_energy
+                     gdot_rotation = density_full_direct_gdot_rotation
+                     norm_energy = density_full_direct_norm_energy
+                     norm_rotation = density_full_direct_norm_rotation
+                     normp = density_full_direct_normp
+                     norm_ratio = density_full_direct_direction_scale*density_full_direct_direction_scale* &
+                                  normp/MAX(gnorm, EPSILON(1.0_dp))
+                     scale_quality = density_full_direct_scale_quality
+                     model_drop = density_full_direct_model_drop
+                     model_calibrated_drop = density_full_direct_model_calibrated_drop
+                     model_gap = 0.0_dp
+                     model_gap_drop = 0.0_dp
+                     model_gap_ratio = 0.0_dp
+                     model_gap_trust = response_trust
+                     response_abs_step = density_full_direct_response_abs_step
+                     response_abs_trust_ratio = density_full_direct_response_abs_trust_ratio
+                     response_weighted_step = density_full_direct_response_weighted_step
+                     response_weighted_trust_ratio = density_full_direct_response_weighted_trust_ratio
+                     dense_expected_drop = density_full_direct_expected_drop
+                  END IF
                   IF (.NOT. attempt_failed .AND. &
                       (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                        (projector_physical_direct_candidate_used .AND. &
@@ -11234,6 +11383,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
                      density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = projector_physical_z_e(:)
                      sol(:) = projector_physical_sol(:)
@@ -11285,6 +11435,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
                      density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = projector_physical_direct_spectral_direction_scale* &
                               projector_physical_direct_spectral_z_e(:)
@@ -11331,6 +11482,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      density_descent_candidate_selected = .FALSE.
                      density_full_candidate_selected = .FALSE.
+                     density_full_direct_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_candidate_selected = .FALSE.
                      projector_physical_direct_spectral_probe_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
@@ -11371,6 +11523,7 @@ CONTAINS
                   IF (projector_physical_direct_density_candidate_selected) selected_flavor = 32
                   IF (density_descent_candidate_selected) selected_flavor = 33
                   IF (density_full_candidate_selected) selected_flavor = 38
+                  IF (density_full_direct_candidate_selected) selected_flavor = 39
                   IF (projector_physical_candidate_selected) selected_flavor = 34
                   IF (projector_physical_direct_candidate_selected) selected_flavor = 35
                   IF (projector_physical_direct_spectral_candidate_selected) selected_flavor = 36
@@ -11635,6 +11788,30 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_abs_trust = &
                      MAX(local_ot_env(1)%schur_projector_density_full_abs_trust, &
                          density_full_history_abs_trust_ratio)
+               END IF
+               IF (density_full_direct_model_calibrated_drop > &
+                   ot_kp_schur_projector_density_full_min_drop .AND. &
+                   density_full_direct_response_weighted_trust_ratio <= 1.0_dp .AND. &
+                   density_full_direct_response_abs_trust_ratio <= 1.0_dp) THEN
+                  IF (.NOT. local_ot_env(1)%schur_projector_density_full_direct_pending) THEN
+                     local_ot_env(1)%schur_projector_density_full_direct_drop = 0.0_dp
+                     local_ot_env(1)%schur_projector_density_full_direct_trust = 1.0_dp
+                     local_ot_env(1)%schur_projector_density_full_direct_weighted_trust = 0.0_dp
+                     local_ot_env(1)%schur_projector_density_full_direct_abs_trust = 0.0_dp
+                  END IF
+                  local_ot_env(1)%schur_projector_density_full_direct_pending = .TRUE.
+                  local_ot_env(1)%schur_projector_density_full_direct_drop = &
+                     local_ot_env(1)%schur_projector_density_full_direct_drop + &
+                     density_full_direct_model_calibrated_drop
+                  local_ot_env(1)%schur_projector_density_full_direct_trust = &
+                     MIN(local_ot_env(1)%schur_projector_density_full_direct_trust, &
+                         density_full_direct_trust_quality)
+                  local_ot_env(1)%schur_projector_density_full_direct_weighted_trust = &
+                     MAX(local_ot_env(1)%schur_projector_density_full_direct_weighted_trust, &
+                         density_full_direct_response_weighted_trust_ratio)
+                  local_ot_env(1)%schur_projector_density_full_direct_abs_trust = &
+                     MAX(local_ot_env(1)%schur_projector_density_full_direct_abs_trust, &
+                         density_full_direct_response_abs_trust_ratio)
                END IF
                IF (exact_density_response_ready) THEN
                   local_ot_env(1)%schur_projector_density_audit_pending = .TRUE.
@@ -12070,12 +12247,12 @@ CONTAINS
                         projector_physical_direct_density_direction_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct full-density shadow exp cdrop rratio aratio tq scale:", &
-                        density_full_expected_drop, &
-                        density_full_model_calibrated_drop, &
-                        density_full_response_weighted_trust_ratio, &
-                        density_full_response_abs_trust_ratio, &
-                        density_full_trust_quality, &
-                        density_full_direction_scale
+                        density_full_direct_expected_drop, &
+                        density_full_direct_model_calibrated_drop, &
+                        density_full_direct_response_weighted_trust_ratio, &
+                        density_full_direct_response_abs_trust_ratio, &
+                        density_full_direct_trust_quality, &
+                        density_full_direct_direction_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),3(1X,ES16.8))') &
                         " OT Schur projector full-density audit ena aex cex phys exden abs frac cdrop:", &
                         projector_density_full_audit_enabled, exact_density_full_audit_ready, &
@@ -12090,6 +12267,14 @@ CONTAINS
                         density_full_response_weighted_trust_ratio, &
                         density_full_response_abs_trust_ratio, density_full_trust_quality, &
                         density_full_direction_scale
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
+                        " OT Schur projector full-density direct candidate ready selected exp qsel cdrop rratio aratio tq scale:", &
+                        density_full_direct_candidate_ready, density_full_direct_candidate_selected, &
+                        density_full_direct_expected_drop, density_full_direct_quality_for_selection, &
+                        density_full_direct_model_calibrated_drop, &
+                        density_full_direct_response_weighted_trust_ratio, &
+                        density_full_direct_response_abs_trust_ratio, &
+                        density_full_direct_trust_quality, density_full_direct_direction_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct density-gap shadow exp cdrop rratio aratio tq scale:", &
                         density_gap_expected_drop, &
