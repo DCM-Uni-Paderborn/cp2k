@@ -2488,6 +2488,12 @@ CONTAINS
             local_ot_env(local_channel)%ener_x_trust_min_abs_eps_mu = min_abs_eps_mu
             local_ot_env(local_channel)%ener_x_trust_rayleigh_gap = rayleigh_gap
             local_ot_env(local_channel)%ener_x_trust_rayleigh_edge_gap = rayleigh_edge_gap
+            local_ot_env(local_channel)%ener_x_step_max = rayleigh_gap
+            local_ot_env(local_channel)%ener_x_trusted_step_max = rayleigh_edge_gap
+            IF (rayleigh_edge_gap > trust_radius .AND. trust_radius > EPSILON(trust_radius)) THEN
+               local_ot_env(local_channel)%ener_x_trust_scale = trust_radius/rayleigh_edge_gap
+               local_ot_env(local_channel)%ener_x_trusted_step_max = trust_radius
+            END IF
          END DO
       END DO
 
@@ -5178,7 +5184,8 @@ CONTAINS
          diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, diag_shift_fraction, direction_scale, &
          energy_floor_count, energy_floor_curv_sum, energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
          gdot_rotation, gnorm, &
-         accepted_projector_coupled_weight, density_projector_fraction, dense_projector_coupled_weight, diag_shift_max, &
+         accepted_projector_coupled_weight, density_projector_fraction, density_projector_trust_scale, &
+         dense_projector_coupled_weight, diag_shift_max, &
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
          model_gap_ratio, mu, norm_energy, norm_ratio, norm_rotation, normp, occ_curv_projection_sum, &
@@ -5928,6 +5935,7 @@ CONTAINS
                 projector_physical_direct_shadow_enabled)
          residual_reference_quality = 0.0_dp
          density_projector_fraction = 0.0_dp
+         density_projector_trust_scale = 1.0_dp
          physical_response_gap_avg = 0.0_dp
          physical_response_gap_max = 0.0_dp
          projector_physical_active_covariant_abs_avg = 0.0_dp
@@ -7171,10 +7179,18 @@ CONTAINS
          IF (sigma > EPSILON(sigma)) THEN
             response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
             response_abs_trust = ot_kp_fermi_window_outer_factor*sigma
+            DO local_channel = 1, nchannels
+               IF (channel_nmo(local_channel) <= 0) CYCLE
+               IF (local_ot_env(local_channel)%ener_x_trust_radius <= 0.0_dp) CYCLE
+               density_projector_trust_scale = &
+                  MIN(density_projector_trust_scale, local_ot_env(local_channel)%ener_x_trust_scale)
+            END DO
+            density_projector_trust_scale = MIN(1.0_dp, MAX(0.0_dp, density_projector_trust_scale))
             IF (residual_delta > 0.0_dp .AND. ot_kp_canonical_density_max_weight > 0.0_dp) THEN
                density_projector_fraction = &
                   kpoint_ot_canonical_density_projector_weight(residual_delta)/ot_kp_canonical_density_max_weight
-               density_projector_fraction = MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))
+               density_projector_fraction = density_projector_trust_scale* &
+                                            MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))
                response_trust_factor = MAX(ot_kp_schur_response_trust_min_factor, &
                                            1.0_dp - density_projector_fraction)
             END IF
@@ -7591,7 +7607,6 @@ CONTAINS
                projector_physical_direct_density_response_weighted_trust_ratio = 0.0_dp
                projector_physical_direct_density_scale_quality = 0.0_dp
                projector_physical_direct_density_trust_quality = 1.0_dp
-               projector_physical_direct_density_quality_for_selection = 0.0_dp
                density_full_direction_scale = 0.0_dp
                density_full_expected_drop = 0.0_dp
                density_full_gdot_energy = 0.0_dp
