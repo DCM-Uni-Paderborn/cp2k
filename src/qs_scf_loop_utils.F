@@ -5274,6 +5274,7 @@ CONTAINS
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
             projector_physical_direct_mixed_drop_ratio, projector_physical_direct_mixed_quality, &
+            projector_physical_direct_mixed_consistency_scale, &
             projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight, &
             projector_physical_direct_offdiag_mix_weight, &
             projector_physical_direct_shadow_weight, &
@@ -6193,6 +6194,7 @@ CONTAINS
             projector_physical_direct_mixed_enabled = .FALSE.
             projector_physical_direct_mixed_drop_ratio = 0.0_dp
             projector_physical_direct_mixed_quality = 0.0_dp
+            projector_physical_direct_mixed_consistency_scale = 0.0_dp
             projector_physical_direct_mixed_step_scale = 0.0_dp
             projector_physical_direct_mixed_weight = 0.0_dp
             projector_physical_direct_offdiag_mix_weight = 0.0_dp
@@ -8561,23 +8563,36 @@ CONTAINS
                                                 projector_physical_direct_mixed_quality, &
                                                 local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
                                                 ot_kp_schur_projector_response_min_samples)
+                                          projector_physical_direct_mixed_consistency_scale = 1.0_dp
+                                          IF (projector_physical_direct_mixed_drop_ratio > &
+                                              ot_kp_schur_projector_response_quality_max_ratio) &
+                                             projector_physical_direct_mixed_consistency_scale = MIN( &
+                                                projector_physical_direct_mixed_consistency_scale, &
+                                                SQRT(ot_kp_schur_projector_response_quality_max_ratio/ &
+                                                     projector_physical_direct_mixed_drop_ratio))
+                                          IF (local_ot_env(1)%schur_projector_mixed_direct_quality_ema > &
+                                              ot_kp_schur_projector_response_quality_max_ratio) &
+                                             projector_physical_direct_mixed_consistency_scale = MIN( &
+                                                projector_physical_direct_mixed_consistency_scale, &
+                                                SQRT(ot_kp_schur_projector_response_quality_max_ratio/ &
+                                                     local_ot_env(1)%schur_projector_mixed_direct_quality_ema))
+                                          ! Large measured/predicted ratios mean that the
+                                          ! mixed Direct shadow is conservative.  Do not
+                                          ! reject such accepted history here; the actual
+                                          ! step remains limited by the shadow weight,
+                                          ! quality clamp, maturity scale and consistency
+                                          ! scale below.
                                           projector_physical_direct_mixed_enabled = &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
                                              2*ot_kp_schur_projector_response_min_samples .AND. &
                                              projector_physical_direct_mixed_drop_ratio >= &
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                             projector_physical_direct_mixed_drop_ratio <= &
-                                             ot_kp_schur_projector_response_quality_max_ratio .AND. &
                                              projector_physical_direct_mixed_quality >= &
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality_ema >= &
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                             local_ot_env(1)%schur_projector_mixed_direct_quality_ema <= &
-                                             ot_kp_schur_projector_response_quality_max_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality >= &
-                                             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                             local_ot_env(1)%schur_projector_mixed_direct_quality <= &
-                                             2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
+                                             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
                                           IF (projector_physical_direct_mixed_enabled) THEN
                                              ! The accepted mixed-Direct shadow weight is the
                                              ! conservative production baseline.  Selected-Direct
@@ -8600,6 +8615,9 @@ CONTAINS
                                                    local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
                                                    local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
                                                    local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples))
+                                             projector_physical_direct_mixed_weight = &
+                                                projector_physical_direct_mixed_weight* &
+                                                projector_physical_direct_mixed_consistency_scale
                                              projector_physical_direct_delta(:, :) = &
                                                 (1.0_dp - projector_physical_direct_mixed_weight)* &
                                                 projector_physical_direct_base_delta(:, :) + &
