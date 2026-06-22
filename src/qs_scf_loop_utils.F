@@ -9390,6 +9390,24 @@ CONTAINS
                                              IF (density_gap_raw_weighted > EPSILON(density_gap_raw_weighted)) &
                                                 density_descent_gap_recoverable_fraction = &
                                                    density_descent_gap_projected_weighted/density_gap_raw_weighted
+                                             IF (density_gap_raw_weighted > EPSILON(density_gap_raw_weighted) .AND. &
+                                                 density_descent_gap_recoverable_fraction < &
+                                                 ot_kp_schur_projector_response_ratio_gate) THEN
+                                                CALL project_kpoint_ot_descent_response( &
+                                                   density_gap_rx_e, z_trial, grad_e, &
+                                                   density_gap_projected_e, density_descent_gap_coeff, &
+                                                   density_gap_gdot, density_descent_gap_denom, .TRUE., &
+                                                   occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                   channel_nmo, e_offset)
+                                                density_descent_gap_projected_abs = &
+                                                   MAXVAL(ABS(density_gap_projected_e))
+                                                CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
+                                                density_descent_gap_projected_weighted = &
+                                                   kpoint_ot_weighted_response_step(density_gap_projected_e, curv, &
+                                                                                   curv_projection_sum)
+                                                density_descent_gap_recoverable_fraction = &
+                                                   density_descent_gap_projected_weighted/density_gap_raw_weighted
+                                             END IF
                                              density_descent_rx_e(:) = projector_physical_direct_density_rx_e(:) + &
                                                                        density_gap_projected_e(:)
                                              CALL project_kpoint_ot_schur_response(density_descent_rx_e, &

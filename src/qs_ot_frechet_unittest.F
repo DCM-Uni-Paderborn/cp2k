@@ -124,6 +124,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density metric-descent recovery", 5.0E-13_dp, nfail)
    CALL check_projector_density_mixed_metric_descent_recovery( &
       "complex projector density mixed-metric descent recovery", 5.0E-13_dp, nfail)
+   CALL check_projector_density_energy_descent_fallback( &
+      "complex projector density energy-descent fallback", 5.0E-13_dp, nfail)
    CALL check_projector_density_mixed_metric_coupled_schur( &
       "complex projector density mixed-metric coupled Schur", 5.0E-13_dp, nfail)
    CALL check_projector_response_mixed_metric_scale( &
@@ -4597,6 +4599,67 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_mixed_metric_descent_recovery
+
+! **************************************************************************************************
+!> \brief Recover density-gap response when the active response basis has collapsed.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_energy_descent_fallback(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 6, nchannel = 2
+      REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.34_dp
+
+      INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: coeff_active, coeff_energy, denom_active, &
+                                                            denom_energy, err, gdot_active, gdot_energy, &
+                                                            primary_norm, recovered_norm
+      REAL(KIND=dp), DIMENSION(ne)                       :: active_descent, density_gap, energy_descent, &
+                                                            grad, occ_curv, projected_active, &
+                                                            projected_energy, tether_curv
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.043_dp, 0.027_dp, 0.016_dp, 0.009_dp, 0.004_dp, 0.002_dp]
+      tether_curv(:) = [0.007_dp, 0.011_dp, 0.009_dp, 0.005_dp, 0.008_dp, 0.004_dp]
+      grad(:) = [0.41_dp, -0.20_dp, 0.12_dp, -0.06_dp, 0.025_dp, -0.012_dp]
+      energy_descent(:) = [0.19_dp, -0.11_dp, 0.055_dp, -0.030_dp, 0.014_dp, -0.006_dp]
+
+      active_descent(:) = 0.0_dp
+      density_gap(:) = expected_coeff*energy_descent(:)
+
+      CALL dense_project_mixed_metric_descent_response(density_gap, active_descent, grad, occ_curv, &
+                                                       tether_curv, channel_nmo, e_offset, &
+                                                       projected_active, coeff_active, gdot_active, &
+                                                       denom_active)
+      CALL dense_project_mixed_metric_descent_response(density_gap, energy_descent, grad, occ_curv, &
+                                                       tether_curv, channel_nmo, e_offset, &
+                                                       projected_energy, coeff_energy, gdot_energy, &
+                                                       denom_energy)
+
+      primary_norm = MAXVAL(ABS(projected_active(:)))
+      recovered_norm = MAXVAL(ABS(projected_energy(:)))
+      err = MAXVAL(ABS(projected_energy(:) - density_gap(:)))
+      err = MAX(err, ABS(coeff_energy - expected_coeff))
+      err = MAX(err, ABS(coeff_active), ABS(denom_active))
+
+      IF (err > tol .OR. primary_norm > tol .OR. recovered_norm <= 0.0_dp .OR. &
+          gdot_energy <= 0.0_dp .OR. denom_energy <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/primary/recovered/gdot/denom", err, primary_norm, recovered_norm, &
+            gdot_energy, denom_energy
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/primary/recovered/gdot/denom", err, primary_norm, recovered_norm, &
+            gdot_energy, denom_energy
+      END IF
+
+   END SUBROUTINE check_projector_density_energy_descent_fallback
 
 ! **************************************************************************************************
 !> \brief Hidden density-gap response must enter the coupled mixed Mermin Schur curvature.
