@@ -7397,7 +7397,7 @@ CONTAINS
          END IF
       END DO
 
-      corr_ref(:) = target_pos*response_pos_ref(:) - target_neg*response_neg_ref(:)
+      corr_ref(:) = target_pos*response_pos_ref(:) + target_neg*response_neg_ref(:)
       cand_ref(:) = response_base(:) + corr_ref(:)
       grad_e(:) = curv(:)*energy_base(:) + curv(:)*corr_ref(:)
       drop_ref = 0.5_dp*DOT_PRODUCT(curv(:)*corr_ref(:), corr_ref(:))
@@ -7531,8 +7531,8 @@ CONTAINS
          response_neg_ref(:) = response_neg_ref(:) + mode_weight*mode_rx(:)
          negative_weight_sum = negative_weight_sum + mode_weight*step_rot(imode)*step_rot(imode)
       END DO
-      candidate_ref(:) = response_base(:) - response_neg_ref(:)
-      grad_e(:) = curv(:)*energy_base(:) - curv(:)*response_neg_ref(:)
+      candidate_ref(:) = response_base(:) + response_neg_ref(:)
+      grad_e(:) = curv(:)*energy_base(:) + curv(:)*response_neg_ref(:)
       correction_drop_ref = 0.5_dp*DOT_PRODUCT(curv(:)*response_neg_ref(:), response_neg_ref(:))
       negative_fraction_ref = 1.0_dp
       applied_weight_ref = negative_weight_sum/step_weight_sum
@@ -7686,10 +7686,10 @@ CONTAINS
       END DO
 
       h11 = DOT_PRODUCT(curv(:)*response_pos(:), response_pos(:))
-      h12 = -DOT_PRODUCT(curv(:)*response_pos(:), response_neg(:))
+      h12 = DOT_PRODUCT(curv(:)*response_pos(:), response_neg(:))
       h22 = DOT_PRODUCT(curv(:)*response_neg(:), response_neg(:))
       g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
-      g2 = -DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
+      g2 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
       coeff_positive = 1.0_dp
       coeff_negative = 1.0_dp
       coeff_det = h11*h22 - h12*h12
@@ -7702,7 +7702,7 @@ CONTAINS
 
       positive_coeff = coeff_positive
       negative_coeff = coeff_negative
-      response_corr(:) = coeff_positive*response_pos(:) - coeff_negative*response_neg(:)
+      response_corr(:) = coeff_positive*response_pos(:) + coeff_negative*response_neg(:)
       response_candidate(:) = response_base(:) + response_corr(:)
       positive_drop = 0.5_dp*coeff_positive*coeff_positive*MAX(0.0_dp, h11)
       negative_drop = 0.5_dp*coeff_negative*coeff_negative*MAX(0.0_dp, h22)

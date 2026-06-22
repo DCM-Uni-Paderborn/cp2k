@@ -15615,10 +15615,9 @@ CONTAINS
             CALL para_env_inter_kp%sum(h22)
          END IF
          h11 = MAX(0.0_dp, h11)
-         h12 = -h12
          h22 = MAX(0.0_dp, h22)
          g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
-         g2 = -DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
+         g2 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
          CALL para_env_inter_kp%sum(g1)
          CALL para_env_inter_kp%sum(g2)
          coeff_positive = 1.0_dp
@@ -15632,7 +15631,7 @@ CONTAINS
          END IF
          positive_coeff = coeff_positive
          negative_coeff = coeff_negative
-         response_corr(:) = coeff_positive*response_pos(:) - coeff_negative*response_neg(:)
+         response_corr(:) = coeff_positive*response_pos(:) + coeff_negative*response_neg(:)
          response_candidate(:) = response_base(:) + response_corr(:)
          IF (use_projected_metric) &
             CALL project_kpoint_ot_schur_response(response_candidate, occ_curv, tether_curv, &
