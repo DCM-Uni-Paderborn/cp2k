@@ -11934,8 +11934,8 @@ CONTAINS
                      density_full_global_history_abs_trust_ratio = &
                         density_full_global_history_abs_step/response_abs_trust
                   density_full_global_history_trust_quality = &
-                     kpoint_ot_schur_trust_quality(density_full_global_history_weighted_trust_ratio, &
-                                                   density_full_global_history_abs_trust_ratio, 0.0_dp)
+                     kpoint_ot_schur_metric_trust_quality( &
+                        density_full_global_history_weighted_trust_ratio, 0.0_dp)
                END IF
                IF (density_full_global_history_drop > &
                    ot_kp_schur_projector_density_full_min_drop) THEN
@@ -13960,6 +13960,22 @@ CONTAINS
          quality = 1.0_dp/trust_ratio
 
       END FUNCTION kpoint_ot_schur_trust_quality
+
+! **************************************************************************************************
+!> \brief ...
+!> \param weighted_trust_ratio ...
+!> \param gap_trust_ratio ...
+!> \return ...
+! **************************************************************************************************
+      FUNCTION kpoint_ot_schur_metric_trust_quality(weighted_trust_ratio, &
+                                                    gap_trust_ratio) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: weighted_trust_ratio, gap_trust_ratio
+      REAL(KIND=dp)                                     :: quality, trust_ratio
+
+         trust_ratio = MAX(1.0_dp, weighted_trust_ratio, gap_trust_ratio)
+         quality = 1.0_dp/trust_ratio
+
+      END FUNCTION kpoint_ot_schur_metric_trust_quality
 
 ! **************************************************************************************************
 !> \brief ...

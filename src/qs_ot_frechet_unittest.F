@@ -154,6 +154,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-13_dp, nfail)
    CALL check_projector_density_global_fixed_n_projection( &
       "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_metric_trust( &
+      "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
@@ -6287,6 +6289,50 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_global_fixed_n_projection
+
+! **************************************************************************************************
+!> \brief Check that global fixed-N density-response trust follows the Mermin metric.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_metric_trust(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: abs_step, abs_trust, abs_trust_ratio, &
+                                                            err, legacy_quality, metric_quality, &
+                                                            response_trust, weighted_step, &
+                                                            weighted_trust_ratio
+      REAL(KIND=dp), DIMENSION(4)                        :: curv, response
+
+      curv(:) = [1.0E-10_dp, 0.40_dp, 0.40_dp, 0.20_dp]
+      response(:) = [2.0E4_dp, 0.20_dp, -0.15_dp, 0.05_dp]
+      response_trust = 0.50_dp
+      abs_trust = response_trust
+
+      weighted_step = SQRT(SUM(curv(:)*response(:)**2)/SUM(curv(:)))
+      abs_step = MAXVAL(ABS(response(:)))
+      weighted_trust_ratio = weighted_step/response_trust
+      abs_trust_ratio = abs_step/abs_trust
+      legacy_quality = 1.0_dp/MAX(1.0_dp, weighted_trust_ratio, abs_trust_ratio)
+      metric_quality = 1.0_dp/MAX(1.0_dp, weighted_trust_ratio)
+
+      err = ABS(metric_quality - 1.0_dp)
+      IF (err > tol .OR. weighted_trust_ratio >= 1.0_dp .OR. &
+          abs_trust_ratio <= 1.0E4_dp .OR. legacy_quality >= 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with err/wtr/atr/metric/legacy", err, weighted_trust_ratio, &
+            abs_trust_ratio, metric_quality, legacy_quality
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with err/wtr/atr/metric/legacy", err, weighted_trust_ratio, &
+            abs_trust_ratio, metric_quality, legacy_quality
+      END IF
+
+   END SUBROUTINE check_projector_density_global_metric_trust
 
 ! **************************************************************************************************
 !> \brief Check that Direct trace compensation follows the selected delta model.
