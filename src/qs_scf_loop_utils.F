@@ -5663,6 +5663,7 @@ CONTAINS
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
             projector_physical_direct_gdot_raw_response, &
             projector_physical_direct_gdot_model_response, &
+            projector_physical_direct_history_growth_scale, &
             projector_physical_direct_history_quality, projector_physical_direct_history_scale, &
             projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
             projector_physical_direct_line_step_trust, &
@@ -6731,6 +6732,7 @@ CONTAINS
             projector_physical_direct_gdotp = 0.0_dp
             projector_physical_direct_history_quality = 1.0_dp
             projector_physical_direct_history_scale = 1.0_dp
+            projector_physical_direct_history_growth_scale = 1.0_dp
             projector_physical_direct_line_step = 0.0_dp
             projector_physical_direct_line_step_curvature = 0.0_dp
             projector_physical_direct_line_step_trust = HUGE(1.0_dp)
@@ -7915,6 +7917,7 @@ CONTAINS
                      projector_physical_direct_quality_for_selection = projector_physical_trace_split_quality
                      projector_physical_direct_history_quality = 1.0_dp
                      projector_physical_direct_history_scale = 1.0_dp
+                     projector_physical_direct_history_growth_scale = 1.0_dp
                      IF (local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
                          ot_kp_schur_calibration_min_samples) THEN
                         projector_physical_direct_quality_for_selection = &
@@ -7939,6 +7942,14 @@ CONTAINS
                               projector_physical_direct_history_quality, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
                               ot_kp_schur_calibration_min_samples)
+                        projector_physical_direct_history_growth_scale = &
+                           kpoint_ot_direct_history_growth_scale( &
+                              projector_physical_direct_history_quality, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples)
+                        projector_physical_direct_history_scale = &
+                           projector_physical_direct_history_scale* &
+                           projector_physical_direct_history_growth_scale
                      END IF
                      projector_physical_direct_density_audit_quality = &
                         kpoint_ot_density_audit_trust_quality( &
