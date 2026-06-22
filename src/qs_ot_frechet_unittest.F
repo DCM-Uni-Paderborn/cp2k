@@ -121,6 +121,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density raw-audit split", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_eigen_response_split( &
       "complex projector density eigen-response split", 2.0E-8_dp, nfail)
+   CALL check_projector_density_local_mean_dP_rejection( &
+      "complex projector density local-mean dP rejection", 5.0E-14_dp, nfail)
    CALL check_complex_projector_density_eigen_floor_filter( &
       "complex projector density eigen floor filter", 5.0E-14_dp, nfail)
    CALL check_projector_active_rotation_pair_weight( &
@@ -4842,6 +4844,82 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_eigen_response_split
+
+! **************************************************************************************************
+!> \brief Check that local-mean-matched dP diagonals are not a valid density-response replacement.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_local_mean_dP_rejection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6
+
+      INTEGER                                            :: first_energy, local_channel, nmo
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: dP_projected, eigen_projected
+      REAL(KIND=dp)                                      :: charge_dP, charge_eigen, err, &
+                                                            local_mean_err, metric_gap, shape_gap, &
+                                                            shift, weight_sum
+      REAL(KIND=dp), DIMENSION(ne) :: dP_projected_response, eigen_projected_response, &
+         eigen_response, local_mean_dP, occ_curv, raw_dP, response_gap, tether_curv
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.045_dp, 0.030_dp, 0.006_dp, 0.026_dp, 0.015_dp, 0.004_dp]
+      tether_curv(:) = 0.0_dp
+      eigen_response(:) = [0.10_dp, -0.05_dp, 0.02_dp, -0.12_dp, 0.04_dp, 0.03_dp]
+      raw_dP(:) = [1.70_dp, -0.90_dp, 0.25_dp, -1.10_dp, 0.80_dp, -0.45_dp]
+
+      ! This mirrors the tempting but harmful replacement: use the back-transformed
+      ! dP diagonal shape and only restore each local channel's weighted mean.
+      local_mean_dP(:) = raw_dP(:)
+      local_mean_err = 0.0_dp
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+         shift = (DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1), &
+                              eigen_response(first_energy:first_energy + nmo - 1)) - &
+                  DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1), &
+                              local_mean_dP(first_energy:first_energy + nmo - 1)))/weight_sum
+         local_mean_dP(first_energy:first_energy + nmo - 1) = &
+            local_mean_dP(first_energy:first_energy + nmo - 1) + shift
+         local_mean_err = MAX(local_mean_err, &
+                              ABS(DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1), &
+                                              local_mean_dP(first_energy:first_energy + nmo - 1) - &
+                                              eigen_response(first_energy:first_energy + nmo - 1))))
+      END DO
+
+      eigen_projected_response(:) = eigen_response(:)
+      CALL dense_project_response_metric(eigen_projected_response, occ_curv, tether_curv, &
+                                         channel_nmo, e_offset, eigen_projected)
+      dP_projected_response(:) = local_mean_dP(:)
+      CALL dense_project_response_metric(dP_projected_response, occ_curv, tether_curv, &
+                                         channel_nmo, e_offset, dP_projected)
+
+      response_gap(:) = dP_projected_response(:) - eigen_projected_response(:)
+      CALL dense_projected_mixed_metric(response_gap, response_gap, occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, metric_gap)
+      shape_gap = MAXVAL(ABS(response_gap(:)))
+      charge_eigen = ABS(DOT_PRODUCT(occ_curv(:), eigen_projected_response(:)))
+      charge_dP = ABS(DOT_PRODUCT(occ_curv(:), dP_projected_response(:)))
+      err = MAX(local_mean_err, charge_eigen, charge_dP)
+
+      IF (.NOT. eigen_projected .OR. .NOT. dP_projected .OR. err > tol .OR. &
+          shape_gap < 0.50_dp .OR. metric_gap < 1.0E-2_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/shape/metric/qe/qd", err, shape_gap, metric_gap, charge_eigen, charge_dP
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/shape/metric/qe/qd", err, shape_gap, metric_gap, charge_eigen, charge_dP
+      END IF
+
+   END SUBROUTINE check_projector_density_local_mean_dP_rejection
 
 ! **************************************************************************************************
 !> \brief Check that gauge-free eigenvalue density response is floor-limited but not active-weight damped.
