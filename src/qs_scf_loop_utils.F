@@ -14285,7 +14285,7 @@ CONTAINS
                gap = ABS(evals(last + 1) - evals(last))
                IF (gap > gauge_gap) EXIT
                slope_cap = kpoint_ot_shared_occ_slope(occ_curv_channel(last), occ_curv_channel(last + 1))
-               allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+               allowed_jump = slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
                IF (occ_jump > allowed_jump) needs_filter = .TRUE.
                last = last + 1
@@ -14301,7 +14301,7 @@ CONTAINS
                   gap = ABS(evals(idx + 1) - evals(idx))
                   slope_pair = kpoint_ot_shared_occ_slope(occ_curv_channel(idx), occ_curv_channel(idx + 1))
                   slope_cap = MIN(slope_cap, slope_pair)
-                  allowed_jump = 4.0_dp*slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+                  allowed_jump = slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                   occ_jump = ABS(occ_mono(idx + 1) - occ_mono(idx))
                   IF (gap <= EPSILON(gap)) CYCLE
                   IF (occ_jump > allowed_jump) CYCLE

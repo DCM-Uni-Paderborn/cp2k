@@ -172,6 +172,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector gauge/physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_physical_fd( &
       "history-safe occupation-projector physical finite difference", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_slope_cap_fd( &
+      "history-safe occupation-projector slope-cap finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_adaptive_fd( &
       "history-safe occupation-projector adaptive finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_diagonal_response( &
@@ -7308,6 +7310,71 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_physical_fd
 
 ! **************************************************************************************************
+!> \brief Check that the finite-difference projector value caps smooth gauge slopes.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_slope_cap_fd(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_ref, &
+                                                            docc_safe, occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, err, gap, occ_tol, raw_gap, slope_cap
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_filtered, occ_scale
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.42_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.006_dp]
+      gap = evals(2) - evals(1)
+      slope_cap = dense_shared_occ_slope(occ_curv(1), occ_curv(2))
+      occ_scale(:) = [1.20_dp, 1.20_dp - 2.5_dp*slope_cap*gap, 0.08_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 2) = CMPLX(0.24_dp, -0.18_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_filtered(:) = occ_scale(:)
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_filtered)
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, &
+                                                     projector_weight, occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, &
+                                                     projector_weight, occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_filtered, docc_ref, &
+                                                       occ_curv, gauge_gap)
+      docc_ref(:, :) = projector_weight*docc_ref(:, :)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_raw)
+
+      err = MAX(MAXVAL(ABS(docc_safe(:, :) - docc_fd(:, :))), &
+                MAXVAL(ABS(docc_safe(:, :) - docc_ref(:, :))))
+      raw_gap = MAXVAL(ABS(projector_weight*docc_raw(:, :) - docc_ref(:, :)))
+      active = MAXVAL(ABS(docc_ref(:, :)))
+
+      IF (err > tol .OR. raw_gap < active_tol .OR. active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/rawgap/active", err, raw_gap, active
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/rawgap/active", err, raw_gap, active
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_slope_cap_fd
+
+! **************************************************************************************************
 !> \brief Check that the gauge-cluster finite-difference probe stays inside the cluster.
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_adaptive_fd(label, tol, nfail)
@@ -8012,7 +8079,7 @@ CONTAINS
             gap = ABS(evals(last + 1) - evals(last))
             IF (gap > gauge_gap) EXIT
             slope_cap = dense_shared_occ_slope(occ_curv(last), occ_curv(last + 1))
-            allowed_jump = 4.0_dp*slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+            allowed_jump = slope_cap*MAX(gap, EPSILON(1.0_dp)) + occ_tol
             occ_jump = ABS(occ_mono(last + 1) - occ_mono(last))
             IF (occ_jump > allowed_jump) needs_filter = .TRUE.
             last = last + 1
@@ -8028,7 +8095,7 @@ CONTAINS
                gap = ABS(evals(idx + 1) - evals(idx))
                slope_pair = dense_shared_occ_slope(occ_curv(idx), occ_curv(idx + 1))
                slope_cap = MIN(slope_cap, slope_pair)
-               allowed_jump = 4.0_dp*slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
+               allowed_jump = slope_pair*MAX(gap, EPSILON(1.0_dp)) + occ_tol
                occ_jump = ABS(occ_mono(idx + 1) - occ_mono(idx))
                IF (gap <= EPSILON(gap)) CYCLE
                IF (occ_jump > allowed_jump) CYCLE
