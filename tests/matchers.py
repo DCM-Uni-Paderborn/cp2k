@@ -208,6 +208,7 @@ registry["N_kpoints"] = GenericMatcher(
 )
 registry["Kpoint_weight_1"] = GenericMatcher(r"BRILLOUIN|     1", col=3)
 registry["Kpoint_weight_2"] = GenericMatcher(r"BRILLOUIN|     2", col=3)
+registry["Kpoint_weight_3"] = GenericMatcher(r"BRILLOUIN|     3", col=3)
 registry["M012"] = GenericMatcher(r"B2(T) =", col=4)
 registry["M013"] = GenericMatcher(r"sparseness function f2 =", col=5)
 registry["M014"] = GenericMatcher(r"CheckSum Shifts =", col=4)

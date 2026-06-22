@@ -1,14 +1,6 @@
-! Slow/manual companion to the cheap symmetry-weighted ADDED_MOS AUTO k-point
-! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
-! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
-! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-06 HIGH reference after eigenvalue density-response filtering:
-! 61 SCF steps / 413 inner k-point OT calls.  E_total = Mermin =
-! -8.15998706508313 Ha, with AUTO growth to 8 and 16, no first/last-band
-! warnings, and no AUTO-exhausted warning.
 &GLOBAL
-  PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_added_auto_sym3_converge
+  PRINT_LEVEL LOW
+  PROJECT Al_kp_ot_added_auto_full3
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -18,9 +10,9 @@
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
     &KPOINTS
-      FULL_GRID OFF
+      FULL_GRID ON
       SCHEME MONKHORST-PACK 3 1 1
-      SYMMETRY ON
+      SYMMETRY OFF
     &END KPOINTS
     &MGRID
       CUTOFF 40
@@ -35,7 +27,8 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 950
+      IGNORE_CONVERGENCE_FAILURE
+      MAX_SCF 12
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC
