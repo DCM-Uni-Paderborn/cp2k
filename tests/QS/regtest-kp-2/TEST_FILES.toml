@@ -52,12 +52,14 @@
 # AUTO-exhausted warning is printed.
 # Current Sym3 HIGH companion reference after global fixed-N density-response
 # calibration:
-# 91 SCF steps, AUTO grows to 8 and 16, E_total = Mermin =
+# 91 final-tail SCF steps and 193 total inner-loop calls including AUTO
+# rebuilds, AUTO grows to 8 and 16, E_total = Mermin =
 # -8.15998707936502 Ha.  The full-grid companion follows the same AUTO growth
 # sequence; its last AUTO tail reaches index 82 before the final grow and then
-# converges in one restarted SCF step, E_total = Mermin =
-# -8.15998537503060 Ha.  In both tails the gauge-free eigenvalue-density
-# response remains active instead of being Fermi-window damped a second time.
+# converges in one restarted SCF step, with 163 total inner-loop calls and
+# E_total = Mermin = -8.15998537551514 Ha.  In both tails the gauge-free
+# eigenvalue-density response remains active instead of being Fermi-window
+# damped a second time.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
