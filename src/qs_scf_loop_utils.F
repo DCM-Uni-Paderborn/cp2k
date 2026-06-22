@@ -8736,9 +8736,9 @@ CONTAINS
                                           ! Large measured/predicted ratios mean that the
                                           ! mixed Direct shadow is conservative.  Do not
                                           ! reject such accepted history here; the actual
-                                          ! step remains limited by the shadow weight,
-                                          ! quality clamp, maturity scale and consistency
-                                          ! scale below.
+                                          ! step and selection quality remain limited by the
+                                          ! shadow weight, quality clamp, maturity scale and
+                                          ! consistency scale below.
                                           projector_physical_direct_mixed_enabled = &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
                                              2*ot_kp_schur_projector_response_min_samples .AND. &
@@ -8794,7 +8794,10 @@ CONTAINS
                                              END IF
                                              projector_physical_direct_quality_for_selection = &
                                                 MAX(projector_physical_direct_quality_for_selection, &
-                                                    MIN(1.0_dp, projector_physical_direct_mixed_quality))
+                                                    MIN(1.0_dp, MAX(0.0_dp, &
+                                                        projector_physical_direct_mixed_quality))* &
+                                                    MIN(1.0_dp, MAX(0.0_dp, &
+                                                        projector_physical_direct_mixed_consistency_scale)))
                                              projector_physical_direct_delta_diag_avg = 0.0_dp
                                              DO r = 1, nrot
                                                 projector_physical_direct_delta_diag_avg = &

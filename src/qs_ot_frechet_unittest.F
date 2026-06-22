@@ -6466,9 +6466,11 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp
 
-      REAL(KIND=dp)                                      :: both_high_scale, boundary_scale, &
+      REAL(KIND=dp)                                      :: both_high_quality, both_high_scale, &
+                                                            boundary_scale, ema_high_quality, &
                                                             ema_high_scale, err, good_scale, &
-                                                            inactive_scale, raw_high_scale
+                                                            inactive_scale, raw_high_quality, &
+                                                            raw_high_scale
 
       good_scale = dense_direct_history_consistency_scale(1.0_dp, 0.8_dp, max_quality)
       boundary_scale = dense_direct_history_consistency_scale(max_quality, max_quality, &
@@ -6477,6 +6479,9 @@ CONTAINS
       ema_high_scale = dense_direct_history_consistency_scale(1.0_dp, 20.0_dp, max_quality)
       both_high_scale = dense_direct_history_consistency_scale(5.0_dp, 20.0_dp, max_quality)
       inactive_scale = dense_direct_history_consistency_scale(-1.0_dp, 0.0_dp, max_quality)
+      raw_high_quality = raw_high_scale*MIN(1.0_dp, 5.0_dp)
+      ema_high_quality = ema_high_scale*MIN(1.0_dp, 20.0_dp)
+      both_high_quality = both_high_scale*MIN(1.0_dp, 20.0_dp)
 
       err = ABS(good_scale - 1.0_dp)
       err = MAX(err, ABS(boundary_scale - 1.0_dp))
@@ -6484,17 +6489,24 @@ CONTAINS
       err = MAX(err, ABS(ema_high_scale - SQRT(max_quality/20.0_dp)))
       err = MAX(err, ABS(both_high_scale - ema_high_scale))
       err = MAX(err, ABS(inactive_scale - 1.0_dp))
+      err = MAX(err, ABS(raw_high_quality - raw_high_scale))
+      err = MAX(err, ABS(ema_high_quality - ema_high_scale))
+      err = MAX(err, ABS(both_high_quality - both_high_scale))
 
       IF (err > tol .OR. raw_high_scale >= good_scale .OR. &
-          ema_high_scale >= raw_high_scale .OR. both_high_scale /= ema_high_scale) THEN
+          ema_high_scale >= raw_high_scale .OR. both_high_scale /= ema_high_scale .OR. &
+          raw_high_quality >= good_scale .OR. ema_high_quality >= raw_high_quality .OR. &
+          both_high_quality /= ema_high_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/good/boundary/raw/ema/both/inactive", err, good_scale, &
-            boundary_scale, raw_high_scale, ema_high_scale, both_high_scale, inactive_scale
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed with error/good/boundary/raw/ema/both/inactive/rawq/emaq/bothq", err, &
+            good_scale, boundary_scale, raw_high_scale, ema_high_scale, both_high_scale, &
+            inactive_scale, raw_high_quality, ema_high_quality, both_high_quality
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/good/boundary/raw/ema/both/inactive", err, good_scale, &
-            boundary_scale, raw_high_scale, ema_high_scale, both_high_scale, inactive_scale
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK with error/good/boundary/raw/ema/both/inactive/rawq/emaq/bothq", err, good_scale, &
+            boundary_scale, raw_high_scale, ema_high_scale, both_high_scale, inactive_scale, &
+            raw_high_quality, ema_high_quality, both_high_quality
       END IF
 
    END SUBROUTINE check_projector_direct_history_consistency_scale
