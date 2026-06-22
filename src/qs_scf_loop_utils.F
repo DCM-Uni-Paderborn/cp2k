@@ -5715,6 +5715,7 @@ CONTAINS
             density_full_direct_gdot_energy, &
             density_full_direct_gdot_rotation, &
             density_full_direct_gdotp, &
+            density_full_direct_history_scale, &
             density_full_direct_model_calibrated_drop, &
             density_full_direct_model_drop, &
             density_full_direct_norm_energy, &
@@ -8243,6 +8244,7 @@ CONTAINS
                density_full_direct_gdot_energy = 0.0_dp
                density_full_direct_gdot_rotation = 0.0_dp
                density_full_direct_gdotp = 0.0_dp
+               density_full_direct_history_scale = 1.0_dp
                density_full_direct_model_calibrated_drop = 0.0_dp
                density_full_direct_model_drop = 0.0_dp
                density_full_direct_norm_energy = 0.0_dp
@@ -10440,10 +10442,22 @@ CONTAINS
                                                       MIN(1.0_dp, MAX(0.0_dp, &
                                                           local_ot_env(1)%schur_projector_density_full_quality_ema))
                                                 IF (local_ot_env(1)%schur_projector_density_full_direct_quality_samples >= &
-                                                    ot_kp_schur_projector_response_min_samples) &
+                                                    ot_kp_schur_projector_response_min_samples) THEN
                                                    density_full_direct_quality_for_selection = &
-                                                      MIN(1.0_dp, MAX(0.0_dp, &
-                                                          local_ot_env(1)%schur_projector_density_full_direct_quality_ema))
+                                                      kpoint_ot_schur_history_quality( &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_drop_sum, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_measured_sum, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                         ot_kp_schur_projector_response_min_samples, 1.0_dp, &
+                                                         ot_kp_schur_projector_response_quality_min_ratio, &
+                                                         ot_kp_schur_projector_response_quality_max_ratio)
+                                                   density_full_direct_history_scale = &
+                                                      kpoint_ot_direct_history_growth_scale( &
+                                                         density_full_direct_quality_for_selection, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                         ot_kp_schur_projector_response_min_samples)
+                                                END IF
                                                 density_full_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &
                                                       density_full_model_calibrated_drop, &
@@ -10490,6 +10504,8 @@ CONTAINS
                                                       density_full_direct_gdotp/ &
                                                       MAX(density_full_direct_normp, &
                                                           EPSILON(density_full_direct_normp)))
+                                                   density_full_direct_direction_scale = &
+                                                      density_full_direct_direction_scale*density_full_direct_history_scale
                                                    density_full_direct_response_abs_step = MAXVAL(ABS(rx_e))
                                                    CALL para_env_inter_kp%max(density_full_direct_response_abs_step)
                                                    density_full_direct_response_weighted_step = &
@@ -13438,14 +13454,16 @@ CONTAINS
                         density_full_response_weighted_trust_ratio, &
                         density_full_response_abs_trust_ratio, density_full_trust_quality, &
                         density_full_direction_scale
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
-                        " OT Schur projector full-density direct candidate ready selected exp qsel cdrop rratio aratio tq scale:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
+                        " OT Schur projector full-density direct candidate ready selected "// &
+                        "exp qsel cdrop rratio aratio tq scale hscale:", &
                         density_full_direct_candidate_ready, density_full_direct_candidate_selected, &
                         density_full_direct_expected_drop, density_full_direct_quality_for_selection, &
                         density_full_direct_model_calibrated_drop, &
                         density_full_direct_response_weighted_trust_ratio, &
                         density_full_direct_response_abs_trust_ratio, &
-                        density_full_direct_trust_quality, density_full_direct_direction_scale
+                        density_full_direct_trust_quality, density_full_direct_direction_scale, &
+                        density_full_direct_history_scale
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),7(1X,ES16.8))') &
                         " OT Schur projector full-density global candidate ready selected boot "// &
                         "exp qsel cdrop rratio aratio tq scale:", &
@@ -14958,6 +14976,33 @@ CONTAINS
          step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
 
       END FUNCTION kpoint_ot_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief accepted-drop growth for repeatedly underpredicted Direct candidates
+!> \param history_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \return ...
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_history_growth_scale(history_quality, samples, min_samples) RESULT(step_scale)
+      REAL(KIND=dp), INTENT(IN)                         :: history_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      INTEGER                                           :: maturity_samples
+      REAL(KIND=dp)                                     :: clipped_quality, maturity, step_scale, target_scale
+
+         step_scale = 1.0_dp
+         IF (samples < min_samples) RETURN
+
+         clipped_quality = MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                               MAX(1.0_dp, history_quality))
+         target_scale = SQRT(clipped_quality)
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - min_samples + 1)
+         maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                    REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+         step_scale = 1.0_dp + maturity*(target_scale - 1.0_dp)
+
+      END FUNCTION kpoint_ot_direct_history_growth_scale
 
 ! **************************************************************************************************
 !> \brief consistency scaling for accepted mixed-Direct history

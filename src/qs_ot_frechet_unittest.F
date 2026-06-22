@@ -4727,6 +4727,12 @@ CONTAINS
    !> \param tol ...
    !> \param nfail ...
    ! **************************************************************************************************
+! **************************************************************************************************
+!> \brief ...
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_eigen_response_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
@@ -4839,6 +4845,12 @@ CONTAINS
    !> \param tol ...
    !> \param nfail ...
    ! **************************************************************************************************
+! **************************************************************************************************
+!> \brief ...
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
    SUBROUTINE check_projector_active_rotation_pair_weight(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
@@ -6304,8 +6316,8 @@ CONTAINS
       INTEGER                                            :: first_energy, local_channel, nmo
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
       LOGICAL                                            :: projected
-      REAL(KIND=dp)                                      :: charge, err, local_gap, local_norm, shift, &
-                                                            weight_sum
+      REAL(KIND=dp)                                      :: charge, err, local_gap, local_norm, &
+                                                            shift, weight_sum
       REAL(KIND=dp), DIMENSION(ne)                       :: global_projected, local_projected, &
                                                             occ_curv, raw_response, tether_curv
 
@@ -6358,10 +6370,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: abs_step, abs_trust, abs_trust_ratio, &
-                                                            err, legacy_quality, metric_quality, &
-                                                            response_trust, weighted_step, &
-                                                            weighted_trust_ratio
+      REAL(KIND=dp) :: abs_step, abs_trust, abs_trust_ratio, err, legacy_quality, metric_quality, &
+         response_trust, weighted_step, weighted_trust_ratio
       REAL(KIND=dp), DIMENSION(4)                        :: curv, response
 
       curv(:) = [1.0E-10_dp, 0.40_dp, 0.40_dp, 0.20_dp]
@@ -6573,10 +6583,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp, &
                                                             scale_floor = 0.25_dp
 
-      REAL(KIND=dp)                                      :: err, floor_scale, good_scale, &
-                                                            mature_floor_scale, &
-                                                            mature_ratio_scale, over_scale, &
-                                                            ratio_scale, young_scale
+      REAL(KIND=dp) :: capped_growth_scale, err, floor_scale, good_scale, growth_scale, &
+         mature_floor_scale, mature_ratio_scale, over_scale, ratio_scale, young_growth_scale, &
+         young_scale
 
       young_scale = dense_direct_history_step_scale(4.0_dp, 1.0_dp, 0.25_dp, 3, 4, &
                                                     8, scale_floor, max_quality)
@@ -6592,6 +6601,12 @@ CONTAINS
                                                    8, scale_floor, max_quality)
       over_scale = dense_direct_history_step_scale(10.0_dp, 20.0_dp, 1.20_dp, 4, 4, &
                                                    8, scale_floor, max_quality)
+      young_growth_scale = dense_direct_history_growth_scale(4.0_dp, 1.0_dp, 0.25_dp, 3, 4, &
+                                                             8, max_quality)
+      growth_scale = dense_direct_history_growth_scale(10.0_dp, 20.0_dp, 1.20_dp, 4, 4, &
+                                                       8, max_quality)
+      capped_growth_scale = dense_direct_history_growth_scale(1.0_dp, 10.0_dp, 5.0_dp, 16, 4, &
+                                                              8, max_quality)
 
       err = ABS(young_scale - 1.0_dp)
       err = MAX(err, ABS(ratio_scale - &
@@ -6602,17 +6617,24 @@ CONTAINS
       err = MAX(err, ABS(mature_floor_scale - SQRT(scale_floor)))
       err = MAX(err, ABS(good_scale - 1.0_dp))
       err = MAX(err, ABS(over_scale - 1.0_dp))
+      err = MAX(err, ABS(young_growth_scale - 1.0_dp))
+      err = MAX(err, ABS(growth_scale - &
+                         (1.0_dp + (1.0_dp/13.0_dp)*(SQRT(max_quality) - 1.0_dp))))
+      err = MAX(err, ABS(capped_growth_scale - SQRT(max_quality)))
 
       IF (err > tol .OR. ratio_scale >= 1.0_dp .OR. floor_scale >= ratio_scale .OR. &
-          mature_ratio_scale >= ratio_scale .OR. mature_floor_scale >= floor_scale) THEN
+          mature_ratio_scale >= ratio_scale .OR. mature_floor_scale >= floor_scale .OR. &
+          growth_scale <= 1.0_dp .OR. capped_growth_scale <= growth_scale) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "failed with error/young/ratio/floor/mratio/mfloor/good/over", err, young_scale, &
-            ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, good_scale, over_scale
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/ratio/floor/mratio/mfloor/good/over/ygrow/grow/cgrow", &
+            err, young_scale, ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, &
+            good_scale, over_scale, young_growth_scale, growth_scale, capped_growth_scale
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "OK with error/young/ratio/floor/mratio/mfloor/good/over", err, young_scale, &
-            ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, good_scale, over_scale
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/ratio/floor/mratio/mfloor/good/over/ygrow/grow/cgrow", &
+            err, young_scale, ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, &
+            good_scale, over_scale, young_growth_scale, growth_scale, capped_growth_scale
       END IF
 
    END SUBROUTINE check_projector_direct_history_step_scale
@@ -6630,11 +6652,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp
 
-      REAL(KIND=dp)                                      :: both_high_quality, both_high_scale, &
-                                                            boundary_scale, ema_high_quality, &
-                                                            ema_high_scale, err, good_scale, &
-                                                            inactive_scale, raw_high_quality, &
-                                                            raw_high_scale
+      REAL(KIND=dp) :: both_high_quality, both_high_scale, boundary_scale, ema_high_quality, &
+         ema_high_scale, err, good_scale, inactive_scale, raw_high_quality, raw_high_scale
 
       good_scale = dense_direct_history_consistency_scale(1.0_dp, 0.8_dp, max_quality)
       boundary_scale = dense_direct_history_consistency_scale(max_quality, max_quality, &
@@ -7253,24 +7272,23 @@ CONTAINS
 !> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_modal_response_negative_floor(label, tol, nfail)
-      CHARACTER(LEN=*), INTENT(IN)                      :: label
-      REAL(KIND=dp), INTENT(IN)                         :: tol
-      INTEGER, INTENT(INOUT)                            :: nfail
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                :: ne = 2, nrot = 3
-      INTEGER                                           :: i, imode
-      REAL(KIND=dp)                                     :: active, applied_weight, applied_weight_ref, &
-                                                            base_weight, correction_drop, correction_drop_ref, &
-                                                            err, eval_abs_avg, mode_weight, negative_fraction, &
-                                                            negative_fraction_ref, negative_weight_sum, raw_negative, &
-                                                            spectral_weight, step_weight_sum
-      REAL(KIND=dp), DIMENSION(ne)                      :: candidate, candidate_ref, curv, energy_base, grad_e, &
-                                                            mode_rx, response_base, response_neg_ref
-      REAL(KIND=dp), DIMENSION(ne, nrot)                :: response_delta, response_raw
-      REAL(KIND=dp), DIMENSION(nrot)                    :: evals, step_rot
-      REAL(KIND=dp), DIMENSION(nrot, nrot)              :: delta, rot_hessian
-      REAL(KIND=dp)                                     :: cross_drop, negative_coeff, negative_drop, &
-                                                            positive_coeff, positive_drop
+      INTEGER, PARAMETER                                 :: ne = 2, nrot = 3
+
+      INTEGER                                            :: i, imode
+      REAL(KIND=dp) :: active, applied_weight, applied_weight_ref, base_weight, correction_drop, &
+         correction_drop_ref, cross_drop, err, eval_abs_avg, mode_weight, negative_coeff, &
+         negative_drop, negative_fraction, negative_fraction_ref, negative_weight_sum, &
+         positive_coeff, positive_drop, raw_negative, spectral_weight, step_weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                       :: candidate, candidate_ref, curv, &
+                                                            energy_base, grad_e, mode_rx, &
+                                                            response_base, response_neg_ref
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: response_delta, response_raw
+      REAL(KIND=dp), DIMENSION(nrot)                     :: evals, step_rot
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: delta, rot_hessian
 
       base_weight = 0.35_dp
       curv(:) = [0.60_dp, 0.90_dp]
@@ -7632,6 +7650,47 @@ CONTAINS
    END FUNCTION dense_direct_history_step_scale
 
 ! **************************************************************************************************
+!> \brief Dense mirror of accepted-drop Direct history growth.
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param ema_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param response_min_samples ...
+!> \param max_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_history_growth_scale(predicted_sum, measured_sum, ema_quality, samples, &
+                                              min_samples, response_min_samples, max_quality) RESULT(step_scale)
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, ema_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples, &
+                                                            response_min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: max_quality
+      REAL(KIND=dp)                                      :: step_scale
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: history_quality, maturity, target_scale
+
+      step_scale = 1.0_dp
+      IF (samples < min_samples) RETURN
+
+      history_quality = 1.0_dp
+      IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
+         history_quality = measured_sum/predicted_sum
+      ELSE IF (ema_quality > 0.0_dp) THEN
+         history_quality = ema_quality
+      END IF
+      history_quality = MAX(1.0_dp, MIN(max_quality, history_quality))
+      target_scale = SQRT(history_quality)
+      maturity_samples = MAX(1, 2*response_min_samples - min_samples + 1)
+      maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                 REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+      step_scale = 1.0_dp + maturity*(target_scale - 1.0_dp)
+
+   END FUNCTION dense_direct_history_growth_scale
+
+! **************************************************************************************************
 !> \brief Dense mirror of mixed-Direct accepted-drop consistency scaling.
 !> \param drop_ratio ...
 !> \param ema_quality ...
@@ -7672,7 +7731,8 @@ CONTAINS
       REAL(KIND=dp)                                      :: projector_weight
 
       REAL(KIND=dp)                                      :: clipped_quality, curvature_fraction, &
-                                                            density_fraction, diag_ratio, quality_weight
+                                                            density_fraction, diag_ratio, &
+                                                            quality_weight
 
       IF (residual_delta > 1.0E-4_dp) THEN
          projector_weight = 1.0_dp
@@ -9276,10 +9336,9 @@ CONTAINS
                                                             gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, &
-                                                            docc_back, docc_fd, docc_ref, &
-                                                            docc_rot, docc_raw, occ_mat_m, &
-                                                            occ_mat_p, q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_back, &
+                                                            docc_fd, docc_raw, docc_ref, docc_rot, &
+                                                            occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active, cov_err, diag_gap, fd_err, &
                                                             occ_sum, raw_noise, ref_fd_err, &
