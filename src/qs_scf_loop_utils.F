@@ -16001,6 +16001,7 @@ CONTAINS
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
       REAL(KIND=dp)                                      :: active_density_denom, active_density_floor, &
+                                                            active_density_weight, &
                                                             channel_occ_curv_max, &
                                                             density_plateau_full_response, &
                                                             density_mix_weight, &
@@ -16168,18 +16169,24 @@ CONTAINS
                      ! only for raw audits/off-diagonal Hessian terms so
                      ! projector-basis gauge motion cannot masquerade as a huge
                      ! auxiliary-energy response in the Schur model.
+                     active_density_weight = 0.0_dp
+                     IF (channel_occ_curv_max > EPSILON(channel_occ_curv_max)) &
+                        active_density_weight = &
+                           SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv_channel(ie)/channel_occ_curv_max)))
                      active_density_denom = MAX(occ_curv_channel(ie), active_density_floor)
                      density_plateau_column(ie) = density_projector_column(ie)
                      IF (active_density_denom > EPSILON(active_density_denom)) &
-                        density_active_column(ie) = density_plateau_column(ie)* &
+                        density_active_column(ie) = active_density_weight*density_plateau_column(ie)* &
                                                     occ_curv_channel(ie)/active_density_denom
                      density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_mix_weight = occ_curv_channel(ie)/MAX(occ_curv_channel(ie), active_density_floor)
                      density_mix_weight = MIN(1.0_dp, MAX(0.0_dp, density_mix_weight))
                      density_mixed_column(ie) = density_active_column(ie) + &
-                                                density_mix_weight*(density_plateau_column(ie) - &
-                                                                    density_active_column(ie))
+                                                active_density_weight*density_mix_weight* &
+                                                (density_plateau_column(ie) - &
+                                                 density_plateau_column(ie)* &
+                                                 occ_curv_channel(ie)/active_density_denom)
                   END IF
                END DO
                DO ie = 1, nmo
