@@ -5641,6 +5641,9 @@ CONTAINS
             projector_phys_direct_active_comp_trial, &
             projector_physical_direct_delta_diag_avg, projector_physical_direct_trace_diag_scale, &
             projector_physical_direct_trace_free_scale, &
+            projector_physical_direct_trace_base_diag_avg, &
+            projector_physical_direct_trace_local_separate_weight, &
+            projector_physical_direct_trace_scale_diag_avg, &
             projector_physical_direct_mixed_drop_ratio, projector_physical_direct_mixed_quality, &
             projector_physical_direct_mixed_consistency_scale, &
             projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight, &
@@ -6708,6 +6711,9 @@ CONTAINS
             projector_phys_direct_lcomp_trial_max = 0.0_dp
             projector_physical_direct_basis_signal = 0.0_dp
             projector_physical_direct_delta_diag_avg = 0.0_dp
+            projector_physical_direct_trace_base_diag_avg = 0.0_dp
+            projector_physical_direct_trace_local_separate_weight = 0.0_dp
+            projector_physical_direct_trace_scale_diag_avg = 0.0_dp
             projector_physical_direct_trace_diag_scale = 1.0_dp
             projector_physical_direct_trace_free_scale = 1.0_dp
             projector_physical_direct_mixed_enabled = .FALSE.
@@ -9404,6 +9410,8 @@ CONTAINS
                                           projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        projector_physical_direct_active_delta_diag_avg = &
                                           projector_physical_direct_active_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       projector_physical_direct_trace_base_diag_avg = &
+                                          projector_physical_direct_delta_diag_avg
                                        projector_physical_direct_diag_compensation = 0.0_dp
                                        projector_physical_direct_active_diag_compensation = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_avg = 0.0_dp
@@ -9498,6 +9506,20 @@ CONTAINS
                                        END DO
                                        projector_physical_direct_delta_diag_avg = &
                                           projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                                       projector_physical_direct_trace_scale_diag_avg = &
+                                          projector_physical_direct_delta_diag_avg
+                                       projector_physical_direct_trace_local_separate_weight = &
+                                          MAX(0.0_dp, projector_physical_direct_trace_diag_scale - &
+                                              SQRT(ot_kp_schur_calibrated_quality_min_ratio))/ &
+                                          MAX(EPSILON(1.0_dp), &
+                                              1.0_dp - SQRT(ot_kp_schur_calibrated_quality_min_ratio))
+                                       projector_physical_direct_trace_local_separate_weight = &
+                                          MIN(1.0_dp, projector_physical_direct_trace_local_separate_weight)
+                                       projector_physical_direct_trace_scale_diag_avg = &
+                                          (1.0_dp - projector_physical_direct_trace_local_separate_weight)* &
+                                          projector_physical_direct_trace_scale_diag_avg + &
+                                          projector_physical_direct_trace_local_separate_weight* &
+                                          projector_physical_direct_trace_base_diag_avg
                                        IF (ABS(projector_physical_direct_trace_diag_scale - 1.0_dp) > &
                                            EPSILON(1.0_dp) .OR. &
                                            ABS(projector_physical_direct_trace_free_scale - 1.0_dp) > &
@@ -9506,7 +9528,7 @@ CONTAINS
                                              projector_physical_direct_trace_free_scale*projector_physical_direct_delta(:, :)
                                           diag_shift = (projector_physical_direct_trace_diag_scale - &
                                                         projector_physical_direct_trace_free_scale)* &
-                                                       projector_physical_direct_delta_diag_avg
+                                                       projector_physical_direct_trace_scale_diag_avg
                                           DO r = 1, nrot
                                              projector_physical_direct_delta(r, r) = &
                                                 projector_physical_direct_delta(r, r) + diag_shift

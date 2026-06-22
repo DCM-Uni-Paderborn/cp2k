@@ -167,6 +167,8 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-14_dp, nfail)
    CALL check_projector_trace_diag_component_scale("complex projector trace-diag Direct scale", &
                                                    5.0E-14_dp, nfail)
+   CALL check_projector_trace_local_compensation("complex projector trace local compensation", &
+                                                 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
                                                   5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
@@ -6645,6 +6647,54 @@ CONTAINS
    END SUBROUTINE check_projector_trace_diag_component_scale
 
 ! **************************************************************************************************
+!> \brief Check quality-gated scaling of local Direct trace compensation.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_local_compensation(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: base_diag = -0.20_dp, &
+                                                            local_comp = 0.08_dp, &
+                                                            quality_floor = 0.25_dp
+
+      REAL(KIND=dp)                                      :: err, high_old, high_scale, high_sep, &
+                                                            high_with_comp, low_scale, &
+                                                            low_with_comp, no_comp
+
+      low_scale = SQRT(quality_floor)
+      high_scale = 0.90_dp
+      high_sep = (high_scale - low_scale)/(1.0_dp - low_scale)
+      no_comp = dense_trace_scaled_diag_with_local_comp(base_diag, 0.0_dp, &
+                                                        high_scale, quality_floor)
+      low_with_comp = dense_trace_scaled_diag_with_local_comp(base_diag, local_comp, &
+                                                              low_scale, quality_floor)
+      high_with_comp = dense_trace_scaled_diag_with_local_comp(base_diag, local_comp, &
+                                                               high_scale, quality_floor)
+      high_old = high_scale*(base_diag + local_comp)
+      err = ABS(low_with_comp - low_scale*(base_diag + local_comp))
+      err = MAX(err, ABS(high_with_comp - &
+                         (base_diag + local_comp + &
+                          (high_scale - 1.0_dp)*(base_diag + (1.0_dp - high_sep)*local_comp))))
+      err = MAX(err, ABS(no_comp - high_scale*base_diag))
+
+      IF (err > tol .OR. high_with_comp <= high_old) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/low/high/old/sep", err, no_comp, low_with_comp, &
+            high_with_comp, high_old, high_sep
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/low/high/old/sep", err, no_comp, low_with_comp, &
+            high_with_comp, high_old, high_sep
+      END IF
+
+   END SUBROUTINE check_projector_trace_local_compensation
+
+! **************************************************************************************************
 !> \brief Check accepted-drop scaling of the physical Direct candidate.
 !> \param label ...
 !> \param tol ...
@@ -7703,6 +7753,31 @@ CONTAINS
       component_scale = MIN(component_scale, SQRT(MIN(1.0_dp, quality_ratio)))
 
    END FUNCTION dense_trace_diag_component_scale
+
+! **************************************************************************************************
+!> \brief Dense mirror of Direct trace scaling with quality-gated local compensation.
+!> \param base_diag_avg ...
+!> \param local_comp_avg ...
+!> \param trace_scale ...
+!> \param quality_floor ...
+!> \return scaled trace diagonal average
+! **************************************************************************************************
+   FUNCTION dense_trace_scaled_diag_with_local_comp(base_diag_avg, local_comp_avg, &
+                                                    trace_scale, quality_floor) RESULT(scaled_diag_avg)
+      REAL(KIND=dp), INTENT(IN)                          :: base_diag_avg, local_comp_avg, &
+                                                            trace_scale, quality_floor
+      REAL(KIND=dp)                                      :: scaled_diag_avg
+
+      REAL(KIND=dp)                                      :: separate_weight, trace_avg
+
+      separate_weight = MAX(0.0_dp, trace_scale - SQRT(quality_floor))/ &
+                        MAX(EPSILON(1.0_dp), 1.0_dp - SQRT(quality_floor))
+      separate_weight = MIN(1.0_dp, separate_weight)
+      trace_avg = (1.0_dp - separate_weight)*(base_diag_avg + local_comp_avg) + &
+                  separate_weight*base_diag_avg
+      scaled_diag_avg = base_diag_avg + local_comp_avg + (trace_scale - 1.0_dp)*trace_avg
+
+   END FUNCTION dense_trace_scaled_diag_with_local_comp
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected-history Direct step scaling.
