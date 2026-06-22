@@ -50,11 +50,13 @@
 # E_total = Mermin = -8.14585274158708 Ha, ADDED_MOS_AUTO = 4,
 # ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16", and no first/last-band or
 # AUTO-exhausted warning is printed.
-# Current Sym3 HIGH companion reference after the offdiag-dP active/inactive
-# audit: 97 SCF steps, AUTO grows to 8 and 16, E_total = Mermin =
-# -8.15998707955858 Ha.  The full-grid companion follows the same AUTO growth
-# sequence and reaches E_total = Mermin = -8.15998513271674 Ha.  Both tails
-# show the offdiag-dP audit dominated by inactive projector-response curvature.
+# Current Sym3 HIGH companion reference after direct-history calibration:
+# 91 SCF steps, AUTO grows to 8 and 16, E_total = Mermin =
+# -8.15998707636986 Ha.  The full-grid companion follows the same AUTO growth
+# sequence; its last AUTO tail reaches index 82 before the final grow and then
+# converges in one restarted SCF step, E_total = Mermin =
+# -8.15998558777130 Ha.  Both tails are now dominated by conservative physical
+# projector/density response curvature.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
