@@ -136,6 +136,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp, &
                                         ot_kp_added_mos_auto_residual_spike_factor = 8.0_dp, &
                                         ot_kp_added_mos_auto_strong_tail_basis_frac = 2.0E-1_dp, &
+                                        ot_kp_added_mos_auto_fractional_tail_basis_frac = 1.2E-1_dp, &
+                                        ot_kp_added_mos_auto_fractional_tail_residual_factor = 2.0_dp, &
                                         ot_kp_added_mos_auto_strong_tail_frac = 2.5E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_max_attempts = 12
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_floor = 1.0E-10_dp, &
@@ -1268,7 +1270,8 @@ CONTAINS
       INTEGER                                            :: base_nmo, current_added, edge_start, edge_width, ikpoint, imo, &
                                                             ispin, local_kpoint, nmo, nonedge_probe_limit, trigger_step
       LOGICAL                                            :: active_tail, basis_limited, basis_probe_limited, edge_limited, &
-                                                            expandable, nonedge_residual_probe, residual_ready, residual_spike, &
+                                                            expandable, fractional_tail_limited, nonedge_residual_probe, &
+                                                            residual_ready, residual_spike, &
                                                             residual_tail_limited, &
                                                             strong_tail_limited
       REAL(KIND=dp)                                      :: basis_signal, edge_fractional_weight, edge_grow_limit, &
@@ -1354,6 +1357,12 @@ CONTAINS
                      max_edge_fractional > edge_tail_occ_min
       basis_probe_limited = basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
+      fractional_tail_limited = nonedge_residual_probe .AND. &
+                                max_fractional >= ot_kp_fermi_window_tail_fraction .AND. &
+                                basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
+                                ot_kp_added_mos_auto_basis_signal_min .AND. &
+                                scf_env%iter_delta <= ot_kp_added_mos_auto_fractional_tail_residual_factor* &
+                                edge_grow_limit
       residual_ready = scf_env%iter_delta <= grow_limit
       residual_tail_limited = residual_ready .AND. (edge_limited .OR. nonedge_residual_probe) .AND. &
                               basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
@@ -1374,18 +1383,19 @@ CONTAINS
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES20.10E3),7(1X,L1))') &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES20.10E3),8(1X,L1))') &
             " OT k-point ADDED_MOS AUTO tail:", &
             scf_env%iter_count, scf_env%iter_delta, residual_model_delta, grow_limit, edge_grow_limit, basis_signal, &
             fractional_weight, edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, &
-            edge_limited, basis_probe_limited, basis_limited, residual_spike, nonedge_residual_probe, expandable
+            edge_limited, basis_probe_limited, basis_limited, fractional_tail_limited, residual_spike, &
+            nonedge_residual_probe, expandable
       END IF
 
       IF (.NOT. expandable) RETURN
       IF (.NOT. active_tail) RETURN
       IF (residual_spike) RETURN
       IF (.NOT. residual_tail_limited .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited .AND. &
-          .NOT. strong_tail_limited) THEN
+          .NOT. strong_tail_limited .AND. .NOT. fractional_tail_limited) THEN
          IF (.NOT. edge_limited) RETURN
          IF (scf_env%iter_delta > edge_grow_limit) RETURN
       END IF

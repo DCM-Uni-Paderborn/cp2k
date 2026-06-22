@@ -43,6 +43,11 @@ MODULE qs_ot_minimizer
    PUBLIC  :: ot_mini
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_cg_kp_history_spike_ratio = 1.0E4_dp, &
+                                        ot_cg_kp_history_jump_ratio = 1.0E2_dp, &
+                                        ot_cg_kp_history_jump_beta = 1.0E1_dp, &
+                                        ot_cg_kp_history_spike_old_norm = 1.0E-8_dp, &
+                                        ot_cg_kp_history_spike_new_norm = 1.0E-6_dp
 
 CONTAINS
 !
@@ -1126,9 +1131,11 @@ CONTAINS
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin, &
                                                             schur_attempt, schur_flavor, schur_last_attempt, &
                                                             schur_last_flavor
-      LOGICAL                                            :: do_ener, do_ks, negative_beta, reset_to_sd, &
+      LOGICAL                                            :: complex_kpoint_history, do_ener, do_ks, &
+                                                            history_spike_reset, negative_beta, reset_to_sd, &
                                                             schur_history_change, schur_history_mixed
       REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
+                                                            gnorm_ratio, &
                                                             gnorm_matrix_im, gnorm_matrix_re, &
                                                             gnorm_rot_im, gnorm_rot_re, nvar, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -1140,6 +1147,11 @@ CONTAINS
 
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
+      complex_kpoint_history = .FALSE.
+      DO ispin = 1, nspin
+         complex_kpoint_history = complex_kpoint_history .OR. qs_ot_env(ispin)%has_complex_kpoint_state
+      END DO
+      history_spike_reset = .FALSE.
       negative_beta = .FALSE.
       reset_to_sd = .FALSE.
       schur_attempt = qs_ot_env(1)%schur_model_attempt
@@ -1338,6 +1350,20 @@ CONTAINS
       beta_raw = beta_pr
       negative_beta = beta_pr < 0.0_dp
       beta_pr = MAX(beta_pr, 0.0_dp) ! reset to SD
+      gnorm_ratio = qs_ot_env(1)%gnorm/MAX(qs_ot_env(1)%gnorm_old, EPSILON(1.0_dp))
+      history_spike_reset = complex_kpoint_history .AND. &
+                            qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+                            qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+                            beta_pr > 0.0_dp .AND. &
+                            qs_ot_env(1)%gnorm > ot_cg_kp_history_spike_new_norm .AND. &
+                            ((qs_ot_env(1)%gnorm_old < ot_cg_kp_history_spike_old_norm .AND. &
+                              gnorm_ratio > ot_cg_kp_history_spike_ratio) .OR. &
+                             (beta_pr > ot_cg_kp_history_jump_beta .AND. &
+                              gnorm_ratio > ot_cg_kp_history_jump_ratio))
+      IF (history_spike_reset) THEN
+         beta_pr = 0.0_dp
+         reset_to_sd = .TRUE.
+      END IF
 
       test_down = 0.0_dp
       IF (do_ks) THEN
@@ -1403,11 +1429,11 @@ CONTAINS
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),4(1X,I6),4(1X,L1))') &
-            " OT CG beta raw used gnorm old cross down schur_att last flavor last neg hist_change mixed reset:", &
-            beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),4(1X,I6),5(1X,L1))') &
+            " OT CG beta raw used gnorm old cross down ratio schur_att last flavor last neg hist_change mixed reset spike:", &
+            beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, gnorm_ratio, &
             schur_attempt, schur_last_attempt, schur_flavor, schur_last_flavor, negative_beta, &
-            schur_history_change, schur_history_mixed, reset_to_sd
+            schur_history_change, schur_history_mixed, reset_to_sd, history_spike_reset
       END IF
       ! since we change the direction we have to adjust the gradient
       qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm

@@ -995,7 +995,7 @@ CONTAINS
                                                             handle, ic, ik, ispin, nmo_mat, &
                                                             nspins, old_nmo, target_nmo
       INTEGER, DIMENSION(2)                              :: new_added, new_nmo
-      LOGICAL                                            :: has_unit_metric, need_resize
+      LOGICAL                                            :: diag_step, has_unit_metric, need_resize
       REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
                                                             maxocc, n_el_f
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, &
@@ -1004,7 +1004,7 @@ CONTAINS
       TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_mo_fm_pools
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, old_mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: mo_derivs
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -1014,18 +1014,20 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (ao_mo_fm_pools, blacs_env, dft_control, eigenvalues, kpoints, matrix_s, &
+      NULLIFY (ao_mo_fm_pools, blacs_env, dft_control, eigenvalues, kpoints, matrix_ks, matrix_s, &
                mo_coeff, mo_derivs, mos, occupation_numbers, old_eigenvalues, old_mo_coeff, &
                old_occupation_numbers, para_env)
 
       CALL get_qs_env(qs_env=qs_env, blacs_env=blacs_env, dft_control=dft_control, &
-                      kpoints=kpoints, matrix_s_kp=matrix_s, mo_derivs=mo_derivs, &
-                      mos=mos, para_env=para_env, has_unit_metric=has_unit_metric)
+                      kpoints=kpoints, matrix_ks_kp=matrix_ks, matrix_s_kp=matrix_s, &
+                      mo_derivs=mo_derivs, mos=mos, para_env=para_env, &
+                      has_unit_metric=has_unit_metric)
 
       CPASSERT(ASSOCIATED(mos))
       CPASSERT(ASSOCIATED(kpoints))
       CPASSERT(ASSOCIATED(dft_control))
       CPASSERT(ASSOCIATED(scf_control))
+      CPASSERT(ASSOCIATED(matrix_ks))
       CPASSERT(ASSOCIATED(matrix_s))
 
       nspins = dft_control%nspins
@@ -1181,6 +1183,9 @@ CONTAINS
       CALL mpools_release(kpoints%mpools)
       CALL kpoint_initialize_mos(kpoints, mos)
       CALL kpoint_initialize_mo_set(kpoints)
+
+      diag_step = .FALSE.
+      CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., diag_step)
 
       IF (ASSOCIATED(kpoints%scf_diis_buffer)) &
          CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
