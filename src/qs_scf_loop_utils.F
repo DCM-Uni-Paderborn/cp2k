@@ -12499,6 +12499,9 @@ CONTAINS
                      IF (direction_scale < schur_min_coupled_scale) &
                         model_calibrated_drop = scale_quality*model_calibrated_drop
                      IF (model_calibrated_drop > local_ot_env(1)%schur_projector_mixed_direct_drop .AND. &
+                         model_calibrated_drop >= &
+                         MAX(accepted_model_calibrated_drop/ot_kp_schur_calibrated_quality_max_ratio, &
+                             EPSILON(accepted_model_calibrated_drop)) .AND. &
                          model_calibrated_drop <= ot_kp_schur_calibrated_quality_max_ratio* &
                          MAX(accepted_model_calibrated_drop, EPSILON(accepted_model_calibrated_drop))) THEN
                         local_ot_env(1)%schur_projector_mixed_direct_pending = .TRUE.
