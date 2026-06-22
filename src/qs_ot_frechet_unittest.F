@@ -160,6 +160,8 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-13_dp, nfail)
    CALL check_projector_active_residual_filter("complex projector active residual filter", &
                                                5.0E-14_dp, nfail)
+   CALL check_projector_active_direct_delta_shadow("complex projector active Direct delta shadow", &
+                                                 5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
@@ -6091,6 +6093,84 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_active_residual_filter
+
+! **************************************************************************************************
+!> \brief Check that the active Direct shadow is distinct from the full physical delta.
+! **************************************************************************************************
+   SUBROUTINE check_projector_active_direct_delta_shadow(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      INTEGER, DIMENSION(n)                              :: channel
+      INTEGER                                            :: r, s
+      REAL(KIND=dp)                                      :: active_cov, active_diag_avg, active_weight, cov, &
+                                                            direct_diag_avg, err, full_diag_avg, residual
+      REAL(KIND=dp), DIMENSION(n)                        :: active_projector_weight, projector_weight
+      REAL(KIND=dp), DIMENSION(n, n)                     :: active, direct_delta, full_delta, physical, rot
+
+      channel(:) = [1, 1, 2]
+      projector_weight(:) = [0.50_dp, 0.20_dp, 0.40_dp]
+      active_projector_weight(:) = [0.10_dp, 0.00_dp, 0.40_dp]
+      rot(:, :) = RESHAPE([0.31_dp, 0.04_dp, -0.02_dp, &
+                           0.04_dp, 0.27_dp, 0.03_dp, &
+                           -0.02_dp, 0.03_dp, 0.18_dp], [n, n])
+      physical(:, :) = rot(:, :)
+      physical(1, 1) = physical(1, 1) + 0.35_dp
+      physical(1, 2) = physical(1, 2) - 0.12_dp
+      physical(2, 1) = physical(1, 2)
+      physical(2, 2) = physical(2, 2) + 0.08_dp
+      physical(1, 3) = physical(1, 3) + 0.21_dp
+      physical(3, 1) = physical(1, 3)
+
+      active(:, :) = physical(:, :)
+      DO s = 1, n
+         DO r = 1, n
+            IF (channel(r) /= channel(s)) CYCLE
+            cov = -0.5_dp*(projector_weight(r) + projector_weight(s))*rot(r, s)
+            active_cov = -0.5_dp*(active_projector_weight(r) + active_projector_weight(s))*rot(r, s)
+            active_weight = 0.0_dp
+            IF (projector_weight(r) + projector_weight(s) > EPSILON(active_weight)) &
+               active_weight = (active_projector_weight(r) + active_projector_weight(s))/ &
+                               MAX(projector_weight(r) + projector_weight(s), EPSILON(1.0_dp))
+            active_weight = MIN(1.0_dp, MAX(0.0_dp, active_weight))
+            residual = physical(r, s) - rot(r, s) - cov
+            active(r, s) = rot(r, s) + active_cov + active_weight*residual
+         END DO
+      END DO
+
+      full_delta(:, :) = 0.5_dp*((physical(:, :) - rot(:, :)) + TRANSPOSE(physical(:, :) - rot(:, :)))
+      direct_delta(:, :) = 0.5_dp*((active(:, :) - rot(:, :)) + TRANSPOSE(active(:, :) - rot(:, :)))
+      full_diag_avg = 0.0_dp
+      active_diag_avg = 0.0_dp
+      direct_diag_avg = 0.0_dp
+      DO r = 1, n
+         full_diag_avg = full_diag_avg + full_delta(r, r)
+         active_diag_avg = active_diag_avg + active(r, r) - rot(r, r)
+         direct_diag_avg = direct_diag_avg + direct_delta(r, r)
+      END DO
+      full_diag_avg = full_diag_avg/REAL(n, KIND=dp)
+      active_diag_avg = active_diag_avg/REAL(n, KIND=dp)
+      direct_diag_avg = direct_diag_avg/REAL(n, KIND=dp)
+
+      err = ABS(direct_diag_avg - active_diag_avg)
+      err = MAX(err, ABS(direct_delta(1, 3) - full_delta(1, 3)))
+
+      IF (err > tol .OR. ABS(full_diag_avg - direct_diag_avg) < 1.0E-3_dp .OR. &
+          ABS(direct_delta(1, 2) - full_delta(1, 2)) < 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/direct/full/active/local", &
+            err, direct_diag_avg, full_diag_avg, active_diag_avg, direct_delta(1, 2)
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/direct/full/active/local", &
+            err, direct_diag_avg, full_diag_avg, active_diag_avg, direct_delta(1, 2)
+      END IF
+
+   END SUBROUTINE check_projector_active_direct_delta_shadow
 
 ! **************************************************************************************************
 !> \brief Check that Direct trace mismatch contributes even when projected response vectors match.
