@@ -8563,19 +8563,10 @@ CONTAINS
                                                 projector_physical_direct_mixed_quality, &
                                                 local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
                                                 ot_kp_schur_projector_response_min_samples)
-                                          projector_physical_direct_mixed_consistency_scale = 1.0_dp
-                                          IF (projector_physical_direct_mixed_drop_ratio > &
-                                              ot_kp_schur_projector_response_quality_max_ratio) &
-                                             projector_physical_direct_mixed_consistency_scale = MIN( &
-                                                projector_physical_direct_mixed_consistency_scale, &
-                                                SQRT(ot_kp_schur_projector_response_quality_max_ratio/ &
-                                                     projector_physical_direct_mixed_drop_ratio))
-                                          IF (local_ot_env(1)%schur_projector_mixed_direct_quality_ema > &
-                                              ot_kp_schur_projector_response_quality_max_ratio) &
-                                             projector_physical_direct_mixed_consistency_scale = MIN( &
-                                                projector_physical_direct_mixed_consistency_scale, &
-                                                SQRT(ot_kp_schur_projector_response_quality_max_ratio/ &
-                                                     local_ot_env(1)%schur_projector_mixed_direct_quality_ema))
+                                          projector_physical_direct_mixed_consistency_scale = &
+                                             kpoint_ot_direct_history_consistency_scale( &
+                                                projector_physical_direct_mixed_drop_ratio, &
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_ema)
                                           ! Large measured/predicted ratios mean that the
                                           ! mixed Direct shadow is conservative.  Do not
                                           ! reject such accepted history here; the actual
@@ -13279,6 +13270,26 @@ CONTAINS
          step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
 
       END FUNCTION kpoint_ot_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief consistency scaling for accepted mixed-Direct history
+!> \param drop_ratio ...
+!> \param ema_quality ...
+!> \return ...
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_history_consistency_scale(drop_ratio, ema_quality) RESULT(consistency_scale)
+      REAL(KIND=dp), INTENT(IN)                         :: drop_ratio, ema_quality
+      REAL(KIND=dp)                                     :: consistency_scale
+
+         consistency_scale = 1.0_dp
+         IF (drop_ratio > ot_kp_schur_projector_response_quality_max_ratio) &
+            consistency_scale = MIN(consistency_scale, &
+                                    SQRT(ot_kp_schur_projector_response_quality_max_ratio/drop_ratio))
+         IF (ema_quality > ot_kp_schur_projector_response_quality_max_ratio) &
+            consistency_scale = MIN(consistency_scale, &
+                                    SQRT(ot_kp_schur_projector_response_quality_max_ratio/ema_quality))
+
+      END FUNCTION kpoint_ot_direct_history_consistency_scale
 
 ! **************************************************************************************************
 !> \brief ...

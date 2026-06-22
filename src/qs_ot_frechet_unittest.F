@@ -158,6 +158,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-14_dp, nfail)
    CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_direct_history_consistency_scale( &
+      "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
    CALL check_projector_coupled_tail_weight("complex projector coupled tail weight", &
                                             5.0E-14_dp, nfail)
    CALL check_projector_direct_delta_eigen_copy("complex projector Direct delta eigen copy", &
@@ -6333,6 +6335,52 @@ CONTAINS
    END SUBROUTINE check_projector_direct_history_step_scale
 
 ! **************************************************************************************************
+!> \brief Check accepted-drop consistency scaling of mixed Direct history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_history_consistency_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp
+
+      REAL(KIND=dp)                                      :: both_high_scale, boundary_scale, &
+                                                            ema_high_scale, err, good_scale, &
+                                                            inactive_scale, raw_high_scale
+
+      good_scale = dense_direct_history_consistency_scale(1.0_dp, 0.8_dp, max_quality)
+      boundary_scale = dense_direct_history_consistency_scale(max_quality, max_quality, &
+                                                              max_quality)
+      raw_high_scale = dense_direct_history_consistency_scale(5.0_dp, 1.0_dp, max_quality)
+      ema_high_scale = dense_direct_history_consistency_scale(1.0_dp, 20.0_dp, max_quality)
+      both_high_scale = dense_direct_history_consistency_scale(5.0_dp, 20.0_dp, max_quality)
+      inactive_scale = dense_direct_history_consistency_scale(-1.0_dp, 0.0_dp, max_quality)
+
+      err = ABS(good_scale - 1.0_dp)
+      err = MAX(err, ABS(boundary_scale - 1.0_dp))
+      err = MAX(err, ABS(raw_high_scale - SQRT(max_quality/5.0_dp)))
+      err = MAX(err, ABS(ema_high_scale - SQRT(max_quality/20.0_dp)))
+      err = MAX(err, ABS(both_high_scale - ema_high_scale))
+      err = MAX(err, ABS(inactive_scale - 1.0_dp))
+
+      IF (err > tol .OR. raw_high_scale >= good_scale .OR. &
+          ema_high_scale >= raw_high_scale .OR. both_high_scale /= ema_high_scale) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/good/boundary/raw/ema/both/inactive", err, good_scale, &
+            boundary_scale, raw_high_scale, ema_high_scale, both_high_scale, inactive_scale
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/good/boundary/raw/ema/both/inactive", err, good_scale, &
+            boundary_scale, raw_high_scale, ema_high_scale, both_high_scale, inactive_scale
+      END IF
+
+   END SUBROUTINE check_projector_direct_history_consistency_scale
+
+! **************************************************************************************************
 !> \brief Check accepted-drop mismatch weighting of the finite Projector-Hessian tail.
 !> \param label ...
 !> \param tol ...
@@ -7188,6 +7236,26 @@ CONTAINS
       step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
 
    END FUNCTION dense_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief Dense mirror of mixed-Direct accepted-drop consistency scaling.
+!> \param drop_ratio ...
+!> \param ema_quality ...
+!> \param max_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_history_consistency_scale(drop_ratio, ema_quality, max_quality) &
+      RESULT(consistency_scale)
+      REAL(KIND=dp), INTENT(IN)                          :: drop_ratio, ema_quality, max_quality
+      REAL(KIND=dp)                                      :: consistency_scale
+
+      consistency_scale = 1.0_dp
+      IF (drop_ratio > max_quality) &
+         consistency_scale = MIN(consistency_scale, SQRT(max_quality/drop_ratio))
+      IF (ema_quality > max_quality) &
+         consistency_scale = MIN(consistency_scale, SQRT(max_quality/ema_quality))
+
+   END FUNCTION dense_direct_history_consistency_scale
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the low-residual finite Projector-Hessian tail weight.
