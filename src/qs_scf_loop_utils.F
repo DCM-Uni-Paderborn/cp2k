@@ -5147,6 +5147,7 @@ CONTAINS
                                                                        projector_physical_direct_candidate_selected, &
                                                                        projector_physical_direct_mixed_enabled, &
                                                                        projector_physical_direct_candidate_used, &
+                                                                       projector_physical_direct_normcap_shadow_ready, &
                                                                        projector_physical_direct_density_candidate_ready, &
                                                                        projector_physical_direct_density_candidate_selected, &
                                                                        projector_physical_direct_spectral_ready, &
@@ -5308,6 +5309,13 @@ CONTAINS
             projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
             projector_physical_direct_line_step_trust, &
             projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
+            projector_physical_direct_normcap_gap_drop, &
+            projector_physical_direct_normcap_model_calibrated_drop, &
+            projector_physical_direct_normcap_model_drop, &
+            projector_physical_direct_normcap_norm_ratio, &
+            projector_physical_direct_normcap_response_abs_step, &
+            projector_physical_direct_normcap_response_weighted_step, &
+            projector_physical_direct_normcap_scale, &
             projector_physical_direct_response_correction_drop, &
             projector_physical_direct_response_correction_negative, &
             projector_physical_direct_response_cross_drop, &
@@ -6243,6 +6251,14 @@ CONTAINS
             projector_physical_direct_metric_normp = 0.0_dp
             projector_physical_direct_metric_norm_ratio = 0.0_dp
             projector_physical_direct_metric_norm_rotation = 0.0_dp
+            projector_physical_direct_normcap_gap_drop = 0.0_dp
+            projector_physical_direct_normcap_model_calibrated_drop = 0.0_dp
+            projector_physical_direct_normcap_model_drop = 0.0_dp
+            projector_physical_direct_normcap_norm_ratio = 0.0_dp
+            projector_physical_direct_normcap_response_abs_step = 0.0_dp
+            projector_physical_direct_normcap_response_weighted_step = 0.0_dp
+            projector_physical_direct_normcap_scale = 0.0_dp
+            projector_physical_direct_normcap_shadow_ready = .FALSE.
             projector_physical_direct_soft_cut = 0.0_dp
             projector_physical_direct_soft_metric_fraction = 0.0_dp
             projector_physical_direct_soft_norm_fraction = 0.0_dp
@@ -7539,6 +7555,7 @@ CONTAINS
                projector_physical_direct_candidate_ready = .FALSE.
                projector_physical_direct_candidate_selected = .FALSE.
                projector_physical_direct_candidate_used = .FALSE.
+               projector_physical_direct_normcap_shadow_ready = .FALSE.
                projector_physical_direct_spectral_candidate_ready = .FALSE.
                projector_physical_direct_spectral_candidate_selected = .FALSE.
                projector_physical_direct_spectral_probe_selected = .FALSE.
@@ -7573,6 +7590,13 @@ CONTAINS
                projector_physical_direct_line_step_trust = HUGE(1.0_dp)
                projector_physical_direct_metric_norm_ratio = 0.0_dp
                projector_physical_direct_metric_norm_rotation = 0.0_dp
+               projector_physical_direct_normcap_gap_drop = 0.0_dp
+               projector_physical_direct_normcap_model_calibrated_drop = 0.0_dp
+               projector_physical_direct_normcap_model_drop = 0.0_dp
+               projector_physical_direct_normcap_norm_ratio = 0.0_dp
+               projector_physical_direct_normcap_response_abs_step = 0.0_dp
+               projector_physical_direct_normcap_response_weighted_step = 0.0_dp
+               projector_physical_direct_normcap_scale = 0.0_dp
                projector_physical_direct_response_correction_drop = 0.0_dp
                projector_physical_direct_response_correction_negative = 0.0_dp
                projector_physical_direct_response_cross_drop = 0.0_dp
@@ -10036,6 +10060,49 @@ CONTAINS
                                              projector_physical_direct_norm_ratio = &
                                                 direction_scale*direction_scale* &
                                                 projector_physical_direct_normp/MAX(gnorm, EPSILON(1.0_dp))
+                                             IF (projector_physical_direct_norm_ratio > max_norm_ratio .AND. &
+                                                 max_norm_ratio > 0.0_dp) THEN
+                                                projector_physical_direct_normcap_scale = &
+                                                   direction_scale*SQRT(max_norm_ratio/ &
+                                                   MAX(projector_physical_direct_norm_ratio, &
+                                                       EPSILON(projector_physical_direct_norm_ratio)))
+                                                projector_physical_direct_normcap_norm_ratio = &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_normp/MAX(gnorm, EPSILON(1.0_dp))
+                                                projector_physical_direct_normcap_model_drop = &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_gdotp - &
+                                                   0.5_dp*projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_metric_normp
+                                                projector_physical_direct_normcap_model_drop = &
+                                                   MAX(0.0_dp, projector_physical_direct_normcap_model_drop)
+                                                projector_physical_direct_normcap_gap_drop = &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_unit_model_gap_drop
+                                                projector_physical_direct_normcap_model_calibrated_drop = &
+                                                   MAX(0.0_dp, projector_physical_direct_normcap_model_drop - &
+                                                               projector_physical_direct_normcap_gap_drop)
+                                                projector_physical_direct_normcap_response_abs_step = &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_unit_abs_step
+                                                projector_physical_direct_normcap_response_weighted_step = &
+                                                   projector_physical_direct_normcap_scale* &
+                                                   projector_physical_direct_unit_weighted_step
+                                                ! Audit only: accepted-drop history promoted these
+                                                ! norm-limited soft-mode steps too eagerly for Al.
+                                                projector_physical_direct_normcap_shadow_ready = &
+                                                   projector_physical_direct_normcap_model_calibrated_drop > &
+                                                   EPSILON(projector_physical_direct_normcap_model_drop) .AND. &
+                                                   projector_physical_direct_normcap_model_drop == &
+                                                   projector_physical_direct_normcap_model_drop .AND. &
+                                                   projector_physical_direct_normcap_response_weighted_step <= &
+                                                   response_trust .AND. &
+                                                   projector_physical_direct_normcap_response_abs_step <= &
+                                                   response_abs_trust
+                                             END IF
                                              IF (direction_scale > 0.0_dp .AND. &
                                                  projector_physical_direct_norm_ratio <= max_norm_ratio) THEN
                                              projector_physical_direct_direction_scale = direction_scale
@@ -11947,6 +12014,16 @@ CONTAINS
                         projector_physical_direct_euclidean_scale, projector_physical_direct_curvature_scale, &
                         projector_physical_direct_trust_scale, projector_physical_direct_unit_weighted_step, &
                         projector_physical_direct_unit_abs_step, projector_physical_direct_norm_ratio, max_norm_ratio
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),6(1X,ES16.8))') &
+                        " OT Schur projector phys direct normcap shadow ready promoted scale cdrop gapdrop nratio "// &
+                        "rstep astep:", &
+                        projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
+                        projector_physical_direct_normcap_scale, &
+                        projector_physical_direct_normcap_model_calibrated_drop, &
+                        projector_physical_direct_normcap_gap_drop, &
+                        projector_physical_direct_normcap_norm_ratio, &
+                        projector_physical_direct_normcap_response_weighted_step, &
+                        projector_physical_direct_normcap_response_abs_step
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                         " OT Schur projector phys direct curv pcap clipavg clipmax diagmax emin emax:", &
                         projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
