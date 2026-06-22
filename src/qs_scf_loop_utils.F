@@ -1263,10 +1263,11 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: nspin_ot
       LOGICAL                                            :: grow
 
-      INTEGER                                            :: edge_start, edge_width, ikpoint, imo, ispin, local_kpoint, &
-                                                            nmo, trigger_step
+      INTEGER                                            :: base_nmo, current_added, edge_start, edge_width, ikpoint, imo, &
+                                                            ispin, local_kpoint, nmo, nonedge_probe_limit, trigger_step
       LOGICAL                                            :: active_tail, basis_limited, basis_probe_limited, edge_limited, &
-                                                            expandable, residual_ready, residual_spike, residual_tail_limited, &
+                                                            expandable, nonedge_residual_probe, residual_ready, residual_spike, &
+                                                            residual_tail_limited, &
                                                             strong_tail_limited
       REAL(KIND=dp)                                      :: basis_signal, edge_fractional_weight, edge_grow_limit, &
                                                             fractional_weight, grow_limit, max_edge_fractional, &
@@ -1310,6 +1311,7 @@ CONTAINS
       fractional_weight = 0.0_dp
       max_edge_fractional = 0.0_dp
       max_fractional = 0.0_dp
+      nonedge_residual_probe = .FALSE.
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -1318,6 +1320,10 @@ CONTAINS
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo, &
                             occupation_numbers=occupation_numbers)
             IF (nmo < kp%mos(1, ispin)%nao) expandable = .TRUE.
+            current_added = MAX(0, scf_control%added_mos(ispin))
+            base_nmo = MAX(0, nmo - current_added)
+            nonedge_probe_limit = MAX(8, (base_nmo + 3)/4)
+            IF (current_added <= nonedge_probe_limit) nonedge_residual_probe = .TRUE.
             IF (.NOT. ASSOCIATED(occupation_numbers)) CYCLE
             IF (ikpoint < 1 .OR. ikpoint > SIZE(wkp)) CYCLE
             weight = ABS(wkp(ikpoint))
@@ -1347,13 +1353,15 @@ CONTAINS
       basis_probe_limited = basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
       residual_ready = scf_env%iter_delta <= grow_limit
-      residual_tail_limited = residual_ready .AND. &
+      residual_tail_limited = residual_ready .AND. (edge_limited .OR. nonedge_residual_probe) .AND. &
                               basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
                               ot_kp_added_mos_auto_basis_signal_min
       residual_spike = scf_env%iter_delta > &
                        ot_kp_added_mos_auto_residual_spike_factor* &
                        MAX(residual_model_delta, scf_control%eps_scf)
-      strong_tail_limited = max_fractional >= ot_kp_added_mos_auto_strong_tail_frac .AND. &
+      strong_tail_limited = (max_edge_fractional >= ot_kp_added_mos_auto_strong_tail_frac .OR. &
+                             (nonedge_residual_probe .AND. &
+                              max_fractional >= ot_kp_added_mos_auto_strong_tail_frac)) .AND. &
                             basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
                             ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
@@ -1364,11 +1372,11 @@ CONTAINS
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES20.10E3),6(1X,L1))') &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES20.10E3),7(1X,L1))') &
             " OT k-point ADDED_MOS AUTO tail:", &
             scf_env%iter_count, scf_env%iter_delta, residual_model_delta, grow_limit, edge_grow_limit, basis_signal, &
             fractional_weight, edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, &
-            edge_limited, basis_probe_limited, basis_limited, residual_spike, expandable
+            edge_limited, basis_probe_limited, basis_limited, residual_spike, nonedge_residual_probe, expandable
       END IF
 
       IF (.NOT. expandable) RETURN
@@ -5053,7 +5061,8 @@ CONTAINS
       INTEGER                                            :: channel_var_start, group, ie, ikpoint, &
                                                             imo, info, ispin, ivar, jmo, &
                                                             local_channel, local_kpoint, &
-                                                            nchannels, ne, nmo, nrot, r, s, schur_attempt, &
+                                                            nchannels, ne, nmo, nrot, nrot_active, nrot_full, r, s, &
+                                                            schur_attempt, &
                                                             selected_attempt, selected_flavor, split_selected_attempt, &
                                                             schur_used_attempt, constrained_reject_reason, &
                                                             coupled_reject_reason, dense_reject_reason, &
@@ -5071,6 +5080,7 @@ CONTAINS
                                                             density_descent_candidate_ready, &
                                                             density_descent_candidate_selected, &
                                                             response_model_available, solved, &
+                                                            active_pair, schur_active_subspace, &
                                                             constrained_candidate_enabled, &
                                                             constrained_candidate_ready, constrained_candidate_selected, &
                                                                exact_energy_model_ready, exact_physical_response_ready, &
@@ -5132,6 +5142,7 @@ CONTAINS
          diag_shift_sum, gvalue, maxocc, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
          model_gap_trust, &
          model_gap_ratio, mu, norm_energy, norm_ratio, norm_rotation, normp, occ_curv_projection_sum, &
+         occ_tail_i, occ_tail_j, &
          occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, &
          occ_response_diag_sum, pair_projector_weight, projected_term, projector_coupled_weight, &
@@ -5430,6 +5441,7 @@ CONTAINS
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_step_max, response_trust, &
          response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, row_abs, row_floor, rot_floor_min, rx_shift, rx_weight, scale_quality, &
+         schur_active_occ_min, schur_energy_window, &
          schur_diag_min, split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, &
          split_direction_scale, &
          split_gdotp, split_gdot_energy, split_gdot_rotation, split_model_calibrated_drop, split_model_drop, &
@@ -5630,6 +5642,11 @@ CONTAINS
 
          ne = 0
          nrot = 0
+         nrot_active = 0
+         nrot_full = 0
+         schur_active_occ_min = ot_kp_fermi_window_min_frac
+         schur_active_subspace = .FALSE.
+         schur_energy_window = ot_kp_fermi_window_outer_factor*MAX(sigma, EPSILON(sigma))
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(local_kpoint)%kpoint_env
             ikpoint = kp%nkpoint
@@ -5637,21 +5654,45 @@ CONTAINS
                group = MERGE(ispin, 1, ngroups == nspin_ot)
                IF (group /= target_group) CYCLE
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-               CALL get_mo_set(kp%mos(1, ispin), nmo=nmo)
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
                e_offset(local_channel) = ne + 1
                channel_nmo(local_channel) = nmo
                ne = ne + nmo
-               nrot = nrot + nmo*(nmo - 1)
+               nrot_full = nrot_full + nmo*(nmo - 1)
+               schur_active_occ_min = MAX(schur_active_occ_min, &
+                                          ot_kp_fermi_window_min_frac*MAX(maxocc, 1.0_dp))
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     occ_tail_i = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
+                                                   maxocc - trial_occupation(imo, ikpoint, ispin)))
+                     occ_tail_j = MAX(0.0_dp, MIN(trial_occupation(jmo, ikpoint, ispin), &
+                                                   maxocc - trial_occupation(jmo, ikpoint, ispin)))
+                     active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
+                                   ABS(trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin)) <= &
+                                   schur_energy_window .OR. &
+                                   ABS(trial_eigenvalues(jmo, ikpoint, ispin) - trial_mu(ispin)) <= &
+                                   schur_energy_window
+                     IF (active_pair) nrot_active = nrot_active + 2
+                  END DO
+               END DO
             END DO
          END DO
+         schur_active_subspace = nrot_full > max_schur_rot
+         nrot = MERGE(nrot_active, nrot_full, schur_active_subspace)
 
          IF (ne == 0 .OR. nrot == 0 .OR. nrot > max_schur_rot) THEN
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8))') &
-                  " OT Schur skipped group ne nrot max:", target_group, ne, nrot, max_schur_rot
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),1(1X,L1))') &
+                  " OT Schur skipped group ne nrot full max active:", &
+                  target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_subspace
             DEALLOCATE (channel_nmo, e_offset)
             RETURN
          END IF
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+             logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),2(1X,ES16.8))') &
+               " OT Schur active subspace group ne nrot full max occ ewin:", &
+               target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_occ_min, schur_energy_window
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), z_exact_raw_trial(ne), &
                       z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
@@ -6444,6 +6485,18 @@ CONTAINS
                channel_var_start = ivar + 1
                DO imo = 1, nmo - 1
                   DO jmo = imo + 1, nmo
+                     IF (schur_active_subspace) THEN
+                        occ_tail_i = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
+                                                      maxocc - trial_occupation(imo, ikpoint, ispin)))
+                        occ_tail_j = MAX(0.0_dp, MIN(trial_occupation(jmo, ikpoint, ispin), &
+                                                      maxocc - trial_occupation(jmo, ikpoint, ispin)))
+                        active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
+                                      ABS(trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin)) <= &
+                                      schur_energy_window .OR. &
+                                      ABS(trial_eigenvalues(jmo, ikpoint, ispin) - trial_mu(ispin)) <= &
+                                      schur_energy_window
+                        IF (.NOT. active_pair) CYCLE
+                     END IF
                      ivar = ivar + 1
                      var_channel(ivar) = local_channel
                      var_i(ivar) = imo
