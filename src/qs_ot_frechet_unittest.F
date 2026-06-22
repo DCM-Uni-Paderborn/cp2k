@@ -106,6 +106,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density gauge-plateau projection", 5.0E-10_dp, nfail)
    CALL check_complex_projector_active_density_response_filter( &
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
+   CALL check_projector_active_density_total_invariant( &
+      "complex projector active density total invariant", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_raw_audit_split( &
       "complex projector density raw-audit split", 5.0E-8_dp, nfail)
    CALL check_projector_active_rotation_pair_weight( &
@@ -3959,6 +3961,120 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_response_filter
+
+! **************************************************************************************************
+!> \brief Check that the active density split preserves the finite physical response.
+! **************************************************************************************************
+   SUBROUTINE check_projector_active_density_total_invariant(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.42_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_safe, &
+                                                            q, work
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active_fixed_n_leak, active_shift, active_sum, &
+                                                            active_weight, audit_gap, finite_total_err, &
+                                                            full_fixed_n_leak, full_shift, full_sum, &
+                                                            occ_curv_max, total_active_gap
+      REAL(KIND=dp), DIMENSION(n)                        :: active_density_response, density_column, &
+                                                            finite_physical_response, full_density_response, &
+                                                            occ_curv, occ_scale, occ_work, physical_occ_response, &
+                                                            projector_evals_m, projector_evals_p, total_response
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.018000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.017986_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.19_dp, 0.0_dp, KIND=dp)
+      chc_eig(4, 4) = CMPLX(0.47_dp, 0.0_dp, KIND=dp)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.10_dp
+      x_re(1, 3) = -0.07_dp
+      x_re(2, 4) = 0.05_dp
+      x_re(3, 4) = -0.04_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.01_dp
+      x_im(2, 2) = -0.02_dp
+      x_im(3, 3) = 0.015_dp
+      x_im(1, 2) = -0.03_dp
+      x_im(1, 4) = 0.04_dp
+      x_im(2, 3) = 0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+
+      occ_scale(:) = [1.68_dp, 0.48_dp, 0.25_dp, 0.17_dp]
+      occ_curv(:) = [0.040_dp, 0.032_dp, 0.013_dp, 0.0017_dp]
+      occ_curv_max = MAXVAL(occ_curv(:))
+
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.08_dp, -0.05_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      dchc_eig(3, 4) = CMPLX(-0.14_dp, 0.09_dp, KIND=dp)
+      dchc_eig(4, 3) = CONJG(dchc_eig(3, 4))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL diag_complex(chc + fd_step*dchc, work, projector_evals_p)
+      CALL diag_complex(chc - fd_step*dchc, work, projector_evals_m)
+
+      full_sum = SUM(occ_curv(:))
+      full_shift = 0.0_dp
+      active_sum = 0.0_dp
+      active_shift = 0.0_dp
+      DO i = 1, n
+         finite_physical_response(i) = (1.0_dp - projector_weight)*REAL(dchc(i, i), KIND=dp) + &
+            projector_weight*(projector_evals_p(i) - projector_evals_m(i))/(2.0_dp*fd_step)
+         density_column(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
+         full_shift = full_shift + occ_curv(i)*density_column(i)
+         active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
+         occ_work(i) = active_weight
+         active_sum = active_sum + occ_curv(i)*active_weight
+         active_shift = active_shift + occ_curv(i)*active_weight*density_column(i)
+      END DO
+      full_shift = full_shift/full_sum
+      active_shift = active_shift/active_sum
+
+      DO i = 1, n
+         full_density_response(i) = density_column(i) - full_shift
+         active_density_response(i) = occ_work(i)*(density_column(i) - active_shift)
+         physical_occ_response(i) = finite_physical_response(i) - active_density_response(i)
+      END DO
+      total_response(:) = physical_occ_response(:) + active_density_response(:)
+
+      finite_total_err = MAXVAL(ABS(total_response(:) - finite_physical_response(:)))
+      active_fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), active_density_response(:)))/full_sum
+      full_fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), full_density_response(:)))/full_sum
+      audit_gap = MAXVAL(ABS(full_density_response(:) - active_density_response(:)))
+      total_active_gap = MAXVAL(ABS(physical_occ_response(:) + full_density_response(:) - &
+                                    finite_physical_response(:)))
+
+      IF (finite_total_err > tol .OR. active_fixed_n_leak > tol .OR. full_fixed_n_leak > tol .OR. &
+          audit_gap < active_tol .OR. total_active_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with total/afixed/ffixed/audit/wrongtotal", &
+            finite_total_err, active_fixed_n_leak, full_fixed_n_leak, audit_gap, total_active_gap
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with total/afixed/ffixed/audit/wrongtotal", &
+            finite_total_err, active_fixed_n_leak, full_fixed_n_leak, audit_gap, total_active_gap
+      END IF
+
+   END SUBROUTINE check_projector_active_density_total_invariant
 
 ! **************************************************************************************************
 !> \brief Check that raw projector-basis density motion stays in audit, not production response.
