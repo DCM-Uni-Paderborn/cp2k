@@ -5182,8 +5182,8 @@ CONTAINS
             projector_physical_direct_shadow_quality_for_promotion, projector_physical_trace_split_quality, &
             projector_physical_direct_density_quality_for_selection, &
             projector_physical_direct_density_shadow_quality_for_selection, &
-            projector_physical_direct_density_audit_quality, &
-            projector_physical_direct_basis_signal, &
+            projector_physical_direct_density_audit_quality
+      REAL(KIND=dp) :: projector_physical_direct_basis_signal, &
             projector_physical_direct_active_delta_diag_avg, &
             projector_physical_direct_active_diag_compensation, &
             projector_phys_direct_active_comp_trial, &
@@ -5245,8 +5245,8 @@ CONTAINS
             projector_physical_direct_density_shadow_expected_drop, &
             projector_physical_direct_density_gdot_energy, &
             projector_physical_direct_density_gdot_rotation, &
-            projector_physical_direct_density_gdotp, &
-            density_full_direction_scale, &
+            projector_physical_direct_density_gdotp
+      REAL(KIND=dp) :: density_full_direction_scale, &
             density_full_expected_drop, &
             density_full_gdot_energy, &
             density_full_gdot_rotation, &
@@ -5357,8 +5357,8 @@ CONTAINS
             projector_physical_direct_trace_full_diag_quad, &
             projector_physical_direct_trace_full_free_quad, &
             projector_physical_direct_trace_full_quad, projector_physical_direct_trace_ratio, &
-            projector_physical_direct_trust_quality, &
-         projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
+            projector_physical_direct_trust_quality
+      REAL(KIND=dp) :: projector_physical_response_abs_step, projector_physical_response_abs_trust_ratio, &
          projector_physical_response_weighted_step, projector_physical_response_weighted_trust_ratio, &
          projector_physical_scale_quality, projector_physical_trust_quality, &
          projector_physical_trust_scale, projector_physical_unit_abs_step, &
