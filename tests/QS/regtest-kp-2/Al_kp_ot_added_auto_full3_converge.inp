@@ -1,14 +1,15 @@
-! Slow/manual companion to the cheap symmetry-weighted ADDED_MOS AUTO k-point
-! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
-! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
-! grow/rebuild path with two irreducible k-points and nontrivial weights.
+! Slow/manual full-grid companion to the cheap explicit 3-k-point ADDED_MOS
+! AUTO k-point OT smoke test. This input is intentionally not listed in
+! TEST_FILES.toml so the default regtest stays cheap. It checks the converged
+! 1E-6 Mermin path without k-point symmetry reduction against the
+! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
 ! Local 2026-06 HIGH reference after the k-point OT CG history shock guard:
-! 154 SCF steps.  E_total = Mermin = -8.15998686900383 Ha, with AUTO
-! growth to 8 and 16, no first/last-band warnings, and no AUTO-exhausted
-! warning.
+! AUTO grows to 8 and 16, then converges in one final SCF step.  E_total =
+! Mermin = -8.15998532831107 Ha, with no first/last-band warnings and no
+! AUTO-exhausted warning.
 &GLOBAL
   PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_added_auto_sym3_converge
+  PROJECT Al_kp_ot_added_auto_full3_converge
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -18,9 +19,9 @@
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
     &KPOINTS
-      FULL_GRID OFF
+      FULL_GRID ON
       SCHEME MONKHORST-PACK 3 1 1
-      SYMMETRY ON
+      SYMMETRY OFF
     &END KPOINTS
     &MGRID
       CUTOFF 40

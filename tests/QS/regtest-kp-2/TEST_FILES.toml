@@ -50,10 +50,12 @@
 # E_total = Mermin = -8.14585274158708 Ha, ADDED_MOS_AUTO = 4,
 # ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16", and no first/last-band or
 # AUTO-exhausted warning is printed.
-# Current Sym3 HIGH companion reference after eigenvalue density-response
-# filtering: 61 SCF steps / 413 inner k-point OT calls, AUTO grows to 8 and
-# 16, E_total = Mermin = -8.15998706508313 Ha. Use
-# ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" for the growth invariant.
+# Current Sym3 HIGH companion reference after the k-point OT CG history shock
+# guard: 154 SCF steps, AUTO grows to 8 and 16, E_total = Mermin =
+# -8.15998686900383 Ha.  The full-grid companion follows the same AUTO growth
+# sequence and reaches E_total = Mermin = -8.15998532831107 Ha.  Use
+# ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
+# smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.76538616998703},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
