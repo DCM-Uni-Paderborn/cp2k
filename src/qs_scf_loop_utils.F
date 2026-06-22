@@ -4115,13 +4115,21 @@ CONTAINS
                IF (samples == 1) THEN
                   local_ot_env(1)%schur_projector_density_descent_selected_quality_ema = &
                      projector_density_descent_selected_quality_ratio
+                  local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema = &
+                     residual_quality_ratio
                ELSE
                   local_ot_env(1)%schur_projector_density_descent_selected_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_density_descent_selected_quality_ema + &
                      ot_kp_schur_quality_ema_alpha* &
                      projector_density_descent_selected_quality_ratio
+                  local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*residual_quality_ratio
                END IF
+               local_ot_env(1)%schur_projector_density_descent_selected_residual_quality = &
+                  residual_quality_ratio
                local_ot_env(1)%schur_projector_density_descent_selected_drop_sum = &
                   local_ot_env(1)%schur_projector_density_descent_selected_drop_sum + &
                   projector_density_descent_selected_predicted_drop
@@ -4980,11 +4988,13 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_descent_support, &
                   local_ot_env(1)%schur_projector_density_descent_support_ema, &
                   local_ot_env(1)%schur_projector_density_descent_support_ready
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
-                  " OT Schur LS projector density-descent selected history n ratio ema pred meas latest:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+                  " OT Schur LS projector density-descent selected history n ratio ema resid rema pred meas latest:", &
                   local_ot_env(1)%schur_projector_density_descent_selected_quality_samples, &
                   local_ot_env(1)%schur_projector_density_descent_selected_quality, &
                   local_ot_env(1)%schur_projector_density_descent_selected_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_descent_selected_residual_quality, &
+                  local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema, &
                   local_ot_env(1)%schur_projector_density_descent_selected_drop_sum, &
                   local_ot_env(1)%schur_projector_density_descent_selected_measured_sum, &
                   projector_density_descent_selected_predicted_drop
@@ -7999,6 +8009,11 @@ CONTAINS
                               density_descent_quality_for_selection, &
                               ot_kp_schur_projector_response_quality_min_ratio, &
                               ot_kp_schur_projector_response_quality_max_ratio)
+                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                           density_descent_quality_for_selection = &
+                              density_descent_quality_for_selection* &
+                              MAX(0.0_dp, MIN(1.0_dp, &
+                                  local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema))
                      END IF
                      IF (local_ot_env(1)%schur_projector_offdiag_quality_samples >= &
                          ot_kp_schur_projector_response_min_samples) THEN

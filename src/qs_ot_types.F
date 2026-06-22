@@ -425,6 +425,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_density_descent_selected = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_selected_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_full_drop = 0.0_dp
@@ -995,6 +997,8 @@ CONTAINS
       qs_ot_env%schur_projector_density_descent_selected = 0.0_dp
       qs_ot_env%schur_projector_density_descent_selected_quality = 0.0_dp
       qs_ot_env%schur_projector_density_descent_selected_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_selected_residual_quality = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_selected_residual_quality_ema = 1.0_dp
       qs_ot_env%schur_projector_density_descent_selected_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_density_descent_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_density_full_drop = 0.0_dp
