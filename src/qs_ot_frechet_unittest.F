@@ -5606,7 +5606,8 @@ CONTAINS
 
       INTEGER, DIMENSION(n)                              :: channel
       INTEGER                                            :: r, s
-      REAL(KIND=dp)                                      :: active_cov, active_weight, cov, diag_change, err, &
+      REAL(KIND=dp)                                      :: active_cov, active_diag_avg, active_weight, cov, &
+                                                            diag_change, err, expected_diag_avg, legacy_diag_avg, &
                                                             local_change, residual
       REAL(KIND=dp), DIMENSION(n)                        :: active_projector_weight, projector_weight
       REAL(KIND=dp), DIMENSION(n, n)                     :: active, expected, physical, rot
@@ -5642,22 +5643,44 @@ CONTAINS
             expected(r, s) = active(r, s)
          END DO
       END DO
+      active_diag_avg = 0.0_dp
+      expected_diag_avg = 0.0_dp
+      legacy_diag_avg = 0.0_dp
+      DO r = 1, n
+         cov = -projector_weight(r)*rot(r, r)
+         active_cov = -active_projector_weight(r)*rot(r, r)
+         active_weight = 0.0_dp
+         IF (projector_weight(r) > EPSILON(active_weight)) &
+            active_weight = active_projector_weight(r)/MAX(projector_weight(r), EPSILON(1.0_dp))
+         active_weight = MIN(1.0_dp, MAX(0.0_dp, active_weight))
+         residual = physical(r, r) - rot(r, r) - cov
+         active_diag_avg = active_diag_avg + active(r, r) - rot(r, r)
+         expected_diag_avg = expected_diag_avg + active_cov + active_weight*residual
+         legacy_diag_avg = legacy_diag_avg + active_cov + residual
+      END DO
+      active_diag_avg = active_diag_avg/REAL(n, KIND=dp)
+      expected_diag_avg = expected_diag_avg/REAL(n, KIND=dp)
+      legacy_diag_avg = legacy_diag_avg/REAL(n, KIND=dp)
 
       err = MAXVAL(ABS(active(:, :) - expected(:, :)))
+      err = MAX(err, ABS(active_diag_avg - expected_diag_avg))
       err = MAX(err, ABS(active(1, 3) - physical(1, 3)))
       local_change = ABS(active(1, 2) - physical(1, 2))
       diag_change = ABS(active(1, 1) - physical(1, 1))
 
       IF (err > tol .OR. local_change < 1.0E-3_dp .OR. diag_change < 1.0E-3_dp .OR. &
-          ABS(active(1, 3) - physical(1, 3)) > tol) THEN
+          ABS(active(1, 3) - physical(1, 3)) > tol .OR. &
+          ABS(legacy_diag_avg - active_diag_avg) < 1.0E-3_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/local/diag/full/cross", err, local_change, diag_change, &
-            physical(1, 2), active(1, 3)
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/local/diag/full/cross/active_avg/legacy_avg", &
+            err, local_change, diag_change, physical(1, 2), active(1, 3), &
+            active_diag_avg, legacy_diag_avg
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/local/diag/full/cross", err, local_change, diag_change, &
-            physical(1, 2), active(1, 3)
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/local/diag/full/cross/active_avg/legacy_avg", &
+            err, local_change, diag_change, physical(1, 2), active(1, 3), &
+            active_diag_avg, legacy_diag_avg
       END IF
 
    END SUBROUTINE check_projector_active_residual_filter

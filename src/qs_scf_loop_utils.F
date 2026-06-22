@@ -8238,16 +8238,19 @@ CONTAINS
                                                   TRANSPOSE(rot_hessian_projector_physical(:, :) - &
                                                             rot_hessian(:, :)))
                                        projector_physical_direct_delta_diag_avg = 0.0_dp
+                                       projector_physical_direct_active_delta_diag_avg = 0.0_dp
                                        DO r = 1, nrot
                                           projector_physical_direct_delta_diag_avg = &
                                              projector_physical_direct_delta_diag_avg + &
                                              projector_physical_direct_delta(r, r)
+                                          projector_physical_direct_active_delta_diag_avg = &
+                                             projector_physical_direct_active_delta_diag_avg + &
+                                             rot_hessian_projector_physical_active(r, r) - rot_hessian(r, r)
                                        END DO
                                        projector_physical_direct_delta_diag_avg = &
                                           projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        projector_physical_direct_active_delta_diag_avg = &
-                                          projector_physical_delta_diag_avg - projector_physical_covariant_diag_avg + &
-                                          projector_physical_active_covariant_diag_avg
+                                          projector_physical_direct_active_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                                        projector_physical_direct_diag_compensation = 0.0_dp
                                        projector_physical_direct_active_diag_compensation = 0.0_dp
                                        projector_physical_direct_diag_compensation_local_avg = 0.0_dp
