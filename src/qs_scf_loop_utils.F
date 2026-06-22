@@ -5775,6 +5775,11 @@ CONTAINS
          plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
          plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
          plateau_gap_mode_step_negative_fraction
+      REAL(KIND=dp) :: inactive_offdiag_mode_abs_quad, inactive_offdiag_mode_eval_max, &
+         inactive_offdiag_mode_eval_min, inactive_offdiag_mode_negative_fraction, &
+         inactive_offdiag_mode_negative_quad, inactive_offdiag_mode_positive_quad, &
+         inactive_offdiag_mode_quad, inactive_offdiag_mode_quad_abs_ratio, &
+         inactive_offdiag_mode_quad_signed_ratio, inactive_offdiag_mode_step_negative_fraction
       REAL(KIND=dp) :: direct_pg_correction_drop, direct_pg_correction_negative, direct_pg_cross_drop, &
          direct_pg_negative_coeff, direct_pg_negative_drop, direct_pg_positive_coeff, direct_pg_positive_drop, &
          direct_pg_metric_drop, direct_pg_metric_ratio, direct_pg_metric_step, direct_pg_raw_negative_fraction, &
@@ -6239,6 +6244,16 @@ CONTAINS
          plateau_gap_mode_quad_abs_ratio = 0.0_dp
          plateau_gap_mode_quad_signed_ratio = 0.0_dp
          plateau_gap_mode_step_negative_fraction = 0.0_dp
+         inactive_offdiag_mode_abs_quad = 0.0_dp
+         inactive_offdiag_mode_eval_max = 0.0_dp
+         inactive_offdiag_mode_eval_min = 0.0_dp
+         inactive_offdiag_mode_negative_fraction = 0.0_dp
+         inactive_offdiag_mode_negative_quad = 0.0_dp
+         inactive_offdiag_mode_positive_quad = 0.0_dp
+         inactive_offdiag_mode_quad = 0.0_dp
+         inactive_offdiag_mode_quad_abs_ratio = 0.0_dp
+         inactive_offdiag_mode_quad_signed_ratio = 0.0_dp
+         inactive_offdiag_mode_step_negative_fraction = 0.0_dp
          direct_pg_correction_drop = 0.0_dp
          direct_pg_correction_negative = 0.0_dp
          direct_pg_cross_drop = 0.0_dp
@@ -12003,6 +12018,19 @@ CONTAINS
                      plateau_gap_mode_negative_quad, &
                      plateau_gap_mode_quad_signed_ratio, &
                      plateau_gap_mode_quad_abs_ratio)
+                  CALL audit_kpoint_ot_hessian_delta_modes( &
+                     rot_hessian_projector_physical_offdiag - &
+                     rot_hessian_projector_physical_offdiag_active, sol, model_calibrated_drop, &
+                     inactive_offdiag_mode_negative_fraction, &
+                     inactive_offdiag_mode_eval_min, &
+                     inactive_offdiag_mode_eval_max, &
+                     inactive_offdiag_mode_step_negative_fraction, &
+                     inactive_offdiag_mode_quad, &
+                     inactive_offdiag_mode_abs_quad, &
+                     inactive_offdiag_mode_positive_quad, &
+                     inactive_offdiag_mode_negative_quad, &
+                     inactive_offdiag_mode_quad_signed_ratio, &
+                     inactive_offdiag_mode_quad_abs_ratio)
                END IF
                IF (projector_physical_shadow_enabled .AND. &
                    projector_physical_offdiag_mode_abs_quad > &
@@ -12538,6 +12566,16 @@ CONTAINS
                               projector_physical_offdiag_mode_quad_abs_ratio, &
                               projector_physical_offdiag_mode_positive_quad, &
                               projector_physical_offdiag_mode_negative_quad
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
+                     " OT Schur projector physical offdiag-dP inactive modes neg stepneg emin emax quad absq "// &
+                     "qratio aratio pquad nquad:", &
+                     inactive_offdiag_mode_negative_fraction, &
+                     inactive_offdiag_mode_step_negative_fraction, &
+                     inactive_offdiag_mode_eval_min, inactive_offdiag_mode_eval_max, &
+                     inactive_offdiag_mode_quad, inactive_offdiag_mode_abs_quad, &
+                     inactive_offdiag_mode_quad_signed_ratio, &
+                     inactive_offdiag_mode_quad_abs_ratio, &
+                     inactive_offdiag_mode_positive_quad, inactive_offdiag_mode_negative_quad
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
                      " OT Schur projector physical offdiag-dP plateau-gap modes neg stepneg emin emax quad absq "// &
                      "qratio aratio pquad nquad:", &
