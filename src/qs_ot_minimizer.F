@@ -47,7 +47,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_history_jump_ratio = 1.0E2_dp, &
                                         ot_cg_kp_history_jump_beta = 1.0E1_dp, &
                                         ot_cg_kp_history_spike_old_norm = 1.0E-8_dp, &
-                                        ot_cg_kp_history_spike_new_norm = 1.0E-6_dp
+                                        ot_cg_kp_history_spike_new_norm = 1.0E-6_dp, &
+                                        ot_cg_kp_history_jump_new_norm = 1.0E-3_dp
 
 CONTAINS
 !
@@ -1359,6 +1360,7 @@ CONTAINS
                             ((qs_ot_env(1)%gnorm_old < ot_cg_kp_history_spike_old_norm .AND. &
                               gnorm_ratio > ot_cg_kp_history_spike_ratio) .OR. &
                              (beta_pr > ot_cg_kp_history_jump_beta .AND. &
+                              qs_ot_env(1)%gnorm > ot_cg_kp_history_jump_new_norm .AND. &
                               gnorm_ratio > ot_cg_kp_history_jump_ratio))
       IF (history_spike_reset) THEN
          beta_pr = 0.0_dp
