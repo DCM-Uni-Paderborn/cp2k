@@ -15206,12 +15206,25 @@ CONTAINS
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
 
          diag_abs = ABS(trace_diag_ema)
-         free_abs = ABS(trace_free_ema)
-         IF (diag_abs <= EPSILON(diag_abs) .OR. free_abs <= EPSILON(free_abs)) RETURN
-
+         IF (diag_abs <= EPSILON(diag_abs)) RETURN
          diag_quality = ABS(trace_diag_quality_ema)/diag_abs
+         free_abs = ABS(trace_free_ema)
+         IF (free_abs <= EPSILON(free_abs)) THEN
+            component_scale = MIN(component_scale, &
+                                  SQRT(MIN(1.0_dp, &
+                                           MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                               diag_quality))))
+            RETURN
+         END IF
+
          free_quality = ABS(trace_free_quality_ema)/free_abs
-         IF (free_quality <= EPSILON(free_quality)) RETURN
+         IF (free_quality <= EPSILON(free_quality)) THEN
+            component_scale = MIN(component_scale, &
+                                  SQRT(MIN(1.0_dp, &
+                                           MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                               diag_quality))))
+            RETURN
+         END IF
          trace_norm = diag_abs + free_abs
          trace_balance = ABS(trace_diag_ema + trace_free_ema)/MAX(trace_norm, EPSILON(trace_norm))
          trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))

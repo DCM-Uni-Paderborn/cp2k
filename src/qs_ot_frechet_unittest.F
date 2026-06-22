@@ -6611,12 +6611,12 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: balanced_scale, err, expected_gauge, &
-                                                            gauge_scale, no_samples_scale, &
-                                                            poor_diag_scale, zero_free_scale
+      REAL(KIND=dp) :: balanced_scale, err, expected_gauge, gauge_scale, no_samples_scale, &
+         poor_diag_scale, zero_free_poor_scale, zero_free_scale
 
       no_samples_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 1.0_dp, 2)
       zero_free_scale = dense_trace_diag_component_scale(-1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 16)
+      zero_free_poor_scale = dense_trace_diag_component_scale(-1.0_dp, 0.0_dp, 0.04_dp, 1.0_dp, 16)
       balanced_scale = dense_trace_diag_component_scale(0.75_dp, 0.25_dp, 1.0_dp, 0.1_dp, 16)
       gauge_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 0.8_dp, 16)
       poor_diag_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 0.08_dp, 0.8_dp, 16)
@@ -6625,20 +6625,21 @@ CONTAINS
       expected_gauge = SQRT(MAX(0.10_dp, expected_gauge*expected_gauge))
       err = ABS(no_samples_scale - 1.0_dp)
       err = MAX(err, ABS(zero_free_scale - 1.0_dp))
+      err = MAX(err, ABS(zero_free_poor_scale - SQRT(0.10_dp)))
       err = MAX(err, ABS(balanced_scale - 1.0_dp))
       err = MAX(err, ABS(gauge_scale - expected_gauge))
       err = MAX(err, ABS(poor_diag_scale - SQRT(0.10_dp)))
 
       IF (err > tol .OR. gauge_scale >= balanced_scale .OR. &
-          poor_diag_scale > gauge_scale) THEN
+          poor_diag_scale > gauge_scale .OR. zero_free_poor_scale >= zero_free_scale) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with error/no/free/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
-            balanced_scale, gauge_scale, poor_diag_scale
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/free/zpoor/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
+            zero_free_poor_scale, balanced_scale, gauge_scale, poor_diag_scale
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with error/no/free/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
-            balanced_scale, gauge_scale, poor_diag_scale
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/free/zpoor/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
+            zero_free_poor_scale, balanced_scale, gauge_scale, poor_diag_scale
       END IF
 
    END SUBROUTINE check_projector_trace_diag_component_scale
@@ -7678,12 +7679,19 @@ CONTAINS
       IF (samples < 8) RETURN
 
       diag_abs = ABS(trace_diag_ema)
-      free_abs = ABS(trace_free_ema)
-      IF (diag_abs <= EPSILON(diag_abs) .OR. free_abs <= EPSILON(free_abs)) RETURN
-
+      IF (diag_abs <= EPSILON(diag_abs)) RETURN
       diag_quality = ABS(trace_diag_quality_ema)/diag_abs
+      free_abs = ABS(trace_free_ema)
+      IF (free_abs <= EPSILON(free_abs)) THEN
+         component_scale = MIN(component_scale, SQRT(MIN(1.0_dp, MAX(0.10_dp, diag_quality))))
+         RETURN
+      END IF
+
       free_quality = ABS(trace_free_quality_ema)/free_abs
-      IF (free_quality <= EPSILON(free_quality)) RETURN
+      IF (free_quality <= EPSILON(free_quality)) THEN
+         component_scale = MIN(component_scale, SQRT(MIN(1.0_dp, MAX(0.10_dp, diag_quality))))
+         RETURN
+      END IF
       trace_norm = diag_abs + free_abs
       trace_balance = ABS(trace_diag_ema + trace_free_ema)/MAX(trace_norm, EPSILON(trace_norm))
       trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
