@@ -131,7 +131,9 @@ class IntSequenceMatcher(Matcher):
                 value=float(values[-1]) if values else None,
             )
 
-        return MatchResult("OK", error=None, value=float(values[-1]) if values else None)
+        return MatchResult(
+            "OK", error=None, value=float(values[-1]) if values else None
+        )
 
 
 # ======================================================================================
@@ -176,7 +178,30 @@ registry["Vib_frc_const"] = GenericMatcher(r"VIB|Frc consts", col=4)  # M128
 
 registry["M009"] = GenericMatcher(r"PINT| Total energy =", col=5)
 registry["M010"] = GenericMatcher(r"BAND TOTAL ENERGY [au]", col=6)
-registry["M011"] = GenericMatcher(r"ENERGY| Total FORCE_EVAL", col=9)
+registry["M011"] = GenericMatcher(
+    r"ENERGY\|\s+Total FORCE_EVAL \( .* \) energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
+registry["FORCE_EVAL_TS_term"] = GenericMatcher(
+    r"ENERGY\|\s+Total FORCE_EVAL \( .* \) T\*S term "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
+registry["FORCE_EVAL_free_energy"] = GenericMatcher(
+    r"ENERGY\|\s+Total FORCE_EVAL \( .* \) free energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
+registry["Mermin_FORCE_EVAL_free_energy"] = GenericMatcher(
+    r"ENERGY\|\s+Mermin FORCE_EVAL \( .* \) free energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
 registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", col=5)
 registry["N_kpoints"] = GenericMatcher(
     r"BRILLOUIN\| List of Kpoints \[2 Pi/Bohr\]\s+([0-9]+)", col=1, regex=True
@@ -285,6 +310,12 @@ registry["NO_TEXT"] = TextAbsenceMatcher()
 registry["M083"] = GenericMatcher(r"1[   1] - 2[   1]", col=7)
 registry["M084"] = GenericMatcher(r"Ionization potential of the excited atom:", col=7)
 registry["M085"] = GenericMatcher(r"Total FORCE_EVAL ( SIRIUS ) energy", col=9)
+registry["SIRIUS_Mermin_free_energy"] = GenericMatcher(
+    r"ENERGY\|\s+Mermin FORCE_EVAL \( SIRIUS \) free energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
 registry["M086"] = GenericMatcher(r"DIPOLE : CheckSum  =", col=5)
 registry["M087"] = GenericMatcher(r"POLAR : CheckSum  =", col=5)
 registry["XAS_excit_ener"] = GenericMatcher(r"XAS excitation energy (eV):", col=7)
