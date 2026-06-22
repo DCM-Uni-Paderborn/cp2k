@@ -15,8 +15,8 @@ PROGRAM qs_ot_frechet_unittest
         dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
    USE kinds,                           ONLY: dp
    USE machine,                         ONLY: default_output_unit
-   USE mathlib,                         ONLY: diamat_all,&
-                                              diag_complex
+   USE mathlib,                         ONLY: diag_complex,&
+                                              diamat_all
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_world_finalize,&
                                               mp_world_init
@@ -49,7 +49,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
    CALL check_fixed_n_preconditioner_gauge("fixed-N preconditioner gauge", 5.0E-15_dp, nfail)
    CALL check_fixed_n_tether_preconditioner_gauge("fixed-N/tether preconditioner gauge", &
-                                                   5.0E-15_dp, nfail)
+                                                  5.0E-15_dp, nfail)
    CALL check_weighted_kpoint_tether_preconditioner_gauge("weighted k-point/tether preconditioner gauge", &
                                                           5.0E-15_dp, nfail)
    CALL check_complex_kpoint_mermin_coupled_gradient("complex k-point Mermin coupled gradient", &
@@ -141,7 +141,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_complex_projector_density_curvature_addback("complex projector density curvature addback", &
                                                           5.0E-12_dp, nfail)
    CALL check_complex_projector_density_coupled_schur("complex projector density coupled Schur", &
-                                                       5.0E-12_dp, nfail)
+                                                      5.0E-12_dp, nfail)
    CALL check_projector_physical_direct_density_shadow( &
       "complex projector physical-direct density shadow", 5.0E-12_dp, nfail)
    CALL check_projector_density_candidate_total_response( &
@@ -165,7 +165,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_projector_active_residual_filter("complex projector active residual filter", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_active_direct_delta_shadow("complex projector active Direct delta shadow", &
-                                                 5.0E-14_dp, nfail)
+                                                   5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
@@ -210,6 +210,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check L_exp(diag(-i*e1,-i*e2), E_12*z)
+!> \param label ...
+!> \param e1 ...
+!> \param e2 ...
+!> \param z ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_offdiag(label, e1, e2, z, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -249,6 +255,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check L_exp(diag(-i*e,-i*e), E_11*z)
+!> \param label ...
+!> \param e1 ...
+!> \param z ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_diag(label, e1, z, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -290,6 +301,9 @@ CONTAINS
 !> \brief Check finite-generator Frechet application with mismatched Re/Im block patterns.
 !>        This mirrors the DBCSR iterator path where real-only, imaginary-only,
 !>        mixed, and absent sparse blocks must be handled consistently.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_sparse_dbcsr_pattern(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -341,6 +355,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the production DBCSR Frechet path with real/imaginary-only blocks.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+!> \param mp_comm ...
 ! **************************************************************************************************
    SUBROUTINE check_dbcsr_sparse_pattern(label, tol, nfail, mp_comm)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -456,6 +474,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Fill the dense companion to the sparse Frechet pattern tests.
+!> \param z ...
 ! **************************************************************************************************
    SUBROUTINE setup_sparse_pattern_data(z)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: z
@@ -478,6 +497,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense reference application of the complex exponential Frechet kernel.
+!> \param evals ...
+!> \param z ...
+!> \param out ...
+!> \param adjoint ...
 ! **************************************************************************************************
    SUBROUTINE apply_dense_frechet(evals, z, out, adjoint)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
@@ -504,6 +527,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Sparse block-pattern application equivalent to the DBCSR block iterator logic.
+!> \param evals ...
+!> \param z ...
+!> \param mask_re ...
+!> \param mask_im ...
+!> \param out ...
 ! **************************************************************************************************
    SUBROUTINE apply_sparse_block_frechet(evals, z, mask_re, mask_im, out)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
@@ -537,6 +565,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the weighted fixed-N Mermin gradient used for k-point OT energy variables.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_weighted_kpoint_mermin_gradient(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -549,8 +580,8 @@ CONTAINS
 
       INTEGER                                            :: ik, imo
       REAL(KIND=dp)                                      :: err, fd, ref
-      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, eps_m, eps_p, grad, h
       REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, eps_m, eps_p, grad, h
 
       wk = [0.25_dp, 0.75_dp]
       eps(:, 1) = [-0.20_dp, -0.060_dp, -0.005_dp, 0.080_dp]
@@ -585,6 +616,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the exact auxiliary-energy projection for the fixed-N Mermin subproblem.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_kpoint_mermin_energy_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -596,8 +630,8 @@ CONTAINS
                                                             sigma = 0.030_dp
 
       REAL(KIND=dp)                                      :: err, gauge_shift
-      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, grad, h, projected
       REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, grad, h, projected
 
       wk = [0.35_dp, 0.65_dp]
       eps(:, 1) = [-0.34_dp, -0.07_dp, 0.025_dp, 0.18_dp]
@@ -622,6 +656,9 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Check that the diagonal energy preconditioner removes the fixed-N gauge
 !>        in the occupation-curvature metric, not by an arithmetic band average.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_fixed_n_preconditioner_gauge(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -658,6 +695,9 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Check that the diagonal energy preconditioner removes the fixed-N gauge
 !>        in the combined occupation-plus-tether curvature metric.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_fixed_n_tether_preconditioner_gauge(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -713,6 +753,9 @@ CONTAINS
 !>        gauge in the combined irreducible-k-point and canonical-tether
 !>        curvature metric.  Dropping either the k-point weights or the tether
 !>        curvature leaves a residual chemical-potential component.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_weighted_kpoint_tether_preconditioner_gauge(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -789,6 +832,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense weighted k-point Mermin free-energy model.
+!> \param eps ...
+!> \param h ...
+!> \param wk ...
+!> \param nel ...
+!> \param sigma ...
+!> \param maxocc ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_kpoint_mermin_value(eps, h, wk, nel, sigma, maxocc) RESULT(value)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps, h
@@ -798,7 +848,8 @@ CONTAINS
 
       INTEGER                                            :: ik
       REAL(KIND=dp)                                      :: kTS, mu
-      REAL(KIND=dp), DIMENSION(SIZE(eps, 1), SIZE(eps, 2)) :: occ
+      REAL(KIND=dp), &
+         DIMENSION(SIZE(eps, 1), SIZE(eps, 2))           :: occ
 
       CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
       value = kTS
@@ -810,6 +861,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense weighted fixed-N Mermin gradient.
+!> \param eps ...
+!> \param h ...
+!> \param wk ...
+!> \param nel ...
+!> \param sigma ...
+!> \param maxocc ...
+!> \param grad ...
 ! **************************************************************************************************
    SUBROUTINE dense_kpoint_mermin_gradient(eps, h, wk, nel, sigma, maxocc, grad)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps, h
@@ -818,8 +876,9 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: grad
 
       INTEGER                                            :: ik, imo
-      REAL(KIND=dp)                                      :: gdotv, gsum, gvalue, mu, kTS, v
-      REAL(KIND=dp), DIMENSION(SIZE(eps, 1), SIZE(eps, 2)) :: occ
+      REAL(KIND=dp)                                      :: gdotv, gsum, gvalue, kTS, mu, v
+      REAL(KIND=dp), &
+         DIMENSION(SIZE(eps, 1), SIZE(eps, 2))           :: occ
 
       CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
 
@@ -849,6 +908,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the coupled complex rotation and auxiliary-energy Mermin gradient.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_kpoint_mermin_coupled_gradient(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -862,10 +924,10 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
       INTEGER                                            :: i, ik, j
       REAL(KIND=dp)                                      :: err, fd, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
       REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps, eps_m, eps_p, grad_eps
       REAL(KIND=dp), DIMENSION(nkp)                      :: wk
-      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, &
-                                                            x_m_re, x_p_im, x_p_re, x_re
 
       wk = [0.40_dp, 0.60_dp]
       eps(:, 1) = [-0.23_dp, -0.035_dp, 0.090_dp]
@@ -1010,6 +1072,9 @@ CONTAINS
 !>        The reduced problem uses eps=h(x), so the dense formula must include
 !>        the fixed-occupation rotation Hessian and the fixed-N energy response
 !>        projector, H_red = H_xx - R^T P_N R.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_fixed_n_schur_hessian(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -1023,16 +1088,16 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
       INTEGER                                            :: i, ivar, j, r, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: dense_term, err, kTS, mu, projected_term, &
-                                                            rtd_r, rtd_s, value
-      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps_base, eps_m, eps_p, grad_eps, h_base, &
-                                                            h_m, h_p, occ
-      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp)                                      :: dense_term, err, kTS, mu, &
+                                                            projected_term, rtd_r, rtd_s, value
       REAL(KIND=dp), DIMENSION(n)                        :: curv, response_r, response_s
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps_base, eps_m, eps_p, grad_eps, &
+                                                            h_base, h_m, h_p, occ
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfixed, hred, schur
-      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, &
-                                                            x_m_re, x_p_im, x_p_re, x_re
 
       wk = [1.0_dp]
       base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -1155,6 +1220,9 @@ CONTAINS
 !>        The cross block is d grad_eps / d theta = -P_N R.  The production
 !>        preconditioner uses the projected pseudo-inverse R = -P_N^+ d grad_eps/d theta,
 !>        so null occupation-curvature modes cannot drive the rotation RHS.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_fixed_n_response_channel(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -1169,12 +1237,13 @@ CONTAINS
       INTEGER                                            :: i, ivar, j, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: curv_sum, err, kTS, mu, response_shift
+      REAL(KIND=dp), DIMENSION(n)                        :: cross_fd, curv, dh, projected_response, &
+                                                            ref_cross, response_from_cross
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, &
+                                                            x_re
       REAL(KIND=dp), DIMENSION(n, nkp)                   :: eps_base, grad_eps_m, grad_eps_p, &
                                                             h_base, h_m, h_p, occ
       REAL(KIND=dp), DIMENSION(nkp)                      :: wk
-      REAL(KIND=dp), DIMENSION(n)                        :: cross_fd, curv, dh, projected_response, &
-                                                            ref_cross, response_from_cross
-      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
 
       wk = [1.0_dp]
       base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -1280,6 +1349,9 @@ CONTAINS
 !>        diagonal projector this reduces to d[U^H H U]_ii/dtheta; with a
 !>        spectral projector blend it also contains the finite complex projector
 !>        rotation response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_blended_response_channel(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -1296,13 +1368,14 @@ CONTAINS
       INTEGER                                            :: i, ivar, j, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: active_err, err
-      REAL(KIND=dp), DIMENSION(n, nkp)                   :: h_m, h_p
       REAL(KIND=dp), DIMENSION(n)                        :: occ_scale, occ_scale_m, occ_scale_p
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im_2d, grad_re_2d
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, &
+                                                            x_re
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: h_m, h_p
       REAL(KIND=dp), DIMENSION(n, nrot)                  :: diag_response, projector_response, &
                                                             response_fd, zero_response
-      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
 
       base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1, 1) = CMPLX(-0.28_dp, 0.0_dp, KIND=dp)
@@ -1410,6 +1483,9 @@ CONTAINS
 !>        This is the gauge-stable companion to the band-projector basis response:
 !>        the diagonal part remains the Rayleigh response, while the spectral part
 !>        follows finite eigenvalue shifts rather than the instantaneous projector basis.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_physical_response_channel(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -1418,7 +1494,8 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3, nkp = 1, nrot = n*(n - 1)
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
-                                                            fd_step = 1.0E-6_dp, projector_weight = 0.70_dp
+                                                            fd_step = 1.0E-6_dp, &
+                                                            projector_weight = 0.70_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc_m, chc_p, occ_mat_m, occ_mat_p, u
       COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
@@ -1426,9 +1503,11 @@ CONTAINS
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: active_err, err
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, &
+                                                            x_re
       REAL(KIND=dp), DIMENSION(n, nkp)                   :: diag_m, diag_p, eig_m, eig_p
-      REAL(KIND=dp), DIMENSION(n, nrot)                  :: basis_response, physical_response, reference
-      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(n, nrot)                  :: basis_response, physical_response, &
+                                                            reference
 
       base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1, 1) = CMPLX(-0.015_dp, 0.0_dp, KIND=dp)
@@ -1527,6 +1606,9 @@ CONTAINS
 !> \brief Check that the physical Projector-Hessian keeps off-diagonal occupation response.
 !>        The diagonal density response is held fixed here because the production
 !>        Schur model consumes it in the auxiliary-energy response channel.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_physical_hessian_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -1535,7 +1617,8 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3, nrot = n*(n - 1)
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
-                                                            fd_step = 1.0E-6_dp, projector_weight = 0.63_dp
+                                                            fd_step = 1.0E-6_dp, &
+                                                            projector_weight = 0.63_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_mat, &
                                                             occ0, occ_m, occ_p, u
@@ -1544,9 +1627,10 @@ CONTAINS
       REAL(KIND=dp)                                      :: active, err
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_docc_im, grad_docc_re, grad_m_im, &
-                                                            grad_m_re, grad_p_im, grad_p_re
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: fixed_hessian, model_hessian, reference_hessian
-      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+                                                            grad_m_re, grad_p_im, grad_p_re, x_im, &
+                                                            x_m_im, x_m_re, x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: fixed_hessian, model_hessian, &
+                                                            reference_hessian
 
       base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1) = CMPLX(-0.021_dp, 0.0_dp, KIND=dp)
@@ -1680,6 +1764,14 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense derivative of the blended projector rotation gradient with respect to occupations.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param projector_weight ...
+!> \param var_i ...
+!> \param var_j ...
+!> \param var_kind ...
+!> \param response ...
 ! **************************************************************************************************
    SUBROUTINE dense_blended_projector_response(x_re, x_im, base, projector_weight, &
                                                var_i, var_j, var_kind, response)
@@ -1712,7 +1804,7 @@ CONTAINS
             END DO
          END IF
          occ_mat(band, band) = occ_mat(band, band) + &
-                                CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
+                               CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
          CALL dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
          DO r = 1, SIZE(var_i)
             SELECT CASE (var_kind(r))
@@ -1730,19 +1822,30 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense finite-complex physical occupation response from Rayleigh/eigenvalue shifts.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param projector_weight ...
+!> \param occ_scale ...
+!> \param occ_curv ...
+!> \param var_i ...
+!> \param var_j ...
+!> \param var_kind ...
+!> \param response ...
 ! **************************************************************************************************
    SUBROUTINE dense_blended_projector_physical_response(x_re, x_im, base, projector_weight, occ_scale, &
                                                         occ_curv, var_i, var_j, var_kind, response)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: base
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale, occ_curv
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: response
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc_m, chc_p, evec, occ_mat_m, occ_mat_p, u
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc_m, chc_p, evec, occ_mat_m, &
+                                                            occ_mat_p, u
       INTEGER                                            :: band, n, s
       REAL(KIND=dp)                                      :: projector_response, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals_m, evals_p
@@ -1794,6 +1897,14 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense gradient for the same blended projector model with arbitrary occupation weights.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_scale ...
+!> \param projector_weight ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param eps_diag ...
 ! **************************************************************************************************
    SUBROUTINE dense_blended_projector_rotation_gradient(x_re, x_im, base, occ_scale, &
                                                         projector_weight, grad_re, grad_im, eps_diag)
@@ -1826,15 +1937,19 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the split Schur projector for global fixed-N Mermin response plus channel-local tether.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_tether_projector(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 5, nrot = 3, nchannels = 2
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 5, nrot = 3
 
-      INTEGER                                            :: first_energy, i, j, local_channel, nmo, r, s
+      INTEGER                                            :: first_energy, i, j, local_channel, nmo, &
+                                                            r, s
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
       REAL(KIND=dp)                                      :: err, occ_sum, projected_term, ref_term, &
                                                             shift_left, shift_right, weight_sum
@@ -1909,15 +2024,19 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check split Schur projector with distinct occupation and tether response channels.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_tether_cross_projector(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 5, nrot = 3, nchannels = 2
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 5, nrot = 3
 
-      INTEGER                                            :: first_energy, i, j, local_channel, nmo, r, s
+      INTEGER                                            :: first_energy, i, j, local_channel, nmo, &
+                                                            r, s
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
       REAL(KIND=dp)                                      :: err, occ_sum, projected_term, ref_term, &
                                                             shift_left, shift_right, weight_sum
@@ -2000,6 +2119,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the symmetrized Schur term for distinct rotation/energy responses.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_asymmetric_response_schur(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -2009,11 +2131,13 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 5, nrot = 3
 
       INTEGER                                            :: i, j, r, s
-      REAL(KIND=dp)                                      :: active_err, err, occ_sum, shift, symmetry_err
+      REAL(KIND=dp)                                      :: active_err, err, occ_sum, shift, &
+                                                            symmetry_err
       REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: hocc
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_occ, b_raw, response_occ, response_occ_projected, &
-                                                            response_raw, response_raw_projected
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_occ, b_raw, response_occ, &
+                                                            response_occ_projected, response_raw, &
+                                                            response_raw_projected
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: mixed, occ_only, reference
 
       occ_curv = [0.31_dp, 0.74_dp, 0.16_dp, 0.47_dp, 0.22_dp]
@@ -2071,24 +2195,28 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check exact dense elimination for the mixed fixed-N/tether energy block.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_tether_exact_response(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nrot = 3, nchannels = 2
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6, nrot = 3
 
-      INTEGER                                            :: first_energy, i, info, j, local_channel, nmo, r
-      INTEGER, DIMENSION(ne)                             :: ipiv
+      INTEGER                                            :: first_energy, i, info, j, local_channel, &
+                                                            nmo, r
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
-      REAL(KIND=dp)                                      :: active_err, channel_occ_sum, curv_max, err, &
-                                                            gauge_weight, ref_value, shift, test_value, &
-                                                            weight_sum
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      REAL(KIND=dp)                                      :: active_err, channel_occ_sum, curv_max, &
+                                                            err, gauge_weight, ref_value, shift, &
+                                                            test_value, weight_sum
       REAL(KIND=dp), DIMENSION(ne)                       :: bq, occ_curv, tether_curv, x
-      REAL(KIND=dp), DIMENSION(nrot)                     :: q
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, rhs
+      REAL(KIND=dp), DIMENSION(nrot)                     :: q
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: exact
 
       channel_nmo = [3, 3]
@@ -2131,8 +2259,8 @@ CONTAINS
             shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
                                 response_tether(first_energy:first_energy + nmo - 1, r))/weight_sum
             b(first_energy:first_energy + nmo - 1, r) = b(first_energy:first_energy + nmo - 1, r) + &
-               tether_curv(first_energy:first_energy + nmo - 1)* &
-               (response_tether(first_energy:first_energy + nmo - 1, r) - shift)
+                                                        tether_curv(first_energy:first_energy + nmo - 1)* &
+                                                        (response_tether(first_energy:first_energy + nmo - 1, r) - shift)
          END DO
       END DO
 
@@ -2186,23 +2314,26 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that exact dense energy response is returned in the mixed response gauge.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_tether_exact_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nrot = 3, nchannels = 2
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6, nrot = 3
 
       INTEGER                                            :: info, r
-      INTEGER, DIMENSION(ne)                             :: ipiv
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
-      LOGICAL                                            :: projected_ok, projected
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      LOGICAL                                            :: projected, projected_ok
       REAL(KIND=dp)                                      :: err, projected_occ_residual, &
-                                                            projected_tether_residual, raw_occ_residual, &
-                                                            raw_tether_residual
-      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, projected_response, raw_response, &
-                                                            tether_curv
+                                                            projected_tether_residual, &
+                                                            raw_occ_residual, raw_tether_residual
+      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, projected_response, &
+                                                            raw_response, tether_curv
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, rhs
 
@@ -2264,25 +2395,30 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check exact energy-block elimination against the full augmented Schur system.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_mixed_fixed_n_tether_exact_schur(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nrot = 3, nchannels = 2, ntot = ne + nrot
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6, nrot = 3, &
+                                                            ntot = ne + nrot
 
       INTEGER                                            :: info
       INTEGER, DIMENSION(MAX(ne, ntot))                  :: ipiv
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
       REAL(KIND=dp)                                      :: err
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, z_aug, z_red
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_red
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, rhs_energy
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, response_occ, response_tether, &
+                                                            rhs_energy
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_red
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: a, schur
-      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
       REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
 
       channel_nmo = [3, 3]
       e_offset = [1, 4]
@@ -2356,6 +2492,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check positive-subspace rescue for an indefinite Schur rotation block.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_indefinite_schur_spectral_fallback(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -2366,8 +2505,8 @@ CONTAINS
 
       INTEGER                                            :: i, info
       INTEGER, DIMENSION(n)                              :: ipiv
-      REAL(KIND=dp)                                      :: direct_dot, err, fallback_dot, floor, mode_rhs, &
-                                                            negative_projection, quad
+      REAL(KIND=dp)                                      :: direct_dot, err, fallback_dot, floor, &
+                                                            mode_rhs, negative_projection, quad
       REAL(KIND=dp), DIMENSION(n)                        :: eval, rhs, sol_direct, sol_spectral
       REAL(KIND=dp), DIMENSION(n, n)                     :: schur, schur_fact, schur_modes
 
@@ -2422,6 +2561,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that indefinite Schur model norms use modal absolute curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_indefinite_schur_absolute_metric(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -2479,14 +2621,22 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param response_occ ...
+!> \param response_tether ...
+!> \param h ...
+!> \param b ...
 ! **************************************************************************************************
    SUBROUTINE build_test_mixed_energy_block(channel_nmo, e_offset, response_occ, response_tether, h, b)
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_occ, response_tether
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: h, b
 
-      INTEGER                                            :: first_energy, i, j, local_channel, ne, nchannels, nmo, nrot, r
-      REAL(KIND=dp)                                      :: channel_occ_sum, curv_max, gauge_weight, shift, weight_sum
+      INTEGER                                            :: first_energy, i, j, local_channel, &
+                                                            nchannels, ne, nmo, nrot, r
+      REAL(KIND=dp)                                      :: channel_occ_sum, curv_max, gauge_weight, &
+                                                            shift, weight_sum
       REAL(KIND=dp), DIMENSION(SIZE(h, 1))               :: occ_curv, tether_curv
 
       ne = SIZE(h, 1)
@@ -2522,8 +2672,8 @@ CONTAINS
             shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
                                 response_tether(first_energy:first_energy + nmo - 1, r))/weight_sum
             b(first_energy:first_energy + nmo - 1, r) = b(first_energy:first_energy + nmo - 1, r) + &
-               tether_curv(first_energy:first_energy + nmo - 1)* &
-               (response_tether(first_energy:first_energy + nmo - 1, r) - shift)
+                                                        tether_curv(first_energy:first_energy + nmo - 1)* &
+                                                        (response_tether(first_energy:first_energy + nmo - 1, r) - shift)
          END DO
       END DO
 
@@ -2554,6 +2704,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Diagonal of U^H H U for each dense complex k-point channel.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param hdiag ...
 ! **************************************************************************************************
    SUBROUTINE dense_complex_kpoint_hdiag(x_re, x_im, base, hdiag)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: x_re, x_im
@@ -2579,6 +2733,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Eigenvalues of U^H H U for each dense complex k-point channel.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eigvals ...
 ! **************************************************************************************************
    SUBROUTINE dense_complex_kpoint_eigvals(x_re, x_im, base, eigvals)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: x_re, x_im
@@ -2602,6 +2760,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Perturb one off-diagonal real or imaginary anti-Hermitian rotation variable.
+!> \param x_re ...
+!> \param x_im ...
+!> \param i ...
+!> \param j ...
+!> \param kind ...
+!> \param step ...
 ! **************************************************************************************************
    SUBROUTINE perturb_complex_rotation_var(x_re, x_im, i, j, kind, step)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: x_re, x_im
@@ -2621,6 +2785,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Perturb one packed complex rotation variable in a dense 2-D fixture.
+!> \param x_re ...
+!> \param x_im ...
+!> \param i ...
+!> \param j ...
+!> \param kind ...
+!> \param step ...
 ! **************************************************************************************************
    SUBROUTINE perturb_complex_rotation_var_2d(x_re, x_im, i, j, kind, step)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: x_re, x_im
@@ -2640,6 +2810,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Pack off-diagonal real/imaginary rotation gradients into a vector.
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param var_i ...
+!> \param var_j ...
+!> \param var_kind ...
+!> \param grad_vec ...
 ! **************************************************************************************************
    SUBROUTINE extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_vec)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: grad_re, grad_im
@@ -2661,6 +2837,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Pack off-diagonal real/imaginary rotation gradients from a dense 2-D fixture.
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param var_i ...
+!> \param var_j ...
+!> \param var_kind ...
+!> \param grad_vec ...
 ! **************************************************************************************************
    SUBROUTINE extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_vec)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: grad_re, grad_im
@@ -2682,6 +2864,15 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense complex k-point Mermin value with occupations from auxiliary energies.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eps ...
+!> \param wk ...
+!> \param nel ...
+!> \param sigma ...
+!> \param maxocc ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_complex_kpoint_mermin_value(x_re, x_im, base, eps, wk, nel, sigma, maxocc) &
       RESULT(value)
@@ -2713,6 +2904,18 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense coupled Mermin gradients for complex k-point rotations and auxiliary energies.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eps ...
+!> \param wk ...
+!> \param nel ...
+!> \param sigma ...
+!> \param maxocc ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param grad_eps ...
+!> \param value ...
 ! **************************************************************************************************
    SUBROUTINE dense_complex_kpoint_mermin_gradient(x_re, x_im, base, eps, wk, nel, sigma, maxocc, &
                                                    grad_re, grad_im, grad_eps, value)
@@ -2747,6 +2950,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check a non-diagonal occupation projector in the complex REF rotation gradient.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_rotation_gradient(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -2865,6 +3071,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the finite rotation Hessian includes the moving occupation projector.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_occ_projector_hessian(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -2875,17 +3084,21 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-7_dp, &
                                                             fd_step = 2.0E-5_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_diag, &
-                                                            docc_mat, docc_offdiag, occ_mat, u
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, &
+                                                            docc_diag, docc_mat, docc_offdiag, &
+                                                            occ_mat, u
       INTEGER                                            :: i, j, r, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: active_diag_err, active_err, active_offdiag_err, err, fd, &
-                                                            split_err, symmetry_err, value_m, value_p
+      REAL(KIND=dp)                                      :: active_diag_err, active_err, &
+                                                            active_offdiag_err, err, fd, &
+                                                            split_err, symmetry_err, value_m, &
+                                                            value_p
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hdiag, hfrechet, hfrozen, hoffdiag, hmove, hsplit
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
                                                             x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hdiag, hfrechet, hfrozen, hmove, &
+                                                            hoffdiag, hsplit
 
       base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1) = CMPLX(-0.37_dp, 0.0_dp, KIND=dp)
@@ -3032,6 +3245,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the covariant curvature removed by a spectral projector blend.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_covariant_curvature(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3048,10 +3264,10 @@ CONTAINS
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: active, err, shift_err
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrozen, hmoving
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
                                                             x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrozen, hmoving
 
       base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1) = CMPLX(-0.42_dp, 0.0_dp, KIND=dp)
@@ -3120,6 +3336,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the spectral projector covariance is removed in the diagonal REF gauge.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_covariant_gauge_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3136,10 +3355,10 @@ CONTAINS
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: err, gauge_err
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hblend_frozen, hdiag_frozen, hmoving
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
                                                             x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hblend_frozen, hdiag_frozen, hmoving
 
       base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1) = CMPLX(-0.37_dp, 0.0_dp, KIND=dp)
@@ -3241,6 +3460,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that diagonal density response is not part of the physical rotation Hessian.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_hessian_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3252,16 +3474,16 @@ CONTAINS
                                                             fd_step = 2.0E-5_dp, &
                                                             projector_weight = 0.35_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, docc_diag, &
-                                                            docc_mat, occ_diag, u
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, chc_m, chc_p, dchc, &
+                                                            docc_diag, docc_mat, occ_diag, u
       INTEGER                                            :: i, j, r, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
       REAL(KIND=dp)                                      :: density_active, err, wrong_err
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hdensity, hdiag_frozen, hmoving
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
                                                             x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hdensity, hdiag_frozen, hmoving
 
       base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1) = CMPLX(-0.39_dp, 0.0_dp, KIND=dp)
@@ -3373,6 +3595,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Separate projector-basis gauge noise from physical occupation response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_occ_projector_gauge_separation(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3423,6 +3648,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Bound near-degenerate projector-basis response by the physical occupation curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_occ_projector_curvature_cap(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3435,7 +3663,8 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, fd_mat, occ_mat_m, &
                                                             occ_mat_p
       REAL(KIND=dp)                                      :: cap, capped_coeff, err, raw_coeff
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal, occ_noisy, occ_smooth
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal, occ_noisy, &
+                                                            occ_smooth
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       chc(1, 1) = CMPLX(0.00_dp, 0.0_dp, KIND=dp)
@@ -3480,6 +3709,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Cap active/inert occupation-projector slopes by shared pair curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_occ_projector_active_inert_pair_cap(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3490,7 +3722,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: gap = 8.0E-5_dp, gauge_gap = 3.0E-5_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat
-      REAL(KIND=dp)                                      :: capped_coeff, err, max_cap, raw_coeff, shared_cap
+      REAL(KIND=dp)                                      :: capped_coeff, err, max_cap, raw_coeff, &
+                                                            shared_cap
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_noisy
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -3526,6 +3759,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Plateau only anomalous near-degenerate projector-basis occupation jumps.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_occ_projector_gauge_plateau(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3539,7 +3775,8 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat, fd_mat, occ_mat_m, &
                                                             occ_mat_p
       REAL(KIND=dp)                                      :: cap, err, plateau_coeff, raw_coeff
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal, occ_noisy, occ_smooth
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_equal, occ_noisy, &
+                                                            occ_smooth
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       chc(1, 1) = CMPLX(0.00_dp, 0.0_dp, KIND=dp)
@@ -3584,6 +3821,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Keep the gauge plateau local, but cap non-Fermi divided-difference slopes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_occ_projector_plateau_caps_far_slope(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3630,6 +3870,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Keep the physical dP response covariant while removing near-degenerate gauge noise.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_occ_projector_gauge_covariance(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3643,7 +3886,8 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_q, dchc, dchc_q, dchc_shift, &
                                                             docc_mat, docc_q, docc_raw, docc_ref, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active, cov_err, err, gauge_err, trace_err
+      REAL(KIND=dp)                                      :: active, cov_err, err, gauge_err, &
+                                                            trace_err
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
@@ -3727,6 +3971,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that diagonal projector-density response enters through the dense fixed-N projection.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_response_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3736,11 +3983,14 @@ CONTAINS
       INTEGER, PARAMETER                                 :: n = 4, nrot = 3
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-7_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_mat, occ_mat_m, occ_mat_p
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_mat, occ_mat_m, &
+                                                            occ_mat_p
       INTEGER                                            :: i, s
-      REAL(KIND=dp)                                      :: active, corr_shift, err, occ_sum, raw_shift
+      REAL(KIND=dp)                                      :: active, corr_shift, err, occ_sum, &
+                                                            raw_shift
       REAL(KIND=dp), DIMENSION(n)                        :: density_diag, occ_curv, occ_scale
-      REAL(KIND=dp), DIMENSION(n, nrot)                  :: b_current, b_reference, raw_response, response_current
+      REAL(KIND=dp), DIMENSION(n, nrot)                  :: b_current, b_reference, raw_response, &
+                                                            response_current
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       chc(1, 1) = CMPLX(-0.31_dp, 0.0_dp, KIND=dp)
@@ -3803,7 +4053,7 @@ CONTAINS
          err = MAX(err, MAXVAL(ABS(docc_mat(:, :) - docc_fd(:, :))))
          err = MAX(err, MAXVAL(ABS(b_current(:, s) - b_reference(:, s))))
          active = MAX(active, MAXVAL(ABS(b_current(:, s) - &
-                                        occ_curv(:)*(raw_response(:, s) - raw_shift))))
+                                         occ_curv(:)*(raw_response(:, s) - raw_shift))))
       END DO
 
       IF (err > tol .OR. active < 1.0E-4_dp) THEN
@@ -3817,6 +4067,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that near-degenerate projector gauge motion is removed before fixed-N density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_gauge_plateau_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3824,14 +4077,14 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 4
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, gauge_gap = 5.0E-5_dp
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_plateau, &
-                                                            docc_raw, q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, &
+                                                            docc_plateau, docc_raw, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, occ_sum, physical_active, physical_capped_norm, &
-                                                            physical_err, physical_raw_norm, plateau_norm, raw_norm, &
-                                                            shift
+      REAL(KIND=dp) :: err, occ_sum, physical_active, physical_capped_norm, physical_err, &
+         physical_raw_norm, plateau_norm, raw_norm, shift
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale, projected_response
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
@@ -3918,6 +4171,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the production density-response filter is separate from finite dP physics.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_active_density_response_filter(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -3926,21 +4182,19 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
                                                             docc_safe, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_bound_err, active_norm, active_plateau_gap, &
-                                                            active_weight, active_shift, active_sum, fixed_n_leak, &
-                                                            full_err, full_norm, gauge_leak_err, gauge_norm, &
-                                                            gauge_shift, low_ratio_err, low_weight, occ_curv_max, &
-                                                            occ_sum, old_fixed_n_leak, plateau_fixed_n_leak, &
-                                                            plateau_norm, plateau_shift
-      REAL(KIND=dp), DIMENSION(n)                        :: active_response, full_response, occ_curv, &
-                                                            occ_plateau, occ_scale, plateau_response, &
-                                                            reference_response, response_shifted, weight_response
+      REAL(KIND=dp) :: active_bound_err, active_norm, active_plateau_gap, active_shift, &
+         active_sum, active_weight, fixed_n_leak, full_err, full_norm, gauge_leak_err, gauge_norm, &
+         gauge_shift, low_ratio_err, low_weight, occ_curv_max, occ_sum, old_fixed_n_leak, &
+         plateau_fixed_n_leak, plateau_norm, plateau_shift
+      REAL(KIND=dp), DIMENSION(n) :: active_response, full_response, occ_curv, occ_plateau, &
+         occ_scale, plateau_response, reference_response, response_shifted, weight_response
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -4047,6 +4301,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the active density response does not amplify low-curvature projector noise.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_active_density_safe_inverse(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4054,15 +4311,15 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 4
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            response_ratio_gate = 2.0E-2_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, response_ratio_gate = 2.0E-2_dp
 
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_floor, active_shift, active_sum, &
-                                                            err, fixed_n_leak, low_suppression, old_shift, &
-                                                            old_sum
-      REAL(KIND=dp), DIMENSION(n)                        :: active_response, active_weight, docc_diag, &
-                                                            occ_curv, old_response, raw_column, safe_column
+                                                            err, fixed_n_leak, low_suppression, &
+                                                            old_shift, old_sum
+      REAL(KIND=dp), DIMENSION(n)                        :: active_response, active_weight, &
+                                                            docc_diag, occ_curv, old_response, &
+                                                            raw_column, safe_column
 
       occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 1.0E-3_dp, 4.0E-8_dp]
       docc_diag(:) = [-8.0E-3_dp, 2.4E-3_dp, -2.0E-4_dp, 1.6E-5_dp]
@@ -4105,6 +4362,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that bounded physical density-response mix recovers active curvature without gauge blow-up.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_bounded_density_mix(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4112,16 +4372,13 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 4
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            response_ratio_gate = 2.0E-2_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, response_ratio_gate = 2.0E-2_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_floor, active_shift, active_sum, &
-                                                            fixed_n_leak, low_suppression, mid_recovery, &
-                                                            mix_shift, mix_sum, mix_weight, old_shift, old_sum
-      REAL(KIND=dp), DIMENSION(n)                        :: active_response, active_weight, docc_diag, &
-                                                            mixed_column, mixed_response, occ_curv, &
-                                                            old_response, raw_column, safe_column
+      REAL(KIND=dp) :: active_floor, active_shift, active_sum, fixed_n_leak, low_suppression, &
+         mid_recovery, mix_shift, mix_sum, mix_weight, old_shift, old_sum
+      REAL(KIND=dp), DIMENSION(n) :: active_response, active_weight, docc_diag, mixed_column, &
+         mixed_response, occ_curv, old_response, raw_column, safe_column
 
       occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp]
       docc_diag(:) = [-8.0E-3_dp, 2.4E-3_dp, -1.6E-4_dp, 1.6E-5_dp]
@@ -4173,6 +4430,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the active density split preserves the finite physical response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_active_density_total_invariant(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4181,20 +4441,18 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.42_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_safe, &
                                                             q, work
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_fixed_n_leak, active_shift, active_sum, &
-                                                            active_weight, audit_gap, finite_total_err, &
-                                                            full_fixed_n_leak, full_shift, full_sum, &
-                                                            occ_curv_max, total_active_gap
-      REAL(KIND=dp), DIMENSION(n)                        :: active_density_response, density_column, &
-                                                            finite_physical_response, full_density_response, &
-                                                            occ_curv, occ_scale, occ_work, physical_occ_response, &
-                                                            projector_evals_m, projector_evals_p, total_response
+      REAL(KIND=dp) :: active_fixed_n_leak, active_shift, active_sum, active_weight, audit_gap, &
+         finite_total_err, full_fixed_n_leak, full_shift, full_sum, occ_curv_max, total_active_gap
+      REAL(KIND=dp), DIMENSION(n) :: active_density_response, density_column, &
+         finite_physical_response, full_density_response, occ_curv, occ_scale, occ_work, &
+         physical_occ_response, projector_evals_m, projector_evals_p, total_response
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -4246,7 +4504,7 @@ CONTAINS
       active_shift = 0.0_dp
       DO i = 1, n
          finite_physical_response(i) = (1.0_dp - projector_weight)*REAL(dchc(i, i), KIND=dp) + &
-            projector_weight*(projector_evals_p(i) - projector_evals_m(i))/(2.0_dp*fd_step)
+                                       projector_weight*(projector_evals_p(i) - projector_evals_m(i))/(2.0_dp*fd_step)
          density_column(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
          full_shift = full_shift + occ_curv(i)*density_column(i)
          active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
@@ -4287,6 +4545,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that raw projector-basis density motion stays in audit, not production response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_raw_audit_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4300,12 +4561,11 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_raw, &
                                                             docc_safe, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_norm, active_shift, active_sum, &
-                                                            active_weight, audit_gap, err, fixed_n_leak, &
-                                                            occ_curv_max, occ_sum, production_norm, &
-                                                            raw_norm, response_shift
-      REAL(KIND=dp), DIMENSION(n)                        :: active_response, audit_response, occ_curv, &
-                                                            occ_scale, physical_column, production_full
+      REAL(KIND=dp) :: active_norm, active_shift, active_sum, active_weight, audit_gap, err, &
+         fixed_n_leak, occ_curv_max, occ_sum, production_norm, raw_norm, response_shift
+      REAL(KIND=dp), DIMENSION(n)                        :: active_response, audit_response, &
+                                                            occ_curv, occ_scale, physical_column, &
+                                                            production_full
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -4389,6 +4649,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that active rotation weights require both bands to be in the Fermi window.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_active_rotation_pair_weight(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4398,8 +4661,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curv_max = 0.040_dp, &
                                                             projector_weight = 0.60_dp
 
-      REAL(KIND=dp)                                      :: active_inert, err, full_active, half_active, &
-                                                            old_active_inert, reversed, zero_weight
+      REAL(KIND=dp)                                      :: active_inert, err, full_active, &
+                                                            half_active, old_active_inert, &
+                                                            reversed, zero_weight
 
       full_active = dense_pair_projector_weight(projector_weight, curv_max, curv_max, curv_max)
       half_active = dense_pair_projector_weight(projector_weight, 0.25_dp*curv_max, &
@@ -4430,6 +4694,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_density_descent_gap_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4438,9 +4705,10 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: ne = 5
 
-      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, neg_norm, null_norm, &
-                                                            phys_norm, raw_norm
-      REAL(KIND=dp), DIMENSION(ne)                       :: descent, gap_null, gap_phys, grad, projected
+      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, neg_norm, &
+                                                            null_norm, phys_norm, raw_norm
+      REAL(KIND=dp), DIMENSION(ne)                       :: descent, gap_null, gap_phys, grad, &
+                                                            projected
 
       grad(:) = [0.31_dp, -0.24_dp, 0.17_dp, -0.09_dp, 0.05_dp]
       descent(:) = [0.42_dp, -0.18_dp, 0.11_dp, -0.04_dp, 0.02_dp]
@@ -4486,6 +4754,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the active density filter can leave a recoverable Mermin-descent gap.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_density_active_filter_descent_recovery(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -4496,11 +4767,12 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.31_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: coeff, denom, err, gdot, gap_weighted, &
-                                                            projected_weighted, recoverable_fraction
+      REAL(KIND=dp)                                      :: coeff, denom, err, gap_weighted, gdot, &
+                                                            projected_weighted, &
+                                                            recoverable_fraction
       REAL(KIND=dp), DIMENSION(ne)                       :: active_response, active_weight, descent, &
-                                                            full_response, gap, gap_null, grad, occ_curv, &
-                                                            projected
+                                                            full_response, gap, gap_null, grad, &
+                                                            occ_curv, projected
 
       occ_curv(:) = [0.040_dp, 0.020_dp, 0.010_dp, 0.005_dp, 0.002_dp]
       active_weight(:) = occ_curv(:)/MAXVAL(occ_curv(:))
@@ -4557,12 +4829,11 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 5
       REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.27_dp
 
-      REAL(KIND=dp)                                      :: coeff_grad, coeff_metric, denom_grad, err, &
-                                                            gdot_grad, gdot_metric, metric_cross, &
-                                                            metric_denom, null_dot, old_norm, &
-                                                            recovered_norm
+      REAL(KIND=dp) :: coeff_grad, coeff_metric, denom_grad, err, gdot_grad, gdot_metric, &
+         metric_cross, metric_denom, null_dot, old_norm, recovered_norm
       REAL(KIND=dp), DIMENSION(ne)                       :: descent, grad, metric_null, occ_curv, &
-                                                            projected_grad, projected_metric, response
+                                                            projected_grad, projected_metric, &
+                                                            response
 
       occ_curv(:) = [0.045_dp, 0.026_dp, 0.018_dp, 0.010_dp, 0.004_dp]
       descent(:) = [0.18_dp, -0.10_dp, 0.06_dp, -0.03_dp, 0.015_dp]
@@ -4614,17 +4885,15 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nchannel = 2
+      INTEGER, PARAMETER                                 :: nchannel = 2, ne = 6
       REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.29_dp
 
       INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
-      REAL(KIND=dp)                                      :: coeff_grad, coeff_metric, denom_grad, err, &
-                                                            gdot_grad, gdot_metric, metric_cross, &
-                                                            metric_denom, null_dot, old_norm, &
-                                                            recovered_norm
+      REAL(KIND=dp) :: coeff_grad, coeff_metric, denom_grad, err, gdot_grad, gdot_metric, &
+         metric_cross, metric_denom, null_dot, old_norm, recovered_norm
       REAL(KIND=dp), DIMENSION(ne)                       :: descent, grad, metric_null, occ_curv, &
-                                                            projected_grad, projected_metric, response, &
-                                                            tether_curv
+                                                            projected_grad, projected_metric, &
+                                                            response, tether_curv
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -4684,16 +4953,16 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nchannel = 2
+      INTEGER, PARAMETER                                 :: nchannel = 2, ne = 6
       REAL(KIND=dp), PARAMETER                           :: expected_coeff = 0.34_dp
 
       INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
-      REAL(KIND=dp)                                      :: coeff_active, coeff_energy, denom_active, &
-                                                            denom_energy, err, gdot_active, gdot_energy, &
-                                                            primary_norm, recovered_norm
-      REAL(KIND=dp), DIMENSION(ne)                       :: active_descent, density_gap, energy_descent, &
-                                                            grad, occ_curv, projected_active, &
-                                                            projected_energy, tether_curv
+      REAL(KIND=dp) :: coeff_active, coeff_energy, denom_active, denom_energy, err, gdot_active, &
+         gdot_energy, primary_norm, recovered_norm
+      REAL(KIND=dp), DIMENSION(ne)                       :: active_descent, density_gap, &
+                                                            energy_descent, grad, occ_curv, &
+                                                            projected_active, projected_energy, &
+                                                            tether_curv
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -4745,19 +5014,21 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nrot = 2, nchannel = 2
+      INTEGER, PARAMETER                                 :: nchannel = 2, ne = 6, nrot = 2
 
       INTEGER                                            :: info, r, s
       INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
       INTEGER, DIMENSION(nrot)                           :: ipiv
-      REAL(KIND=dp)                                      :: blind_coeff, blind_denom, blind_gdot, curvature_gap, &
-                                                            drop_active, drop_full, drop_gap, err, metric_coeff, &
-                                                            metric_cross, metric_denom, metric_term, rhs_gap, &
-                                                            solution_gap
+      REAL(KIND=dp) :: blind_coeff, blind_denom, blind_gdot, curvature_gap, drop_active, &
+         drop_full, drop_gap, err, metric_coeff, metric_cross, metric_denom, metric_term, rhs_gap, &
+         solution_gap
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, projected, tether_curv
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_gap, response_active, response_full, seed_gap
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_active, rhs_full, sol_active, sol_full
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_base, schur_active, schur_fact, schur_full
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_gap, response_active, &
+                                                            response_full, seed_gap
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_active, rhs_full, &
+                                                            sol_active, sol_full
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_base, schur_active, schur_fact, &
+                                                            schur_full
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -4775,7 +5046,7 @@ CONTAINS
       density_gap(:, :) = seed_gap(:, :)
       DO s = 1, nrot
          density_gap(:, s) = density_gap(:, s) - &
-            DOT_PRODUCT(grad_e(:), density_gap(:, s))/DOT_PRODUCT(grad_e(:), grad_e(:))*grad_e(:)
+                             DOT_PRODUCT(grad_e(:), density_gap(:, s))/DOT_PRODUCT(grad_e(:), grad_e(:))*grad_e(:)
       END DO
       response_full(:, :) = response_active(:, :) + density_gap(:, :)
 
@@ -4853,15 +5124,14 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nchannel = 2
+      INTEGER, PARAMETER                                 :: nchannel = 2, ne = 6
 
       INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
-      REAL(KIND=dp)                                      :: drop_euclidean, drop_mixed, err, gauge_dot, &
-                                                            gdotp, norm_energy_euclidean, norm_energy_mixed, &
-                                                            norm_euclidean, norm_mixed, rotation_gdot, &
-                                                            rotation_norm, scale_euclidean, scale_mixed
-      REAL(KIND=dp), DIMENSION(ne)                       :: gauge, grad_e, occ_curv, response, response_physical, &
-                                                            tether_curv
+      REAL(KIND=dp) :: drop_euclidean, drop_mixed, err, gauge_dot, gdotp, norm_energy_euclidean, &
+         norm_energy_mixed, norm_euclidean, norm_mixed, rotation_gdot, rotation_norm, &
+         scale_euclidean, scale_mixed
+      REAL(KIND=dp), DIMENSION(ne)                       :: gauge, grad_e, occ_curv, response, &
+                                                            response_physical, tether_curv
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -4917,13 +5187,15 @@ CONTAINS
 
       INTEGER                                            :: info, r, s
       INTEGER, DIMENSION(nrot)                           :: ipiv
-      REAL(KIND=dp)                                      :: blind_coeff, blind_denom, blind_gdot, curvature_gap, &
-                                                            drop_active, drop_full, drop_gap, err, metric_term, &
-                                                            rhs_gap, solution_gap
+      REAL(KIND=dp) :: blind_coeff, blind_denom, blind_gdot, curvature_gap, drop_active, &
+         drop_full, drop_gap, err, metric_term, rhs_gap, solution_gap
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, projected
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_gap, response_active, response_full, seed_gap
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_active, rhs_full, sol_active, sol_full
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_base, schur_active, schur_fact, schur_full
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_gap, response_active, &
+                                                            response_full, seed_gap
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_active, rhs_full, &
+                                                            sol_active, sol_full
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_base, schur_active, schur_fact, &
+                                                            schur_full
 
       occ_curv(:) = [0.045_dp, 0.026_dp, 0.018_dp, 0.010_dp, 0.004_dp]
       grad_e(:) = [0.33_dp, -0.23_dp, 0.13_dp, -0.07_dp, 0.03_dp]
@@ -4938,7 +5210,7 @@ CONTAINS
       density_gap(:, :) = seed_gap(:, :)
       DO s = 1, nrot
          density_gap(:, s) = density_gap(:, s) - &
-            DOT_PRODUCT(grad_e(:), density_gap(:, s))/DOT_PRODUCT(grad_e(:), grad_e(:))*grad_e(:)
+                             DOT_PRODUCT(grad_e(:), density_gap(:, s))/DOT_PRODUCT(grad_e(:), grad_e(:))*grad_e(:)
       END DO
       response_full(:, :) = response_active(:, :) + density_gap(:, :)
 
@@ -5000,6 +5272,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Remove near-degenerate gauge noise from the off-diagonal Projector-Hessian channel.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_offdiag_gauge_plateau_hessian(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5010,16 +5285,16 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
                                                             gauge_gap = 3.0E-5_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_plateau, &
-                                                            docc_raw, q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, &
+                                                            docc_plateau, docc_raw, q
       INTEGER                                            :: i, ivar, j
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: err, physical_active, physical_capped_norm, &
-                                                            physical_err, physical_raw_norm, plateau_norm, &
-                                                            raw_gap_norm, raw_norm
+      REAL(KIND=dp) :: err, physical_active, physical_capped_norm, physical_err, &
+         physical_raw_norm, plateau_norm, raw_gap_norm, raw_norm
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_curv, occ_scale
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_physical_vec, grad_plateau_vec, grad_raw_vec
       REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_physical_vec, grad_plateau_vec, &
+                                                            grad_raw_vec
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       chc_eig(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
@@ -5123,6 +5398,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the fixed-N low-rank curvature from diagonal projector-density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_curvature_addback(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5131,13 +5409,14 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
 
-      INTEGER                                            :: i, info, j, r, s
+      INTEGER                                            :: i, info, j, s
       INTEGER, DIMENSION(ne)                             :: ipiv
-      REAL(KIND=dp)                                      :: err, gauge_shift, occ_sum, qdrop, ref_drop, shift
+      REAL(KIND=dp)                                      :: err, gauge_shift, occ_sum, qdrop, &
+                                                            ref_drop, shift
       REAL(KIND=dp), DIMENSION(ne)                       :: bq, occ_curv, tether_curv, xq
-      REAL(KIND=dp), DIMENSION(nrot)                     :: qvec
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b, b_gauge, density_response, rhs
+      REAL(KIND=dp), DIMENSION(nrot)                     :: qvec
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: curv, curv_gauge
 
       occ_curv(:) = [0.38_dp, 0.71_dp, 0.29_dp, 0.16_dp]
@@ -5209,6 +5488,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the algebra of promoting diagonal density response into the Schur block.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_projector_density_coupled_schur(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5218,20 +5500,22 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 4, nrot = 3, ntot = ne + nrot
 
       INTEGER                                            :: i, info, j, s
-      INTEGER, DIMENSION(ntot)                           :: ipiv_aug
       INTEGER, DIMENSION(ne)                             :: ipiv
-      REAL(KIND=dp)                                      :: aug_err, err, gauge_shift, norm_delta, occ_sum, shift
-      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, tether_curv
-      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, z_aug, z_red
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_red
+      INTEGER, DIMENSION(ntot)                           :: ipiv_aug
+      REAL(KIND=dp)                                      :: aug_err, err, gauge_shift, norm_delta, &
+                                                            occ_sum, shift
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, tether_curv, z_aug, &
+                                                            z_red
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, density_response, &
-                                                            phys_response, rhs_density, rhs_phys, rhs_total
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: combined_schur, curv_density, expected_combined, &
-                                                            rot_base, split_schur
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: a, schur_solve
-      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, &
+                                                            density_response, phys_response, &
+                                                            rhs_density, rhs_phys, rhs_total
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_red
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: a, combined_schur, curv_density, &
+                                                            expected_combined, rot_base, &
+                                                            schur_solve, split_schur
       REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
 
       occ_curv(:) = [0.44_dp, 0.67_dp, 0.31_dp, 0.18_dp]
       tether_curv(:) = [0.03_dp, 0.04_dp, 0.02_dp, 0.01_dp]
@@ -5245,7 +5529,7 @@ CONTAINS
       grad_rot(:) = [0.18_dp, -0.13_dp, 0.09_dp]
       rot_base(:, :) = RESHAPE([0.63_dp, 0.04_dp, -0.02_dp, &
                                 0.04_dp, 0.51_dp, 0.03_dp, &
-                               -0.02_dp, 0.03_dp, 0.58_dp], [nrot, nrot])
+                                -0.02_dp, 0.03_dp, 0.58_dp], [nrot, nrot])
 
       h(:, :) = 0.0_dp
       DO i = 1, ne
@@ -5369,6 +5653,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that physical-direct shadows augment Schur, RHS and model response with density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_physical_direct_density_shadow(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5383,13 +5670,15 @@ CONTAINS
       INTEGER, DIMENSION(ntot)                           :: ipiv_aug
       REAL(KIND=dp)                                      :: aug_err, err, legacy_gap, occ_sum, shift
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, z_aug, z_full, z_legacy
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_full, q_legacy
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, density_response, &
-                                                            phys_response, rhs_density, rhs_phys, rhs_total
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_delta, rot_metric, schur_full, schur_legacy
-      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, &
+                                                            density_response, phys_response, &
+                                                            rhs_density, rhs_phys, rhs_total
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_full, q_legacy
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_delta, rot_metric, schur_full, &
+                                                            schur_legacy
       REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
 
       occ_curv(:) = [0.41_dp, 0.72_dp, 0.29_dp, 0.16_dp]
       phys_response(:, 1) = [0.16_dp, -0.08_dp, 0.05_dp, -0.01_dp]
@@ -5402,10 +5691,10 @@ CONTAINS
       grad_rot(:) = [0.19_dp, -0.11_dp, 0.08_dp]
       rot_delta(:, :) = RESHAPE([0.12_dp, 0.03_dp, -0.01_dp, &
                                  0.03_dp, 0.08_dp, 0.02_dp, &
-                                -0.01_dp, 0.02_dp, 0.10_dp], [nrot, nrot])
+                                 -0.01_dp, 0.02_dp, 0.10_dp], [nrot, nrot])
       rot_metric(:, :) = RESHAPE([0.69_dp, 0.05_dp, -0.03_dp, &
                                   0.05_dp, 0.56_dp, 0.04_dp, &
-                                 -0.03_dp, 0.04_dp, 0.61_dp], [nrot, nrot]) + rot_delta(:, :)
+                                  -0.03_dp, 0.04_dp, 0.61_dp], [nrot, nrot]) + rot_delta(:, :)
 
       h(:, :) = 0.0_dp
       DO i = 1, ne
@@ -5509,6 +5798,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that density-response candidates keep the physical response in the accepted z step.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_density_candidate_total_response(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5522,15 +5814,16 @@ CONTAINS
       INTEGER, DIMENSION(nrot)                           :: ipiv_rot
       INTEGER, DIMENSION(ntot)                           :: ipiv_aug
       REAL(KIND=dp)                                      :: err, gap, occ_sum, shift
-      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, z_aug, z_base, z_density_only, z_total
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_total
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, z_aug, z_base, &
+                                                            z_density_only, z_total
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, &
-                                                            density_response, phys_response, rhs_density, &
-                                                            rhs_phys, rhs_total
+                                                            density_response, phys_response, &
+                                                            rhs_density, rhs_phys, rhs_total
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_total
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_metric, schur_total
-      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
       REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
+      REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
 
       occ_curv(:) = [0.52_dp, 0.37_dp, 0.21_dp, 0.09_dp]
       phys_response(:, 1) = [0.19_dp, -0.11_dp, 0.07_dp, -0.03_dp]
@@ -5633,6 +5926,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that density-descent selection keeps its modeled rotation step.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_density_descent_selected_rotation(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5641,9 +5937,9 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: ne = 4, nrot = 2
 
-      REAL(KIND=dp)                                      :: err, gap, model_gdotp, model_normp, scale, &
-                                                            selected_gdotp, selected_normp, wrong_gdotp, &
-                                                            wrong_normp
+      REAL(KIND=dp)                                      :: err, gap, model_gdotp, model_normp, &
+                                                            scale, selected_gdotp, selected_normp, &
+                                                            wrong_gdotp, wrong_normp
       REAL(KIND=dp), DIMENSION(ne)                       :: density_rx_e, grad_e, z_e, z_phys
       REAL(KIND=dp), DIMENSION(nrot)                     :: density_sol, grad_rot, physical_sol
 
@@ -5679,18 +5975,20 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the trust-limited Mermin quadratic used by density-response candidates.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_density_candidate_metric_model(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 5, nchannels = 1, nrot = 2
+      INTEGER, PARAMETER                                 :: nchannels = 1, ne = 5, nrot = 2
 
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
-      REAL(KIND=dp)                                      :: curvature_scale, err, gdotp, legacy_drop, &
-                                                            metric_drop, norm_energy, norm_rotation, &
-                                                            normp, response_trust, trust_scale, unit_weighted_step
+      REAL(KIND=dp) :: curvature_scale, err, gdotp, legacy_drop, metric_drop, norm_energy, &
+         norm_rotation, normp, response_trust, trust_scale, unit_weighted_step
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, tether_curv, z_e
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_rot, sol
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: schur_metric
@@ -5704,7 +6002,7 @@ CONTAINS
       sol(:) = [0.34_dp, -0.21_dp]
       grad_rot(:) = [0.57_dp, -0.36_dp]
       schur_metric(:, :) = RESHAPE([1.80_dp, -0.14_dp, &
-                                   -0.14_dp, 1.35_dp], [nrot, nrot])
+                                    -0.14_dp, 1.35_dp], [nrot, nrot])
 
       CALL dense_projected_mixed_metric(z_e, z_e, occ_curv, tether_curv, channel_nmo, e_offset, norm_energy)
       rhs_rot(:) = MATMUL(schur_metric, sol)
@@ -5740,19 +6038,26 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check exact metric projection of coupled fixed-N and local tether response gauges.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_metric_response_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: ne = 6, nchannels = 2
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6
 
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
-      LOGICAL                                            :: metric_projected, reference_projected, single_projected
-      REAL(KIND=dp)                                      :: err, legacy_residual, reference_err, single_err, tether_residual
-      REAL(KIND=dp), DIMENSION(ne)                       :: legacy, legacy_occ_only, metric, metric_occ_only, &
-                                                            metric_reference, occ_curv, response, tether_curv, tether_zero
+      LOGICAL                                            :: metric_projected, reference_projected, &
+                                                            single_projected
+      REAL(KIND=dp)                                      :: err, legacy_residual, reference_err, &
+                                                            single_err, tether_residual
+      REAL(KIND=dp), DIMENSION(ne)                       :: legacy, legacy_occ_only, metric, &
+                                                            metric_occ_only, metric_reference, &
+                                                            occ_curv, response, tether_curv, &
+                                                            tether_zero
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -5799,6 +6104,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that Direct trace compensation follows the selected delta model.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_trace_compensation(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5807,13 +6115,15 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: active_delta = -0.027_dp, &
                                                             coupled_weight = 0.20_dp, &
-                                                            full_delta = -0.181_dp, reference_delta = 0.0_dp
+                                                            full_delta = -0.181_dp, &
+                                                            reference_delta = 0.0_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_comp, active_diag_after, active_negative_ref_comp, &
-                                                            err, full_comp, old_active_diag_after, positive_comp, &
-                                                            uniform_after, uniform_comp
-      REAL(KIND=dp), DIMENSION(4)                        :: row_after, row_comp, row_delta, row_reference
+      REAL(KIND=dp) :: active_comp, active_diag_after, active_negative_ref_comp, err, full_comp, &
+         old_active_diag_after, positive_comp, scaled_active_after, scaled_active_comp, &
+         trace_scale, uniform_after, uniform_comp
+      REAL(KIND=dp), DIMENSION(4)                        :: row_after, row_comp, row_delta, &
+                                                            row_reference
 
       full_comp = dense_direct_trace_compensation(coupled_weight, full_delta, reference_delta)
       active_comp = dense_direct_trace_compensation(coupled_weight, active_delta, reference_delta)
@@ -5821,6 +6131,9 @@ CONTAINS
       old_active_diag_after = active_delta + full_comp/coupled_weight
       active_negative_ref_comp = dense_direct_trace_compensation(coupled_weight, active_delta, full_delta)
       positive_comp = dense_direct_trace_compensation(coupled_weight, 0.05_dp, 0.01_dp)
+      trace_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 0.8_dp, 16)
+      scaled_active_comp = trace_scale*active_comp
+      scaled_active_after = active_delta + scaled_active_comp/coupled_weight
       row_delta(:) = [-0.20_dp, -0.04_dp, 0.005_dp, 0.06_dp]
       row_reference(:) = [0.0_dp, -0.10_dp, 0.01_dp, 0.10_dp]
       DO i = 1, SIZE(row_delta)
@@ -5836,39 +6149,43 @@ CONTAINS
       err = MAX(err, ABS(full_delta + full_comp/coupled_weight))
       err = MAX(err, ABS(active_negative_ref_comp - active_comp))
       err = MAX(err, ABS(positive_comp - coupled_weight*(0.05_dp - 0.01_dp)))
+      err = MAX(err, ABS(scaled_active_comp - trace_scale*active_comp))
       err = MAX(err, ABS(row_after(1)), ABS(row_after(2)), ABS(row_after(3) - row_delta(3)))
       err = MAX(err, ABS(row_after(4) - row_delta(4)))
 
       IF (err > tol .OR. old_active_diag_after < 0.1_dp .OR. active_comp >= full_comp .OR. &
+          scaled_active_after >= active_diag_after .OR. scaled_active_after <= active_delta .OR. &
           uniform_after <= row_delta(3)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "failed with error/full/active/negref/old/positive/row/uniform", err, full_comp, active_comp, &
-            active_negative_ref_comp, old_active_diag_after, positive_comp, row_comp(3), uniform_after
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/active/negref/old/positive/scaled/row/uniform", err, full_comp, &
+            active_comp, active_negative_ref_comp, old_active_diag_after, positive_comp, &
+            scaled_active_after, row_comp(3), uniform_after
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "OK with error/full/active/negref/old/positive/row/uniform", err, full_comp, active_comp, &
-            active_negative_ref_comp, old_active_diag_after, positive_comp, row_comp(3), uniform_after
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/active/negref/old/positive/scaled/row/uniform", err, full_comp, active_comp, &
+            active_negative_ref_comp, old_active_diag_after, positive_comp, scaled_active_after, row_comp(3), &
+            uniform_after
       END IF
 
    END SUBROUTINE check_projector_direct_trace_compensation
 
 ! **************************************************************************************************
 !> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_trace_active_mix_weight(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER                           :: active_trace = -4.0E-3_dp, &
-                                                            history_weight = 0.25_dp, &
-                                                            poor_quality = 0.05_dp, &
-                                                            quality = 1.20_dp, raw_trace = -1.0_dp
+      REAL(KIND=dp), PARAMETER :: active_trace = -4.0E-3_dp, history_weight = 0.25_dp, &
+         poor_quality = 0.05_dp, quality = 1.20_dp, raw_trace = -1.0_dp
 
-      REAL(KIND=dp)                                      :: err, expected_gauge, gauge_mix, mature_mix, &
-                                                            no_raw_mix, poor_mix, saturated_mix, selected_poor_mix, &
-                                                            shadow_only_mix, young_mix
+      REAL(KIND=dp) :: err, expected_gauge, gauge_mix, mature_mix, no_raw_mix, poor_mix, &
+         saturated_mix, selected_poor_mix, shadow_only_mix, young_mix
 
       young_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
                                                 quality, 2, quality, 16)
@@ -5885,7 +6202,7 @@ CONTAINS
       saturated_mix = dense_trace_active_mix_weight(raw_trace, 0.0_dp, 0.90_dp, &
                                                     quality, 16, quality, 16)
       no_raw_mix = dense_trace_active_mix_weight(0.0_dp, active_trace, history_weight, &
-                                                quality, 16, quality, 16)
+                                                 quality, 16, quality, 16)
 
       expected_gauge = 0.95_dp*(1.0_dp - ABS(active_trace/raw_trace))
       err = ABS(young_mix - history_weight)
@@ -5912,14 +6229,18 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check fixed-N trace-balance damping of the Direct trace diagonal component.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_trace_diag_component_scale(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: balanced_scale, err, expected_gauge, gauge_scale, &
-                                                            no_samples_scale, poor_diag_scale, zero_free_scale
+      REAL(KIND=dp)                                      :: balanced_scale, err, expected_gauge, &
+                                                            gauge_scale, no_samples_scale, &
+                                                            poor_diag_scale, zero_free_scale
 
       no_samples_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 1.0_dp, 2)
       zero_free_scale = dense_trace_diag_component_scale(-1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 16)
@@ -5951,6 +6272,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check accepted-drop scaling of the physical Direct candidate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_history_step_scale(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -5960,8 +6284,10 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp, &
                                                             scale_floor = 0.25_dp
 
-      REAL(KIND=dp)                                      :: err, floor_scale, good_scale, mature_floor_scale, &
-                                                            mature_ratio_scale, over_scale, ratio_scale, young_scale
+      REAL(KIND=dp)                                      :: err, floor_scale, good_scale, &
+                                                            mature_floor_scale, &
+                                                            mature_ratio_scale, over_scale, &
+                                                            ratio_scale, young_scale
 
       young_scale = dense_direct_history_step_scale(4.0_dp, 1.0_dp, 0.25_dp, 3, 4, &
                                                     8, scale_floor, max_quality)
@@ -6004,6 +6330,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check accepted-drop mismatch weighting of the finite Projector-Hessian tail.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_coupled_tail_weight(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -6011,12 +6340,12 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp), PARAMETER                           :: density_fraction = 0.80_dp, &
-                                                            diag_avg = 0.50_dp, diag_delta = 0.25_dp
+                                                            diag_avg = 0.50_dp, &
+                                                            diag_delta = 0.25_dp
 
-      REAL(KIND=dp)                                      :: above_tail_weight, diag_damped_weight, err, &
-                                                            expected_mismatch_weight, expected_saturated_weight, &
-                                                            good_weight, high_weight, low_weight, scaled_weight, &
-                                                            saturated_weight, young_weight
+      REAL(KIND=dp) :: above_tail_weight, diag_damped_weight, err, expected_mismatch_weight, &
+         expected_saturated_weight, good_weight, high_weight, low_weight, saturated_weight, &
+         scaled_weight, young_weight
 
       above_tail_weight = dense_projector_coupled_tail_weight(2.0E-4_dp, 1.0_dp, 0, &
                                                               density_fraction, diag_avg, diag_delta)
@@ -6062,6 +6391,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that Direct-Delta eigenspaces do not overwrite the production curvature matrix.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_delta_eigen_copy(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -6071,7 +6403,7 @@ CONTAINS
       INTEGER, PARAMETER                                 :: n = 4
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, mode_quad, matrix_quad
+      REAL(KIND=dp)                                      :: err, matrix_quad, mode_quad
       REAL(KIND=dp), DIMENSION(n)                        :: coeff, eval, step
       REAL(KIND=dp), DIMENSION(n, n)                     :: delta, delta_saved, eigvec
 
@@ -6108,6 +6440,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that active Direct curvature filters local residuals, not fixed-N cross-channel terms.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_active_residual_filter(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -6116,11 +6451,10 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
 
-      INTEGER, DIMENSION(n)                              :: channel
       INTEGER                                            :: r, s
-      REAL(KIND=dp)                                      :: active_cov, active_diag_avg, active_weight, cov, &
-                                                            diag_change, err, expected_diag_avg, legacy_diag_avg, &
-                                                            local_change, residual
+      INTEGER, DIMENSION(n)                              :: channel
+      REAL(KIND=dp) :: active_cov, active_diag_avg, active_weight, cov, diag_change, err, &
+         expected_diag_avg, legacy_diag_avg, local_change, residual
       REAL(KIND=dp), DIMENSION(n)                        :: active_projector_weight, projector_weight
       REAL(KIND=dp), DIMENSION(n, n)                     :: active, expected, physical, rot
 
@@ -6199,6 +6533,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the active Direct shadow is distinct from the full physical delta.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_active_direct_delta_shadow(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -6207,12 +6544,14 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
 
-      INTEGER, DIMENSION(n)                              :: channel
       INTEGER                                            :: r, s
-      REAL(KIND=dp)                                      :: active_cov, active_diag_avg, active_weight, cov, &
-                                                            direct_diag_avg, err, full_diag_avg, residual
+      INTEGER, DIMENSION(n)                              :: channel
+      REAL(KIND=dp)                                      :: active_cov, active_diag_avg, &
+                                                            active_weight, cov, direct_diag_avg, &
+                                                            err, full_diag_avg, residual
       REAL(KIND=dp), DIMENSION(n)                        :: active_projector_weight, projector_weight
-      REAL(KIND=dp), DIMENSION(n, n)                     :: active, direct_delta, full_delta, physical, rot
+      REAL(KIND=dp), DIMENSION(n, n)                     :: active, direct_delta, full_delta, &
+                                                            physical, rot
 
       channel(:) = [1, 1, 2]
       projector_weight(:) = [0.50_dp, 0.20_dp, 0.40_dp]
@@ -6277,6 +6616,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that Direct trace mismatch contributes even when projected response vectors match.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_direct_trace_model_gap(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -6315,6 +6657,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_projector_modal_response_sign_model(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -6324,27 +6669,22 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 3, nrot = 4
 
       INTEGER                                            :: i, imode
-      REAL(KIND=dp)                                      :: active, applied_weight_dead, applied_weight_diag, &
-                                                            applied_weight_ref, applied_weight_rot, base_weight, c, &
-                                                            cross_drop_dead, cross_drop_diag, cross_drop_rot, &
-                                                            dead_active, drop_dead, drop_diag, drop_ref, drop_rot, &
-                                                            err, eval_abs_avg, mode_norm, mode_weight, neg_balance, &
-                                                            neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, &
-                                                            neg_drop_dead, neg_drop_diag, neg_drop_rot, &
-                                                            neg_fraction_dead, neg_fraction_diag, neg_fraction_ref, &
-                                                            neg_fraction_rot, neg_norm_diag, &
-                                                            neg_weight_sum, pos_coeff_diag, pos_coeff_rot, &
-                                                            pos_coeff_dead, pos_drop_dead, pos_drop_diag, pos_drop_rot, &
-                                                            pos_weight_sum, raw_neg_fraction_dead, &
-                                                            raw_neg_fraction_diag, raw_neg_fraction_ref, &
-                                                            raw_neg_fraction_rot, raw_neg_sum, response_total_sum, &
-                                                            s, spectral_weight, step_weight_sum, target_neg, target_pos
-      REAL(KIND=dp), DIMENSION(ne)                       :: cand_dead, cand_diag, cand_ref, cand_rot, corr_ref, curv, &
-                                                            energy_base, grad_e, mode_rx, response_base, &
-                                                            response_neg_ref, response_pos_ref
-      REAL(KIND=dp), DIMENSION(nrot)                     :: eval_diag, step_diag, step_rot
+      REAL(KIND=dp) :: active, applied_weight_dead, applied_weight_diag, applied_weight_ref, &
+         applied_weight_rot, base_weight, c, cross_drop_dead, cross_drop_diag, cross_drop_rot, &
+         dead_active, drop_dead, drop_diag, drop_ref, drop_rot, err, eval_abs_avg, mode_norm, &
+         mode_weight, neg_balance, neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, neg_drop_dead, &
+         neg_drop_diag, neg_drop_rot, neg_fraction_dead, neg_fraction_diag, neg_fraction_ref, &
+         neg_fraction_rot, neg_norm_diag, neg_weight_sum, pos_coeff_dead, pos_coeff_diag, &
+         pos_coeff_rot, pos_drop_dead, pos_drop_diag, pos_drop_rot, pos_weight_sum
+      REAL(KIND=dp) :: raw_neg_fraction_dead, raw_neg_fraction_diag, raw_neg_fraction_ref, &
+         raw_neg_fraction_rot, raw_neg_sum, response_total_sum, s, spectral_weight, &
+         step_weight_sum, target_neg, target_pos
+      REAL(KIND=dp), DIMENSION(ne) :: cand_dead, cand_diag, cand_ref, cand_rot, corr_ref, curv, &
+         energy_base, grad_e, mode_rx, response_base, response_neg_ref, response_pos_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: response_delta_diag, response_delta_rot, &
-                                                            response_exact_diag, response_exact_rot, response_raw
+                                                            response_exact_diag, &
+                                                            response_exact_rot, response_raw
+      REAL(KIND=dp), DIMENSION(nrot)                     :: eval_diag, step_diag, step_rot
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: delta_diag, delta_rot, q, rot_hessian
 
       base_weight = 0.42_dp
@@ -6486,6 +6826,26 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense copy of the finite Projector-Hessian modal response algebra.
+!> \param rot_hessian ...
+!> \param rot_hessian_projector ...
+!> \param step_rot ...
+!> \param response_raw ...
+!> \param response_exact ...
+!> \param curv ...
+!> \param grad_e ...
+!> \param energy_base ...
+!> \param response_base ...
+!> \param base_weight ...
+!> \param response_candidate ...
+!> \param applied_weight ...
+!> \param correction_drop ...
+!> \param correction_negative_fraction ...
+!> \param raw_negative_fraction ...
+!> \param positive_drop ...
+!> \param negative_drop ...
+!> \param cross_drop ...
+!> \param positive_coeff ...
+!> \param negative_coeff ...
 ! **************************************************************************************************
    SUBROUTINE dense_projector_modal_response_candidate(rot_hessian, rot_hessian_projector, step_rot, &
                                                        response_raw, response_exact, curv, grad_e, energy_base, &
@@ -6493,25 +6853,24 @@ CONTAINS
                                                        correction_drop, correction_negative_fraction, &
                                                        raw_negative_fraction, positive_drop, negative_drop, cross_drop, &
                                                        positive_coeff, negative_coeff)
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector, &
-                                                            response_raw, response_exact
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, energy_base, grad_e, response_base, step_rot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_rot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_raw, response_exact
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv, grad_e, energy_base, response_base
       REAL(KIND=dp), INTENT(IN)                          :: base_weight
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: response_candidate
-      REAL(KIND=dp), INTENT(OUT)                         :: applied_weight, correction_drop, &
-                                                            correction_negative_fraction, cross_drop, negative_drop, &
-                                                            negative_coeff, positive_coeff, positive_drop, &
-                                                            raw_negative_fraction
+      REAL(KIND=dp), INTENT(OUT) :: applied_weight, correction_drop, correction_negative_fraction, &
+         raw_negative_fraction, positive_drop, negative_drop, cross_drop, positive_coeff, &
+         negative_coeff
 
       INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp)                                      :: coeff_det, coeff_negative, coeff_positive, eval_abs_avg, &
-                                                            g1, g2, h11, h12, h22, mode_norm, mode_sign, mode_weight, &
-                                                            negative_balance, negative_norm, negative_weight_sum, &
-                                                            positive_sum, positive_weight_sum, raw_negative_sum, &
-                                                            response_total_sum, spectral_weight, step_weight, &
-                                                            step_weight_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_rx, response_corr, &
-                                                            response_neg, response_pos
+      REAL(KIND=dp) :: coeff_det, coeff_negative, coeff_positive, eval_abs_avg, g1, g2, h11, h12, &
+         h22, mode_norm, mode_sign, mode_weight, negative_balance, negative_norm, &
+         negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
+         response_total_sum, spectral_weight, step_weight, step_weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_rx, &
+                                                            response_corr, response_neg, &
+                                                            response_pos
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
 
       applied_weight = 0.0_dp
@@ -6615,12 +6974,18 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct trace compensation model.
+!> \param coupled_weight ...
+!> \param direct_delta_diag_avg ...
+!> \param reference_delta_diag_avg ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_direct_trace_compensation(coupled_weight, direct_delta_diag_avg, reference_delta_diag_avg) &
       RESULT(compensation)
       REAL(KIND=dp), INTENT(IN)                          :: coupled_weight, direct_delta_diag_avg, &
                                                             reference_delta_diag_avg
-      REAL(KIND=dp)                                      :: compensation, positive_reference
+      REAL(KIND=dp)                                      :: compensation
+
+      REAL(KIND=dp)                                      :: positive_reference
 
       positive_reference = MAX(0.0_dp, reference_delta_diag_avg)
       compensation = MAX(0.0_dp, -coupled_weight*direct_delta_diag_avg)
@@ -6631,15 +6996,27 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.
+!> \param raw_trace_ema ...
+!> \param active_trace_ema ...
+!> \param history_weight ...
+!> \param history_quality ...
+!> \param samples ...
+!> \param selected_quality ...
+!> \param selected_samples ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_trace_active_mix_weight(raw_trace_ema, active_trace_ema, history_weight, &
                                           history_quality, samples, selected_quality, &
                                           selected_samples) RESULT(mix_weight)
       REAL(KIND=dp), INTENT(IN)                          :: raw_trace_ema, active_trace_ema, &
-                                                            history_weight, history_quality, selected_quality
-      INTEGER, INTENT(IN)                                :: samples, selected_samples
-      REAL(KIND=dp)                                      :: active_fraction, gauge_fraction, mix_weight, &
-                                                            raw_abs, quality_weight
+                                                            history_weight, history_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: mix_weight
+
+      REAL(KIND=dp)                                      :: active_fraction, gauge_fraction, &
+                                                            quality_weight, raw_abs
 
       mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight))
       IF (samples < 8) RETURN
@@ -6662,15 +7039,24 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of trace-bearing Direct curvature component scaling.
+!> \param trace_diag_ema ...
+!> \param trace_free_ema ...
+!> \param trace_diag_quality_ema ...
+!> \param trace_free_quality_ema ...
+!> \param samples ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_trace_diag_component_scale(trace_diag_ema, trace_free_ema, trace_diag_quality_ema, &
                                              trace_free_quality_ema, samples) RESULT(component_scale)
       REAL(KIND=dp), INTENT(IN)                          :: trace_diag_ema, trace_free_ema, &
-                                                            trace_diag_quality_ema, trace_free_quality_ema
+                                                            trace_diag_quality_ema, &
+                                                            trace_free_quality_ema
       INTEGER, INTENT(IN)                                :: samples
-      REAL(KIND=dp)                                      :: balance_scale, component_scale, diag_abs, diag_quality, &
-                                                            free_abs, free_quality, quality_ratio, trace_balance, &
-                                                            trace_norm
+      REAL(KIND=dp)                                      :: component_scale
+
+      REAL(KIND=dp)                                      :: balance_scale, diag_abs, diag_quality, &
+                                                            free_abs, free_quality, quality_ratio, &
+                                                            trace_balance, trace_norm
 
       component_scale = 1.0_dp
       IF (samples < 8) RETURN
@@ -6696,15 +7082,27 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected-history Direct step scaling.
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param ema_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param response_min_samples ...
+!> \param scale_floor ...
+!> \param max_quality ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_direct_history_step_scale(predicted_sum, measured_sum, ema_quality, samples, &
                                             min_samples, response_min_samples, scale_floor, &
                                             max_quality) RESULT(step_scale)
-      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, ema_quality, &
-                                                            scale_floor, max_quality
-      INTEGER, INTENT(IN)                                :: samples, min_samples, response_min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, ema_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples, &
+                                                            response_min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: scale_floor, max_quality
+      REAL(KIND=dp)                                      :: step_scale
+
       INTEGER                                            :: maturity_samples
-      REAL(KIND=dp)                                      :: history_quality, maturity, step_scale, target_scale
+      REAL(KIND=dp)                                      :: history_quality, maturity, target_scale
 
       history_quality = 1.0_dp
       IF (samples >= min_samples) THEN
@@ -6726,15 +7124,25 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the low-residual finite Projector-Hessian tail weight.
+!> \param residual_delta ...
+!> \param history_quality ...
+!> \param samples ...
+!> \param density_projector_fraction ...
+!> \param projector_diag_avg ...
+!> \param projector_delta_diag_avg ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_projector_coupled_tail_weight(residual_delta, history_quality, samples, &
                                                 density_projector_fraction, projector_diag_avg, &
                                                 projector_delta_diag_avg) RESULT(projector_weight)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
-                                                            density_projector_fraction, projector_diag_avg, &
-                                                            projector_delta_diag_avg
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality
       INTEGER, INTENT(IN)                                :: samples
-      REAL(KIND=dp)                                      :: clipped_quality, diag_ratio, projector_weight, &
+      REAL(KIND=dp), INTENT(IN)                          :: density_projector_fraction, &
+                                                            projector_diag_avg, &
+                                                            projector_delta_diag_avg
+      REAL(KIND=dp)                                      :: projector_weight
+
+      REAL(KIND=dp)                                      :: clipped_quality, diag_ratio, &
                                                             quality_weight
 
       IF (residual_delta > 1.0E-4_dp) THEN
@@ -6761,9 +7169,14 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct trace model-gap term.
+!> \param trace_actual_quad ...
+!> \param trace_model_quad ...
+!> \param scale ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_direct_trace_model_gap_drop(trace_actual_quad, trace_model_quad, scale) RESULT(drop)
-      REAL(KIND=dp), INTENT(IN)                          :: trace_actual_quad, trace_model_quad, scale
+      REAL(KIND=dp), INTENT(IN)                          :: trace_actual_quad, trace_model_quad, &
+                                                            scale
       REAL(KIND=dp)                                      :: drop
 
       drop = 0.5_dp*scale*scale*ABS(trace_actual_quad - trace_model_quad)
@@ -6772,13 +7185,21 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Project a density response onto the fixed-N Mermin descent direction.
+!> \param response_vec ...
+!> \param descent_vec ...
+!> \param grad_vec ...
+!> \param projected_vec ...
+!> \param coeff ...
+!> \param gdot ...
+!> \param denom ...
+!> \param flip_negative ...
 ! **************************************************************************************************
    SUBROUTINE dense_project_descent_response(response_vec, descent_vec, grad_vec, projected_vec, coeff, gdot, &
                                              denom, flip_negative)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, descent_vec, grad_vec
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: projected_vec
-      REAL(KIND=dp), INTENT(OUT)                          :: coeff, denom, gdot
-      LOGICAL, INTENT(IN), OPTIONAL                       :: flip_negative
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_vec, descent_vec, grad_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: projected_vec
+      REAL(KIND=dp), INTENT(OUT)                         :: coeff, gdot, denom
+      LOGICAL, INTENT(IN), OPTIONAL                      :: flip_negative
 
       projected_vec(:) = 0.0_dp
       coeff = 0.0_dp
@@ -6798,17 +7219,26 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Project a density response onto the fixed-N Mermin metric descent direction.
+!> \param response_vec ...
+!> \param descent_vec ...
+!> \param grad_vec ...
+!> \param occ_curv ...
+!> \param projected_vec ...
+!> \param coeff ...
+!> \param gdot ...
+!> \param denom ...
+!> \param flip_negative ...
 ! **************************************************************************************************
    SUBROUTINE dense_project_metric_descent_response(response_vec, descent_vec, grad_vec, occ_curv, projected_vec, &
                                                     coeff, gdot, denom, flip_negative)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, descent_vec, grad_vec, &
-                                                             occ_curv
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: projected_vec
-      REAL(KIND=dp), INTENT(OUT)                          :: coeff, denom, gdot
-      LOGICAL, INTENT(IN), OPTIONAL                       :: flip_negative
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_vec, descent_vec, grad_vec, &
+                                                            occ_curv
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: projected_vec
+      REAL(KIND=dp), INTENT(OUT)                         :: coeff, gdot, denom
+      LOGICAL, INTENT(IN), OPTIONAL                      :: flip_negative
 
-      REAL(KIND=dp)                                       :: grad_coeff, metric_coeff, metric_cross, &
-                                                             metric_denom
+      REAL(KIND=dp)                                      :: grad_coeff, metric_coeff, metric_cross, &
+                                                            metric_denom
 
       projected_vec(:) = 0.0_dp
       coeff = 0.0_dp
@@ -6843,19 +7273,31 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Project a density response onto the mixed fixed-N/tether Mermin descent direction.
+!> \param response_vec ...
+!> \param descent_vec ...
+!> \param grad_vec ...
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param projected_vec ...
+!> \param coeff ...
+!> \param gdot ...
+!> \param denom ...
+!> \param flip_negative ...
 ! **************************************************************************************************
    SUBROUTINE dense_project_mixed_metric_descent_response(response_vec, descent_vec, grad_vec, occ_curv, &
                                                           tether_curv, channel_nmo, e_offset, projected_vec, &
                                                           coeff, gdot, denom, flip_negative)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, descent_vec, grad_vec, &
-                                                             occ_curv, tether_curv
-      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: projected_vec
-      REAL(KIND=dp), INTENT(OUT)                          :: coeff, denom, gdot
-      LOGICAL, INTENT(IN), OPTIONAL                       :: flip_negative
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_vec, descent_vec, grad_vec, &
+                                                            occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: projected_vec
+      REAL(KIND=dp), INTENT(OUT)                         :: coeff, gdot, denom
+      LOGICAL, INTENT(IN), OPTIONAL                      :: flip_negative
 
-      REAL(KIND=dp)                                       :: grad_coeff, metric_coeff, metric_cross, &
-                                                             metric_denom
+      REAL(KIND=dp)                                      :: grad_coeff, metric_coeff, metric_cross, &
+                                                            metric_denom
 
       projected_vec(:) = 0.0_dp
       coeff = 0.0_dp
@@ -6892,12 +7334,16 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Fixed-N dense Mermin metric used by the density-response projection fixture.
+!> \param response_left ...
+!> \param response_right ...
+!> \param occ_curv ...
+!> \param projected_term ...
 ! **************************************************************************************************
    SUBROUTINE dense_projected_metric(response_left, response_right, occ_curv, projected_term)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_left, response_right, occ_curv
-      REAL(KIND=dp), INTENT(OUT)                          :: projected_term
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_left, response_right, occ_curv
+      REAL(KIND=dp), INTENT(OUT)                         :: projected_term
 
-      REAL(KIND=dp)                                       :: left_shift, occ_sum, right_shift
+      REAL(KIND=dp)                                      :: left_shift, occ_sum, right_shift
 
       occ_sum = SUM(occ_curv(:))
       IF (occ_sum <= EPSILON(occ_sum)) THEN
@@ -6914,17 +7360,24 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Mixed fixed-N/tether dense Mermin metric for response projection fixtures.
+!> \param response_left ...
+!> \param response_right ...
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param projected_term ...
 ! **************************************************************************************************
    SUBROUTINE dense_projected_mixed_metric(response_left, response_right, occ_curv, tether_curv, &
                                            channel_nmo, e_offset, projected_term)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_left, response_right, occ_curv, &
-                                                             tether_curv
-      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
-      REAL(KIND=dp), INTENT(OUT)                          :: projected_term
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_left, response_right, occ_curv, &
+                                                            tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), INTENT(OUT)                         :: projected_term
 
-      INTEGER                                             :: first_energy, local_channel, nmo
-      REAL(KIND=dp)                                       :: left_shift, occ_sum, occ_term, right_shift, &
-                                                             tether_term, weight_sum
+      INTEGER                                            :: first_energy, local_channel, nmo
+      REAL(KIND=dp)                                      :: left_shift, occ_sum, occ_term, &
+                                                            right_shift, tether_term, weight_sum
 
       occ_term = DOT_PRODUCT(occ_curv(:)*response_left(:), response_right(:))
       occ_sum = SUM(occ_curv(:))
@@ -6954,14 +7407,19 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Legacy two-pass dense response-gauge projection.
+!> \param response_vec ...
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
 ! **************************************************************************************************
    SUBROUTINE dense_project_response_two_pass(response_vec, occ_curv, tether_curv, channel_nmo, e_offset)
-      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: response_vec
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_curv, tether_curv
-      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
 
-      INTEGER                                             :: first_energy, local_channel, nmo, pass
-      REAL(KIND=dp)                                       :: occ_sum, response_shift, weight_sum
+      INTEGER                                            :: first_energy, local_channel, nmo, pass
+      REAL(KIND=dp)                                      :: occ_sum, response_shift, weight_sum
 
       occ_sum = SUM(occ_curv(:))
       DO pass = 1, 2
@@ -6986,20 +7444,25 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the distributed curvature-metric response-gauge projection.
+!> \param response_vec ...
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param projected ...
 ! **************************************************************************************************
    SUBROUTINE dense_project_response_metric_distributed(response_vec, occ_curv, tether_curv, channel_nmo, e_offset, &
                                                         projected)
-      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: response_vec
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_curv, tether_curv
-      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
-      LOGICAL, INTENT(OUT)                                :: projected
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      LOGICAL, INTENT(OUT)                               :: projected
 
-      INTEGER                                             :: first_energy, ie, local_channel, nmo
-      REAL(KIND=dp)                                       :: channel_alpha, channel_beta, channel_rhs, curv_max, &
-                                                             denom, global_alpha2_over_beta, &
-                                                             global_alpha_rhs_over_beta, lambda_occ, max_lambda, &
-                                                             occ_metric, occ_rhs, occ_sum, total_curv
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: channel_lambda, inv_curv
+      INTEGER                                            :: first_energy, ie, local_channel, nmo
+      REAL(KIND=dp) :: channel_alpha, channel_beta, channel_rhs, curv_max, denom, &
+         global_alpha2_over_beta, global_alpha_rhs_over_beta, lambda_occ, max_lambda, occ_metric, &
+         occ_rhs, occ_sum, total_curv
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_lambda, inv_curv
 
       projected = .FALSE.
       curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
@@ -7088,19 +7551,25 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense curvature-metric response-gauge projection.
+!> \param response_vec ...
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param projected ...
 ! **************************************************************************************************
    SUBROUTINE dense_project_response_metric(response_vec, occ_curv, tether_curv, channel_nmo, e_offset, projected)
-      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: response_vec
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_curv, tether_curv
-      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
-      LOGICAL, INTENT(OUT)                                :: projected
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      LOGICAL, INTENT(OUT)                               :: projected
 
-      INTEGER                                             :: first_energy, ie, info, local_channel, nconstraints, &
-                                                             nmo, row
-      INTEGER, ALLOCATABLE, DIMENSION(:)                  :: ipiv
-      REAL(KIND=dp)                                       :: curv_max, occ_sum, total_curv, weight_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: inv_curv, lambda, rhs
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)         :: constraint, gram
+      INTEGER                                            :: first_energy, ie, info, local_channel, &
+                                                            nconstraints, nmo, row
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv
+      REAL(KIND=dp)                                      :: curv_max, occ_sum, total_curv, weight_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: inv_curv, lambda, rhs
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: constraint, gram
 
       projected = .FALSE.
       occ_sum = SUM(occ_curv(:))
@@ -7168,13 +7637,18 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Maximum channel-local tether residual for a dense response vector.
+!> \param response_vec ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_response_tether_residual(response_vec, tether_curv, channel_nmo, e_offset) RESULT(residual)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: response_vec, tether_curv
-      INTEGER, DIMENSION(:), INTENT(IN)                   :: channel_nmo, e_offset
-      REAL(KIND=dp)                                       :: residual
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: response_vec, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp)                                      :: residual
 
-      INTEGER                                             :: first_energy, local_channel, nmo
+      INTEGER                                            :: first_energy, local_channel, nmo
 
       residual = 0.0_dp
       DO local_channel = 1, SIZE(channel_nmo)
@@ -7189,6 +7663,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check monotone projection for noisy occupation slopes before divided differences.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_monotone_occupation_slope_projection(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7199,8 +7676,9 @@ CONTAINS
 
       INTEGER                                            :: i, j
       REAL(KIND=dp)                                      :: coeff, err, positive_slope
-      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, monotone_input, noisy_input, &
-                                                            projected, projected_monotone
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, monotone_input, &
+                                                            noisy_input, projected, &
+                                                            projected_monotone
 
       noisy_input = [1.40_dp, 0.82_dp, 0.87_dp, 0.35_dp, 0.36_dp]
       expected = [1.40_dp, 0.845_dp, 0.845_dp, 0.355_dp, 0.355_dp]
@@ -7235,6 +7713,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the production-style monotone occupation preprojection used by k-point OT.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_derivative(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7289,6 +7770,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that history-safe dP removes gauge noise but keeps physical response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_gauge_physical_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7296,19 +7780,20 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 4
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, fd_step = 1.0E-7_dp, &
-                                                            gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
-                                                            docc_raw, docc_safe, occ_mat_m, occ_mat_p, q
+                                                            docc_raw, docc_safe, occ_mat_m, &
+                                                            occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, gauge_err, mixed_err, mixed_safe, occ_tol, &
-                                                            physical_active, physical_err, physical_near_err, &
-                                                            raw_gauge, raw_mixed, raw_transitive, safe_gauge, &
-                                                            transitive_err, value_err, value_raw
-      REAL(KIND=dp), DIMENSION(n)                        :: occ_cluster, occ_curv, occ_curv_mixed, occ_mixed, &
-                                                            occ_filtered, occ_near_physical, occ_plateau, &
-                                                            occ_scale, evals_ref
+      REAL(KIND=dp) :: err, gauge_err, mixed_err, mixed_safe, occ_tol, physical_active, &
+         physical_err, physical_near_err, raw_gauge, raw_mixed, raw_transitive, safe_gauge, &
+         transitive_err, value_err, value_raw
+      REAL(KIND=dp), DIMENSION(n) :: evals_ref, occ_cluster, occ_curv, occ_curv_mixed, &
+         occ_filtered, occ_mixed, occ_near_physical, occ_plateau, occ_scale
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -7466,6 +7951,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that finite-difference history-safe dP keeps physical near-Fermi slopes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_physical_fd(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7474,14 +7962,17 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_fd, &
-                                                            docc_raw, docc_safe, occ_mat_m, occ_mat_p, q
+                                                            docc_raw, docc_safe, occ_mat_m, &
+                                                            occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: err, gap, physical_active, physical_raw_err, &
-                                                            physical_slope, raw_gauge, safe_gauge
+      REAL(KIND=dp)                                      :: err, gap, physical_active, &
+                                                            physical_raw_err, physical_slope, &
+                                                            raw_gauge, safe_gauge
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_gauge, occ_physical
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
@@ -7565,6 +8056,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the finite-difference projector value caps smooth gauge slopes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_slope_cap_fd(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7573,13 +8067,15 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_ref, &
                                                             docc_safe, occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active, err, gap, occ_tol, raw_gap, slope_cap
+      REAL(KIND=dp)                                      :: active, err, gap, occ_tol, raw_gap, &
+                                                            slope_cap
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_filtered, occ_scale
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.42_dp]
@@ -7630,6 +8126,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the gauge-cluster finite-difference probe stays inside the cluster.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_adaptive_fd(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7638,14 +8137,15 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            gauge_gap = 5.0E-5_dp, old_fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            old_fd_step = 1.0E-7_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_adaptive, docc_fd, &
                                                             docc_old, occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: adaptive_step, err, old_gap, scale, step_ratio, &
-                                                            work_norm
+      REAL(KIND=dp)                                      :: adaptive_step, err, old_gap, scale, &
+                                                            step_ratio, work_norm
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.34_dp]
@@ -7696,6 +8196,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the explicit diagonal Fermi response in the history-safe dP model.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_diagonal_response(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7704,7 +8207,8 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_safe, expected
       INTEGER                                            :: i
@@ -7748,6 +8252,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that the gauge finite-difference dP branch keeps the fixed-N diagonal response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_fd_diagonal_response(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7756,13 +8263,15 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 3
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, expected, &
                                                             occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: charge_leak, err, missing, occ_sum, shift_mu
+      REAL(KIND=dp)                                      :: charge_leak, err, missing, occ_sum, &
+                                                            shift_mu
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, shift
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.22_dp]
@@ -7817,6 +8326,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the mixed gauge/physical finite-difference projector dP branch.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_fd_mixed_response(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7825,14 +8337,16 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_safe, &
                                                             expected, occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: charge_leak, diagonal_fix, err, gauge_pair, &
-                                                            occ_sum, physical_pair, raw_gauge, shift_mu
+      REAL(KIND=dp)                                      :: charge_leak, diagonal_fix, err, &
+                                                            gauge_pair, occ_sum, physical_pair, &
+                                                            raw_gauge, shift_mu
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, shift
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.18_dp, 0.37_dp]
@@ -7895,6 +8409,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_cluster_slope_split(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7903,14 +8420,16 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_raw, docc_ref, &
                                                             docc_safe, occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: cluster_avg, cluster_center, err, fd_err, &
-                                                            physical_slope, raw_noise, retained
+      REAL(KIND=dp)                                      :: cluster_avg, cluster_center, err, &
+                                                            fd_err, physical_slope, raw_noise, &
+                                                            retained
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_expected, occ_noisy
 
       evals(:) = [-0.010000_dp, -0.009982_dp, -0.009964_dp, 0.42_dp]
@@ -7969,6 +8488,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that one noisy near-degenerate pair filters the full connected component.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_component_filter(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -7977,17 +8499,18 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_legacy_fd, &
                                                             docc_safe, occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: component_err, component_span, eval_center, &
-                                                            legacy_err, legacy_span, occ_tol, pair_plateau, &
-                                                            pair_slope
-      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_component, occ_curv, occ_pair_local, &
-                                                            occ_scale
+      REAL(KIND=dp)                                      :: component_err, component_span, &
+                                                            eval_center, legacy_err, legacy_span, &
+                                                            occ_tol, pair_plateau, pair_slope
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_component, occ_curv, &
+                                                            occ_pair_local, occ_scale
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       evals(:) = [-0.010000_dp, -0.009982_dp, -0.009960_dp, 0.42_dp]
@@ -8042,6 +8565,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check that a fully noisy near-degenerate cluster keeps fixed-N Mermin shape.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_fixed_n_cluster_shape(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -8050,15 +8576,17 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, &
                                                             occ_mat_m, occ_mat_p
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active, cluster_sum, err, occ_tol, shape_err, &
-                                                            shape_sum, span, total_err
-      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, occ_curv, occ_filtered, occ_scale
+      REAL(KIND=dp)                                      :: active, cluster_sum, err, occ_tol, &
+                                                            shape_err, shape_sum, span, total_err
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, expected, occ_curv, occ_filtered, &
+                                                            occ_scale
 
       evals(:) = [-0.010000_dp, -0.009982_dp, -0.009960_dp, 0.42_dp]
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -8112,15 +8640,18 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
+!> \param occ_scale ...
+!> \param occ_tol ...
+!> \param occ_mono ...
 ! **************************************************************************************************
    SUBROUTINE dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_mono)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: occ_scale
-      REAL(KIND=dp), INTENT(IN)                           :: occ_tol
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)            :: occ_mono
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
+      REAL(KIND=dp), INTENT(IN)                          :: occ_tol
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: occ_mono
 
-      INTEGER                                             :: iblock, i, idx, n, nblock
-      INTEGER, ALLOCATABLE, DIMENSION(:)                  :: block_end, block_start
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: block_level, block_weight
+      INTEGER                                            :: i, iblock, idx, n, nblock
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: block_end, block_start
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: block_level, block_weight
 
       n = SIZE(occ_scale)
       IF (n <= 0) RETURN
@@ -8156,6 +8687,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense value 1/2 sum_i f_i lambda_i[U^H H U].
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_scale ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_spectral_projector_value(x_re, x_im, base, occ_scale) RESULT(value)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8179,6 +8715,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense spectral occupation projector in the current rotated REF basis.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_scale ...
+!> \param occ_mat ...
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_mat)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8200,6 +8741,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense spectral occupation projector for a supplied Hermitian CHC matrix.
+!> \param chc ...
+!> \param occ_scale ...
+!> \param occ_mat ...
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_occ_projector_from_chc(chc, occ_scale, occ_mat)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc
@@ -8224,6 +8768,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Production-like history-safe occupation projector for one dense CHC fixture.
+!> \param chc ...
+!> \param occ_scale ...
+!> \param projector_weight ...
+!> \param occ_mat ...
+!> \param occ_curv ...
+!> \param gauge_gap ...
 ! **************************************************************************************************
    SUBROUTINE dense_history_safe_occ_projector_from_chc(chc, occ_scale, projector_weight, occ_mat, &
                                                         occ_curv, gauge_gap)
@@ -8265,6 +8815,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Shared pair slope for near-degenerate occupation-gauge filtering.
+!> \param occ_curv_i ...
+!> \param occ_curv_j ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_shared_occ_slope(occ_curv_i, occ_curv_j) RESULT(slope)
       REAL(KIND=dp), INTENT(IN)                          :: occ_curv_i, occ_curv_j
@@ -8276,9 +8829,15 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief occupation-window projector weight for one dense rotation-pair fixture
+!> \param projector_weight ...
+!> \param curv_i ...
+!> \param curv_j ...
+!> \param curv_max ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_pair_projector_weight(projector_weight, curv_i, curv_j, curv_max) RESULT(pair_weight)
-      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, curv_i, curv_j, curv_max
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, curv_i, curv_j, &
+                                                            curv_max
       REAL(KIND=dp)                                      :: pair_weight
 
       REAL(KIND=dp)                                      :: active_fraction
@@ -8295,6 +8854,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
+!> \param chc ...
+!> \param dchc ...
+!> \param occ_scale ...
+!> \param docc_mat ...
+!> \param occ_curv ...
+!> \param gauge_gap ...
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
@@ -8305,9 +8870,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp)                                      :: allowed_jump, coeff, denom, diag_response_shift, &
-                                                            gap_tol, occ_curv_sum, occ_jump, occ_tol, physical_slope, &
-                                                            scale, slope_cap
+      REAL(KIND=dp) :: allowed_jump, coeff, denom, diag_response_shift, gap_tol, occ_curv_sum, &
+         occ_jump, occ_tol, physical_slope, scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       n = SIZE(chc, 1)
@@ -8384,6 +8948,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Production-like history-safe derivative: monotone slopes before projector dP.
+!> \param chc ...
+!> \param dchc ...
+!> \param occ_scale ...
+!> \param projector_weight ...
+!> \param docc_mat ...
+!> \param occ_curv ...
+!> \param gauge_gap ...
 ! **************************************************************************************************
    SUBROUTINE dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                               docc_mat, occ_curv, gauge_gap)
@@ -8397,8 +8968,10 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
       LOGICAL                                            :: same_gauge_cluster, use_projector_fd
-      REAL(KIND=dp)                                      :: coeff, diag_response_shift, occ_curv_sum, occ_tol, &
-                                                            projector_fd_step, scale, work_norm, work_tol
+      REAL(KIND=dp)                                      :: coeff, diag_response_shift, &
+                                                            occ_curv_sum, occ_tol, &
+                                                            projector_fd_step, scale, work_norm, &
+                                                            work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -8477,17 +9050,24 @@ CONTAINS
 
    END SUBROUTINE dense_history_safe_occ_projector_derivative_chc
 
+! **************************************************************************************************
+!> \brief ...
+!> \param evals ...
+!> \param occ_curv ...
+!> \param gauge_gap ...
+!> \param occ_tol ...
+!> \param occ_mono ...
+! **************************************************************************************************
    SUBROUTINE dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_mono)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: evals, occ_curv
-      REAL(KIND=dp), INTENT(IN)                           :: gauge_gap, occ_tol
-      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)          :: occ_mono
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_curv
+      REAL(KIND=dp), INTENT(IN)                          :: gauge_gap, occ_tol
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: occ_mono
 
-      INTEGER                                             :: first, idx, last, n
-      LOGICAL                                             :: needs_filter
-      REAL(KIND=dp)                                      :: allowed_jump, cluster_sum, eval_center, fit_den, &
-                                                            fit_num, gap, occ_curv_sum, occ_jump, pair_slope, &
-                                                            pair_weight, physical_slope, plateau, shape_sum, &
-                                                            slope_cap, slope_pair
+      INTEGER                                            :: first, idx, last, n
+      LOGICAL                                            :: needs_filter
+      REAL(KIND=dp) :: allowed_jump, cluster_sum, eval_center, fit_den, fit_num, gap, &
+         occ_curv_sum, occ_jump, pair_slope, pair_weight, physical_slope, plateau, shape_sum, &
+         slope_cap, slope_pair
 
       n = SIZE(evals)
       IF (n <= 1) RETURN
@@ -8563,6 +9143,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Gradient of the dense spectral occupation-projector value.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_scale ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param eps_diag ...
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_projector_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8584,6 +9171,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense value 1/2 Tr[P U^H H U] for a doubled Hermitian occupation projector.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_mat ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_projector_rotation_value(x_re, x_im, base, occ_mat) RESULT(value)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8604,6 +9196,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense gradient of 1/2 Tr[P U^H H U] for a doubled Hermitian occupation projector.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_mat ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param eps_diag ...
 ! **************************************************************************************************
    SUBROUTINE dense_projector_rotation_gradient(x_re, x_im, base, occ_mat, grad_re, grad_im, eps_diag)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8612,8 +9211,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
 
       COMPLEX(KIND=dp)                                   :: kernel
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, &
-                                                            inner, outer, u, work
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, inner, &
+                                                            outer, u, work
       INTEGER                                            :: i, j, n
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
@@ -8650,6 +9249,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the complex k-point NONDIAG_ENERGY tether gradient.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_nondiag_tether_gradient(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -8766,6 +9368,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check the gauge-projected complex canonical tether gradient.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
 ! **************************************************************************************************
    SUBROUTINE check_complex_canonical_tether_gradient(label, tol, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
@@ -8882,6 +9487,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense gauge-projected complex canonical tether value.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eps ...
+!> \param weights ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_canonical_tether_value(x_re, x_im, base, eps, weights) RESULT(value)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8913,6 +9524,15 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense gauge-projected complex canonical tether gradients.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eps ...
+!> \param weights ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param grad_eps ...
+!> \param value ...
 ! **************************************************************************************************
    SUBROUTINE dense_canonical_tether_gradient(x_re, x_im, base, eps, weights, &
                                               grad_re, grad_im, grad_eps, value)
@@ -8974,6 +9594,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense complex NONDIAG_ENERGY tether value.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eps ...
+!> \param strength ...
+!> \param kweight ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION dense_nondiag_tether_value(x_re, x_im, base, eps, strength, kweight) RESULT(value)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -8999,6 +9626,16 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense complex NONDIAG_ENERGY tether gradients.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param eps ...
+!> \param strength ...
+!> \param kweight ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param grad_eps ...
+!> \param value ...
 ! **************************************************************************************************
    SUBROUTINE dense_nondiag_tether_gradient(x_re, x_im, base, eps, strength, kweight, &
                                             grad_re, grad_im, grad_eps, value)
@@ -9011,7 +9648,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: value
 
       COMPLEX(KIND=dp)                                   :: kernel
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dmat, dedu, evec, frechet, generator, &
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, dmat, evec, frechet, generator, &
                                                             inner, outer, u
       INTEGER                                            :: i, j, n
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
@@ -9052,6 +9689,13 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense gradient of sum_i occ_scale_i [U^H H U]_ii.
+!> \param x_re ...
+!> \param x_im ...
+!> \param base ...
+!> \param occ_scale ...
+!> \param grad_re ...
+!> \param grad_im ...
+!> \param eps_diag ...
 ! **************************************************************************************************
    SUBROUTINE dense_ref_rotation_gradient(x_re, x_im, base, occ_scale, grad_re, grad_im, eps_diag)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -9061,8 +9705,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eps_diag
 
       COMPLEX(KIND=dp)                                   :: kernel
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, &
-                                                            inner, outer, u, work
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: dedu, evec, frechet, generator, inner, &
+                                                            outer, u, work
       INTEGER                                            :: i, j, n
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
@@ -9103,6 +9747,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Build U=exp(-i X) for the dense anti-Hermitian k-point generator convention.
+!> \param x_re ...
+!> \param x_im ...
+!> \param u ...
 ! **************************************************************************************************
    SUBROUTINE dense_rotation_u(x_re, x_im, u)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
@@ -9123,6 +9770,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Build U=V exp(-i evals) V^H.
+!> \param evec ...
+!> \param evals ...
+!> \param u ...
 ! **************************************************************************************************
    SUBROUTINE dense_rotation_u_from_eigensystem(evec, evals, u)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: evec
@@ -9141,13 +9791,22 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Small local Fermi-Dirac k-point smearing helper for this standalone unit test.
+!> \param occ ...
+!> \param mu ...
+!> \param kTS ...
+!> \param eps ...
+!> \param nel ...
+!> \param wk ...
+!> \param sigma ...
+!> \param maxocc ...
 ! **************************************************************************************************
    SUBROUTINE dense_fermi_kpoint(occ, mu, kTS, eps, nel, wk, sigma, maxocc)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: occ
       REAL(KIND=dp), INTENT(OUT)                         :: mu, kTS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps
+      REAL(KIND=dp), INTENT(IN)                          :: nel
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
-      REAL(KIND=dp), INTENT(IN)                          :: nel, sigma, maxocc
+      REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc
 
       REAL(KIND=dp), PARAMETER                           :: epsocc = 1.0E-12_dp
 
@@ -9174,13 +9833,22 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Evaluate Fermi-Dirac occupations and -TS correction for a fixed chemical potential.
+!> \param occ ...
+!> \param nel ...
+!> \param kTS ...
+!> \param eps ...
+!> \param mu ...
+!> \param wk ...
+!> \param sigma ...
+!> \param maxocc ...
 ! **************************************************************************************************
    SUBROUTINE dense_fermi_kpoint_eval(occ, nel, kTS, eps, mu, wk, sigma, maxocc)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: occ
       REAL(KIND=dp), INTENT(OUT)                         :: nel, kTS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: eps
+      REAL(KIND=dp), INTENT(IN)                          :: mu
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wk
-      REAL(KIND=dp), INTENT(IN)                          :: mu, sigma, maxocc
+      REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc
 
       INTEGER                                            :: ik, imo
       REAL(KIND=dp)                                      :: arg, term1, term2, tmp, tmp2, tmp3, &
@@ -9219,6 +9887,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Small dense 2x2 matrix exponential via Taylor series.
+!> \param a ...
+!> \param expa ...
 ! **************************************************************************************************
    SUBROUTINE dense_expm2(a, expa)
       COMPLEX(KIND=dp), DIMENSION(2, 2), INTENT(IN)      :: a
