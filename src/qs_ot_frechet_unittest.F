@@ -150,6 +150,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
+   CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
+                                                  5.0E-14_dp, nfail)
    CALL check_projector_active_residual_filter("complex projector active residual filter", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
@@ -5773,6 +5775,59 @@ CONTAINS
    END SUBROUTINE check_projector_trace_active_mix_weight
 
 ! **************************************************************************************************
+!> \brief Check accepted-drop scaling of the physical Direct candidate.
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_history_step_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp, &
+                                                            scale_floor = 0.25_dp
+
+      REAL(KIND=dp)                                      :: err, floor_scale, good_scale, mature_floor_scale, &
+                                                            mature_ratio_scale, over_scale, ratio_scale, young_scale
+
+      young_scale = dense_direct_history_step_scale(4.0_dp, 1.0_dp, 0.25_dp, 3, 4, &
+                                                    8, scale_floor, max_quality)
+      ratio_scale = dense_direct_history_step_scale(10.0_dp, 4.0_dp, 0.20_dp, 4, 4, &
+                                                    8, scale_floor, max_quality)
+      floor_scale = dense_direct_history_step_scale(10.0_dp, 0.01_dp, 0.02_dp, 4, 4, &
+                                                    8, scale_floor, max_quality)
+      mature_ratio_scale = dense_direct_history_step_scale(10.0_dp, 4.0_dp, 0.20_dp, 16, 4, &
+                                                           8, scale_floor, max_quality)
+      mature_floor_scale = dense_direct_history_step_scale(10.0_dp, 0.01_dp, 0.02_dp, 16, 4, &
+                                                           8, scale_floor, max_quality)
+      good_scale = dense_direct_history_step_scale(10.0_dp, 10.0_dp, 0.70_dp, 4, 4, &
+                                                   8, scale_floor, max_quality)
+      over_scale = dense_direct_history_step_scale(10.0_dp, 20.0_dp, 1.20_dp, 4, 4, &
+                                                   8, scale_floor, max_quality)
+
+      err = ABS(young_scale - 1.0_dp)
+      err = MAX(err, ABS(ratio_scale - &
+                         (1.0_dp - (1.0_dp/13.0_dp)*(1.0_dp - SQRT(0.40_dp)))))
+      err = MAX(err, ABS(floor_scale - &
+                         (1.0_dp - (1.0_dp/13.0_dp)*(1.0_dp - SQRT(scale_floor)))))
+      err = MAX(err, ABS(mature_ratio_scale - SQRT(0.40_dp)))
+      err = MAX(err, ABS(mature_floor_scale - SQRT(scale_floor)))
+      err = MAX(err, ABS(good_scale - 1.0_dp))
+      err = MAX(err, ABS(over_scale - 1.0_dp))
+
+      IF (err > tol .OR. ratio_scale >= 1.0_dp .OR. floor_scale >= ratio_scale .OR. &
+          mature_ratio_scale >= ratio_scale .OR. mature_floor_scale >= floor_scale) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/ratio/floor/mratio/mfloor/good/over", err, young_scale, &
+            ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, good_scale, over_scale
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/ratio/floor/mratio/mfloor/good/over", err, young_scale, &
+            ratio_scale, floor_scale, mature_ratio_scale, mature_floor_scale, good_scale, over_scale
+      END IF
+
+   END SUBROUTINE check_projector_direct_history_step_scale
+
+! **************************************************************************************************
 !> \brief Check that active Direct curvature filters local residuals, not fixed-N cross-channel terms.
 ! **************************************************************************************************
    SUBROUTINE check_projector_active_residual_filter(label, tol, nfail)
@@ -6247,6 +6302,36 @@ CONTAINS
       mix_weight = MIN(0.95_dp, MAX(0.0_dp, mix_weight))
 
    END FUNCTION dense_trace_active_mix_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of selected-history Direct step scaling.
+! **************************************************************************************************
+   FUNCTION dense_direct_history_step_scale(predicted_sum, measured_sum, ema_quality, samples, &
+                                            min_samples, response_min_samples, scale_floor, &
+                                            max_quality) RESULT(step_scale)
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, ema_quality, &
+                                                            scale_floor, max_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples, response_min_samples
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: history_quality, maturity, step_scale, target_scale
+
+      history_quality = 1.0_dp
+      IF (samples >= min_samples) THEN
+         IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
+            history_quality = measured_sum/predicted_sum
+         ELSE IF (ema_quality > 0.0_dp) THEN
+            history_quality = ema_quality
+         END IF
+      END IF
+      history_quality = MAX(scale_floor, MIN(max_quality, history_quality))
+      target_scale = SQRT(MIN(1.0_dp, history_quality))
+      maturity_samples = MAX(1, 2*response_min_samples - min_samples + 1)
+      maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                 REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+      step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
+
+   END FUNCTION dense_direct_history_step_scale
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct trace model-gap term.

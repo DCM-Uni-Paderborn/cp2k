@@ -5245,6 +5245,7 @@ CONTAINS
             projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
             projector_physical_direct_gdot_raw_response, &
             projector_physical_direct_gdot_model_response, &
+            projector_physical_direct_history_quality, projector_physical_direct_history_scale, &
             projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
             projector_physical_direct_line_step_trust, &
             projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
@@ -6149,6 +6150,8 @@ CONTAINS
             projector_physical_direct_gdot_raw_response = 0.0_dp
             projector_physical_direct_gdot_rotation = 0.0_dp
             projector_physical_direct_gdotp = 0.0_dp
+            projector_physical_direct_history_quality = 1.0_dp
+            projector_physical_direct_history_scale = 1.0_dp
             projector_physical_direct_line_step = 0.0_dp
             projector_physical_direct_line_step_curvature = 0.0_dp
             projector_physical_direct_line_step_trust = HUGE(1.0_dp)
@@ -7264,6 +7267,8 @@ CONTAINS
                               ot_kp_schur_projector_response_quality_min_ratio, &
                               ot_kp_schur_projector_response_quality_max_ratio)
                      projector_physical_direct_quality_for_selection = projector_physical_trace_split_quality
+                     projector_physical_direct_history_quality = 1.0_dp
+                     projector_physical_direct_history_scale = 1.0_dp
                      IF (local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
                          ot_kp_schur_calibration_min_samples) THEN
                         projector_physical_direct_quality_for_selection = &
@@ -7276,6 +7281,18 @@ CONTAINS
                               projector_physical_trace_split_quality, &
                               ot_kp_schur_projector_response_quality_min_ratio, &
                               ot_kp_schur_projector_response_quality_max_ratio)
+                        projector_physical_direct_history_quality = &
+                           kpoint_ot_direct_history_quality( &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples)
+                        projector_physical_direct_history_scale = &
+                           kpoint_ot_direct_history_step_scale( &
+                              projector_physical_direct_history_quality, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples)
                      END IF
                      projector_physical_direct_density_audit_quality = &
                         kpoint_ot_density_audit_trust_quality( &
@@ -8718,6 +8735,8 @@ CONTAINS
                                                       projector_physical_direct_schur_eval_min
                                              END IF
                                           END IF
+                                          projector_physical_direct_sol(:) = &
+                                             projector_physical_direct_history_scale*projector_physical_direct_sol(:)
                                           IF (logger%iter_info%print_level >= high_print_level) THEN
                                              projector_physical_direct_trace_active_quad = 0.0_dp
                                              projector_physical_direct_trace_actual_quad = 0.0_dp
@@ -11724,9 +11743,9 @@ CONTAINS
                         projector_phys_direct_active_comp_trial, &
                         projector_physical_direct_basis_signal, &
                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,18(1X,ES16.8))') &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,20(1X,ES16.8))') &
                         " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr "// &
-                        "mratio nratio tq sq mnorm mrot geb ger gem:", &
+                        "mratio nratio tq sq mnorm mrot geb ger gem hscale hq:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
                         projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
                         projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
@@ -11737,7 +11756,8 @@ CONTAINS
                         projector_physical_direct_metric_normp, projector_physical_direct_metric_norm_rotation, &
                         projector_physical_direct_gdot_base_energy, &
                         projector_physical_direct_gdot_raw_response, &
-                        projector_physical_direct_gdot_model_response
+                        projector_physical_direct_gdot_model_response, &
+                        projector_physical_direct_history_scale, projector_physical_direct_history_quality
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                         " OT Schur projector phys direct trace shadow actual raw active excess raw_ratio "// &
                         "active_actual actual_norm raw_norm active_norm:", &
@@ -12857,6 +12877,42 @@ CONTAINS
          quality = MAX(min_quality, MIN(max_quality, quality))
 
       END FUNCTION kpoint_ot_schur_history_quality
+
+      FUNCTION kpoint_ot_direct_history_quality(predicted_sum, measured_sum, ema_quality, &
+                                                samples, min_samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: predicted_sum, measured_sum, ema_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp)                                     :: quality
+
+         quality = 1.0_dp
+         IF (samples < min_samples) RETURN
+
+         IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
+            quality = measured_sum/predicted_sum
+         ELSE IF (ema_quality > 0.0_dp) THEN
+            quality = ema_quality
+         END IF
+         quality = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                       MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
+
+      END FUNCTION kpoint_ot_direct_history_quality
+
+      FUNCTION kpoint_ot_direct_history_step_scale(history_quality, samples, min_samples) RESULT(step_scale)
+      REAL(KIND=dp), INTENT(IN)                         :: history_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      INTEGER                                           :: maturity_samples
+      REAL(KIND=dp)                                     :: clipped_quality, maturity, step_scale, target_scale
+
+         clipped_quality = MIN(1.0_dp, MAX(ot_kp_schur_calibration_floor, &
+                                           history_quality))
+         target_scale = SQRT(clipped_quality)
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - min_samples + 1)
+         maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                    REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+         step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
+
+      END FUNCTION kpoint_ot_direct_history_step_scale
 
       FUNCTION kpoint_ot_schur_trust_quality(weighted_trust_ratio, abs_trust_ratio, &
                                              gap_trust_ratio) RESULT(quality)
