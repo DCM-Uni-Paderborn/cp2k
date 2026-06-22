@@ -108,6 +108,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector active density-response filter", 5.0E-8_dp, nfail)
    CALL check_complex_projector_active_density_safe_inverse( &
       "complex projector active density safe inverse", 5.0E-14_dp, nfail)
+   CALL check_complex_projector_bounded_density_mix( &
+      "complex projector bounded density-response mix", 5.0E-14_dp, nfail)
    CALL check_projector_active_density_total_invariant( &
       "complex projector active density total invariant", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_raw_audit_split( &
@@ -4023,6 +4025,74 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_active_density_safe_inverse
+
+! **************************************************************************************************
+!> \brief Check that bounded physical density-response mix recovers active curvature without gauge blow-up.
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_bounded_density_mix(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            response_ratio_gate = 2.0E-2_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active_floor, active_shift, active_sum, &
+                                                            fixed_n_leak, low_suppression, mid_recovery, &
+                                                            mix_shift, mix_sum, mix_weight, old_shift, old_sum
+      REAL(KIND=dp), DIMENSION(n)                        :: active_response, active_weight, docc_diag, &
+                                                            mixed_column, mixed_response, occ_curv, &
+                                                            old_response, raw_column, safe_column
+
+      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp]
+      docc_diag(:) = [-8.0E-3_dp, 2.4E-3_dp, -1.6E-4_dp, 1.6E-5_dp]
+      active_floor = response_ratio_gate*MAXVAL(occ_curv(:))
+
+      active_weight(:) = 0.0_dp
+      raw_column(:) = 0.0_dp
+      safe_column(:) = 0.0_dp
+      mixed_column(:) = 0.0_dp
+      DO i = 1, n
+         raw_column(i) = 0.5_dp*docc_diag(i)/occ_curv(i)
+         safe_column(i) = 0.5_dp*docc_diag(i)/MAX(occ_curv(i), active_floor)
+         mix_weight = occ_curv(i)/MAX(occ_curv(i), active_floor)
+         mix_weight = MIN(1.0_dp, MAX(0.0_dp, mix_weight))
+         mixed_column(i) = safe_column(i) + mix_weight*(raw_column(i) - safe_column(i))
+         active_weight(i) = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/MAXVAL(occ_curv(:)))))
+      END DO
+
+      active_sum = DOT_PRODUCT(occ_curv(:), active_weight(:))
+      active_shift = DOT_PRODUCT(occ_curv(:)*active_weight(:), safe_column(:))/active_sum
+      active_response(:) = active_weight(:)*(safe_column(:) - active_shift)
+
+      mix_sum = DOT_PRODUCT(occ_curv(:), active_weight(:))
+      mix_shift = DOT_PRODUCT(occ_curv(:)*active_weight(:), mixed_column(:))/mix_sum
+      mixed_response(:) = active_weight(:)*(mixed_column(:) - mix_shift)
+
+      old_sum = DOT_PRODUCT(occ_curv(:), active_weight(:))
+      old_shift = DOT_PRODUCT(occ_curv(:)*active_weight(:), raw_column(:))/old_sum
+      old_response(:) = active_weight(:)*(raw_column(:) - old_shift)
+
+      fixed_n_leak = ABS(DOT_PRODUCT(occ_curv(:), mixed_response(:)))
+      mid_recovery = ABS(mixed_response(3)) - ABS(active_response(3))
+      low_suppression = ABS(mixed_response(n))/MAX(ABS(old_response(n)), EPSILON(1.0_dp))
+
+      IF (fixed_n_leak > tol .OR. mid_recovery < active_tol .OR. &
+          ABS(old_response(n)) < active_tol .OR. low_suppression > 2.5E-2_dp .OR. &
+          MAXVAL(ABS(mixed_response(1:2) - old_response(1:2))) > active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with fixed/mid/oldlow/suppress/highgap", fixed_n_leak, mid_recovery, &
+            ABS(old_response(n)), low_suppression, MAXVAL(ABS(mixed_response(1:2) - old_response(1:2)))
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with fixed/mid/oldlow/suppress/highgap", fixed_n_leak, mid_recovery, &
+            ABS(old_response(n)), low_suppression, MAXVAL(ABS(mixed_response(1:2) - old_response(1:2)))
+      END IF
+
+   END SUBROUTINE check_complex_projector_bounded_density_mix
 
 ! **************************************************************************************************
 !> \brief Check that the active density split preserves the finite physical response.
