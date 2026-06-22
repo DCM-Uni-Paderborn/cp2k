@@ -10336,7 +10336,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = density_descent_direction_scale*density_descent_z_e(:)
-                     sol(:) = density_descent_direction_scale*projector_physical_direct_density_sol(:)
+                     sol(:) = density_descent_direction_scale*projector_physical_direct_sol(:)
                      direction_scale = density_descent_direction_scale
                      gdotp = density_descent_gdotp
                      gdot_energy = density_descent_gdot_energy
@@ -10683,7 +10683,7 @@ CONTAINS
                      projector_physical_direct_density_candidate_selected = .FALSE.
                      projector_response_candidate_selected = .FALSE.
                      z_e(:) = density_descent_direction_scale*density_descent_z_e(:)
-                     sol(:) = density_descent_direction_scale*projector_physical_direct_density_sol(:)
+                     sol(:) = density_descent_direction_scale*projector_physical_direct_sol(:)
                      direction_scale = density_descent_direction_scale
                      gdotp = density_descent_gdotp
                      gdot_energy = density_descent_gdot_energy

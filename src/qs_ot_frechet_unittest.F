@@ -138,6 +138,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical-direct density shadow", 5.0E-12_dp, nfail)
    CALL check_projector_density_candidate_total_response( &
       "complex projector density candidate total response", 5.0E-12_dp, nfail)
+   CALL check_projector_density_descent_selected_rotation( &
+      "complex projector density-descent selected rotation", 5.0E-14_dp, nfail)
    CALL check_projector_metric_response_projection("complex projector metric response projection", &
                                                    5.0E-13_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
@@ -5360,6 +5362,52 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_candidate_total_response
+
+! **************************************************************************************************
+!> \brief Check that density-descent selection keeps its modeled rotation step.
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_descent_selected_rotation(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 2
+
+      REAL(KIND=dp)                                      :: err, gap, model_gdotp, model_normp, scale, &
+                                                            selected_gdotp, selected_normp, wrong_gdotp, &
+                                                            wrong_normp
+      REAL(KIND=dp), DIMENSION(ne)                       :: density_rx_e, grad_e, z_e, z_phys
+      REAL(KIND=dp), DIMENSION(nrot)                     :: density_sol, grad_rot, physical_sol
+
+      scale = 0.37_dp
+      grad_e(:) = [0.21_dp, -0.17_dp, 0.09_dp, -0.06_dp]
+      grad_rot(:) = [0.31_dp, -0.22_dp]
+      z_phys(:) = [0.18_dp, -0.08_dp, 0.05_dp, -0.02_dp]
+      density_rx_e(:) = [0.07_dp, -0.04_dp, 0.03_dp, -0.01_dp]
+      physical_sol(:) = [0.26_dp, -0.15_dp]
+      density_sol(:) = [-0.11_dp, 0.29_dp]
+      z_e(:) = z_phys(:) + density_rx_e(:)
+
+      model_gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, physical_sol)
+      model_normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(physical_sol, physical_sol)
+      selected_gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, physical_sol)
+      selected_normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(physical_sol, physical_sol)
+      wrong_gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, density_sol)
+      wrong_normp = DOT_PRODUCT(z_e, z_e) + DOT_PRODUCT(density_sol, density_sol)
+
+      err = MAX(ABS(scale*selected_gdotp - scale*model_gdotp), &
+                ABS(scale*scale*selected_normp - scale*scale*model_normp))
+      gap = MAX(ABS(scale*wrong_gdotp - scale*model_gdotp), &
+                ABS(scale*scale*wrong_normp - scale*scale*model_normp))
+
+      IF (err > tol .OR. gap <= 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/wrong_gap", err, gap
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/wrong_gap", err, gap
+      END IF
+
+   END SUBROUTINE check_projector_density_descent_selected_rotation
 
 ! **************************************************************************************************
 !> \brief Check the trust-limited Mermin quadratic used by density-response candidates.
