@@ -5346,7 +5346,9 @@ CONTAINS
          dense_direction_scale, &
          dense_expected_drop, dense_term, &
          dense_gdot_energy, dense_gdot_rotation, dense_model_gap, dense_model_gap_drop, dense_model_gap_ratio, &
-         dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, dense_quality_for_selection, &
+         dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, dense_print_model_gap, &
+         dense_print_model_gap_drop, dense_print_model_gap_ratio, dense_print_model_gap_trust, &
+         dense_quality_for_selection, &
          dense_residual_quality, dense_scale_quality, dense_trust_quality, diag_shift, diag_shift_avg, &
          diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, diag_shift_fraction, direction_scale, &
          energy_floor_count, energy_floor_curv_sum, energy_gauge_weight, exact_response_diag_avg, gdotp, gdot_energy, &
@@ -12906,6 +12908,22 @@ CONTAINS
                         projector_physical_model_calibrated_drop, projector_physical_model_gap, &
                         projector_physical_response_weighted_trust_ratio, &
                         projector_physical_response_abs_trust_ratio, projector_physical_response_weight
+                     dense_print_model_gap = dense_model_gap
+                     dense_print_model_gap_drop = dense_model_gap_drop
+                     dense_print_model_gap_trust = dense_model_gap_trust
+                     dense_print_model_gap_ratio = dense_model_gap_ratio
+                     IF (ABS(dense_print_model_gap) < SQRT(TINY(dense_print_model_gap)) .OR. &
+                         ABS(dense_print_model_gap) > SQRT(HUGE(dense_print_model_gap))) &
+                        dense_print_model_gap = 0.0_dp
+                     IF (ABS(dense_print_model_gap_drop) < SQRT(TINY(dense_print_model_gap_drop)) .OR. &
+                         ABS(dense_print_model_gap_drop) > SQRT(HUGE(dense_print_model_gap_drop))) &
+                        dense_print_model_gap_drop = 0.0_dp
+                     IF (ABS(dense_print_model_gap_trust) < SQRT(TINY(dense_print_model_gap_trust)) .OR. &
+                         ABS(dense_print_model_gap_trust) > SQRT(HUGE(dense_print_model_gap_trust))) &
+                        dense_print_model_gap_trust = 0.0_dp
+                     IF (ABS(dense_print_model_gap_ratio) < SQRT(TINY(dense_print_model_gap_ratio)) .OR. &
+                         ABS(dense_print_model_gap_ratio) > SQRT(HUGE(dense_print_model_gap_ratio))) &
+                        dense_print_model_gap_ratio = 0.0_dp
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),3(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used flavor split_used dense_code split_ready constr_selected "// &
                      "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
@@ -12917,7 +12935,8 @@ CONTAINS
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
                      split_quality_for_selection, constrained_quality_for_selection, split_trust_quality, &
                      dense_trust_quality, constrained_trust_quality, split_dense_expected_ratio, &
-                     dense_model_gap, dense_model_gap_drop, dense_model_gap_trust, dense_model_gap_ratio, &
+                     dense_print_model_gap, dense_print_model_gap_drop, dense_print_model_gap_trust, &
+                     dense_print_model_gap_ratio, &
                      split_residual_quality, dense_residual_quality
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
                      " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
