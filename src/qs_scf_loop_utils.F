@@ -14183,7 +14183,6 @@ CONTAINS
                   projector_fd_step = MAX(projector_fd_step, &
                                           10.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, scale)/work_norm)
                END IF
-               DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
                ALLOCATE (occ_mat_p(n, n), occ_mat_m(n, n))
                CALL dense_history_safe_occ_projector(chc + projector_fd_step*dchc, occupation_numbers, &
                                                      kpoint_weight, delta, occ_mat_p, occ_curv_channel, &
@@ -14192,7 +14191,28 @@ CONTAINS
                                                      kpoint_weight, delta, occ_mat_m, occ_curv_channel, &
                                                      gauge_gap)
                docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
+               kernel(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(docc_mat, evec))
+               diag_response_shift = 0.0_dp
+               occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
+               IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+                  DO i = 1, n
+                     diag_response_shift = diag_response_shift + &
+                                           MAX(0.0_dp, occ_curv_channel(i))*REAL(work(i, i), KIND=dp)
+                  END DO
+                  diag_response_shift = diag_response_shift/occ_curv_sum
+               END IF
+               DO i = 1, n
+                  coeff = -2.0_dp*MAX(0.0_dp, occ_curv_channel(i))
+                  kernel(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+                  IF (ABS(coeff) > EPSILON(coeff)) &
+                     kernel(i, i) = CMPLX(projector_weight*coeff* &
+                                          (REAL(work(i, i), KIND=dp) - diag_response_shift), &
+                                          0.0_dp, KIND=dp)
+               END DO
+               docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
+               docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
                DEALLOCATE (occ_mat_p, occ_mat_m)
+               DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
                RETURN
             END IF
          END IF

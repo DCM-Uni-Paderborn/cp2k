@@ -178,6 +178,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector adaptive finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_diagonal_response( &
       "history-safe occupation-projector diagonal response", 5.0E-14_dp, nfail)
+   CALL check_history_safe_occ_projector_fd_diagonal_response( &
+      "history-safe occupation-projector fd diagonal response", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -7493,6 +7495,75 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_diagonal_response
 
 ! **************************************************************************************************
+!> \brief Check that the gauge finite-difference dP branch keeps the fixed-N diagonal response.
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_fd_diagonal_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_fd, docc_safe, expected, &
+                                                            occ_mat_m, occ_mat_p
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: charge_leak, err, missing, occ_sum, shift_mu
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, shift
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.22_dp]
+      occ_scale(:) = [1.18_dp, 0.41_dp, 0.23_dp]
+      occ_curv(:) = [0.038_dp, 0.035_dp, 0.018_dp]
+      shift(:) = [0.81_dp, -0.49_dp, 0.23_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+         dchc(i, i) = CMPLX(shift(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 2) = CMPLX(0.24_dp, -0.18_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, &
+                                                     projector_weight, occ_mat_p, occ_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_from_chc(chc - fd_step*dchc, occ_scale, &
+                                                     projector_weight, occ_mat_m, occ_curv, gauge_gap)
+      docc_fd(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      expected(:, :) = docc_fd(:, :)
+
+      occ_sum = SUM(occ_curv(:))
+      shift_mu = DOT_PRODUCT(occ_curv(:), shift(:))/occ_sum
+      DO i = 1, n
+         expected(i, i) = CMPLX(-2.0_dp*projector_weight*occ_curv(i)*(shift(i) - shift_mu), &
+                                0.0_dp, KIND=dp)
+      END DO
+
+      err = MAXVAL(ABS(docc_safe(:, :) - expected(:, :)))
+      missing = MAXVAL(ABS(expected(:, :) - docc_fd(:, :)))
+      charge_leak = 0.0_dp
+      DO i = 1, n
+         charge_leak = charge_leak + REAL(expected(i, i) - docc_fd(i, i), KIND=dp)
+      END DO
+      charge_leak = ABS(charge_leak)
+
+      IF (err > tol .OR. missing < active_tol .OR. charge_leak > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/missing/charge", err, missing, charge_leak
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/missing/charge", err, missing, charge_leak
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_fd_diagonal_response
+
+! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
 ! **************************************************************************************************
    SUBROUTINE check_history_safe_occ_projector_cluster_slope_split(label, tol, nfail)
@@ -7993,10 +8064,11 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
 
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, occ_mat_m, occ_mat_p, work
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
       LOGICAL                                            :: same_gauge_cluster, use_projector_fd
-      REAL(KIND=dp)                                      :: occ_tol, projector_fd_step, scale, work_norm, work_tol
+      REAL(KIND=dp)                                      :: coeff, diag_response_shift, occ_curv_sum, occ_tol, &
+                                                            projector_fd_step, scale, work_norm, work_tol
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -8007,7 +8079,7 @@ CONTAINS
       CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_work)
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
          n = SIZE(occ_scale)
-         ALLOCATE (evec(n, n), evals(n), work(n, n))
+         ALLOCATE (evec(n, n), evals(n), kernel(n, n), work(n, n))
          CALL diag_complex(chc, evec, evals)
          work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
          use_projector_fd = .FALSE.
@@ -8039,11 +8111,31 @@ CONTAINS
             CALL dense_history_safe_occ_projector_from_chc(chc - projector_fd_step*dchc, occ_scale, &
                                                            projector_weight, occ_mat_m, occ_curv, gauge_gap)
             docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
-            DEALLOCATE (evec, evals, work, occ_mat_p, occ_mat_m, occ_work)
+            kernel(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(docc_mat, evec))
+            diag_response_shift = 0.0_dp
+            occ_curv_sum = SUM(MAX(0.0_dp, occ_curv(:)))
+            IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
+               DO i = 1, n
+                  diag_response_shift = diag_response_shift + &
+                                        MAX(0.0_dp, occ_curv(i))*REAL(work(i, i), KIND=dp)
+               END DO
+               diag_response_shift = diag_response_shift/occ_curv_sum
+            END IF
+            DO i = 1, n
+               coeff = -2.0_dp*MAX(0.0_dp, occ_curv(i))
+               kernel(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               IF (ABS(coeff) > EPSILON(coeff)) &
+                  kernel(i, i) = CMPLX(projector_weight*coeff* &
+                                       (REAL(work(i, i), KIND=dp) - diag_response_shift), &
+                                       0.0_dp, KIND=dp)
+            END DO
+            docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
+            docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
+            DEALLOCATE (evec, evals, kernel, work, occ_mat_p, occ_mat_m, occ_work)
             RETURN
          END IF
          CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
-         DEALLOCATE (evec, evals, work)
+         DEALLOCATE (evec, evals, kernel, work)
       END IF
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap)
