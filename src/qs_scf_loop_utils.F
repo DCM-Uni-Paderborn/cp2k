@@ -9023,6 +9023,14 @@ CONTAINS
                                           IF (exact_density_response_ready) &
                                              projector_physical_direct_model_e(:) = projector_physical_direct_model_e(:) + &
                                                 MATMUL(response_density_exact, projector_physical_direct_sol)
+                                          IF (projector_physical_direct_mixed_enabled .AND. &
+                                              projector_physical_direct_mixed_weight > &
+                                              EPSILON(projector_physical_direct_mixed_weight)) &
+                                             projector_physical_direct_model_e(:) = &
+                                                (1.0_dp - projector_physical_direct_mixed_weight)* &
+                                                projector_physical_direct_rx_e(:) + &
+                                                projector_physical_direct_mixed_weight* &
+                                                projector_physical_direct_model_e(:)
                                           CALL project_kpoint_ot_schur_response(projector_physical_direct_rx_e, &
                                              occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                           CALL project_kpoint_ot_schur_response(projector_physical_direct_model_e, &

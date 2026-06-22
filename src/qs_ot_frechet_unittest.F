@@ -6721,8 +6721,8 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
       REAL(KIND=dp), PARAMETER                           :: z_weight = 0.35_dp
 
-      REAL(KIND=dp)                                      :: err, full_err, legacy_gap, mixed_gap, &
-                                                            zero_err
+      REAL(KIND=dp)                                      :: endpoint_err, err, full_err, legacy_gap, &
+                                                            mixed_gap, zero_err
       REAL(KIND=dp), DIMENSION(ne)                       :: actual, curv, expected, model_full, &
                                                             model_mixed, model_zero
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density, physical, raw
@@ -6747,6 +6747,10 @@ CONTAINS
       model_full(:) = MATMUL(physical, step) + MATMUL(density, step)
       expected(:) = (1.0_dp - z_weight)*MATMUL(raw, step) + &
                     z_weight*MATMUL(physical, step) + z_weight*MATMUL(density, step)
+      model_mixed(:) = MATMUL(raw, step)
+      endpoint_err = MAXVAL(ABS(model_mixed(:) - model_zero(:)))
+      model_mixed(:) = MATMUL(physical, step) + MATMUL(density, step)
+      endpoint_err = MAX(endpoint_err, MAXVAL(ABS(model_mixed(:) - model_full(:))))
       model_mixed(:) = expected(:)
       actual(:) = expected(:)
 
@@ -6756,16 +6760,16 @@ CONTAINS
       mixed_gap = 0.5_dp*SUM(curv(:)*(model_mixed(:) - actual(:))**2)
       legacy_gap = 0.5_dp*SUM(curv(:)*(model_full(:) - actual(:))**2)
 
-      IF (err > tol .OR. zero_err > tol .OR. full_err > tol .OR. mixed_gap > tol .OR. &
+      IF (err > tol .OR. endpoint_err > tol .OR. zero_err > tol .OR. full_err > tol .OR. mixed_gap > tol .OR. &
           legacy_gap < 1.0E-6_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/zero/full/mixedgap/legacygap", &
-            err, zero_err, full_err, mixed_gap, legacy_gap
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/endpoint/zero/full/mixedgap/legacygap", &
+            err, endpoint_err, zero_err, full_err, mixed_gap, legacy_gap
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/zero/full/mixedgap/legacygap", &
-            err, zero_err, full_err, mixed_gap, legacy_gap
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/endpoint/zero/full/mixedgap/legacygap", &
+            err, endpoint_err, zero_err, full_err, mixed_gap, legacy_gap
       END IF
 
    END SUBROUTINE check_projector_mixed_direct_response_blend
