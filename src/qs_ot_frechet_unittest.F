@@ -96,6 +96,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-10_dp, nfail)
    CALL check_occ_projector_active_inert_pair_cap( &
       "complex occupation-projector active/inert pair cap", 5.0E-10_dp, nfail)
+   CALL check_occ_projector_far_active_inert_pair_max_cap( &
+      "complex occupation-projector far active/inert pair max cap", 5.0E-10_dp, nfail)
    CALL check_complex_occ_projector_gauge_plateau("complex occupation-projector gauge plateau", &
                                                   5.0E-10_dp, nfail)
    CALL check_occ_projector_plateau_caps_far_slope( &
@@ -3770,6 +3772,58 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_occ_projector_active_inert_pair_cap
+
+! **************************************************************************************************
+!> \brief Keep far active/inert occupation-projector slopes out of the near-gauge cap.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_occ_projector_far_active_inert_pair_max_cap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: gap = 0.20_dp, gauge_gap = 3.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat
+      REAL(KIND=dp)                                      :: capped_coeff, err, max_cap, raw_coeff, &
+                                                            shared_cap
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_noisy
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.08_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(-0.08_dp + gap, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.43_dp, 0.0_dp, KIND=dp)
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.19_dp, -0.13_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      occ_curv(:) = [0.040_dp, 1.0E-5_dp, 0.003_dp]
+      occ_noisy(:) = [0.90_dp, 0.02_dp, 0.01_dp]
+      shared_cap = dense_shared_occ_slope(occ_curv(1), occ_curv(2))
+      max_cap = 2.0_dp*MAX(occ_curv(1), occ_curv(2))
+
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_mat, occ_curv, gauge_gap)
+      raw_coeff = (occ_noisy(1) - occ_noisy(2))/(REAL(chc(1, 1), KIND=dp) - &
+                                                 REAL(chc(2, 2), KIND=dp))
+      capped_coeff = REAL(docc_mat(1, 2), KIND=dp)/REAL(dchc(1, 2), KIND=dp)
+      err = ABS(capped_coeff + max_cap)
+
+      IF (err > tol .OR. ABS(raw_coeff) < 10.0_dp*max_cap .OR. &
+          shared_cap >= 0.05_dp*max_cap .OR. ABS(gap) <= 4.0_dp*gauge_gap .OR. &
+          ABS(capped_coeff + shared_cap) < 0.5_dp*max_cap) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/raw/shared/max/capped", err, raw_coeff, shared_cap, max_cap, capped_coeff
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/raw/shared/max/capped", err, raw_coeff, shared_cap, max_cap, capped_coeff
+      END IF
+
+   END SUBROUTINE check_occ_projector_far_active_inert_pair_max_cap
 
 ! **************************************************************************************************
 !> \brief Plateau only anomalous near-degenerate projector-basis occupation jumps.
