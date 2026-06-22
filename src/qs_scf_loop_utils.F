@@ -5348,6 +5348,22 @@ CONTAINS
             projector_physical_direct_density_gdot_rotation, &
             projector_physical_direct_density_gdotp
       REAL(KIND=dp) :: density_full_direction_scale, &
+            density_full_direct_direction_scale, &
+            density_full_direct_expected_drop, &
+            density_full_direct_gdot_energy, &
+            density_full_direct_gdot_rotation, &
+            density_full_direct_gdotp, &
+            density_full_direct_model_calibrated_drop, &
+            density_full_direct_model_drop, &
+            density_full_direct_norm_energy, &
+            density_full_direct_norm_rotation, &
+            density_full_direct_normp, &
+            density_full_direct_response_abs_step, &
+            density_full_direct_response_abs_trust_ratio, &
+            density_full_direct_response_weighted_step, &
+            density_full_direct_response_weighted_trust_ratio, &
+            density_full_direct_scale_quality, &
+            density_full_direct_trust_quality, &
             density_full_expected_drop, &
             density_full_gdot_energy, &
             density_full_gdot_rotation, &
@@ -7647,6 +7663,22 @@ CONTAINS
                projector_physical_direct_density_scale_quality = 0.0_dp
                projector_physical_direct_density_trust_quality = 1.0_dp
                density_full_direction_scale = 0.0_dp
+               density_full_direct_direction_scale = 0.0_dp
+               density_full_direct_expected_drop = 0.0_dp
+               density_full_direct_gdot_energy = 0.0_dp
+               density_full_direct_gdot_rotation = 0.0_dp
+               density_full_direct_gdotp = 0.0_dp
+               density_full_direct_model_calibrated_drop = 0.0_dp
+               density_full_direct_model_drop = 0.0_dp
+               density_full_direct_norm_energy = 0.0_dp
+               density_full_direct_norm_rotation = 0.0_dp
+               density_full_direct_normp = 0.0_dp
+               density_full_direct_response_abs_step = 0.0_dp
+               density_full_direct_response_abs_trust_ratio = 0.0_dp
+               density_full_direct_response_weighted_step = 0.0_dp
+               density_full_direct_response_weighted_trust_ratio = 0.0_dp
+               density_full_direct_scale_quality = 0.0_dp
+               density_full_direct_trust_quality = 1.0_dp
                density_full_expected_drop = 0.0_dp
                density_full_gdot_energy = 0.0_dp
                density_full_gdot_rotation = 0.0_dp
@@ -9525,6 +9557,130 @@ CONTAINS
                                                    ot_kp_schur_projector_density_full_min_drop .AND. &
                                                    density_full_response_weighted_step <= response_trust .AND. &
                                                    density_full_response_abs_step <= response_abs_trust
+                                             END IF
+                                             IF (projector_physical_direct_candidate_ready) THEN
+                                                rx_e(:) = MATMUL(response_exact_physical, &
+                                                                 projector_physical_direct_sol) + &
+                                                          MATMUL(response_density_full_exact, &
+                                                                 projector_physical_direct_sol)
+                                                CALL project_kpoint_ot_schur_response(rx_e, &
+                                                   occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                                z_density_full_trial(:) = z_exact_physical_trial(:) + rx_e(:)
+                                                density_full_direct_gdot_energy = &
+                                                   DOT_PRODUCT(grad_e, z_density_full_trial)
+                                                density_full_direct_gdot_rotation = &
+                                                   DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
+                                                density_full_direct_gdotp = density_full_direct_gdot_energy + &
+                                                                            density_full_direct_gdot_rotation
+                                                CALL kpoint_ot_mixed_projected_term(z_density_full_trial, &
+                                                   z_density_full_trial, occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                   channel_nmo, e_offset, density_full_direct_norm_energy)
+                                                density_full_direct_norm_energy = &
+                                                   MAX(0.0_dp, density_full_direct_norm_energy)
+                                                density_full_direct_norm_rotation = &
+                                                   MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                                density_full_direct_normp = density_full_direct_norm_energy + &
+                                                                            density_full_direct_norm_rotation
+                                                IF (density_full_direct_gdotp > 0.0_dp .AND. &
+                                                    density_full_direct_normp > &
+                                                    EPSILON(density_full_direct_normp)) THEN
+                                                   density_full_direct_direction_scale = MIN(1.0_dp, &
+                                                      density_full_direct_gdotp/ &
+                                                      MAX(density_full_direct_normp, &
+                                                          EPSILON(density_full_direct_normp)))
+                                                   density_full_direct_response_abs_step = MAXVAL(ABS(rx_e))
+                                                   CALL para_env_inter_kp%max(density_full_direct_response_abs_step)
+                                                   density_full_direct_response_weighted_step = &
+                                                      kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
+                                                   IF (response_trust > EPSILON(response_trust) .AND. &
+                                                       density_full_direct_response_weighted_step > &
+                                                       EPSILON(density_full_direct_response_weighted_step)) &
+                                                      density_full_direct_direction_scale = &
+                                                         MIN(density_full_direct_direction_scale, &
+                                                             0.8_dp*response_trust/ &
+                                                             density_full_direct_response_weighted_step)
+                                                   IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                                                       density_full_direct_response_abs_step > &
+                                                       EPSILON(density_full_direct_response_abs_step)) &
+                                                      density_full_direct_direction_scale = &
+                                                         MIN(density_full_direct_direction_scale, &
+                                                             0.8_dp*response_abs_trust/ &
+                                                             density_full_direct_response_abs_step)
+                                                   density_full_direct_scale_quality = &
+                                                      kpoint_ot_schur_scale_quality( &
+                                                         density_full_direct_direction_scale, &
+                                                         schur_min_coupled_scale)
+                                                   density_full_direct_model_drop = &
+                                                      density_full_direct_direction_scale* &
+                                                      density_full_direct_gdotp - &
+                                                      0.5_dp*density_full_direct_direction_scale* &
+                                                      density_full_direct_direction_scale* &
+                                                      density_full_direct_normp
+                                                   density_full_direct_model_drop = &
+                                                      MAX(0.0_dp, density_full_direct_model_drop)
+                                                   density_full_direct_model_calibrated_drop = &
+                                                      density_full_direct_model_drop
+                                                   IF (density_full_direct_direction_scale < schur_min_coupled_scale) &
+                                                      density_full_direct_model_calibrated_drop = &
+                                                         density_full_direct_scale_quality* &
+                                                         density_full_direct_model_calibrated_drop
+                                                   density_full_direct_response_abs_step = &
+                                                      density_full_direct_direction_scale* &
+                                                      density_full_direct_response_abs_step
+                                                   density_full_direct_response_weighted_step = &
+                                                      density_full_direct_direction_scale* &
+                                                      density_full_direct_response_weighted_step
+                                                   IF (response_trust > EPSILON(response_trust)) &
+                                                      density_full_direct_response_weighted_trust_ratio = &
+                                                         density_full_direct_response_weighted_step/response_trust
+                                                   IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                                      density_full_direct_response_abs_trust_ratio = &
+                                                         density_full_direct_response_abs_step/response_abs_trust
+                                                   density_full_direct_trust_quality = &
+                                                      kpoint_ot_schur_trust_quality( &
+                                                         density_full_direct_response_weighted_trust_ratio, &
+                                                         density_full_direct_response_abs_trust_ratio, 0.0_dp)
+                                                   density_full_direct_expected_drop = &
+                                                      kpoint_ot_schur_expected_drop( &
+                                                         density_full_direct_model_calibrated_drop, &
+                                                         density_full_quality_for_selection, &
+                                                         density_full_direct_trust_quality* &
+                                                         projector_physical_direct_density_audit_quality)
+                                                   IF (density_full_direct_expected_drop > density_full_expected_drop .AND. &
+                                                       density_full_direct_model_calibrated_drop > &
+                                                       ot_kp_schur_projector_density_full_min_drop) THEN
+                                                      density_full_rx_e(:) = rx_e(:)
+                                                      density_full_sol(:) = projector_physical_direct_sol(:)
+                                                      density_full_z_e(:) = z_density_full_trial(:)
+                                                      density_full_direction_scale = density_full_direct_direction_scale
+                                                      density_full_expected_drop = density_full_direct_expected_drop
+                                                      density_full_gdot_energy = density_full_direct_gdot_energy
+                                                      density_full_gdot_rotation = density_full_direct_gdot_rotation
+                                                      density_full_gdotp = density_full_direct_gdotp
+                                                      density_full_model_calibrated_drop = &
+                                                         density_full_direct_model_calibrated_drop
+                                                      density_full_model_drop = density_full_direct_model_drop
+                                                      density_full_norm_energy = density_full_direct_norm_energy
+                                                      density_full_norm_rotation = density_full_direct_norm_rotation
+                                                      density_full_normp = density_full_direct_normp
+                                                      density_full_response_abs_step = &
+                                                         density_full_direct_response_abs_step
+                                                      density_full_response_abs_trust_ratio = &
+                                                         density_full_direct_response_abs_trust_ratio
+                                                      density_full_response_weighted_step = &
+                                                         density_full_direct_response_weighted_step
+                                                      density_full_response_weighted_trust_ratio = &
+                                                         density_full_direct_response_weighted_trust_ratio
+                                                      density_full_scale_quality = density_full_direct_scale_quality
+                                                      density_full_trust_quality = density_full_direct_trust_quality
+                                                      density_full_candidate_ready = &
+                                                         local_ot_env(1)%schur_projector_density_full_candidate_enabled .AND. &
+                                                         density_full_expected_drop > &
+                                                         ot_kp_schur_projector_density_full_min_drop .AND. &
+                                                         density_full_response_weighted_step <= response_trust .AND. &
+                                                         density_full_response_abs_step <= response_abs_trust
+                                                   END IF
+                                                END IF
                                              END IF
                                           END IF
                                           IF (exact_density_response_ready .AND. &
