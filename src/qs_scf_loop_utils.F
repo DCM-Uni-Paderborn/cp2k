@@ -5287,6 +5287,7 @@ CONTAINS
                                                             density_full_candidate_selected, &
                                                             density_full_direct_candidate_ready, &
                                                             density_full_direct_candidate_selected, &
+                                                            density_full_global_bootstrap_ready, &
                                                             density_full_global_candidate_ready, &
                                                             density_full_global_candidate_selected, &
                                                             density_descent_candidate_ready, &
@@ -6713,6 +6714,7 @@ CONTAINS
             density_full_candidate_selected = .FALSE.
             density_full_direct_candidate_ready = .FALSE.
             density_full_direct_candidate_selected = .FALSE.
+            density_full_global_bootstrap_ready = .FALSE.
             density_full_global_candidate_ready = .FALSE.
             density_full_global_candidate_selected = .FALSE.
             density_descent_candidate_ready = .FALSE.
@@ -7916,6 +7918,7 @@ CONTAINS
                density_full_gdotp = 0.0_dp
                density_full_global_direction_scale = 0.0_dp
                density_full_global_expected_drop = 0.0_dp
+               density_full_global_bootstrap_ready = .FALSE.
                density_full_global_gdot_energy = 0.0_dp
                density_full_global_gdot_rotation = 0.0_dp
                density_full_global_gdotp = 0.0_dp
@@ -10025,6 +10028,19 @@ CONTAINS
                                                    density_full_global_quality_for_selection = &
                                                       MIN(1.0_dp, MAX(0.0_dp, &
                                                           local_ot_env(1)%schur_projector_density_full_global_quality_ema))
+                                                IF (density_full_global_quality_for_selection <= 0.0_dp .AND. &
+                                                    new_search_point .AND. &
+                                                    local_ot_env(1)%schur_model_quality_ready .AND. &
+                                                    projector_physical_direct_density_audit_quality >= &
+                                                    ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                    density_full_global_response_weighted_trust_ratio <= &
+                                                    ot_kp_schur_projector_spectral_probe_trust_fraction) THEN
+                                                   density_full_global_bootstrap_ready = .TRUE.
+                                                   density_full_global_quality_for_selection = &
+                                                      MIN(1.0_dp, MAX( &
+                                                          ot_kp_schur_projector_response_quality_min_ratio, &
+                                                          0.5_dp*dense_quality_for_selection))
+                                                END IF
                                                 density_full_global_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &
                                                       density_full_global_model_calibrated_drop, &
@@ -10032,12 +10048,13 @@ CONTAINS
                                                       density_full_global_trust_quality* &
                                                       projector_physical_direct_density_audit_quality)
                                                 density_full_global_candidate_ready = &
-                                                   local_ot_env(1)%schur_projector_density_full_global_quality_samples >= &
-                                                   ot_kp_schur_projector_response_min_samples .AND. &
-                                                   local_ot_env(1)%schur_projector_density_full_global_quality_ema >= &
-                                                   ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                                   local_ot_env(1)%schur_projector_density_full_global_quality >= &
-                                                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                   (density_full_global_bootstrap_ready .OR. &
+                                                    (local_ot_env(1)%schur_projector_density_full_global_quality_samples >= &
+                                                     ot_kp_schur_projector_response_min_samples .AND. &
+                                                     local_ot_env(1)%schur_projector_density_full_global_quality_ema >= &
+                                                     ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                     local_ot_env(1)%schur_projector_density_full_global_quality >= &
+                                                     0.5_dp*ot_kp_schur_projector_response_quality_min_ratio)) .AND. &
                                                    density_full_global_model_calibrated_drop > &
                                                    ot_kp_schur_projector_density_full_min_drop .AND. &
                                                    density_full_global_expected_drop > &
@@ -12718,9 +12735,11 @@ CONTAINS
                         density_full_direct_response_weighted_trust_ratio, &
                         density_full_direct_response_abs_trust_ratio, &
                         density_full_direct_trust_quality, density_full_direct_direction_scale
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
-                        " OT Schur projector full-density global candidate ready selected exp qsel cdrop rratio aratio tq scale:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),7(1X,ES16.8))') &
+                        " OT Schur projector full-density global candidate ready selected boot "// &
+                        "exp qsel cdrop rratio aratio tq scale:", &
                         density_full_global_candidate_ready, density_full_global_candidate_selected, &
+                        density_full_global_bootstrap_ready, &
                         density_full_global_expected_drop, density_full_global_quality_for_selection, &
                         density_full_global_model_calibrated_drop, &
                         density_full_global_response_weighted_trust_ratio, &
