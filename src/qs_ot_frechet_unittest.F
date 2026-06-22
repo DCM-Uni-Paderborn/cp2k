@@ -154,6 +154,8 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_direct_delta_eigen_copy("complex projector Direct delta eigen copy", &
+                                                5.0E-13_dp, nfail)
    CALL check_projector_active_residual_filter("complex projector active residual filter", &
                                                5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_model_gap("complex projector direct trace model gap", &
@@ -5889,6 +5891,52 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief Check that Direct-Delta eigenspaces do not overwrite the production curvature matrix.
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_delta_eigen_copy(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: err, mode_quad, matrix_quad
+      REAL(KIND=dp), DIMENSION(n)                        :: coeff, eval, step
+      REAL(KIND=dp), DIMENSION(n, n)                     :: delta, delta_saved, eigvec
+
+      delta(:, :) = RESHAPE([0.35_dp, 0.04_dp, -0.02_dp, 0.03_dp, &
+                             0.04_dp, -0.18_dp, 0.07_dp, -0.01_dp, &
+                             -0.02_dp, 0.07_dp, 0.12_dp, 0.05_dp, &
+                             0.03_dp, -0.01_dp, 0.05_dp, -0.09_dp], [n, n])
+      delta(:, :) = 0.5_dp*(delta(:, :) + TRANSPOSE(delta(:, :)))
+      delta_saved(:, :) = delta(:, :)
+      step(:) = [0.42_dp, -0.31_dp, 0.27_dp, 0.16_dp]
+
+      eigvec(:, :) = delta(:, :)
+      CALL diamat_all(eigvec, eval)
+      coeff(:) = MATMUL(TRANSPOSE(eigvec), step)
+      matrix_quad = DOT_PRODUCT(step, MATMUL(delta, step))
+      mode_quad = 0.0_dp
+      DO i = 1, n
+         mode_quad = mode_quad + eval(i)*coeff(i)*coeff(i)
+      END DO
+
+      err = MAXVAL(ABS(delta(:, :) - delta_saved(:, :)))
+      err = MAX(err, ABS(matrix_quad - mode_quad))
+      IF (err > tol .OR. ABS(matrix_quad) < 1.0E-4_dp .OR. &
+          MAXVAL(ABS(delta(:, :) - eigvec(:, :))) < 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/matrix_quad/mode_quad", err, matrix_quad, mode_quad
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/matrix_quad/mode_quad", err, matrix_quad, mode_quad
+      END IF
+
+   END SUBROUTINE check_projector_direct_delta_eigen_copy
 
 ! **************************************************************************************************
 !> \brief Check that active Direct curvature filters local residuals, not fixed-N cross-channel terms.

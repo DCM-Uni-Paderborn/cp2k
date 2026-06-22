@@ -5555,6 +5555,7 @@ CONTAINS
                                                             response_density_full_exact, response_density_plateau_exact, &
                                                             response_exact_physical, response_exact_raw, response_occ, &
                                                             projector_physical_direct_base_delta, &
+                                                            projector_physical_direct_curv_vec, &
                                                             projector_physical_direct_delta, response_occ_physical, &
                                                             projector_physical_direct_schur_mat, &
                                                             projector_physical_direct_schur_vec, &
@@ -5747,6 +5748,7 @@ CONTAINS
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    projector_physical_direct_base_delta(nrot, nrot), &
+                   projector_physical_direct_curv_vec(nrot, nrot), &
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
                    projector_physical_direct_schur_mat(nrot, nrot), &
                    projector_physical_direct_schur_vec(nrot, nrot), &
@@ -5850,6 +5852,7 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_plateau(:, :) = 0.0_dp
          rot_hessian_projector_physical_offdiag_plateau_active(:, :) = 0.0_dp
          projector_physical_direct_base_delta(:, :) = 0.0_dp
+         projector_physical_direct_curv_vec(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_mat(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
@@ -8582,7 +8585,13 @@ CONTAINS
                                           END DO
                                           projector_physical_direct_curv_clip_avg = &
                                              projector_physical_direct_curv_clip_sum/REAL(MAX(1, nrot), KIND=dp)
-                                          CALL diamat_all(projector_physical_direct_delta, &
+                                       END IF
+                                       IF (logger%iter_info%print_level >= high_print_level .OR. &
+                                           projector_physical_direct_spectral_enabled) THEN
+                                          projector_physical_direct_curv_vec(:, :) = &
+                                             0.5_dp*(projector_physical_direct_delta(:, :) + &
+                                                     TRANSPOSE(projector_physical_direct_delta(:, :)))
+                                          CALL diamat_all(projector_physical_direct_curv_vec, &
                                                           projector_physical_direct_curv_eval)
                                           projector_physical_direct_curv_eval_min = &
                                              MINVAL(projector_physical_direct_curv_eval)
@@ -8813,7 +8822,7 @@ CONTAINS
                                                                      projector_physical_direct_sol)
                                              DO r = 1, nrot
                                                 projected_term = &
-                                                   DOT_PRODUCT(projector_physical_direct_delta(:, r), &
+                                                   DOT_PRODUCT(projector_physical_direct_curv_vec(:, r), &
                                                                projector_physical_direct_sol)
                                                 diag_shift = projected_term*projected_term
                                                 IF (projector_physical_direct_curv_eval(r) < 0.0_dp) THEN
