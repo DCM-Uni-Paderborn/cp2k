@@ -5736,6 +5736,7 @@ CONTAINS
             projector_physical_direct_gdot_model_response, &
             projector_physical_direct_history_growth_scale, &
             projector_physical_direct_history_quality, projector_physical_direct_history_scale, &
+            projector_physical_direct_tail_history_quality, projector_physical_direct_tail_history_scale, &
             projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
             projector_physical_direct_line_step_trust, &
             projector_physical_direct_metric_norm_ratio, projector_physical_direct_metric_norm_rotation, &
@@ -6810,6 +6811,8 @@ CONTAINS
             projector_physical_direct_history_quality = 1.0_dp
             projector_physical_direct_history_scale = 1.0_dp
             projector_physical_direct_history_growth_scale = 1.0_dp
+            projector_physical_direct_tail_history_quality = 0.0_dp
+            projector_physical_direct_tail_history_scale = 1.0_dp
             projector_physical_direct_line_step = 0.0_dp
             projector_physical_direct_line_step_curvature = 0.0_dp
             projector_physical_direct_line_step_trust = HUGE(1.0_dp)
@@ -7997,6 +8000,17 @@ CONTAINS
                      projector_physical_direct_history_growth_scale = 1.0_dp
                      IF (local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
                          ot_kp_schur_calibration_min_samples) THEN
+                        projector_physical_direct_tail_history_quality = &
+                           kpoint_ot_schur_history_quality( &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples, &
+                              0.0_dp, 0.0_dp, &
+                              ot_kp_schur_projector_response_quality_max_ratio)
+                        projector_physical_direct_tail_history_scale = &
+                           SQRT(MIN(1.0_dp, projector_physical_direct_tail_history_quality))
                         projector_physical_direct_quality_for_selection = &
                            kpoint_ot_direct_selected_history_quality( &
                               projector_physical_trace_split_quality, &
@@ -13697,9 +13711,9 @@ CONTAINS
                         projector_phys_direct_active_comp_trial, &
                         projector_physical_direct_basis_signal, &
                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,20(1X,ES16.8))') &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,22(1X,ES16.8))') &
                         " OT Schur projector phys direct model scale drop gapdrop gdotp ge gr normp ne nr "// &
-                        "mratio nratio tq sq mnorm mrot geb ger gem hscale hq:", &
+                        "mratio nratio tq sq mnorm mrot geb ger gem hscale hq tail_scale tail_q:", &
                         projector_physical_direct_direction_scale, projector_physical_direct_model_drop, &
                         projector_physical_direct_model_gap_drop, projector_physical_direct_gdotp, &
                         projector_physical_direct_gdot_energy, projector_physical_direct_gdot_rotation, &
@@ -13711,7 +13725,8 @@ CONTAINS
                         projector_physical_direct_gdot_base_energy, &
                         projector_physical_direct_gdot_raw_response, &
                         projector_physical_direct_gdot_model_response, &
-                        projector_physical_direct_history_scale, projector_physical_direct_history_quality
+                        projector_physical_direct_history_scale, projector_physical_direct_history_quality, &
+                        projector_physical_direct_tail_history_scale, projector_physical_direct_tail_history_quality
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                         " OT Schur projector phys direct trace shadow actual raw active excess raw_ratio "// &
                         "active_actual actual_norm raw_norm active_norm:", &
