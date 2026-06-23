@@ -9973,14 +9973,24 @@ CONTAINS
                                              rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
                                                                      projector_physical_direct_sol)
                                              IF (rx_weight > EPSILON(rx_weight)) THEN
-                                                projector_physical_direct_trace_actual_diag_quad = &
-                                                   projector_physical_direct_delta_diag_avg*rx_weight
-                                                projector_physical_direct_trace_full_diag_quad = &
-                                                   projector_physical_delta_diag_avg*rx_weight
-                                                projector_physical_direct_trace_active_diag_quad = &
-                                                   (projector_physical_delta_diag_avg - &
-                                                    projector_physical_covariant_diag_avg + &
-                                                    projector_physical_active_covariant_diag_avg)*rx_weight
+                                                projector_physical_direct_trace_actual_diag_quad = 0.0_dp
+                                                projector_physical_direct_trace_full_diag_quad = 0.0_dp
+                                                projector_physical_direct_trace_active_diag_quad = 0.0_dp
+                                                DO r = 1, nrot
+                                                   rx_shift = projector_physical_direct_sol(r)* &
+                                                              projector_physical_direct_sol(r)
+                                                   projector_physical_direct_trace_actual_diag_quad = &
+                                                      projector_physical_direct_trace_actual_diag_quad + &
+                                                      rx_shift*projector_physical_direct_delta(r, r)
+                                                   projector_physical_direct_trace_full_diag_quad = &
+                                                      projector_physical_direct_trace_full_diag_quad + &
+                                                      rx_shift*(rot_hessian_projector_physical(r, r) - &
+                                                                rot_hessian(r, r))
+                                                   projector_physical_direct_trace_active_diag_quad = &
+                                                      projector_physical_direct_trace_active_diag_quad + &
+                                                      rx_shift*(rot_hessian_projector_physical_active(r, r) - &
+                                                                rot_hessian(r, r))
+                                                END DO
                                                 projector_physical_direct_trace_actual_free_quad = &
                                                    projector_physical_direct_trace_actual_quad - &
                                                    projector_physical_direct_trace_actual_diag_quad
@@ -10073,14 +10083,24 @@ CONTAINS
                                              rx_weight = DOT_PRODUCT(projector_physical_direct_sol, &
                                                                      projector_physical_direct_sol)
                                              IF (rx_weight > EPSILON(rx_weight)) THEN
-                                                projector_physical_direct_trace_actual_diag_quad = &
-                                                   projector_physical_direct_delta_diag_avg*rx_weight
-                                                projector_physical_direct_trace_full_diag_quad = &
-                                                   projector_physical_delta_diag_avg*rx_weight
-                                                projector_physical_direct_trace_active_diag_quad = &
-                                                   (projector_physical_delta_diag_avg - &
-                                                    projector_physical_covariant_diag_avg + &
-                                                    projector_physical_active_covariant_diag_avg)*rx_weight
+                                                projector_physical_direct_trace_actual_diag_quad = 0.0_dp
+                                                projector_physical_direct_trace_full_diag_quad = 0.0_dp
+                                                projector_physical_direct_trace_active_diag_quad = 0.0_dp
+                                                DO r = 1, nrot
+                                                   rx_shift = projector_physical_direct_sol(r)* &
+                                                              projector_physical_direct_sol(r)
+                                                   projector_physical_direct_trace_actual_diag_quad = &
+                                                      projector_physical_direct_trace_actual_diag_quad + &
+                                                      rx_shift*projector_physical_direct_delta(r, r)
+                                                   projector_physical_direct_trace_full_diag_quad = &
+                                                      projector_physical_direct_trace_full_diag_quad + &
+                                                      rx_shift*(rot_hessian_projector_physical(r, r) - &
+                                                                rot_hessian(r, r))
+                                                   projector_physical_direct_trace_active_diag_quad = &
+                                                      projector_physical_direct_trace_active_diag_quad + &
+                                                      rx_shift*(rot_hessian_projector_physical_active(r, r) - &
+                                                                rot_hessian(r, r))
+                                                END DO
                                                 projector_physical_direct_trace_actual_free_quad = &
                                                    projector_physical_direct_trace_actual_quad - &
                                                    projector_physical_direct_trace_actual_diag_quad
