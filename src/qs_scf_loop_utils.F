@@ -1819,6 +1819,36 @@ CONTAINS
    END FUNCTION kpoint_ot_bounded_density_response
 
 ! **************************************************************************************************
+!> \brief gauge-safe physical diagonal projector-density response
+!> \param density_projector_response finite projector eigenvalue response
+!> \param density_safe_response gauge-safe dP/occupation-curvature response
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \return active-window response, using dP in the Fermi window without low-curvature blow-up
+! **************************************************************************************************
+   FUNCTION kpoint_ot_physical_density_response(density_projector_response, density_safe_response, &
+                                                occ_curv, occ_curv_max) RESULT(density_response)
+      REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, density_safe_response, &
+                                                            occ_curv, occ_curv_max
+      REAL(KIND=dp)                                      :: active_fraction, active_weight, &
+                                                            density_response, response_shape, response_target
+
+      density_response = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      active_weight = kpoint_ot_active_density_response_weight(occ_curv, occ_curv_max)
+      active_fraction = occ_curv/MAX(occ_curv, &
+                                     ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      response_target = density_projector_response + &
+                        active_fraction*(density_safe_response - density_projector_response)
+      density_response = active_weight*response_shape*response_target
+
+   END FUNCTION kpoint_ot_physical_density_response
+
+! **************************************************************************************************
 !> \brief shared pair slope for near-degenerate occupation-gauge filtering
 !> \param occ_curv_i ...
 !> \param occ_curv_j ...
@@ -16196,17 +16226,19 @@ CONTAINS
                density_plateau_column(:) = 0.0_dp
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
-                     ! The physical density-response channel follows the finite
-                     ! eigenvalue response.  Keep back-transformed dP diagonals
-                     ! only for raw audits/off-diagonal Hessian terms so
-                     ! projector-basis gauge motion cannot masquerade as a huge
-                     ! auxiliary-energy response in the Schur model.
+                     ! The physical density-response channel follows the
+                     ! finite eigenvalue response away from the Fermi window,
+                     ! but restores the gauge-safe dP/curvature response in
+                     ! active bands.  This moves true occupation curvature into
+                     ! the auxiliary-energy Schur block without reintroducing
+                     ! low-curvature projector-gauge amplification.
                      density_plateau_column(ie) = density_projector_column(ie)
                      density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_mixed_column(ie) = &
-                        kpoint_ot_bounded_density_response(density_plateau_column(ie), &
-                                                           occ_curv_channel(ie), channel_occ_curv_max)
+                        kpoint_ot_physical_density_response(density_plateau_column(ie), &
+                                                            density_full_column(ie), &
+                                                            occ_curv_channel(ie), channel_occ_curv_max)
                   END IF
                END DO
                DO ie = 1, nmo
