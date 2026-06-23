@@ -14239,8 +14239,12 @@ CONTAINS
                   END IF
                END IF
             END IF
+            ! Learn the mixed active/physical Direct curvature from any accepted
+            ! exact-response dense step.  Waiting for an already selected Direct
+            ! candidate makes promotion circular in the metallic residual tail.
             IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop) .AND. &
-                (projector_physical_direct_candidate_selected .OR. &
+                (selected_attempt == 3 .OR. &
+                 projector_physical_direct_candidate_selected .OR. &
                  projector_physical_direct_density_candidate_selected .OR. &
                  projector_physical_direct_spectral_candidate_selected)) THEN
                projector_physical_direct_shadow_weight = &
