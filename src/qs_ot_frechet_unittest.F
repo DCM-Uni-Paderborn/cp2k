@@ -131,6 +131,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_active_filter_descent_recovery( &
       "complex projector density active-filter descent recovery", 5.0E-14_dp, nfail)
+   CALL check_projector_density_descent_history_optimum_cap( &
+      "complex projector density-descent history optimum cap", 5.0E-14_dp, nfail)
    CALL check_projector_density_metric_descent_recovery( &
       "complex projector density metric-descent recovery", 5.0E-13_dp, nfail)
    CALL check_projector_density_mixed_metric_descent_recovery( &
@@ -5127,7 +5129,7 @@ CONTAINS
                                                             occ_curv, projected
 
       occ_curv(:) = [0.040_dp, 0.020_dp, 0.010_dp, 0.005_dp, 0.002_dp]
-      active_weight(:) = occ_curv(:)/MAXVAL(occ_curv(:))
+      active_weight(:) = SQRT(occ_curv(:)/MAXVAL(occ_curv(:)))
       grad(:) = [0.0_dp, 0.40_dp, -0.20_dp, 0.10_dp, -0.05_dp]
       descent(:) = [0.0_dp, 0.20_dp, -0.10_dp, 0.04_dp, -0.02_dp]
 
@@ -5166,6 +5168,45 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_active_filter_descent_recovery
+
+! **************************************************************************************************
+!> \brief Check density-descent history calibration does not overstep the quadratic optimum.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_descent_history_optimum_cap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: gdotp = 0.30_dp, &
+                                                            requested_history_scale = 1.60_dp, &
+                                                            normp = 0.40_dp
+
+      REAL(KIND=dp)                                      :: applied_history_scale, base_drop, base_scale, err, &
+                                                            legacy_drop, scaled_drop, scaled_scale
+
+      base_scale = gdotp/normp
+      base_drop = base_scale*gdotp - 0.5_dp*base_scale*base_scale*normp
+      applied_history_scale = MIN(1.0_dp, requested_history_scale)
+      scaled_scale = applied_history_scale*base_scale
+      scaled_drop = scaled_scale*gdotp - 0.5_dp*scaled_scale*scaled_scale*normp
+      legacy_drop = requested_history_scale*base_drop
+
+      err = ABS(scaled_drop - base_drop)
+
+      IF (err > tol .OR. scaled_drop <= 0.0_dp .OR. legacy_drop <= scaled_drop .OR. &
+          applied_history_scale > 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/base/scaled/legacy", err, base_drop, scaled_drop, legacy_drop
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/base/scaled/legacy", err, base_drop, scaled_drop, legacy_drop
+      END IF
+
+   END SUBROUTINE check_projector_density_descent_history_optimum_cap
 
 ! **************************************************************************************************
 !> \brief Recover fixed-N density-gap response that is hidden from the linear gradient dot product.
