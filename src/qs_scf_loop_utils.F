@@ -14334,105 +14334,105 @@ CONTAINS
                   END IF
                END IF
             END IF
-            ! Learn the mixed active/physical Direct curvature from any accepted
-            ! exact-response dense step.  Waiting for an already selected Direct
-            ! candidate makes promotion circular in the metallic residual tail.
-            IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop) .AND. &
-                (selected_attempt == 3 .OR. &
-                 projector_physical_direct_candidate_selected .OR. &
-                 projector_physical_direct_density_candidate_selected .OR. &
-                 projector_physical_direct_spectral_candidate_selected)) THEN
-               projector_physical_direct_shadow_weight = &
-                  MAX(projector_coupled_weight, &
-                      MAX(projector_physical_response_weight, projector_physical_direct_response_weight))
-               IF (projector_physical_shadow_enabled .AND. exact_physical_response_ready .AND. &
-                   projector_physical_direct_shadow_weight > &
-                   EPSILON(projector_physical_direct_shadow_weight) .AND. &
-                   (local_ot_env(1)%schur_projector_mode_quality_samples >= &
-                    ot_kp_schur_calibration_min_samples .OR. &
-                    projector_physical_direct_promoted)) THEN
-                  DO ivar = 1, 3
-                     z_weight = REAL(ivar, KIND=dp)/4.0_dp
-                     projector_physical_direct_schur_vec(:, :) = &
-                        (1.0_dp - z_weight)*projector_physical_direct_base_delta(:, :) + &
-                        z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
-                                         TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
-                                                   rot_hessian(:, :)))
-                     IF (projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
-                        diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
-                                     projector_physical_direct_shadow_weight
-                        DO r = 1, nrot
-                           projector_physical_direct_schur_vec(r, r) = &
-                              projector_physical_direct_schur_vec(r, r) + diag_shift
-                        END DO
-                     END IF
-                     schur(:, :) = rot_hessian_coupled(:, :) + &
-                                   projector_physical_direct_shadow_weight* &
-                                   projector_physical_direct_schur_vec(:, :)
-                     DO s = 1, nrot
-                        DO r = 1, nrot
-                           projected_term = 0.5_dp* &
-                              (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
-                               DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
-                           IF (exact_density_response_ready) &
-                              projected_term = projected_term + 0.5_dp* &
-                                 (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
-                                  DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
-                           schur(r, s) = schur(r, s) - projected_term
-                        END DO
-                     END DO
+         END IF
+         ! Learn the mixed active/physical Direct curvature from any accepted
+         ! exact-response dense step. Waiting for an already selected Direct
+         ! candidate makes promotion circular in the metallic residual tail.
+         ! Keep this outside the HIGH print block so PRINT_LEVEL cannot change
+         ! the k-point OT minimizer path.
+         IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop) .AND. &
+             (selected_attempt == 3 .OR. &
+              projector_physical_direct_candidate_selected .OR. &
+              projector_physical_direct_density_candidate_selected .OR. &
+              projector_physical_direct_spectral_candidate_selected)) THEN
+            projector_physical_direct_shadow_weight = &
+               MAX(projector_coupled_weight, &
+                   MAX(projector_physical_response_weight, projector_physical_direct_response_weight))
+            IF (projector_physical_shadow_enabled .AND. exact_physical_response_ready .AND. &
+                projector_physical_direct_shadow_weight > &
+                EPSILON(projector_physical_direct_shadow_weight) .AND. &
+                (local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                 ot_kp_schur_calibration_min_samples .OR. &
+                 projector_physical_direct_promoted)) THEN
+               DO ivar = 1, 3
+                  z_weight = REAL(ivar, KIND=dp)/4.0_dp
+                  projector_physical_direct_schur_vec(:, :) = &
+                     (1.0_dp - z_weight)*projector_physical_direct_base_delta(:, :) + &
+                     z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
+                                      TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
+                                                rot_hessian(:, :)))
+                  IF (projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
+                     diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
+                                  projector_physical_direct_shadow_weight
                      DO r = 1, nrot
-                        row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
-                           rot_hessian(r, r) + projector_physical_direct_schur_vec(r, r), rot_floor(r))
-                        schur(r, r) = schur(r, r) + MAX(0.0_dp, row_floor - schur(r, r))
+                        projector_physical_direct_schur_vec(r, r) = &
+                           projector_physical_direct_schur_vec(r, r) + diag_shift
                      END DO
-                     projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
-                     CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
-                     rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
-                     rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, accepted_sol) + &
-                                   z_weight*MATMUL(response_exact_physical, accepted_sol)
-                     IF (exact_density_response_ready) &
-                        rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, accepted_sol)
-                     CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
-                                                           occ_curv_projection_sum, channel_nmo, e_offset)
-                     CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
-                                                           occ_curv_projection_sum, channel_nmo, e_offset)
-                     gdotp = DOT_PRODUCT(grad_e, accepted_z_e) + DOT_PRODUCT(grad_rot, accepted_sol)
-                     CALL kpoint_ot_mixed_projected_term(accepted_z_e, accepted_z_e, occ_curv, tether_curv, &
-                                                         occ_curv_projection_sum, channel_nmo, e_offset, &
-                                                         projector_physical_direct_metric_norm_energy)
-                     projector_physical_direct_metric_norm_energy = &
-                        MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
-                     projector_physical_direct_metric_norm_rotation = &
-                        kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
-                                                 projector_physical_direct_schur_eval, accepted_sol)
-                     projector_physical_direct_metric_normp = &
-                        projector_physical_direct_metric_norm_energy + &
-                        projector_physical_direct_metric_norm_rotation
-                     IF (gdotp <= 0.0_dp .OR. &
-                         projector_physical_direct_metric_normp <= &
-                         EPSILON(projector_physical_direct_metric_normp)) CYCLE
-                     model_drop = gdotp - 0.5_dp*projector_physical_direct_metric_normp
-                     model_drop = MAX(0.0_dp, model_drop)
-                     IF (model_drop <= EPSILON(model_drop)) CYCLE
-                     model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, 1.0_dp)
-                     model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
-                     IF (model_calibrated_drop > local_ot_env(1)%schur_projector_mixed_direct_drop .AND. &
-                         model_calibrated_drop >= &
-                         MAX(accepted_model_calibrated_drop/ot_kp_schur_calibrated_quality_max_ratio, &
-                             EPSILON(accepted_model_calibrated_drop)) .AND. &
-                         model_calibrated_drop <= ot_kp_schur_calibrated_quality_max_ratio* &
-                         MAX(accepted_model_calibrated_drop, EPSILON(accepted_model_calibrated_drop))) THEN
-                        local_ot_env(1)%schur_projector_mixed_direct_pending = .TRUE.
-                        local_ot_env(1)%schur_projector_mixed_direct_drop = model_calibrated_drop
-                        local_ot_env(1)%schur_projector_mixed_direct_weight = z_weight
-                     END IF
+                  END IF
+                  schur(:, :) = rot_hessian_coupled(:, :) + &
+                                projector_physical_direct_shadow_weight* &
+                                projector_physical_direct_schur_vec(:, :)
+                  DO s = 1, nrot
+                     DO r = 1, nrot
+                        projected_term = 0.5_dp* &
+                           (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
+                            DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
+                        IF (exact_density_response_ready) &
+                           projected_term = projected_term + 0.5_dp* &
+                              (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
+                               DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
+                               DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
+                               DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
+                               DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
+                               DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                        schur(r, s) = schur(r, s) - projected_term
+                     END DO
                   END DO
-               END IF
+                  DO r = 1, nrot
+                     row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
+                        rot_hessian(r, r) + projector_physical_direct_schur_vec(r, r), rot_floor(r))
+                     schur(r, r) = schur(r, r) + MAX(0.0_dp, row_floor - schur(r, r))
+                  END DO
+                  projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                  rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
+                  rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, accepted_sol) + &
+                                z_weight*MATMUL(response_exact_physical, accepted_sol)
+                  IF (exact_density_response_ready) &
+                     rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, accepted_sol)
+                  CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
+                  CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
+                  gdotp = DOT_PRODUCT(grad_e, accepted_z_e) + DOT_PRODUCT(grad_rot, accepted_sol)
+                  CALL kpoint_ot_mixed_projected_term(accepted_z_e, accepted_z_e, occ_curv, tether_curv, &
+                                                      occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                      projector_physical_direct_metric_norm_energy)
+                  projector_physical_direct_metric_norm_energy = &
+                     MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
+                  rhs(:) = MATMUL(projector_physical_direct_schur_vec, accepted_sol)
+                  projector_physical_direct_metric_norm_rotation = SUM(ABS(accepted_sol(:)*rhs(:)))
+                  projector_physical_direct_metric_normp = &
+                     projector_physical_direct_metric_norm_energy + &
+                     projector_physical_direct_metric_norm_rotation
+                  IF (gdotp <= 0.0_dp .OR. &
+                      projector_physical_direct_metric_normp <= &
+                      EPSILON(projector_physical_direct_metric_normp)) CYCLE
+                  model_drop = gdotp - 0.5_dp*projector_physical_direct_metric_normp
+                  model_drop = MAX(0.0_dp, model_drop)
+                  IF (model_drop <= EPSILON(model_drop)) CYCLE
+                  model_gap_drop = kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, 1.0_dp)
+                  model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+                  IF (model_calibrated_drop > local_ot_env(1)%schur_projector_mixed_direct_drop .AND. &
+                      model_calibrated_drop >= &
+                      MAX(accepted_model_calibrated_drop/ot_kp_schur_calibrated_quality_max_ratio, &
+                          EPSILON(accepted_model_calibrated_drop)) .AND. &
+                      model_calibrated_drop <= ot_kp_schur_calibrated_quality_max_ratio* &
+                      MAX(accepted_model_calibrated_drop, EPSILON(accepted_model_calibrated_drop))) THEN
+                     local_ot_env(1)%schur_projector_mixed_direct_pending = .TRUE.
+                     local_ot_env(1)%schur_projector_mixed_direct_drop = model_calibrated_drop
+                     local_ot_env(1)%schur_projector_mixed_direct_weight = z_weight
+                  END IF
+               END DO
             END IF
          END IF
 
