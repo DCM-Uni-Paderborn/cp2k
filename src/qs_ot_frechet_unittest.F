@@ -171,6 +171,10 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_trace_split_history_quality("complex projector trace-split Direct quality", &
+                                                    5.0E-14_dp, nfail)
+   CALL check_projector_direct_selected_history_quality( &
+      "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
    CALL check_projector_trace_diag_component_scale("complex projector trace-diag Direct scale", &
@@ -6775,6 +6779,106 @@ CONTAINS
    END SUBROUTINE check_projector_direct_trace_compensation
 
 ! **************************************************************************************************
+!> \brief Check that diagonal-dominated Direct traces do not masquerade as failed split histories.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_split_history_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: balanced_quality, diag_tail_quality, err, fallback_quality, &
+                       no_samples_quality, poor_tail_quality, two_component_quality
+
+      fallback_quality = 0.42_dp
+      no_samples_quality = dense_trace_split_history_quality(1.0_dp, -0.4_dp, &
+                                                             0.5_dp, 0.2_dp, 2, &
+                                                             fallback_quality)
+      diag_tail_quality = dense_trace_split_history_quality(1.0_dp, -1.0E-3_dp, &
+                                                            0.05_dp, 0.0_dp, 16, &
+                                                            fallback_quality)
+      poor_tail_quality = dense_trace_split_history_quality(1.0_dp, -1.0E-3_dp, &
+                                                            0.02_dp, 0.0_dp, 16, &
+                                                            0.0_dp)
+      balanced_quality = dense_trace_split_history_quality(0.75_dp, -0.25_dp, &
+                                                           0.60_dp, 0.10_dp, 16, &
+                                                           fallback_quality)
+      two_component_quality = dense_trace_split_history_quality(0.75_dp, 0.25_dp, &
+                                                                0.60_dp, 0.10_dp, 16, &
+                                                                fallback_quality)
+
+      err = ABS(no_samples_quality - fallback_quality)
+      err = MAX(err, ABS(diag_tail_quality - fallback_quality))
+      err = MAX(err, ABS(poor_tail_quality - 0.10_dp))
+      err = MAX(err, ABS(balanced_quality - 0.35_dp))
+      err = MAX(err, ABS(two_component_quality - 0.10_dp))
+
+      IF (err > tol .OR. diag_tail_quality <= balanced_quality .OR. &
+          two_component_quality >= balanced_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/diag/poor/bal/two", err, no_samples_quality, &
+            diag_tail_quality, poor_tail_quality, balanced_quality, two_component_quality
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/diag/poor/bal/two", err, no_samples_quality, &
+            diag_tail_quality, poor_tail_quality, balanced_quality, two_component_quality
+      END IF
+
+   END SUBROUTINE check_projector_trace_split_history_quality
+
+! **************************************************************************************************
+!> \brief Check that sparse selected Direct samples do not erase non-circular trace history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_selected_history_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp, &
+                                                            min_quality = 0.10_dp
+
+      REAL(KIND=dp) :: early_bad_quality, early_good_quality, err, mature_bad_quality, &
+                       no_samples_quality
+
+      no_samples_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
+                                                                 0.05_dp, 3, 4, 8, &
+                                                                 min_quality, max_quality)
+      early_bad_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
+                                                                0.05_dp, 4, 4, 8, &
+                                                                min_quality, max_quality)
+      mature_bad_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
+                                                                 0.05_dp, 16, 4, 8, &
+                                                                 min_quality, max_quality)
+      early_good_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 20.0_dp, &
+                                                                 1.20_dp, 4, 4, 8, &
+                                                                 min_quality, max_quality)
+
+      err = ABS(no_samples_quality - 1.0_dp)
+      err = MAX(err, ABS(early_bad_quality - (1.0_dp - (1.0_dp/13.0_dp)*(1.0_dp - min_quality))))
+      err = MAX(err, ABS(mature_bad_quality - min_quality))
+      err = MAX(err, ABS(early_good_quality - (1.0_dp + (1.0_dp/13.0_dp)*(max_quality - 1.0_dp))))
+
+      IF (err > tol .OR. early_bad_quality <= mature_bad_quality .OR. &
+          early_bad_quality <= min_quality .OR. early_good_quality <= no_samples_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/early/mature/good", err, no_samples_quality, &
+            early_bad_quality, mature_bad_quality, early_good_quality
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/early/mature/good", err, no_samples_quality, &
+            early_bad_quality, mature_bad_quality, early_good_quality
+      END IF
+
+   END SUBROUTINE check_projector_direct_selected_history_quality
+
+! **************************************************************************************************
 !> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
 !> \param label ...
 !> \param tol ...
@@ -7931,6 +8035,106 @@ CONTAINS
          compensation = MAX(compensation, coupled_weight*(direct_delta_diag_avg - positive_reference))
 
    END FUNCTION dense_direct_trace_compensation
+
+! **************************************************************************************************
+!> \brief Dense mirror of accepted Direct trace split quality.
+!> \param trace_diag_ema ...
+!> \param trace_free_ema ...
+!> \param trace_diag_quality_ema ...
+!> \param trace_free_quality_ema ...
+!> \param samples ...
+!> \param fallback_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_trace_split_history_quality(trace_diag_ema, trace_free_ema, trace_diag_quality_ema, &
+                                              trace_free_quality_ema, samples, fallback_quality) &
+      RESULT(history_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: trace_diag_ema, trace_free_ema, &
+                                                            trace_diag_quality_ema, &
+                                                            trace_free_quality_ema, fallback_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: history_quality
+
+      REAL(KIND=dp)                                      :: balance_quality, component_fraction, component_quality, &
+                                                            diag_abs, diag_quality, dominant_quality, free_abs, &
+                                                            free_quality, trace_abs_sum
+
+      history_quality = fallback_quality
+      IF (samples < 8) RETURN
+
+      diag_abs = ABS(trace_diag_ema)
+      free_abs = ABS(trace_free_ema)
+      trace_abs_sum = diag_abs + free_abs
+      IF (trace_abs_sum <= EPSILON(trace_abs_sum)) RETURN
+
+      diag_quality = 0.0_dp
+      free_quality = 0.0_dp
+      IF (diag_abs > EPSILON(diag_abs)) diag_quality = ABS(trace_diag_quality_ema)/diag_abs
+      IF (free_abs > EPSILON(free_abs)) free_quality = ABS(trace_free_quality_ema)/free_abs
+      component_fraction = MIN(diag_abs, free_abs)/trace_abs_sum
+      IF (component_fraction < 0.10_dp) THEN
+         dominant_quality = MERGE(diag_quality, free_quality, diag_abs >= free_abs)
+         IF (dominant_quality > EPSILON(dominant_quality)) &
+            history_quality = MAX(history_quality, MIN(2.5_dp, MAX(0.10_dp, dominant_quality)))
+         RETURN
+      END IF
+
+      component_quality = (diag_abs*diag_quality + free_abs*free_quality)/trace_abs_sum
+      IF (component_quality <= EPSILON(component_quality)) RETURN
+
+      balance_quality = 1.0_dp - ABS(trace_diag_ema + trace_free_ema)/trace_abs_sum
+      balance_quality = MIN(1.0_dp, MAX(0.0_dp, balance_quality))
+
+      history_quality = MIN(2.5_dp, MAX(0.10_dp, component_quality))
+      history_quality = history_quality*MAX(0.10_dp, balance_quality)
+      history_quality = MIN(2.5_dp, MAX(0.10_dp, history_quality))
+
+   END FUNCTION dense_trace_split_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of selected-history Direct quality maturity.
+!> \param base_quality ...
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param ema_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param response_min_samples ...
+!> \param min_quality ...
+!> \param max_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_selected_history_quality(base_quality, predicted_sum, measured_sum, ema_quality, &
+                                                  samples, min_samples, response_min_samples, min_quality, &
+                                                  max_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, predicted_sum, measured_sum, &
+                                                            ema_quality, min_quality, max_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples, response_min_samples
+      REAL(KIND=dp)                                      :: quality
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: maturity, selected_quality
+
+      quality = base_quality
+      IF (samples < min_samples) RETURN
+
+      selected_quality = base_quality
+      IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
+         selected_quality = measured_sum/predicted_sum
+      ELSE IF (ema_quality > 0.0_dp) THEN
+         selected_quality = ema_quality
+      END IF
+      selected_quality = MAX(min_quality, MIN(max_quality, selected_quality))
+
+      maturity_samples = MAX(1, 2*response_min_samples - min_samples + 1)
+      maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                 REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+      quality = (1.0_dp - maturity)*base_quality + maturity*selected_quality
+      quality = MAX(min_quality, MIN(max_quality, quality))
+
+   END FUNCTION dense_direct_selected_history_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.

@@ -7998,15 +7998,13 @@ CONTAINS
                      IF (local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
                          ot_kp_schur_calibration_min_samples) THEN
                         projector_physical_direct_quality_for_selection = &
-                           kpoint_ot_schur_history_quality( &
+                           kpoint_ot_direct_selected_history_quality( &
+                              projector_physical_trace_split_quality, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
-                              ot_kp_schur_calibration_min_samples, &
-                              projector_physical_trace_split_quality, &
-                              ot_kp_schur_projector_response_quality_min_ratio, &
-                              ot_kp_schur_projector_response_quality_max_ratio)
+                              ot_kp_schur_calibration_min_samples)
                         projector_physical_direct_history_quality = &
                            kpoint_ot_direct_history_quality( &
                               local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
@@ -15116,6 +15114,44 @@ CONTAINS
       END FUNCTION kpoint_ot_direct_history_quality
 
 ! **************************************************************************************************
+!> \brief maturity-weighted selected-history calibration for physical Direct selection
+!> \param base_quality trace/mixed Direct history quality before selected-history override
+!> \param predicted_sum selected Direct predicted Mermin drop sum
+!> \param measured_sum selected Direct measured Mermin drop sum
+!> \param ema_quality recent selected Direct measured/predicted quality
+!> \param samples number of selected Direct accepted samples
+!> \param min_samples minimum samples before selected history contributes
+!> \return selected-history quality blended with the non-circular Direct base
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_selected_history_quality(base_quality, predicted_sum, measured_sum, &
+                                                         ema_quality, samples, min_samples) &
+         RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: base_quality, predicted_sum, measured_sum, &
+                                                            ema_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp)                                     :: quality
+
+      INTEGER                                           :: maturity_samples
+      REAL(KIND=dp)                                     :: maturity, selected_quality
+
+         quality = base_quality
+         IF (samples < min_samples) RETURN
+
+         selected_quality = kpoint_ot_schur_history_quality(predicted_sum, measured_sum, ema_quality, &
+                                                            samples, min_samples, base_quality, &
+                                                            ot_kp_schur_projector_response_quality_min_ratio, &
+                                                            ot_kp_schur_projector_response_quality_max_ratio)
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - min_samples + 1)
+         maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+         quality = (1.0_dp - maturity)*base_quality + maturity*selected_quality
+         quality = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                       MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
+
+      END FUNCTION kpoint_ot_direct_selected_history_quality
+
+! **************************************************************************************************
 !> \brief ...
 !> \param history_quality ...
 !> \param samples ...
@@ -15316,9 +15352,9 @@ CONTAINS
                                                             trace_diag_quality_ema, trace_free_quality_ema, &
                                                             fallback_quality
       INTEGER, INTENT(IN)                               :: samples
-      REAL(KIND=dp)                                     :: balance_quality, component_quality, diag_abs, &
-                                                            diag_quality, free_abs, free_quality, history_quality, &
-                                                            trace_abs_sum
+      REAL(KIND=dp)                                     :: balance_quality, component_fraction, component_quality, &
+                                                            diag_abs, diag_quality, dominant_quality, free_abs, &
+                                                            free_quality, history_quality, trace_abs_sum
 
          history_quality = fallback_quality
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
@@ -15332,7 +15368,17 @@ CONTAINS
          free_quality = 0.0_dp
          IF (diag_abs > EPSILON(diag_abs)) diag_quality = ABS(trace_diag_quality_ema)/diag_abs
          IF (free_abs > EPSILON(free_abs)) free_quality = ABS(trace_free_quality_ema)/free_abs
-         component_quality = MIN(diag_quality, free_quality)
+         component_fraction = MIN(diag_abs, free_abs)/trace_abs_sum
+         IF (component_fraction < 1.0E-1_dp) THEN
+            dominant_quality = MERGE(diag_quality, free_quality, diag_abs >= free_abs)
+            IF (dominant_quality > EPSILON(dominant_quality)) &
+               history_quality = MAX(history_quality, &
+                                     MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                         MAX(ot_kp_schur_projector_response_quality_min_ratio, dominant_quality)))
+            RETURN
+         END IF
+
+         component_quality = (diag_abs*diag_quality + free_abs*free_quality)/trace_abs_sum
          IF (component_quality <= EPSILON(component_quality)) RETURN
 
          balance_quality = 1.0_dp - ABS(trace_diag_ema + trace_free_ema)/trace_abs_sum
