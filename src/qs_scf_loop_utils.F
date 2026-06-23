@@ -5466,6 +5466,7 @@ CONTAINS
                                                                        projector_physical_direct_candidate_ready, &
                                                                        projector_physical_direct_candidate_selected, &
                                                                        projector_physical_direct_mixed_enabled, &
+                                                                       projector_physical_direct_mixed_promoted, &
                                                                        projector_physical_direct_candidate_used, &
                                                                        projector_physical_direct_tail_probe_ready, &
                                                                        projector_physical_direct_normcap_shadow_ready, &
@@ -6727,6 +6728,7 @@ CONTAINS
             projector_physical_direct_trace_diag_scale = 1.0_dp
             projector_physical_direct_trace_free_scale = 1.0_dp
             projector_physical_direct_mixed_enabled = .FALSE.
+            projector_physical_direct_mixed_promoted = .FALSE.
             projector_physical_direct_mixed_drop_ratio = 0.0_dp
             projector_physical_direct_mixed_quality = 0.0_dp
             projector_physical_direct_mixed_consistency_scale = 0.0_dp
@@ -9561,8 +9563,7 @@ CONTAINS
                                        projector_physical_direct_base_delta(:, :) = projector_physical_direct_delta(:, :)
                                        ! Promote mixed active/physical curvature from accepted-drop history, not
                                        ! from an absolute residual tail threshold.
-                                       IF (projector_physical_direct_promoted .AND. &
-                                           local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
+                                       IF (local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
                                            ot_kp_schur_projector_response_min_samples .AND. &
                                            local_ot_env(1)%schur_projector_mixed_direct_weight_ema > &
                                            EPSILON(local_ot_env(1)%schur_projector_mixed_direct_weight_ema)) THEN
@@ -9595,7 +9596,7 @@ CONTAINS
                                           ! step and selection quality remain limited by the
                                           ! shadow weight, quality clamp, maturity scale and
                                           ! consistency scale below.
-                                          projector_physical_direct_mixed_enabled = &
+                                          projector_physical_direct_mixed_promoted = &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
                                              2*ot_kp_schur_projector_response_min_samples .AND. &
                                              projector_physical_direct_mixed_drop_ratio >= &
@@ -9606,6 +9607,11 @@ CONTAINS
                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                              local_ot_env(1)%schur_projector_mixed_direct_quality >= &
                                              0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+                                          ! The mixed active/physical Direct curvature has its own
+                                          ! accepted-drop audit.  Do not require selected Direct
+                                          ! samples here; that would make the bootstrap circular.
+                                          projector_physical_direct_mixed_enabled = &
+                                             projector_physical_direct_mixed_promoted
                                           IF (projector_physical_direct_mixed_enabled) THEN
                                              ! The accepted mixed-Direct shadow weight is the
                                              ! conservative production baseline.  Selected-Direct
@@ -12071,6 +12077,7 @@ CONTAINS
                       (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                        (projector_physical_direct_candidate_used .AND. &
                         (projector_physical_direct_promoted .OR. &
+                         projector_physical_direct_mixed_enabled .OR. &
                          projector_physical_direct_tail_probe_ready))) .AND. &
                       projector_physical_candidate_ready .AND. &
                       projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
@@ -12507,6 +12514,7 @@ CONTAINS
                       (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                        (projector_physical_direct_candidate_used .AND. &
                         (projector_physical_direct_promoted .OR. &
+                         projector_physical_direct_mixed_enabled .OR. &
                          projector_physical_direct_tail_probe_ready))) .AND. &
                       projector_physical_candidate_ready .AND. &
                       projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
@@ -15316,9 +15324,11 @@ CONTAINS
       REAL(KIND=dp)                                     :: active_fraction, gauge_fraction, mix_weight, &
                                                             raw_abs, quality_weight
 
-         mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight))
+         mix_weight = 0.0_dp
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
          IF (history_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         quality_weight = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+         mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight)*quality_weight)
          IF (selected_samples < ot_kp_schur_projector_response_min_samples) RETURN
          IF (selected_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
 
@@ -15328,7 +15338,6 @@ CONTAINS
          active_fraction = ABS(active_trace_ema)/raw_abs
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          gauge_fraction = 1.0_dp - active_fraction
-         quality_weight = MIN(1.0_dp, MAX(0.0_dp, history_quality))
 
          mix_weight = MAX(mix_weight, &
                           ot_kp_schur_projector_trace_active_max_weight*gauge_fraction*quality_weight)
