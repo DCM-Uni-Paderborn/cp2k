@@ -16331,7 +16331,7 @@ CONTAINS
                      ! the auxiliary-energy Schur block without reintroducing
                      ! low-curvature projector-gauge amplification.
                      density_plateau_column(ie) = density_projector_column(ie)
-                     density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
+                     density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_mixed_column(ie) = &
                         kpoint_ot_physical_density_response(density_plateau_column(ie), &
@@ -16341,11 +16341,9 @@ CONTAINS
                END DO
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
-                     ! Keep the bounded local density response unprojected.  The
-                     ! exact dense Mermin block below applies the fixed-N chemical
-                     ! potential projection globally over the spin/k group; doing
-                     ! a channel-local fixed-N projection here cuts physical
-                     ! inter-k charge transfer and can amplify inactive tails.
+                     ! Keep the production density response tied to the
+                     ! gauge-safe diagonal dP.  The raw diagonal derivative is
+                     ! still exposed through the audit channel below.
                      density_plateau_response = density_mixed_column(ie)
                      ! The full plateau-density response enters the dense Mermin
                      ! energy block below, whose fixed-N projector is global over
@@ -16353,7 +16351,8 @@ CONTAINS
                      ! physical inter-k charge transfer is not removed before the
                      ! global chemical-potential projection.
                      density_plateau_full_response = density_plateau_column(ie)
-                     density_response = density_full_column(ie)
+                     density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
+                                        occ_curv_channel(ie)
                      IF (compute_density_full_audit) &
                         response_density_full_audit(first_energy + ie - 1, s) = density_response
                      IF (compute_projector_shadow) THEN

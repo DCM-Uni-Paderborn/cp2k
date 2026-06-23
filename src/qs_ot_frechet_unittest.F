@@ -119,6 +119,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector bounded density-response helper", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_helper( &
       "complex projector physical density-response helper", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_density_safe_source( &
+      "complex projector physical density safe source", 5.0E-14_dp, nfail)
    CALL check_projector_active_density_total_invariant( &
       "complex projector active density total invariant", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_raw_audit_split( &
@@ -4620,6 +4622,71 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_helper
+
+! **************************************************************************************************
+!> \brief Check that production uses the gauge-safe diagonal dP source for physical density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_density_safe_source(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.42_dp, &
+                                                            response_ratio_gate = 2.0E-2_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_raw, docc_safe
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: collapsed, err, occ_curv_max, retained, &
+                                                            safe_norm
+      REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale, projector_response, &
+                                                            raw_density, safe_density, shift
+
+      occ_scale(:) = [1.58_dp, 0.64_dp, 0.31_dp, 0.11_dp]
+      occ_curv(:) = [0.040_dp, 0.032_dp, 0.013_dp, 0.002_dp]
+      shift(:) = [0.11_dp, -0.07_dp, 0.03_dp, -0.02_dp]
+      occ_curv_max = MAXVAL(occ_curv(:))
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(0.08_dp*REAL(i, KIND=dp), 0.0_dp, KIND=dp)
+         dchc(i, i) = CMPLX(shift(i), 0.0_dp, KIND=dp)
+      END DO
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, docc_raw)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+
+      DO i = 1, n
+         projector_response(i) = -projector_weight*shift(i)
+         raw_density(i) = 0.5_dp*REAL(docc_raw(i, i), KIND=dp)/occ_curv(i)
+         safe_density(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
+      END DO
+
+      retained = dense_physical_density_response(projector_response(1), safe_density(1), &
+                                                 occ_curv(1), occ_curv_max, response_ratio_gate)
+      collapsed = dense_physical_density_response(projector_response(1), raw_density(1), &
+                                                  occ_curv(1), occ_curv_max, response_ratio_gate)
+      safe_norm = MAXVAL(ABS(safe_density(:)))
+      err = MAXVAL(ABS(raw_density(:)))
+
+      IF (err > tol .OR. ABS(retained) < active_tol .OR. &
+          ABS(collapsed) > 0.1_dp*ABS(retained) .OR. safe_norm < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with raw/retained/collapsed/safe", err, retained, collapsed, safe_norm
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with raw/retained/collapsed/safe", err, retained, collapsed, safe_norm
+      END IF
+
+   END SUBROUTINE check_projector_physical_density_safe_source
 
 ! **************************************************************************************************
 !> \brief Check that the active density split preserves the finite physical response.
