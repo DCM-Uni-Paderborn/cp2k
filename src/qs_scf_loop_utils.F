@@ -9654,16 +9654,12 @@ CONTAINS
                                           ! shadow weight, quality clamp, maturity scale and
                                           ! consistency scale below.
                                           projector_physical_direct_mixed_promoted = &
-                                             local_ot_env(1)%schur_projector_mixed_direct_quality_samples >= &
-                                             2*ot_kp_schur_projector_response_min_samples .AND. &
-                                             projector_physical_direct_mixed_drop_ratio >= &
-                                             ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                             projector_physical_direct_mixed_quality >= &
-                                             ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                             local_ot_env(1)%schur_projector_mixed_direct_quality_ema >= &
-                                             ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                             local_ot_env(1)%schur_projector_mixed_direct_quality >= &
-                                             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+                                             kpoint_ot_mixed_direct_promoted( &
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
+                                                ot_kp_schur_projector_response_min_samples, &
+                                                projector_physical_direct_mixed_drop_ratio, &
+                                                projector_physical_direct_mixed_quality, &
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_ema)
                                           ! The mixed active/physical Direct curvature has its own
                                           ! accepted-drop audit.  Do not require selected Direct
                                           ! samples here; that would make the bootstrap circular.
@@ -15168,6 +15164,28 @@ CONTAINS
                                     SQRT(ot_kp_schur_projector_response_quality_max_ratio/ema_quality))
 
       END FUNCTION kpoint_ot_direct_history_consistency_scale
+
+! **************************************************************************************************
+!> \brief accepted-history promotion for mixed active/physical Direct curvature
+!> \param samples ...
+!> \param min_samples ...
+!> \param drop_ratio accepted measured/predicted sum ratio
+!> \param history_quality accepted-history quality used for candidate scaling
+!> \param ema_quality recent accepted-history quality
+!> \return true if aggregate evidence is mature enough for non-circular Direct use
+! **************************************************************************************************
+      FUNCTION kpoint_ot_mixed_direct_promoted(samples, min_samples, drop_ratio, history_quality, &
+                                               ema_quality) RESULT(promoted)
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp), INTENT(IN)                         :: drop_ratio, history_quality, ema_quality
+      LOGICAL                                           :: promoted
+
+         promoted = samples >= 5*min_samples .AND. &
+                    drop_ratio >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                    history_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                    ema_quality >= 0.9_dp*ot_kp_schur_projector_response_quality_min_ratio
+
+      END FUNCTION kpoint_ot_mixed_direct_promoted
 
 ! **************************************************************************************************
 !> \brief ...

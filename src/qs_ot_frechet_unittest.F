@@ -181,6 +181,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
       "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
+   CALL check_projector_mixed_direct_promotion("complex projector mixed Direct promotion", &
+                                               5.0E-14_dp, nfail)
    CALL check_projector_coupled_tail_weight("complex projector coupled tail weight", &
                                             5.0E-14_dp, nfail)
    CALL check_projector_direct_delta_eigen_copy("complex projector Direct delta eigen copy", &
@@ -7062,6 +7064,48 @@ CONTAINS
    END SUBROUTINE check_projector_direct_history_consistency_scale
 
 ! **************************************************************************************************
+!> \brief Check accepted-history promotion of mixed Direct curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_mixed_direct_promotion(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: min_samples = 8
+      REAL(KIND=dp), PARAMETER                           :: min_quality = 0.10_dp
+
+      REAL(KIND=dp)                                      :: promoted_value
+      LOGICAL                                            :: aggregate_promoted, early_blocked, ema_low_blocked, &
+                                                            low_blocked, young_blocked
+
+      aggregate_promoted = dense_mixed_direct_promoted(42, min_samples, 0.102135336_dp, &
+                                                       0.102135336_dp, 0.0949032371_dp, min_quality)
+      early_blocked = dense_mixed_direct_promoted(36, min_samples, 0.181141780_dp, &
+                                                  0.181141780_dp, 0.0892512190_dp, min_quality)
+      young_blocked = dense_mixed_direct_promoted(15, min_samples, 0.5_dp, 0.5_dp, 0.5_dp, min_quality)
+      low_blocked = dense_mixed_direct_promoted(42, min_samples, 0.099_dp, 0.11_dp, 0.11_dp, min_quality)
+      ema_low_blocked = dense_mixed_direct_promoted(42, min_samples, 0.11_dp, 0.11_dp, &
+                                                    0.049_dp, min_quality)
+      promoted_value = MERGE(1.0_dp, 0.0_dp, aggregate_promoted)
+
+      IF (.NOT. aggregate_promoted .OR. early_blocked .OR. young_blocked .OR. low_blocked .OR. &
+          ema_low_blocked .OR. ABS(promoted_value - 1.0_dp) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,L1),1(1X,ES12.5))') TRIM(label), &
+            "failed with aggregate/early/young/low/ema/value", aggregate_promoted, early_blocked, &
+            young_blocked, low_blocked, ema_low_blocked, promoted_value
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,L1),1(1X,ES12.5))') TRIM(label), &
+            "OK with aggregate/early/young/low/ema/value", aggregate_promoted, early_blocked, &
+            young_blocked, low_blocked, ema_low_blocked, promoted_value
+      END IF
+
+   END SUBROUTINE check_projector_mixed_direct_promotion
+
+! **************************************************************************************************
 !> \brief Check accepted-drop mismatch weighting of the finite Projector-Hessian tail.
 !> \param label ...
 !> \param tol ...
@@ -8110,6 +8154,30 @@ CONTAINS
          consistency_scale = MIN(consistency_scale, SQRT(max_quality/ema_quality))
 
    END FUNCTION dense_direct_history_consistency_scale
+
+! **************************************************************************************************
+!> \brief Dense mirror of mixed active/physical Direct promotion.
+!> \param samples ...
+!> \param min_samples ...
+!> \param drop_ratio ...
+!> \param history_quality ...
+!> \param ema_quality ...
+!> \param min_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_mixed_direct_promoted(samples, min_samples, drop_ratio, history_quality, &
+                                        ema_quality, min_quality) RESULT(promoted)
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: drop_ratio, history_quality, ema_quality, &
+                                                            min_quality
+      LOGICAL                                            :: promoted
+
+      promoted = samples >= 5*min_samples .AND. &
+                 drop_ratio >= min_quality .AND. &
+                 history_quality >= min_quality .AND. &
+                 ema_quality >= 0.9_dp*min_quality
+
+   END FUNCTION dense_mixed_direct_promoted
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the low-residual finite Projector-Hessian tail weight.
