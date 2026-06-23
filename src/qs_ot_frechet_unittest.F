@@ -115,6 +115,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector active density safe inverse", 5.0E-14_dp, nfail)
    CALL check_complex_projector_bounded_density_mix( &
       "complex projector bounded density-response mix", 5.0E-14_dp, nfail)
+   CALL check_projector_bounded_density_response_helper( &
+      "complex projector bounded density-response helper", 5.0E-14_dp, nfail)
    CALL check_projector_active_density_total_invariant( &
       "complex projector active density total invariant", 5.0E-8_dp, nfail)
    CALL check_complex_projector_density_raw_audit_split( &
@@ -4506,6 +4508,54 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_bounded_density_mix
+
+! **************************************************************************************************
+!> \brief Check the production bounded density-response helper algebra.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_bounded_density_response_helper(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            response_ratio_gate = 2.0E-2_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active_fraction, err, inert_suppression, &
+                                                            occ_curv_max
+      REAL(KIND=dp), DIMENSION(n)                        :: expected, occ_curv, raw_response, response
+
+      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp]
+      raw_response(:) = [0.10_dp, -0.08_dp, 0.06_dp, -25.0_dp]
+      occ_curv_max = MAXVAL(occ_curv(:))
+
+      DO i = 1, n
+         response(i) = dense_bounded_density_response(raw_response(i), occ_curv(i), occ_curv_max, &
+                                                      response_ratio_gate)
+         active_fraction = occ_curv(i)/MAX(occ_curv(i), response_ratio_gate*occ_curv_max)
+         active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+         expected(i) = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))*raw_response(i)* &
+                       (2.0_dp*active_fraction - active_fraction*active_fraction)
+      END DO
+
+      err = MAXVAL(ABS(response(:) - expected(:)))
+      inert_suppression = ABS(response(n))/MAX(ABS(raw_response(n)), EPSILON(1.0_dp))
+
+      IF (err > tol .OR. ABS(response(1) - raw_response(1)) > tol .OR. &
+          ABS(response(3)) < active_tol .OR. inert_suppression > 1.0E-5_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/mid/inert", err, response(1), response(3), inert_suppression
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/mid/inert", err, response(1), response(3), inert_suppression
+      END IF
+
+   END SUBROUTINE check_projector_bounded_density_response_helper
 
 ! **************************************************************************************************
 !> \brief Check that the active density split preserves the finite physical response.
@@ -9958,6 +10008,50 @@ CONTAINS
       pair_weight = projector_weight*active_fraction
 
    END FUNCTION dense_pair_projector_weight
+
+! **************************************************************************************************
+!> \brief active Fermi-window weight for dense projector-density response fixtures.
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_active_density_response_weight(occ_curv, occ_curv_max) RESULT(response_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv, occ_curv_max
+      REAL(KIND=dp)                                      :: response_weight
+
+      response_weight = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      response_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv/occ_curv_max)))
+
+   END FUNCTION dense_active_density_response_weight
+
+! **************************************************************************************************
+!> \brief bounded diagonal projector-density response matching the production Schur helper.
+!> \param density_projector_response ...
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \param response_ratio_gate ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_bounded_density_response(density_projector_response, occ_curv, occ_curv_max, &
+                                           response_ratio_gate) RESULT(density_response)
+      REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, occ_curv, &
+                                                            occ_curv_max, response_ratio_gate
+      REAL(KIND=dp)                                      :: active_fraction, density_response
+
+      density_response = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      density_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
+                         density_projector_response* &
+                         (2.0_dp*active_fraction - active_fraction*active_fraction)
+
+   END FUNCTION dense_bounded_density_response
 
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.

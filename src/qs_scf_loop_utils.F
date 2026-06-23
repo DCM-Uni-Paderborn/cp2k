@@ -1792,6 +1792,33 @@ CONTAINS
    END FUNCTION kpoint_ot_active_density_response_weight
 
 ! **************************************************************************************************
+!> \brief bounded diagonal projector-density response for the physical Schur channel
+!> \param density_projector_response finite projector eigenvalue response
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \return active-window response with the low-curvature inverse safely capped
+! **************************************************************************************************
+   FUNCTION kpoint_ot_bounded_density_response(density_projector_response, occ_curv, &
+                                               occ_curv_max) RESULT(density_response)
+      REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, occ_curv, &
+                                                            occ_curv_max
+      REAL(KIND=dp)                                      :: active_fraction, active_weight, &
+                                                            density_response
+
+      density_response = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      active_weight = kpoint_ot_active_density_response_weight(occ_curv, occ_curv_max)
+      active_fraction = occ_curv/MAX(occ_curv, &
+                                     ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      density_response = active_weight*density_projector_response* &
+                         (2.0_dp*active_fraction - active_fraction*active_fraction)
+
+   END FUNCTION kpoint_ot_bounded_density_response
+
+! **************************************************************************************************
 !> \brief shared pair slope for near-degenerate occupation-gauge filtering
 !> \param occ_curv_i ...
 !> \param occ_curv_j ...
@@ -16011,16 +16038,12 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: active_density_denom, active_density_floor, &
-                                                            active_density_weight, &
-                                                            channel_occ_curv_max, &
+      REAL(KIND=dp)                                      :: channel_occ_curv_max, &
                                                             density_plateau_full_response, &
-                                                            density_mix_weight, &
                                                             density_plateau_response, density_response, &
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
-                                                            projector_evals_p, density_active_column, &
-                                                            density_full_column, &
+                                                            projector_evals_p, density_full_column, &
                                                             density_mixed_column, &
                                                             density_plateau_column, density_projector_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -16045,7 +16068,7 @@ CONTAINS
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
-         ALLOCATE (density_active_column(nmo), density_full_column(nmo), density_mixed_column(nmo), &
+         ALLOCATE (density_full_column(nmo), density_mixed_column(nmo), &
                    density_plateau_column(nmo), density_projector_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
@@ -16169,10 +16192,8 @@ CONTAINS
                ! near-degenerate projector-gauge motion does not enter the
                ! finite complex Mermin curvature.
                density_full_column(:) = 0.0_dp
-               density_active_column(:) = 0.0_dp
                density_mixed_column(:) = 0.0_dp
                density_plateau_column(:) = 0.0_dp
-               active_density_floor = ot_kp_schur_projector_response_ratio_gate*channel_occ_curv_max
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! The physical density-response channel follows the finite
@@ -16180,22 +16201,12 @@ CONTAINS
                      ! only for raw audits/off-diagonal Hessian terms so
                      ! projector-basis gauge motion cannot masquerade as a huge
                      ! auxiliary-energy response in the Schur model.
-                     active_density_weight = &
-                        kpoint_ot_active_density_response_weight(occ_curv_channel(ie), channel_occ_curv_max)
-                     active_density_denom = MAX(occ_curv_channel(ie), active_density_floor)
                      density_plateau_column(ie) = density_projector_column(ie)
-                     IF (active_density_denom > EPSILON(active_density_denom)) &
-                        density_active_column(ie) = active_density_weight*density_plateau_column(ie)* &
-                                                    occ_curv_channel(ie)/active_density_denom
                      density_full_column(ie) = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
-                     density_mix_weight = occ_curv_channel(ie)/MAX(occ_curv_channel(ie), active_density_floor)
-                     density_mix_weight = MIN(1.0_dp, MAX(0.0_dp, density_mix_weight))
-                     density_mixed_column(ie) = density_active_column(ie) + &
-                                                active_density_weight*density_mix_weight* &
-                                                (density_plateau_column(ie) - &
-                                                 density_plateau_column(ie)* &
-                                                 occ_curv_channel(ie)/active_density_denom)
+                     density_mixed_column(ie) = &
+                        kpoint_ot_bounded_density_response(density_plateau_column(ie), &
+                                                           occ_curv_channel(ie), channel_occ_curv_max)
                   END IF
                END DO
                DO ie = 1, nmo
@@ -16306,8 +16317,7 @@ CONTAINS
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
-         DEALLOCATE (density_active_column, density_full_column, density_mixed_column, density_plateau_column, &
-                     density_projector_column)
+         DEALLOCATE (density_full_column, density_mixed_column, density_plateau_column, density_projector_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
