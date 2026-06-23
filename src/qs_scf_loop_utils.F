@@ -13445,11 +13445,12 @@ CONTAINS
                      accepted_model_calibrated_drop, accepted_occgap_shadow_drop, &
                      1.0_dp/MAX(1.0_dp, accepted_occgap_shadow_gap_ratio), &
                      accepted_occgap_shadow_gap_ratio
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
-                     " OT Schur projector curvature residual tail eligible dense accepted:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
+                     " OT Schur projector curvature residual tail eligible dense accepted rweight:", &
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
                      MERGE(1.0_dp, 0.0_dp, residual_delta > ot_kp_schur_projector_coupled_tail_delta), &
-                     dense_projector_coupled_weight, accepted_projector_coupled_weight
+                     dense_projector_coupled_weight, accepted_projector_coupled_weight, &
+                     kpoint_ot_projector_response_residual_weight(residual_delta)
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
                      " OT Schur projector modes q neg damp emin emax step rneg rdrop rratio trust:", &
                      projector_mode_quality, projector_mode_negative_fraction, projector_mode_damped_abs_avg, &
@@ -15469,6 +15470,26 @@ CONTAINS
 
       END FUNCTION kpoint_ot_projector_coupled_weight
 
+! **************************************************************************************************
+!> \brief finite Projector-response residual taper used by modal response audits
+!> \param residual_delta current OT residual
+!> \return response weight in [0,1], with extra damping below the validated floor
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_response_residual_weight(residual_delta) RESULT(residual_weight)
+      REAL(KIND=dp), INTENT(IN)                         :: residual_delta
+      REAL(KIND=dp)                                     :: residual_weight
+
+         residual_weight = residual_delta/ &
+                           MAX(EPSILON(1.0_dp), ot_kp_schur_projector_response_full_delta)
+         residual_weight = MAX(0.0_dp, MIN(1.0_dp, residual_weight))
+         IF (residual_delta < ot_kp_schur_projector_response_floor_delta) &
+            residual_weight = residual_weight* &
+                              SQRT(MAX(0.0_dp, residual_delta/ &
+                                            MAX(EPSILON(1.0_dp), &
+                                                ot_kp_schur_projector_response_floor_delta)))
+
+      END FUNCTION kpoint_ot_projector_response_residual_weight
+
 !> \brief audit an accepted-history calibrated finite-response correction in Projector modes
 !> \param rot_hessian diagonal/canonical rotation Hessian
 !> \param rot_hessian_projector finite complex Projector-Hessian
@@ -15579,14 +15600,7 @@ CONTAINS
          IF (SIZE(energy_base) /= SIZE(curv)) RETURN
          IF (SIZE(grad_e) /= SIZE(curv)) RETURN
 
-         residual_weight = residual_delta/ &
-                           MAX(EPSILON(1.0_dp), ot_kp_schur_projector_response_full_delta)
-         residual_weight = MAX(0.0_dp, MIN(1.0_dp, residual_weight))
-         IF (residual_delta < ot_kp_schur_projector_response_floor_delta) &
-            residual_weight = residual_weight* &
-                              SQRT(MAX(0.0_dp, residual_delta/ &
-                                            MAX(EPSILON(1.0_dp), &
-                                                ot_kp_schur_projector_response_floor_delta)))
+         residual_weight = kpoint_ot_projector_response_residual_weight(residual_delta)
          base_weight = ot_kp_schur_projector_response_max_weight*residual_weight* &
                        MIN(1.0_dp, MAX(0.0_dp, projector_weight))* &
                        MIN(1.0_dp, MAX(0.0_dp, history_quality))* &
