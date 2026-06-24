@@ -3271,6 +3271,8 @@ CONTAINS
                                                                projector_physical_direct_quality_ratio, &
                                                                projector_physical_direct_selected_predicted_drop, &
                                                                projector_physical_direct_selected_quality_ratio, &
+                                                               projector_physical_direct_density_selected_predicted_drop, &
+                                                               projector_physical_direct_density_selected_quality_ratio, &
                                                                projector_mixed_direct_predicted_drop, &
                                                                projector_mixed_direct_quality_ratio, &
                                                                projector_physical_compensation_ratio, &
@@ -4665,6 +4667,36 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum = &
                   local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum + measured_drop
             END IF
+            projector_physical_direct_density_selected_predicted_drop = &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel
+            projector_physical_direct_density_selected_quality_ratio = 0.0_dp
+            IF (mermin_search .AND. projector_physical_direct_density_selected_predicted_drop > &
+                EPSILON(projector_physical_direct_density_selected_predicted_drop) .AND. &
+                measured_drop > 0.0_dp) THEN
+               projector_physical_direct_density_selected_quality_ratio = &
+                  measured_drop/projector_physical_direct_density_selected_predicted_drop
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality = &
+                  projector_physical_direct_density_selected_quality_ratio
+               samples = MIN( &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples + 1, &
+                  HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema = &
+                     projector_physical_direct_density_selected_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha* &
+                     projector_physical_direct_density_selected_quality_ratio
+               END IF
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum = &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum + &
+                  projector_physical_direct_density_selected_predicted_drop
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum = &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum + measured_drop
+            END IF
             projector_mixed_direct_predicted_drop = local_ot_env(1)%schur_projector_mixed_direct_drop
             projector_mixed_direct_quality_ratio = 0.0_dp
             IF (mermin_search .AND. local_ot_env(1)%schur_projector_mixed_direct_pending .AND. &
@@ -5166,6 +5198,14 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
                   local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
                   projector_physical_direct_selected_predicted_drop
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
+                  " OT Schur LS projector physical direct-density selected history n ratio ema pred meas latest:", &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
+                  projector_physical_direct_density_selected_predicted_drop
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
                   " OT Schur LS projector mixed-direct shadow n ratio ema pred meas latest weight wema:", &
                   local_ot_env(1)%schur_projector_mixed_direct_quality_samples, &
@@ -5508,6 +5548,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_negative = 0.0_dp
                local_ot_env(1)%schur_projector_physical_direct = 0.0_dp
                local_ot_env(1)%schur_projector_physical_direct_selected = 0.0_dp
+               local_ot_env(1)%schur_projector_phys_direct_density_sel = 0.0_dp
                local_ot_env(1)%schur_projector_physical_selected = 0.0_dp
                local_ot_env(1)%schur_projector_physical_shift = 0.0_dp
                local_ot_env(1)%schur_projector_physical_trace_actual = 0.0_dp
@@ -5767,6 +5808,7 @@ CONTAINS
             projector_physical_normp, projector_physical_norm_ratio, projector_physical_quality_for_selection, &
             projector_physical_direct_quality_for_selection, &
             projector_physical_direct_shadow_quality_for_promotion, projector_physical_trace_split_quality, &
+            projector_physical_direct_density_selected_history_quality, &
             projector_physical_direct_density_quality_for_selection, &
             projector_physical_direct_density_shadow_quality_for_selection, &
             projector_physical_direct_density_audit_quality
@@ -8122,14 +8164,25 @@ CONTAINS
                            0.0_dp, &
                            ot_kp_schur_projector_response_quality_min_ratio, &
                            ot_kp_schur_projector_response_quality_max_ratio)
-                     projector_physical_direct_density_quality_for_selection = &
-                        kpoint_ot_direct_selected_history_quality( &
-                           projector_physical_direct_density_quality_for_selection, &
-                           local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
-                           local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
-                           local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
-                           local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
-                           ot_kp_schur_calibration_min_samples)
+                     projector_physical_direct_density_selected_history_quality = 0.0_dp
+                     IF (local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples >= &
+                         ot_kp_schur_calibration_min_samples) THEN
+                        projector_physical_direct_density_selected_history_quality = &
+                           kpoint_ot_schur_history_quality( &
+                              local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
+                              local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
+                              local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema, &
+                              local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+                              ot_kp_schur_calibration_min_samples, &
+                              0.0_dp, 0.0_dp, &
+                              ot_kp_schur_projector_response_quality_max_ratio)
+                        projector_physical_direct_density_quality_for_selection = &
+                           kpoint_ot_direct_selected_probe_quality( &
+                              projector_physical_direct_density_quality_for_selection, &
+                              projector_physical_direct_density_selected_history_quality, &
+                              local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+                              ot_kp_schur_calibration_min_samples)
+                     END IF
                      projector_physical_direct_density_shadow_quality_for_selection = &
                         projector_physical_direct_density_quality_for_selection
                      density_descent_quality_for_selection = &
@@ -13291,6 +13344,11 @@ CONTAINS
                       accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
                      local_ot_env(1)%schur_projector_physical_direct_selected = &
                         local_ot_env(1)%schur_projector_physical_direct_selected + &
+                        accepted_model_calibrated_drop
+                  IF (projector_physical_direct_density_candidate_selected .AND. &
+                      accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
+                     local_ot_env(1)%schur_projector_phys_direct_density_sel = &
+                        local_ot_env(1)%schur_projector_phys_direct_density_sel + &
                         accepted_model_calibrated_drop
                   local_ot_env(1)%schur_projector_physical_weight = &
                      MAX(local_ot_env(1)%schur_projector_physical_weight, projector_physical_response_weight)
