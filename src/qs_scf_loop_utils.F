@@ -1872,6 +1872,36 @@ CONTAINS
    END FUNCTION kpoint_ot_physical_density_response
 
 ! **************************************************************************************************
+!> \brief shadow-only finite-floor physical diagonal projector-density response
+!> \param density_projector_response finite projector eigenvalue response
+!> \param density_safe_response gauge-safe dP/occupation-curvature response
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \return floor-limited finite response with only the dP correction active-window damped
+! **************************************************************************************************
+   FUNCTION kpoint_ot_physical_density_floor_audit_response(density_projector_response, density_safe_response, &
+                                                           occ_curv, occ_curv_max) RESULT(density_response)
+      REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, density_safe_response, &
+                                                            occ_curv, occ_curv_max
+      REAL(KIND=dp)                                      :: active_fraction, active_weight, &
+                                                            density_response, response_shape
+
+      density_response = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      active_weight = kpoint_ot_active_density_response_weight(occ_curv, occ_curv_max)
+      active_fraction = occ_curv/MAX(occ_curv, &
+                                     ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      density_response = response_shape*density_projector_response + &
+                         active_weight*response_shape*active_fraction* &
+                         (density_safe_response - density_projector_response)
+
+   END FUNCTION kpoint_ot_physical_density_floor_audit_response
+
+! **************************************************************************************************
 !> \brief tail bootstrap gate for the physical Direct k-point Schur candidate
 !> \param candidate_used ...
 !> \param promoted ...
@@ -5691,6 +5721,7 @@ CONTAINS
                                                             var_j, var_kind
       LOGICAL                                            :: attempt_failed, exact_attempt_response, failed, &
                                                             exact_density_full_audit_ready, &
+                                                            exact_density_floor_audit_ready, &
                                                             exact_density_full_response_ready, &
                                                             exact_density_plateau_response_ready, &
                                                             exact_density_response_ready, new_search_point, &
@@ -6224,7 +6255,11 @@ CONTAINS
          projector_physical_density_low_curv_sum, &
          projector_physical_density_response_abs_avg, projector_physical_density_response_abs_max, &
          projector_physical_density_rhs_abs_avg, projector_physical_density_rhs_abs_max
-      REAL(KIND=dp) :: projector_density_full_audit_abs_avg, projector_density_full_global_abs_avg
+      REAL(KIND=dp) :: projector_density_floor_audit_abs_avg, &
+         projector_density_floor_audit_diag_abs_sum, projector_density_floor_audit_exact_abs_avg, &
+         projector_density_floor_audit_gap_abs_avg, projector_density_floor_audit_low_curv_fraction, &
+         projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg, &
+         projector_density_full_global_abs_avg
       REAL(KIND=dp) :: projector_physical_direct_spectral_dot, projector_physical_direct_spectral_drop, &
          projector_physical_direct_spectral_norm
       REAL(KIND=dp) :: projector_physical_direct_spectral_direction_scale, &
@@ -6315,22 +6350,26 @@ CONTAINS
                                                             var_occ_gap_weight, var_projector_active_weight, &
                                                             var_projector_weight, z_e, &
                                                             z_density_plateau_trial, &
+                                                            z_density_floor_audit_trial, &
                                                             z_density_full_audit_trial, &
                                                             z_density_full_global_trial, &
                                                             z_density_full_trial, &
                                                             z_exact_raw_trial, z_exact_physical_trial, &
                                                             z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_im, grad_re, h_im, h_re, response, &
-                                                            energy_cross, energy_cross_density, energy_cross_density_full, &
+                                                            energy_cross, energy_cross_density, &
+                                                            energy_cross_density_floor_audit, energy_cross_density_full, &
                                                             energy_cross_density_full_audit, &
                                                             energy_cross_density_full_global, &
                                                             energy_cross_density_plateau, &
                                                             energy_cross_physical, &
                                                             energy_cross_raw, energy_hessian, response_coupled, response_exact, &
                                                             response_density_exact, response_density_physical, &
+                                                            response_density_floor_audit, &
                                                             response_density_full, response_density_plateau, &
                                                             response_density_full_audit, &
                                                             response_density_full_audit_exact, &
+                                                            response_density_floor_audit_exact, &
                                                             response_density_full_exact, &
                                                             response_density_full_global, &
                                                             response_density_full_global_exact, &
@@ -6505,7 +6544,8 @@ CONTAINS
                                projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
                                projector_physical_direct_spectral_model_e(ne), &
                                projector_physical_direct_spectral_rx_e(ne), &
-                               z_density_plateau_trial(ne), z_density_full_audit_trial(ne), &
+                              z_density_plateau_trial(ne), z_density_floor_audit_trial(ne), &
+                              z_density_full_audit_trial(ne), &
                                z_density_full_global_trial(ne), &
                                z_density_full_trial(ne), z_density_trial(ne), &
                                        projector_physical_direct_z_e(ne), &
@@ -6527,14 +6567,17 @@ CONTAINS
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
+                   energy_cross_density_floor_audit(ne, nrot), &
                    energy_cross_density_full(ne, nrot), &
                    energy_cross_density_full_audit(ne, nrot), &
                    energy_cross_density_full_global(ne, nrot), energy_cross_density_plateau(ne, nrot), &
                    energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
                    energy_hessian(ne, ne), response(ne, nrot), response_coupled(ne, nrot), &
                    response_density_exact(ne, nrot), response_density_physical(ne, nrot), &
+                   response_density_floor_audit(ne, nrot), &
                    response_density_full(ne, nrot), response_density_plateau(ne, nrot), &
                    response_density_full_audit(ne, nrot), response_density_full_audit_exact(ne, nrot), &
+                   response_density_floor_audit_exact(ne, nrot), &
                    response_density_full_exact(ne, nrot), &
                    response_density_full_global(ne, nrot), response_density_full_global_exact(ne, nrot), &
                    response_density_plateau_exact(ne, nrot), &
@@ -6601,6 +6644,7 @@ CONTAINS
                      projector_physical_direct_curv_eval(:) = 0.0_dp
             z_density_trial(:) = 0.0_dp
             z_density_plateau_trial(:) = 0.0_dp
+            z_density_floor_audit_trial(:) = 0.0_dp
             z_density_full_audit_trial(:) = 0.0_dp
             z_density_full_global_trial(:) = 0.0_dp
             z_density_full_trial(:) = 0.0_dp
@@ -6625,6 +6669,7 @@ CONTAINS
                      projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
          energy_cross_density(:, :) = 0.0_dp
+         energy_cross_density_floor_audit(:, :) = 0.0_dp
          energy_cross_density_full(:, :) = 0.0_dp
          energy_cross_density_full_audit(:, :) = 0.0_dp
          energy_cross_density_full_global(:, :) = 0.0_dp
@@ -6635,6 +6680,8 @@ CONTAINS
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
          response_density_exact(:, :) = 0.0_dp
+         response_density_floor_audit(:, :) = 0.0_dp
+         response_density_floor_audit_exact(:, :) = 0.0_dp
          response_density_full(:, :) = 0.0_dp
          response_density_full_audit(:, :) = 0.0_dp
          response_density_full_audit_exact(:, :) = 0.0_dp
@@ -7301,6 +7348,7 @@ CONTAINS
             exact_density_plateau_response_ready = .FALSE.
             exact_density_response_ready = .FALSE.
             exact_density_full_audit_ready = .FALSE.
+            exact_density_floor_audit_ready = .FALSE.
             exact_density_full_response_ready = .FALSE.
             density_full_candidate_ready = .FALSE.
             density_full_candidate_selected = .FALSE.
@@ -7470,7 +7518,8 @@ CONTAINS
                                                        rot_hessian_projector_physical_offdiag, &
                                                        rot_hessian_projector_physical_offdiag_plateau, response, &
                                                        response_occ, response_occ_physical, response_density_physical, &
-                                                       response_density_full, response_density_full_audit, &
+                                                       response_density_floor_audit, response_density_full, &
+                                                       response_density_full_audit, &
                                                        response_density_plateau, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
@@ -7549,7 +7598,7 @@ CONTAINS
                   rot_grad_active_re, rot_grad_active_im
             IF (failed) THEN
                DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
-                           z_density_full_audit_trial, &
+                           z_density_floor_audit_trial, z_density_full_audit_trial, &
                            z_density_full_global_trial, &
                            z_density_full_trial, z_density_trial, &
                            z_exact_physical_trial, z_exact_raw_trial, &
@@ -7583,11 +7632,13 @@ CONTAINS
                                             projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                                     var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_density_full, &
+            DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, &
+                        energy_cross_density_floor_audit, energy_cross_density_full, &
                         energy_cross_density_full_audit, energy_cross_density_full_global, &
                         energy_cross_density_plateau, &
                         energy_cross_physical, energy_cross_raw, &
                         energy_hessian, response, response_coupled, response_density_exact, &
+                        response_density_floor_audit, response_density_floor_audit_exact, &
                         response_density_full, response_density_full_audit, &
                         response_density_full_audit_exact, response_density_full_exact, &
                         response_density_full_global, response_density_full_global_exact, response_density_physical, &
@@ -7723,6 +7774,9 @@ CONTAINS
          rot_hessian_projector_physical_diagref(:, :) = 0.5_dp* &
             (rot_hessian_projector_physical_diagref(:, :) + &
              TRANSPOSE(rot_hessian_projector_physical_diagref(:, :)))
+         projector_density_floor_audit_abs_avg = SUM(ABS(response_density_floor_audit(:, :)))
+         projector_density_floor_audit_gap_abs_avg = &
+            SUM(ABS(response_density_floor_audit(:, :) - response_density_physical(:, :)))
          projector_physical_density_full_abs_avg = SUM(ABS(response_density_full(:, :)))
          projector_density_full_audit_abs_avg = SUM(ABS(response_density_full_audit(:, :)))
          response_density_full_global(:, :) = response_density_full_audit(:, :)
@@ -7736,12 +7790,18 @@ CONTAINS
             SUM(ABS(response_density_full(:, :) - response_density_physical(:, :)))
          projector_physical_density_gap_abs_max = &
             MAXVAL(ABS(response_density_full(:, :) - response_density_physical(:, :)))
+         CALL para_env_inter_kp%sum(projector_density_floor_audit_abs_avg)
+         CALL para_env_inter_kp%sum(projector_density_floor_audit_gap_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_full_abs_avg)
          CALL para_env_inter_kp%sum(projector_density_full_audit_abs_avg)
          CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_active_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_gap_abs_avg)
          CALL para_env_inter_kp%max(projector_physical_density_gap_abs_max)
+         projector_density_floor_audit_abs_avg = projector_density_floor_audit_abs_avg/ &
+                                                 REAL(MAX(1, ne*nrot), KIND=dp)
+         projector_density_floor_audit_gap_abs_avg = projector_density_floor_audit_gap_abs_avg/ &
+                                                     REAL(MAX(1, ne*nrot), KIND=dp)
          projector_physical_density_full_abs_avg = projector_physical_density_full_abs_avg/ &
                                                    REAL(MAX(1, ne*nrot), KIND=dp)
          projector_density_full_audit_abs_avg = projector_density_full_audit_abs_avg/ &
@@ -7816,7 +7876,41 @@ CONTAINS
                                                           exact_density_plateau_response_ready, energy_gauge_weight)
          END IF
          exact_density_full_audit_ready = .FALSE.
+         exact_density_floor_audit_ready = .FALSE.
          exact_density_full_response_ready = .FALSE.
+         projector_density_floor_audit_exact_abs_avg = 0.0_dp
+         projector_density_floor_audit_low_curv_fraction = 0.0_dp
+         projector_density_floor_audit_diag_abs_sum = 0.0_dp
+         projector_density_floor_audit_low_curv_sum = 0.0_dp
+         IF (projector_density_full_audit_enabled .AND. projector_density_floor_audit_abs_avg > &
+             EPSILON(projector_density_floor_audit_abs_avg)) THEN
+            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_floor_audit, &
+                                                       0.0_dp*response_density_floor_audit, 0.0_dp*grad_e, &
+                                                       channel_nmo, e_offset, energy_hessian, &
+                                                       energy_cross_density_floor_audit, &
+                                                       response_density_floor_audit_exact, &
+                                                       z_density_floor_audit_trial, ipiv_energy, &
+                                                       exact_density_floor_audit_ready, energy_gauge_weight)
+            IF (exact_density_floor_audit_ready) THEN
+               projector_density_floor_audit_exact_abs_avg = &
+                  SUM(ABS(response_density_floor_audit_exact(:, :)))/REAL(MAX(1, ne*nrot), KIND=dp)
+               DO r = 1, nrot
+                  DO ie = 1, ne
+                     dense_term = energy_cross_density_floor_audit(ie, r)* &
+                                  response_density_floor_audit_exact(ie, r)
+                     projector_density_floor_audit_diag_abs_sum = &
+                        projector_density_floor_audit_diag_abs_sum + ABS(dense_term)
+                     IF (occ_curv(ie) + tether_curv(ie) <= 0.1_dp*total_curv_diag_max) &
+                        projector_density_floor_audit_low_curv_sum = &
+                           projector_density_floor_audit_low_curv_sum + ABS(dense_term)
+                  END DO
+               END DO
+               IF (projector_density_floor_audit_diag_abs_sum > &
+                   EPSILON(projector_density_floor_audit_diag_abs_sum)) &
+                  projector_density_floor_audit_low_curv_fraction = &
+                     projector_density_floor_audit_low_curv_sum/projector_density_floor_audit_diag_abs_sum
+            END IF
+         END IF
          IF (projector_physical_shadow_enabled .AND. projector_physical_density_full_abs_avg > &
              EPSILON(projector_physical_density_full_abs_avg)) THEN
             CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full, &
@@ -13961,6 +14055,11 @@ CONTAINS
                      projector_physical_density_full_abs_avg, projector_physical_density_active_abs_avg, &
                      projector_physical_density_gap_abs_avg, projector_physical_density_gap_abs_max, &
                      projector_physical_density_active_fraction
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1(1X,L1),4(1X,ES16.8))') &
+                     " OT Schur projector physical density floor-audit ready abs exact_abs gap lowfrac:", &
+                     exact_density_floor_audit_ready, projector_density_floor_audit_abs_avg, &
+                     projector_density_floor_audit_exact_abs_avg, projector_density_floor_audit_gap_abs_avg, &
+                     projector_density_floor_audit_low_curv_fraction
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,14(1X,ES16.8))') &
                      " OT Schur projector phys direct diag parts pdelta ddelta active_ddelta hdelta cov acov "// &
                      "residual density diagref_gap offdiag_gap balance comp active_comp applied:", &
@@ -14947,7 +15046,7 @@ CONTAINS
          END IF
 
             DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
-                        z_density_full_audit_trial, &
+                        z_density_floor_audit_trial, z_density_full_audit_trial, &
                         z_density_full_global_trial, &
                         z_density_full_trial, z_density_trial, &
                         z_exact_physical_trial, z_exact_raw_trial, &
@@ -14989,9 +15088,11 @@ CONTAINS
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_physical, &
                      energy_cross_raw, &
+                     energy_cross_density_floor_audit, &
                      energy_cross_density_full, energy_cross_density_full_audit, &
                      energy_cross_density_full_global, energy_cross_density_plateau, &
                      energy_hessian, response, response_coupled, response_density_exact, &
+                     response_density_floor_audit, response_density_floor_audit_exact, &
                      response_density_full, response_density_full_audit, &
                      response_density_full_audit_exact, response_density_full_exact, &
                      response_density_full_global, response_density_full_global_exact, response_density_physical, &
@@ -16759,6 +16860,7 @@ CONTAINS
 !> \param response_occ ...
 !> \param response_occ_physical ...
 !> \param response_density_physical ...
+!> \param response_density_floor_audit ...
 !> \param response_density_full ...
 !> \param response_density_full_audit ...
 !> \param response_density_plateau ...
@@ -16773,7 +16875,8 @@ CONTAINS
                                                  rot_hessian_projector_physical_offdiag, &
                                                  rot_hessian_projector_physical_offdiag_plateau, response, &
                                                  response_occ, response_occ_physical, response_density_physical, &
-                                                 response_density_full, response_density_full_audit, &
+                                                 response_density_floor_audit, response_density_full, &
+                                                 response_density_full_audit, &
                                                  response_density_plateau, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
@@ -16789,7 +16892,8 @@ CONTAINS
                                                             rot_hessian_projector_physical_offdiag, &
                                                             rot_hessian_projector_physical_offdiag_plateau, &
                                                             response, response_occ, response_density_physical, &
-                                                            response_density_full, response_density_full_audit, &
+                                                            response_density_floor_audit, response_density_full, &
+                                                            response_density_full_audit, &
                                                             response_density_plateau, &
                                                             response_occ_physical
       LOGICAL, INTENT(INOUT)                             :: failed
@@ -16806,7 +16910,7 @@ CONTAINS
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
                                                             projector_evals_p, density_active_projector_column, &
-                                                            density_full_column, &
+                                                            density_floor_audit_column, density_full_column, &
                                                             density_mixed_column, &
                                                             density_plateau_column, density_projector_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -16831,8 +16935,8 @@ CONTAINS
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
-         ALLOCATE (density_active_projector_column(nmo), density_full_column(nmo), density_mixed_column(nmo), &
-                   density_plateau_column(nmo), density_projector_column(nmo))
+         ALLOCATE (density_active_projector_column(nmo), density_floor_audit_column(nmo), density_full_column(nmo), &
+                   density_mixed_column(nmo), density_plateau_column(nmo), density_projector_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -16961,6 +17065,7 @@ CONTAINS
                ! near-degenerate projector-gauge motion does not enter the
                ! finite complex Mermin curvature.
                density_full_column(:) = 0.0_dp
+               density_floor_audit_column(:) = 0.0_dp
                density_mixed_column(:) = 0.0_dp
                density_plateau_column(:) = 0.0_dp
                DO ie = 1, nmo
@@ -16978,6 +17083,11 @@ CONTAINS
                         kpoint_ot_physical_density_response(density_plateau_column(ie), &
                                                             density_full_column(ie), &
                                                             occ_curv_channel(ie), channel_occ_curv_max)
+                     density_floor_audit_column(ie) = &
+                        kpoint_ot_physical_density_floor_audit_response(density_plateau_column(ie), &
+                                                                        density_full_column(ie), &
+                                                                        occ_curv_channel(ie), &
+                                                                        channel_occ_curv_max)
                   END IF
                END DO
                DO ie = 1, nmo
@@ -16996,6 +17106,9 @@ CONTAINS
                                         occ_curv_channel(ie)
                      IF (compute_density_full_audit) &
                         response_density_full_audit(first_energy + ie - 1, s) = density_response
+                     IF (compute_density_full_audit) &
+                        response_density_floor_audit(first_energy + ie - 1, s) = &
+                           density_floor_audit_column(ie)
                      IF (compute_projector_shadow) THEN
                         response_density_full(first_energy + ie - 1, s) = &
                            density_plateau_full_response
@@ -17087,8 +17200,8 @@ CONTAINS
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
-         DEALLOCATE (density_active_projector_column, density_full_column, density_mixed_column, density_plateau_column, &
-                     density_projector_column)
+         DEALLOCATE (density_active_projector_column, density_floor_audit_column, density_full_column, &
+                     density_mixed_column, density_plateau_column, density_projector_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
