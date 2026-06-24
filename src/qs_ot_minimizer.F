@@ -1144,7 +1144,9 @@ CONTAINS
       REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
                                                             gnorm_ratio, &
                                                             gnorm_matrix_im, gnorm_matrix_re, &
-                                                            gnorm_rot_im, gnorm_rot_re, nvar, test_down, tmp
+                                                            gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
+                                                            physical_delta, physical_gnorm, raw_delta, &
+                                                            test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1343,9 +1345,24 @@ CONTAINS
       ! Handling the case of no free variables to optimize
       IF (nvar > 0.0_dp) THEN
          qs_ot_env(1)%delta = SQRT(ABS(qs_ot_env(1)%gnorm)/nvar)
+         raw_delta = qs_ot_env(1)%delta
+         qs_ot_env(1)%kpoint_raw_delta = raw_delta
+         qs_ot_env(1)%kpoint_physical_delta = -1.0_dp
+         IF (complex_kpoint_history .AND. qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+             qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+             qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
+             qs_ot_env(1)%kpoint_physical_delta_groups > 0) THEN
+            matrix_gnorm = MAX(0.0_dp, gnorm_matrix_re) + MAX(0.0_dp, gnorm_matrix_im)
+            physical_gnorm = matrix_gnorm + MAX(0.0_dp, qs_ot_env(1)%kpoint_physical_gnorm)
+            physical_delta = SQRT(ABS(physical_gnorm)/nvar)
+            qs_ot_env(1)%kpoint_physical_delta = physical_delta
+            IF (physical_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_delta
+         END IF
          beta_pr = (qs_ot_env(1)%gnorm - gnorm_cross)/qs_ot_env(1)%gnorm_old
       ELSE
          qs_ot_env(1)%delta = 0.0_dp
+         qs_ot_env(1)%kpoint_raw_delta = 0.0_dp
+         qs_ot_env(1)%kpoint_physical_delta = 0.0_dp
          beta_pr = 0.0_dp
       END IF
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -1353,6 +1370,14 @@ CONTAINS
             " OT CG channel norms C_re C_im R_re R_im eps total:", &
             gnorm_matrix_re, gnorm_matrix_im, gnorm_rot_re, gnorm_rot_im, &
             gnorm_ener, qs_ot_env(1)%gnorm
+         IF (qs_ot_env(1)%kpoint_physical_delta_groups > 0) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,I6,7(1X,ES16.8))') &
+               " OT CG physical residual ready groups raw effective physical matrix phys_rot phys_eps gauge:", &
+               qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_physical_delta_groups, &
+               qs_ot_env(1)%kpoint_raw_delta, qs_ot_env(1)%delta, qs_ot_env(1)%kpoint_physical_delta, &
+               MAX(0.0_dp, gnorm_matrix_re) + MAX(0.0_dp, gnorm_matrix_im), &
+               qs_ot_env(1)%kpoint_physical_rot_gnorm, &
+               qs_ot_env(1)%kpoint_physical_energy_gnorm, qs_ot_env(1)%kpoint_gauge_gnorm
       END IF
       beta_raw = beta_pr
       negative_beta = beta_pr < 0.0_dp

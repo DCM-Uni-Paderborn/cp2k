@@ -4604,7 +4604,7 @@ CONTAINS
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_fraction, active_gap, err, &
                                                             inert_suppression, mid_recovery, occ_curv_max, &
-                                                            response_shape
+                                                            response_shape, safe_recovery
       REAL(KIND=dp), DIMENSION(n)                        :: expected, occ_curv, projector_response, &
                                                             response, safe_response
 
@@ -4619,8 +4619,9 @@ CONTAINS
          active_fraction = occ_curv(i)/MAX(occ_curv(i), response_ratio_gate*occ_curv_max)
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-         expected(i) = dense_active_density_response_weight(occ_curv(i), occ_curv_max)*response_shape* &
-                       (projector_response(i) + active_fraction*(safe_response(i) - projector_response(i)))
+         expected(i) = dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
+                       (response_shape*projector_response(i) + &
+                        active_fraction*(safe_response(i) - projector_response(i)))
       END DO
 
       err = MAXVAL(ABS(response(:) - expected(:)))
@@ -4628,16 +4629,24 @@ CONTAINS
       mid_recovery = ABS(response(3)) - ABS(dense_bounded_density_response(projector_response(3), &
                                                                            occ_curv(3), occ_curv_max, &
                                                                            response_ratio_gate))
+      active_fraction = occ_curv(3)/MAX(occ_curv(3), response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      safe_recovery = ABS(response(3) - &
+                          dense_active_density_response_weight(occ_curv(3), occ_curv_max)* &
+                          response_shape*projector_response(3))
       inert_suppression = ABS(response(n))/MAX(ABS(safe_response(n)), EPSILON(1.0_dp))
 
       IF (err > tol .OR. active_gap > tol .OR. mid_recovery < active_tol .OR. &
-          inert_suppression > 1.0E-8_dp) THEN
+          safe_recovery <= active_tol .OR. inert_suppression > 1.0E-6_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/active/mid/inert", err, response(1), mid_recovery, inert_suppression
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_recovery, &
+            inert_suppression
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/active/mid/inert", err, response(1), mid_recovery, inert_suppression
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_recovery, &
+            inert_suppression
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_helper
@@ -10988,8 +10997,7 @@ CONTAINS
                                             occ_curv_max, response_ratio_gate) RESULT(density_response)
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, density_safe_response, &
                                                             occ_curv, occ_curv_max, response_ratio_gate
-      REAL(KIND=dp)                                      :: active_fraction, density_response, &
-                                                            response_shape, response_target
+      REAL(KIND=dp)                                      :: active_fraction, density_response, response_shape
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -10998,10 +11006,9 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      response_target = density_projector_response + &
-                        active_fraction*(density_safe_response - density_projector_response)
       density_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
-                         response_shape*response_target
+                         (response_shape*density_projector_response + &
+                          active_fraction*(density_safe_response - density_projector_response))
 
    END FUNCTION dense_physical_density_response
 

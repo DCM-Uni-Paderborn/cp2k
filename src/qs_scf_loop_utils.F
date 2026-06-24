@@ -1859,7 +1859,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, density_safe_response, &
                                                             occ_curv, occ_curv_max
       REAL(KIND=dp)                                      :: active_fraction, active_weight, &
-                                                            density_response, response_shape, response_target
+                                                            density_response, response_shape
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -1870,9 +1870,14 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      response_target = density_projector_response + &
-                        active_fraction*(density_safe_response - density_projector_response)
-      density_response = active_weight*response_shape*response_target
+      ! Keep the finite projector eigen-response strongly damped outside the
+      ! Fermi window, but do not damp the gauge-safe dP/occupation-curvature
+      ! correction by the same shape a second time.  That correction is already
+      ! active-window limited and globally fixed-N projected by the Schur energy
+      ! block; over-damping it leaves the residual tail dominated by a missing
+      ! physical density response.
+      density_response = active_weight*(response_shape*density_projector_response + &
+                                        active_fraction*(density_safe_response - density_projector_response))
 
    END FUNCTION kpoint_ot_physical_density_response
 
@@ -5605,6 +5610,14 @@ CONTAINS
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
             local_ot_env(1)%schur_model_delta = 0.0_dp
             local_ot_env(1)%schur_model_residual_drop = 0.0_dp
+            local_ot_env(1)%kpoint_physical_delta_ready = .TRUE.
+            local_ot_env(1)%kpoint_physical_delta_groups = 0
+            local_ot_env(1)%kpoint_raw_delta = -1.0_dp
+            local_ot_env(1)%kpoint_physical_delta = -1.0_dp
+            local_ot_env(1)%kpoint_physical_gnorm = 0.0_dp
+            local_ot_env(1)%kpoint_physical_rot_gnorm = 0.0_dp
+            local_ot_env(1)%kpoint_physical_energy_gnorm = 0.0_dp
+            local_ot_env(1)%kpoint_gauge_gnorm = 0.0_dp
             local_ot_env(1)%schur_constrained_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_calibrated_drop = 0.0_dp
             local_ot_env(1)%schur_constrained_gap_ratio = 0.0_dp
@@ -5788,7 +5801,7 @@ CONTAINS
                                                                         projector_response_candidate_selected, &
                                                             split_candidate_ready, split_candidate_selected, &
                                                             split_candidate_diagnostic, split_candidate_enabled, &
-                                                            split_residual_competitive, &
+                                                            split_residual_competitive, physical_delta_group_ready, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
          accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
@@ -6312,7 +6325,8 @@ CONTAINS
          rot_grad_fermi_weight, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
          rot_grad_gauge_im, rot_grad_gauge_re, rot_grad_gauge_weight, &
          rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
-         rot_grad_pair_fraction, rot_grad_rest_fraction, rot_grad_sq
+         rot_grad_pair_fraction, rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq, &
+         rot_grad_energy_norm, rot_grad_gauge_norm, rot_grad_total_physical_norm
       REAL(KIND=dp) :: inactive_offdiag_mode_abs_quad, inactive_offdiag_mode_eval_max, &
          inactive_offdiag_mode_eval_min, inactive_offdiag_mode_negative_fraction, &
          inactive_offdiag_mode_negative_quad, inactive_offdiag_mode_positive_quad, &
@@ -7610,6 +7624,27 @@ CONTAINS
             IF (rot_grad_active_weight_sum + rot_grad_inactive_weight_sum > EPSILON(1.0_dp)) &
                rot_grad_active_fraction_avg = rot_grad_active_weight_sum/ &
                   (rot_grad_active_weight_sum + rot_grad_inactive_weight_sum)
+            rot_grad_physical_norm = rot_grad_active_re + rot_grad_active_im + &
+                                     rot_grad_gap_re + rot_grad_gap_im
+            rot_grad_gauge_norm = rot_grad_gauge_re + rot_grad_gauge_im
+            rot_grad_energy_norm = DOT_PRODUCT(grad_e, grad_e)
+            CALL para_env_inter_kp%sum(rot_grad_energy_norm)
+            rot_grad_total_physical_norm = rot_grad_physical_norm + rot_grad_energy_norm
+            physical_delta_group_ready = residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                         rot_grad_gauge_norm > &
+                                         MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp))
+            local_ot_env(1)%kpoint_physical_delta_groups = &
+               local_ot_env(1)%kpoint_physical_delta_groups + 1
+            local_ot_env(1)%kpoint_physical_gnorm = &
+               local_ot_env(1)%kpoint_physical_gnorm + rot_grad_total_physical_norm
+            local_ot_env(1)%kpoint_physical_rot_gnorm = &
+               local_ot_env(1)%kpoint_physical_rot_gnorm + rot_grad_physical_norm
+            local_ot_env(1)%kpoint_physical_energy_gnorm = &
+               local_ot_env(1)%kpoint_physical_energy_gnorm + rot_grad_energy_norm
+            local_ot_env(1)%kpoint_gauge_gnorm = &
+               local_ot_env(1)%kpoint_gauge_gnorm + rot_grad_gauge_norm
+            local_ot_env(1)%kpoint_physical_delta_ready = &
+               local_ot_env(1)%kpoint_physical_delta_ready .AND. physical_delta_group_ready
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
                   " OT Schur rotation gradient active audit group re im inactive_re inactive_im favg fmax wact winact:", &
@@ -7622,6 +7657,11 @@ CONTAINS
                   target_group, rot_grad_gap_re, rot_grad_gap_im, rot_grad_gauge_re, &
                   rot_grad_gauge_im, rot_grad_gap_weight, rot_grad_gauge_weight, &
                   rot_grad_active_re, rot_grad_active_im
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,5(1X,ES16.8))') &
+                  " OT Schur physical residual audit group ready energy rot gauge total raw_delta:", &
+                  target_group, physical_delta_group_ready, rot_grad_energy_norm, rot_grad_physical_norm, &
+                  rot_grad_gauge_norm, rot_grad_total_physical_norm, residual_delta
             IF (failed) THEN
                DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
                            z_density_floor_audit_trial, z_density_full_audit_trial, &
@@ -12760,9 +12800,9 @@ CONTAINS
                   IF (.NOT. attempt_failed .AND. &
                       (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                        (projector_physical_direct_candidate_used .AND. &
-                        (projector_physical_direct_promoted .OR. &
-                         projector_physical_direct_mixed_enabled .OR. &
-                         projector_physical_direct_tail_probe_ready))) .AND. &
+                         (projector_physical_direct_promoted .OR. &
+                          projector_physical_direct_mixed_enabled .OR. &
+                          projector_physical_direct_tail_probe_ready))) .AND. &
                       projector_physical_candidate_ready .AND. &
                       projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                       projector_physical_expected_drop >= &
@@ -13208,9 +13248,9 @@ CONTAINS
                   IF (.NOT. attempt_failed .AND. &
                       (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                        (projector_physical_direct_candidate_used .AND. &
-                        (projector_physical_direct_promoted .OR. &
-                         projector_physical_direct_mixed_enabled .OR. &
-                         projector_physical_direct_tail_probe_ready))) .AND. &
+                         (projector_physical_direct_promoted .OR. &
+                          projector_physical_direct_mixed_enabled .OR. &
+                          projector_physical_direct_tail_probe_ready))) .AND. &
                       projector_physical_candidate_ready .AND. &
                       projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                       projector_physical_expected_drop >= &

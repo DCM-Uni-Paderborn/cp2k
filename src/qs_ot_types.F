@@ -300,6 +300,11 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_step_gauge_ratio_ema = 0.0_dp
       REAL(KIND=dp) :: schur_step_gauge_residual_quality = 1.0_dp
       REAL(KIND=dp) :: schur_step_gauge_residual_quality_ema = 1.0_dp
+      LOGICAL :: kpoint_physical_delta_ready = .FALSE.
+      INTEGER :: kpoint_physical_delta_groups = 0
+      REAL(KIND=dp) :: kpoint_raw_delta = -1.0_dp, kpoint_physical_delta = -1.0_dp
+      REAL(KIND=dp) :: kpoint_physical_gnorm = 0.0_dp, kpoint_physical_rot_gnorm = 0.0_dp
+      REAL(KIND=dp) :: kpoint_physical_energy_gnorm = 0.0_dp, kpoint_gauge_gnorm = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_drop = 0.0_dp, schur_constrained_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_quality = 0.0_dp, schur_constrained_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_calibrated_quality = 0.0_dp
@@ -876,6 +881,14 @@ CONTAINS
       qs_ot_env%schur_step_gauge_ratio_ema = 0.0_dp
       qs_ot_env%schur_step_gauge_residual_quality = 1.0_dp
       qs_ot_env%schur_step_gauge_residual_quality_ema = 1.0_dp
+      qs_ot_env%kpoint_physical_delta_ready = .FALSE.
+      qs_ot_env%kpoint_physical_delta_groups = 0
+      qs_ot_env%kpoint_raw_delta = -1.0_dp
+      qs_ot_env%kpoint_physical_delta = -1.0_dp
+      qs_ot_env%kpoint_physical_gnorm = 0.0_dp
+      qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
+      qs_ot_env%kpoint_physical_energy_gnorm = 0.0_dp
+      qs_ot_env%kpoint_gauge_gnorm = 0.0_dp
       qs_ot_env%schur_constrained_drop = 0.0_dp
       qs_ot_env%schur_constrained_calibrated_drop = 0.0_dp
       qs_ot_env%schur_constrained_quality = 0.0_dp
