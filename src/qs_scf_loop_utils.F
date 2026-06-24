@@ -3459,6 +3459,25 @@ CONTAINS
             local_ot_env(1)%schur_model_quality_samples = 0
             local_ot_env(1)%schur_model_quality_ready = .FALSE.
          END IF
+         IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop) .AND. measured_drop > 0.0_dp .AND. &
+             local_ot_env(1)%schur_step_gauge_ratio > EPSILON(local_ot_env(1)%schur_step_gauge_ratio)) THEN
+            samples = MIN(local_ot_env(1)%schur_step_gauge_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_step_gauge_quality_samples = samples
+            local_ot_env(1)%schur_step_gauge_residual_quality = residual_quality_ratio
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_step_gauge_ratio_ema = local_ot_env(1)%schur_step_gauge_ratio
+               local_ot_env(1)%schur_step_gauge_residual_quality_ema = residual_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_step_gauge_ratio_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_step_gauge_ratio_ema + &
+                  ot_kp_schur_quality_ema_alpha*local_ot_env(1)%schur_step_gauge_ratio
+               local_ot_env(1)%schur_step_gauge_residual_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_step_gauge_residual_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*residual_quality_ratio
+            END IF
+         END IF
          constrained_predicted_drop = local_ot_env(1)%schur_constrained_drop
          constrained_calibrated_predicted_drop = local_ot_env(1)%schur_constrained_calibrated_drop
          IF (constrained_calibrated_predicted_drop <= EPSILON(constrained_calibrated_predicted_drop)) &
@@ -6159,7 +6178,8 @@ CONTAINS
          split_quality_for_selection, split_dense_expected_ratio, split_residual_quality, &
          residual_reference_quality, constrained_quality_for_selection, &
          constrained_gdot_energy, constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
-         constrained_scale_quality, split_trust_quality, tether_projected_term, tether_response, tether_response_diag_sum, &
+         constrained_scale_quality, split_trust_quality, step_gauge_quality, tether_projected_term, tether_response, &
+         tether_response_diag_sum, &
          tether_strength, tether_weight, occ_curv_diag_max, occ_curv_diag_sum, tether_curv_diag_max, &
          tether_curv_diag_sum, total_curv_diag_max, total_curv_diag_sum, z_shift, z_weight
       REAL(KIND=dp) :: projector_physical_direct_curvature_scale, projector_physical_direct_euclidean_scale, &
@@ -6203,7 +6223,8 @@ CONTAINS
          plateau_gap_mode_step_negative_fraction
       REAL(KIND=dp) :: accepted_step_fermi_im, accepted_step_fermi_re, &
          accepted_step_gap_im, accepted_step_gap_re, accepted_step_gauge_im, accepted_step_gauge_re, &
-         accepted_step_gap_weight, accepted_step_gauge_weight, accepted_step_sq
+         accepted_step_fermi_norm, accepted_step_gap_norm, accepted_step_gauge_norm, &
+         accepted_step_gauge_ratio, accepted_step_gap_weight, accepted_step_gauge_weight, accepted_step_sq
       REAL(KIND=dp) :: rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
          rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, &
          rot_grad_fermi_weight, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
@@ -7220,6 +7241,7 @@ CONTAINS
          split_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_residual_quality = 1.0_dp
          split_residual_competitive = .TRUE.
+         step_gauge_quality = 1.0_dp
          constrained_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_trust_quality = 1.0_dp
          split_density_projector_fraction = 0.0_dp
@@ -8469,6 +8491,12 @@ CONTAINS
                       MIN(1.0_dp, local_ot_env(1)%schur_coupled_residual_quality_ema/residual_reference_quality))
             split_quality_for_selection = split_quality_for_selection*split_residual_quality
             dense_quality_for_selection = dense_quality_for_selection*dense_residual_quality
+         END IF
+         IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+            step_gauge_quality = &
+               kpoint_ot_schur_step_gauge_quality(local_ot_env(1)%schur_step_gauge_ratio_ema, &
+                                                  local_ot_env(1)%schur_step_gauge_residual_quality_ema, &
+                                                  local_ot_env(1)%schur_step_gauge_quality_samples)
          END IF
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
              local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
@@ -13589,58 +13617,70 @@ CONTAINS
                DEALLOCATE (grad_re, grad_im)
             END DO
             group_done = .TRUE.
-            IF (logger%iter_info%print_level >= high_print_level) THEN
-               accepted_step_gap_re = 0.0_dp
-               accepted_step_gap_im = 0.0_dp
-               accepted_step_gauge_re = 0.0_dp
-               accepted_step_gauge_im = 0.0_dp
-               accepted_step_fermi_re = 0.0_dp
-               accepted_step_fermi_im = 0.0_dp
-               accepted_step_gap_weight = 0.0_dp
-               accepted_step_gauge_weight = 0.0_dp
-               DO r = 1, nrot
-                  rot_grad_pair_fraction = 0.0_dp
-                  IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) &
-                     rot_grad_pair_fraction = var_projector_active_weight(r)/var_projector_weight(r)
-                  rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
-                  rot_grad_rest_fraction = 1.0_dp - rot_grad_pair_fraction
-                  rot_grad_fermi_weight = rot_grad_pair_fraction
-                  accepted_step_sq = sol(r)*sol(r)
-                  accepted_step_gap_weight = accepted_step_gap_weight + &
-                                             rot_grad_rest_fraction*var_occ_gap_weight(r)
-                  accepted_step_gauge_weight = accepted_step_gauge_weight + &
-                                               rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))
-                  IF (var_kind(r) == 1) THEN
-                     accepted_step_fermi_re = accepted_step_fermi_re + rot_grad_fermi_weight*accepted_step_sq
-                     accepted_step_gap_re = accepted_step_gap_re + &
-                                            rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
-                     accepted_step_gauge_re = accepted_step_gauge_re + &
-                                              rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
-                                              accepted_step_sq
-                  ELSE
-                     accepted_step_fermi_im = accepted_step_fermi_im + rot_grad_fermi_weight*accepted_step_sq
-                     accepted_step_gap_im = accepted_step_gap_im + &
-                                            rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
-                     accepted_step_gauge_im = accepted_step_gauge_im + &
-                                              rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
-                                              accepted_step_sq
-                  END IF
-               END DO
-               CALL para_env_inter_kp%sum(accepted_step_gap_re)
-               CALL para_env_inter_kp%sum(accepted_step_gap_im)
-               CALL para_env_inter_kp%sum(accepted_step_gauge_re)
-               CALL para_env_inter_kp%sum(accepted_step_gauge_im)
-               CALL para_env_inter_kp%sum(accepted_step_fermi_re)
-               CALL para_env_inter_kp%sum(accepted_step_fermi_im)
-               CALL para_env_inter_kp%sum(accepted_step_gap_weight)
-               CALL para_env_inter_kp%sum(accepted_step_gauge_weight)
-               accepted_step_gap_re = SQRT(MAX(0.0_dp, accepted_step_gap_re))
-               accepted_step_gap_im = SQRT(MAX(0.0_dp, accepted_step_gap_im))
-               accepted_step_gauge_re = SQRT(MAX(0.0_dp, accepted_step_gauge_re))
-               accepted_step_gauge_im = SQRT(MAX(0.0_dp, accepted_step_gauge_im))
-               accepted_step_fermi_re = SQRT(MAX(0.0_dp, accepted_step_fermi_re))
-               accepted_step_fermi_im = SQRT(MAX(0.0_dp, accepted_step_fermi_im))
-            END IF
+            accepted_step_gap_re = 0.0_dp
+            accepted_step_gap_im = 0.0_dp
+            accepted_step_gauge_re = 0.0_dp
+            accepted_step_gauge_im = 0.0_dp
+            accepted_step_fermi_re = 0.0_dp
+            accepted_step_fermi_im = 0.0_dp
+            accepted_step_gap_weight = 0.0_dp
+            accepted_step_gauge_weight = 0.0_dp
+            DO r = 1, nrot
+               rot_grad_pair_fraction = 0.0_dp
+               IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) &
+                  rot_grad_pair_fraction = var_projector_active_weight(r)/var_projector_weight(r)
+               rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
+               rot_grad_rest_fraction = 1.0_dp - rot_grad_pair_fraction
+               rot_grad_fermi_weight = rot_grad_pair_fraction
+               accepted_step_sq = sol(r)*sol(r)
+               accepted_step_gap_weight = accepted_step_gap_weight + &
+                                          rot_grad_rest_fraction*var_occ_gap_weight(r)
+               accepted_step_gauge_weight = accepted_step_gauge_weight + &
+                                            rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))
+               IF (var_kind(r) == 1) THEN
+                  accepted_step_fermi_re = accepted_step_fermi_re + rot_grad_fermi_weight*accepted_step_sq
+                  accepted_step_gap_re = accepted_step_gap_re + &
+                                         rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
+                  accepted_step_gauge_re = accepted_step_gauge_re + &
+                                           rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
+                                           accepted_step_sq
+               ELSE
+                  accepted_step_fermi_im = accepted_step_fermi_im + rot_grad_fermi_weight*accepted_step_sq
+                  accepted_step_gap_im = accepted_step_gap_im + &
+                                         rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
+                  accepted_step_gauge_im = accepted_step_gauge_im + &
+                                           rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
+                                           accepted_step_sq
+               END IF
+            END DO
+            CALL para_env_inter_kp%sum(accepted_step_gap_re)
+            CALL para_env_inter_kp%sum(accepted_step_gap_im)
+            CALL para_env_inter_kp%sum(accepted_step_gauge_re)
+            CALL para_env_inter_kp%sum(accepted_step_gauge_im)
+            CALL para_env_inter_kp%sum(accepted_step_fermi_re)
+            CALL para_env_inter_kp%sum(accepted_step_fermi_im)
+            CALL para_env_inter_kp%sum(accepted_step_gap_weight)
+            CALL para_env_inter_kp%sum(accepted_step_gauge_weight)
+            accepted_step_gap_re = SQRT(MAX(0.0_dp, accepted_step_gap_re))
+            accepted_step_gap_im = SQRT(MAX(0.0_dp, accepted_step_gap_im))
+            accepted_step_gauge_re = SQRT(MAX(0.0_dp, accepted_step_gauge_re))
+            accepted_step_gauge_im = SQRT(MAX(0.0_dp, accepted_step_gauge_im))
+            accepted_step_fermi_re = SQRT(MAX(0.0_dp, accepted_step_fermi_re))
+            accepted_step_fermi_im = SQRT(MAX(0.0_dp, accepted_step_fermi_im))
+            accepted_step_gap_norm = SQRT(accepted_step_gap_re*accepted_step_gap_re + &
+                                          accepted_step_gap_im*accepted_step_gap_im)
+            accepted_step_gauge_norm = SQRT(accepted_step_gauge_re*accepted_step_gauge_re + &
+                                            accepted_step_gauge_im*accepted_step_gauge_im)
+            accepted_step_fermi_norm = SQRT(accepted_step_fermi_re*accepted_step_fermi_re + &
+                                            accepted_step_fermi_im*accepted_step_fermi_im)
+            accepted_step_gauge_ratio = 0.0_dp
+            IF (accepted_step_gap_norm + accepted_step_gauge_norm > EPSILON(1.0_dp)) &
+               accepted_step_gauge_ratio = &
+                  MIN(100.0_dp, accepted_step_gauge_norm/MAX(accepted_step_gap_norm, EPSILON(1.0_dp)))
+            local_ot_env(1)%schur_step_gap_norm = accepted_step_gap_norm
+            local_ot_env(1)%schur_step_gauge_norm = accepted_step_gauge_norm
+            local_ot_env(1)%schur_step_fermi_norm = accepted_step_fermi_norm
+            local_ot_env(1)%schur_step_gauge_ratio = accepted_step_gauge_ratio
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
                diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                response_abs_trust_ratio = 0.0_dp
@@ -13665,6 +13705,13 @@ CONTAINS
                   target_group, accepted_step_gap_re, accepted_step_gap_im, accepted_step_gauge_re, &
                   accepted_step_gauge_im, accepted_step_gap_weight, accepted_step_gauge_weight, &
                   accepted_step_fermi_re, accepted_step_fermi_im
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+                  " OT Schur accepted step gauge history samples ratio rema rq rqema qshadow gap gauge:", &
+                  local_ot_env(1)%schur_step_gauge_quality_samples, accepted_step_gauge_ratio, &
+                  local_ot_env(1)%schur_step_gauge_ratio_ema, &
+                  local_ot_env(1)%schur_step_gauge_residual_quality, &
+                  local_ot_env(1)%schur_step_gauge_residual_quality_ema, &
+                  step_gauge_quality, accepted_step_gap_norm, accepted_step_gauge_norm
                IF (split_candidate_diagnostic) THEN
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),27(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop cdrop pred meas "// &
@@ -15692,6 +15739,30 @@ CONTAINS
          quality = 1.0_dp/trust_ratio
 
       END FUNCTION kpoint_ot_schur_metric_trust_quality
+
+! **************************************************************************************************
+!> \brief tail quality from accepted gauge-like rotation content
+!> \param gauge_ratio_ema accepted inactive gauge/gap step-norm ratio
+!> \param residual_quality_ema accepted residual-drop quality for those steps
+!> \param samples number of accepted samples in the gauge/gap history
+!> \return conservative quality factor for coupled tail candidate selection
+! **************************************************************************************************
+      FUNCTION kpoint_ot_schur_step_gauge_quality(gauge_ratio_ema, residual_quality_ema, &
+                                                  samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: gauge_ratio_ema, residual_quality_ema
+      INTEGER, INTENT(IN)                               :: samples
+      REAL(KIND=dp)                                     :: gauge_weight, quality, residual_weight
+
+         quality = 1.0_dp
+         IF (samples < ot_kp_schur_calibration_min_samples) RETURN
+         IF (gauge_ratio_ema <= 1.5_dp .OR. residual_quality_ema >= 0.25_dp) RETURN
+
+         gauge_weight = MIN(1.0_dp, MAX(0.0_dp, (gauge_ratio_ema - 1.5_dp)/6.5_dp))
+         residual_weight = MIN(1.0_dp, MAX(0.0_dp, (0.25_dp - residual_quality_ema)/0.25_dp))
+         quality = 1.0_dp - 0.20_dp*gauge_weight*residual_weight
+         quality = MIN(1.0_dp, MAX(ot_kp_schur_calibrated_quality_min_ratio, quality))
+
+      END FUNCTION kpoint_ot_schur_step_gauge_quality
 
 ! **************************************************************************************************
 !> \brief ...

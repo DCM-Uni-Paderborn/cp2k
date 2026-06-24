@@ -294,6 +294,12 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_model_calibrated_quality = 0.0_dp, schur_model_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
       REAL(KIND=dp) :: schur_model_delta = 0.0_dp, schur_model_residual_drop = 0.0_dp
+      INTEGER :: schur_step_gauge_quality_samples = 0
+      REAL(KIND=dp) :: schur_step_gap_norm = 0.0_dp, schur_step_gauge_norm = 0.0_dp
+      REAL(KIND=dp) :: schur_step_fermi_norm = 0.0_dp, schur_step_gauge_ratio = 0.0_dp
+      REAL(KIND=dp) :: schur_step_gauge_ratio_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_step_gauge_residual_quality = 1.0_dp
+      REAL(KIND=dp) :: schur_step_gauge_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: schur_constrained_drop = 0.0_dp, schur_constrained_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_quality = 0.0_dp, schur_constrained_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_calibrated_quality = 0.0_dp
@@ -862,6 +868,14 @@ CONTAINS
       qs_ot_env%schur_model_gap_ratio = 0.0_dp
       qs_ot_env%schur_model_delta = 0.0_dp
       qs_ot_env%schur_model_residual_drop = 0.0_dp
+      qs_ot_env%schur_step_gauge_quality_samples = 0
+      qs_ot_env%schur_step_gap_norm = 0.0_dp
+      qs_ot_env%schur_step_gauge_norm = 0.0_dp
+      qs_ot_env%schur_step_fermi_norm = 0.0_dp
+      qs_ot_env%schur_step_gauge_ratio = 0.0_dp
+      qs_ot_env%schur_step_gauge_ratio_ema = 0.0_dp
+      qs_ot_env%schur_step_gauge_residual_quality = 1.0_dp
+      qs_ot_env%schur_step_gauge_residual_quality_ema = 1.0_dp
       qs_ot_env%schur_constrained_drop = 0.0_dp
       qs_ot_env%schur_constrained_calibrated_drop = 0.0_dp
       qs_ot_env%schur_constrained_quality = 0.0_dp
