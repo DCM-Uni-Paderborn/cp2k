@@ -5692,6 +5692,7 @@ CONTAINS
                                                                        projector_offdiag_candidate_inactive, &
                                                                        projector_inactive_offdiag_candidate_ready, &
                                                                         projector_density_full_audit_enabled, &
+                                                                        projector_density_full_history_enabled, &
                                                                         projector_physical_direct_promoted, &
                                                                         projector_physical_direct_shadow_enabled, &
                                                                         projector_physical_shadow_enabled, &
@@ -6351,7 +6352,8 @@ CONTAINS
             IF (new_search_point) &
                projector_physical_direct_shadow_enabled = projector_physical_direct_shadow_enabled .OR. &
                                                           projector_physical_direct_promoted
-            projector_density_full_audit_enabled = projector_physical_shadow_enabled
+            projector_density_full_history_enabled = projector_physical_shadow_enabled
+            projector_density_full_audit_enabled = projector_density_full_history_enabled
             IF (logger%iter_info%print_level >= high_print_level) &
                projector_density_full_audit_enabled = .TRUE.
 
@@ -11031,6 +11033,7 @@ CONTAINS
                                                       density_full_global_trust_quality* &
                                                       projector_physical_direct_density_audit_quality)
                                                 density_full_global_candidate_ready = &
+                                                   projector_density_full_history_enabled .AND. &
                                                    (density_full_global_bootstrap_ready .OR. &
                                                     (local_ot_env(1)%schur_projector_density_full_global_quality_samples >= &
                                                      ot_kp_schur_projector_response_min_samples .AND. &
@@ -13272,7 +13275,8 @@ CONTAINS
                      MAX(local_ot_env(1)%schur_projector_density_full_abs_trust, &
                          density_full_history_abs_trust_ratio)
                END IF
-               IF (exact_density_full_audit_ready .AND. &
+               IF (projector_density_full_history_enabled .AND. &
+                   exact_density_full_audit_ready .AND. &
                    accepted_model_calibrated_drop > ot_kp_schur_projector_density_full_min_drop) THEN
                   rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
                   rx_model(:) = MATMUL(response_exact_physical, accepted_sol) + &
