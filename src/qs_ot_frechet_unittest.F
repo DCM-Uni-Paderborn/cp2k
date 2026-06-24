@@ -172,6 +172,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-13_dp, nfail)
    CALL check_projector_density_global_fixed_n_projection( &
       "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
+   CALL check_projector_density_floor_global_projection( &
+      "complex projector density floor global projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_density_audit_trust_quality( &
@@ -6809,6 +6811,66 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_global_fixed_n_projection
+
+! **************************************************************************************************
+!> \brief Check that floor-limited density response is suitable for global fixed-N projection.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_floor_global_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 4
+      REAL(KIND=dp), PARAMETER                           :: response_ratio_gate = 2.0E-2_dp
+
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: floor_projected, raw_projected_ok
+      REAL(KIND=dp)                                      :: charge, floor_norm, raw_norm, retained
+      REAL(KIND=dp), DIMENSION(ne)                       :: floor_response, occ_curv, projector_response, &
+                                                            raw_response, safe_response, tether_curv
+
+      channel_nmo(:) = [2, 2]
+      e_offset(:) = [1, 3]
+      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp]
+      tether_curv(:) = 0.0_dp
+      projector_response(:) = [0.010_dp, -0.008_dp, 0.006_dp, -0.004_dp]
+      safe_response(:) = [0.10_dp, -0.08_dp, 0.06_dp, -25.0_dp]
+
+      floor_response(:) = 0.0_dp
+      raw_response(:) = safe_response(:)
+      floor_response(1) = dense_physical_density_floor_audit_response( &
+         projector_response(1), safe_response(1), occ_curv(1), MAXVAL(occ_curv(:)), response_ratio_gate)
+      floor_response(2) = dense_physical_density_floor_audit_response( &
+         projector_response(2), safe_response(2), occ_curv(2), MAXVAL(occ_curv(:)), response_ratio_gate)
+      floor_response(3) = dense_physical_density_floor_audit_response( &
+         projector_response(3), safe_response(3), occ_curv(3), MAXVAL(occ_curv(:)), response_ratio_gate)
+      floor_response(4) = dense_physical_density_floor_audit_response( &
+         projector_response(4), safe_response(4), occ_curv(4), MAXVAL(occ_curv(:)), response_ratio_gate)
+
+      CALL dense_project_response_metric_distributed(floor_response, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, floor_projected)
+      CALL dense_project_response_metric_distributed(raw_response, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, raw_projected_ok)
+
+      charge = ABS(DOT_PRODUCT(occ_curv(:), floor_response(:)))
+      floor_norm = MAXVAL(ABS(floor_response(:)))
+      raw_norm = MAXVAL(ABS(raw_response(:)))
+      retained = ABS(floor_response(3))/MAX(ABS(projector_response(3)), EPSILON(1.0_dp))
+
+      IF (.NOT. floor_projected .OR. .NOT. raw_projected_ok .OR. charge > tol .OR. &
+          floor_norm >= 0.1_dp*raw_norm .OR. retained < 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with charge/floor/raw/retained", charge, floor_norm, raw_norm, retained
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with charge/floor/raw/retained", charge, floor_norm, raw_norm, retained
+      END IF
+
+   END SUBROUTINE check_projector_density_floor_global_projection
 
 ! **************************************************************************************************
 !> \brief Check that global fixed-N density-response trust follows the Mermin metric.

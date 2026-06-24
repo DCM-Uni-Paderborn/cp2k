@@ -7779,7 +7779,11 @@ CONTAINS
             SUM(ABS(response_density_floor_audit(:, :) - response_density_physical(:, :)))
          projector_physical_density_full_abs_avg = SUM(ABS(response_density_full(:, :)))
          projector_density_full_audit_abs_avg = SUM(ABS(response_density_full_audit(:, :)))
-         response_density_full_global(:, :) = response_density_full_audit(:, :)
+         ! Use the floor-limited physical density response for the global
+         ! fixed-N candidate.  The raw full-density audit remains printed
+         ! separately, but it is too gauge/noise sensitive to drive the
+         ! accepted-step model directly in the metallic tail.
+         response_density_full_global(:, :) = response_density_floor_audit(:, :)
          DO s = 1, nrot
             CALL project_kpoint_ot_schur_response(response_density_full_global(:, s), occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
@@ -15006,8 +15010,12 @@ CONTAINS
                   rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
                   rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, accepted_sol) + &
                                 z_weight*MATMUL(response_exact_physical, accepted_sol)
-                  IF (exact_density_response_ready) &
+                  IF (exact_density_full_audit_ready) THEN
+                     rx_model(:) = rx_model(:) + &
+                                   z_weight*MATMUL(response_density_full_audit_exact, accepted_sol)
+                  ELSE IF (exact_density_response_ready) THEN
                      rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, accepted_sol)
+                  END IF
                   CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
                   CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
