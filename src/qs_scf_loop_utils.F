@@ -6087,6 +6087,15 @@ CONTAINS
             projector_physical_direct_response_positive_drop, &
             projector_physical_direct_response_raw_negative_fraction, &
             projector_physical_direct_response_weight, &
+            spectral_resp_correction_drop, &
+            spectral_resp_correction_negative, &
+            spectral_resp_cross_drop, &
+            spectral_resp_negative_coeff, &
+            spectral_resp_negative_drop, &
+            spectral_resp_positive_coeff, &
+            spectral_resp_positive_drop, &
+            spectral_resp_raw_negative_fraction, &
+            spectral_resp_weight, &
             projector_physical_direct_curv_cap, projector_physical_direct_curv_clip_avg, &
             projector_physical_direct_curv_clip_max, projector_physical_direct_curv_clip_sum, &
             projector_physical_direct_curv_diag_max, projector_physical_direct_curv_eval_max, &
@@ -6740,6 +6749,15 @@ CONTAINS
          direct_pg_positive_drop = 0.0_dp
          direct_pg_raw_negative_fraction = 0.0_dp
          direct_pg_response_weight = 0.0_dp
+         spectral_resp_correction_drop = 0.0_dp
+         spectral_resp_correction_negative = 0.0_dp
+         spectral_resp_cross_drop = 0.0_dp
+         spectral_resp_negative_coeff = 0.0_dp
+         spectral_resp_negative_drop = 0.0_dp
+         spectral_resp_positive_coeff = 0.0_dp
+         spectral_resp_positive_drop = 0.0_dp
+         spectral_resp_raw_negative_fraction = 0.0_dp
+         spectral_resp_weight = 0.0_dp
          projector_physical_offdiag_mode_abs_quad = 0.0_dp
          projector_physical_offdiag_mode_eval_max = 0.0_dp
          projector_physical_offdiag_mode_eval_min = 0.0_dp
@@ -10481,6 +10499,44 @@ CONTAINS
                                              CALL project_kpoint_ot_schur_response( &
                                                 projector_physical_direct_spectral_model_e, &
                                                 occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
+                                             IF (projector_physical_direct_shadow_enabled .AND. &
+                                                 projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                                                 local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                                                 ot_kp_schur_calibration_min_samples) THEN
+                                                response_physical_model(:, :) = response_exact_physical(:, :)
+                                                IF (exact_density_response_ready) &
+                                                   response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                                                  response_density_exact(:, :)
+                                                CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
+                                                   rot_hessian_projector_physical_active, &
+                                                   projector_physical_direct_spectral_sol, response_exact_raw, &
+                                                   response_physical_model, curv, occ_curv, tether_curv, &
+                                                   occ_curv_projection_sum, channel_nmo, e_offset, .TRUE., &
+                                                   projector_coupled_weight, residual_delta, &
+                                                   projector_mode_history_quality, &
+                                                   local_ot_env(1)%schur_projector_mode_trust_ema, &
+                                                   projector_mode_history_response_ratio, grad_e, &
+                                                   z_exact_physical_trial + projector_physical_direct_spectral_rx_e, &
+                                                   projector_physical_direct_spectral_rx_e, rx_model, &
+                                                   spectral_resp_weight, &
+                                                   spectral_resp_correction_drop, &
+                                                   spectral_resp_correction_negative, &
+                                                   spectral_resp_raw_negative_fraction, &
+                                                   spectral_resp_positive_drop, &
+                                                   spectral_resp_negative_drop, &
+                                                   spectral_resp_cross_drop, &
+                                                   spectral_resp_positive_coeff, &
+                                                   spectral_resp_negative_coeff)
+                                                IF (spectral_resp_weight > &
+                                                    EPSILON(spectral_resp_weight)) THEN
+                                                   projector_physical_direct_spectral_rx_e(:) = rx_model(:)
+                                                   CALL project_kpoint_ot_schur_response( &
+                                                      projector_physical_direct_spectral_rx_e, occ_curv, tether_curv, &
+                                                      occ_curv_projection_sum, channel_nmo, e_offset)
+                                                   projector_physical_direct_spectral_model_e(:) = &
+                                                      projector_physical_direct_spectral_rx_e(:)
+                                                END IF
+                                             END IF
                                              projector_physical_direct_spectral_z_e(:) = &
                                                 z_exact_physical_trial(:) + projector_physical_direct_spectral_rx_e(:)
                                              projector_physical_direct_spectral_gdot_energy = &
@@ -14232,6 +14288,14 @@ CONTAINS
                         projector_physical_direct_spectral_response_weighted_step, &
                         projector_physical_direct_spectral_response_abs_step, &
                         projector_physical_direct_spectral_direction_scale
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
+                        " OT Schur projector phys direct spectral active-response "// &
+                        "w cdrop cneg rneg pdrop ndrop xdrop cpos ncoeff:", &
+                        spectral_resp_weight, spectral_resp_correction_drop, &
+                        spectral_resp_correction_negative, spectral_resp_raw_negative_fraction, &
+                        spectral_resp_positive_drop, spectral_resp_negative_drop, &
+                        spectral_resp_cross_drop, spectral_resp_positive_coeff, &
+                        spectral_resp_negative_coeff
                      WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
                         " OT Schur projector phys direct soft cut nfrac mfrac:", &
                         projector_physical_direct_soft_cut, &
