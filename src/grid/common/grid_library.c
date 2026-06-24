@@ -47,6 +47,29 @@ static grid_library_config config = {
 #endif
 
 /*******************************************************************************
+ * \brief Returns the thread-local library state, allocating missing slots.
+ ******************************************************************************/
+static grid_library_globals *grid_library_get_thread_globals(void) {
+  const int ithread = omp_get_thread_num();
+  if (ithread < 0 || ithread >= max_threads) {
+    printf("Error: Grid library OpenMP thread index %i exceeds allocation %i.\n",
+           ithread, max_threads);
+    abort();
+  }
+  if (per_thread_globals[ithread] == NULL) {
+#pragma omp critical(grid_library_thread_globals)
+    {
+      if (per_thread_globals[ithread] == NULL) {
+        per_thread_globals[ithread] = malloc(sizeof(grid_library_globals));
+        assert(per_thread_globals[ithread] != NULL);
+        memset(per_thread_globals[ithread], 0, sizeof(grid_library_globals));
+      }
+    }
+  }
+  return per_thread_globals[ithread];
+}
+
+/*******************************************************************************
  * \brief Initializes the grid library.
  * \author Ole Schuett
  ******************************************************************************/
@@ -116,9 +139,7 @@ void grid_library_finalize(void) {
  * \author Ole Schuett
  ******************************************************************************/
 grid_sphere_cache *grid_library_get_sphere_cache(void) {
-  const int ithread = omp_get_thread_num();
-  assert(ithread < max_threads);
-  return &per_thread_globals[ithread]->sphere_cache;
+  return &grid_library_get_thread_globals()->sphere_cache;
 }
 
 /*******************************************************************************
@@ -151,9 +172,9 @@ void grid_library_counter_add(const int lp, const enum grid_backend backend,
   assert(back < GRID_NBACKENDS);
   const int idx = back * GRID_NKERNELS * GRID_MAX_LP + kernel * GRID_MAX_LP +
                   imin(lp, GRID_MAX_LP - 1);
-  const int ithread = omp_get_thread_num();
-  assert(ithread < max_threads);
-  per_thread_globals[ithread]->counters[idx] += increment;
+  grid_library_globals *globals = grid_library_get_thread_globals();
+#pragma omp atomic update
+  globals->counters[idx] += increment;
 }
 
 /*******************************************************************************
