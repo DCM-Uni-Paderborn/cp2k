@@ -5207,7 +5207,7 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curv_max = 0.040_dp, &
                                                             projector_weight = 0.60_dp
 
-      REAL(KIND=dp)                                      :: active_inert, err, full_active, &
+      REAL(KIND=dp)                                      :: active_inert, diag_delta_ratio, err, full_active, &
                                                             half_active, old_active_inert, &
                                                             reversed, zero_weight
 
@@ -5220,20 +5220,21 @@ CONTAINS
                                              curv_max, curv_max)
       zero_weight = dense_pair_projector_weight(projector_weight, curv_max, 0.0_dp, curv_max)
       old_active_inert = projector_weight
+      diag_delta_ratio = active_inert/MAX(old_active_inert, EPSILON(old_active_inert))
 
       err = ABS(full_active - projector_weight)
       err = MAX(err, ABS(half_active - 0.25_dp*projector_weight))
       err = MAX(err, ABS(active_inert - reversed), ABS(zero_weight))
 
-      IF (err > tol .OR. active_inert >= 0.05_dp*old_active_inert) THEN
+      IF (err > tol .OR. diag_delta_ratio >= 0.05_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/full/half/active-inert/zero", err, full_active, half_active, &
-            active_inert, zero_weight
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/half/active-inert/zero/diagratio", err, full_active, half_active, &
+            active_inert, zero_weight, diag_delta_ratio
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/full/half/active-inert/zero", err, full_active, half_active, &
-            active_inert, zero_weight
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/half/active-inert/zero/diagratio", err, full_active, half_active, &
+            active_inert, zero_weight, diag_delta_ratio
       END IF
 
    END SUBROUTINE check_projector_active_rotation_pair_weight
