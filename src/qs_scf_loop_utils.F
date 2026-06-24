@@ -6307,8 +6307,10 @@ CONTAINS
                                                             response_density_plateau_exact, &
                                                             response_exact_physical, response_exact_raw, response_occ, &
                                                             projector_physical_direct_base_delta, &
+                                                            projector_physical_direct_curv_evec, &
                                                             projector_physical_direct_curv_vec, &
                                                             projector_physical_direct_delta, response_occ_physical, &
+                                                            projector_physical_direct_schur_evec, &
                                                             projector_physical_direct_schur_mat, &
                                                             projector_physical_direct_schur_vec, &
                                                             response_physical_model, &
@@ -6512,8 +6514,10 @@ CONTAINS
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    projector_physical_direct_base_delta(nrot, nrot), &
+                   projector_physical_direct_curv_evec(nrot, nrot), &
                    projector_physical_direct_curv_vec(nrot, nrot), &
                    projector_physical_direct_delta(nrot, nrot), rot_hessian_projector(nrot, nrot), &
+                   projector_physical_direct_schur_evec(nrot, nrot), &
                    projector_physical_direct_schur_mat(nrot, nrot), &
                    projector_physical_direct_schur_vec(nrot, nrot), &
                    rot_hessian_projector_physical(nrot, nrot), &
@@ -6628,9 +6632,11 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_plateau(:, :) = 0.0_dp
          rot_hessian_projector_physical_offdiag_plateau_active(:, :) = 0.0_dp
          projector_physical_direct_base_delta(:, :) = 0.0_dp
+         projector_physical_direct_curv_evec(:, :) = 0.0_dp
          projector_physical_direct_curv_vec(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
          projector_physical_direct_schur_mat(:, :) = 0.0_dp
+         projector_physical_direct_schur_evec(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = rotation_curvature_floor
          row_floor_shift(:) = 0.0_dp
@@ -10096,10 +10102,10 @@ CONTAINS
                                        END IF
                                        IF (logger%iter_info%print_level >= high_print_level .OR. &
                                            projector_physical_direct_spectral_enabled) THEN
-                                          projector_physical_direct_curv_vec(:, :) = &
+                                          projector_physical_direct_curv_evec(:, :) = &
                                              0.5_dp*(projector_physical_direct_delta(:, :) + &
                                                      TRANSPOSE(projector_physical_direct_delta(:, :)))
-                                          CALL diamat_all(projector_physical_direct_curv_vec, &
+                                          CALL diamat_all(projector_physical_direct_curv_evec, &
                                                           projector_physical_direct_curv_eval)
                                           projector_physical_direct_curv_eval_min = &
                                              MINVAL(projector_physical_direct_curv_eval)
@@ -10174,9 +10180,9 @@ CONTAINS
                                           projector_physical_direct_schur_mat(:, :)
                                        IF (logger%iter_info%print_level >= high_print_level .OR. &
                                            projector_physical_direct_spectral_enabled) THEN
-                                          projector_physical_direct_schur_vec(:, :) = &
+                                          projector_physical_direct_schur_evec(:, :) = &
                                              projector_physical_direct_schur_mat(:, :)
-                                          CALL diamat_all(projector_physical_direct_schur_vec, &
+                                          CALL diamat_all(projector_physical_direct_schur_evec, &
                                                           projector_physical_direct_schur_eval)
                                           projector_physical_direct_schur_eval_min = &
                                              MINVAL(projector_physical_direct_schur_eval)
@@ -10228,10 +10234,10 @@ CONTAINS
                                              rhs(:) = 0.0_dp
                                              DO r = 1, nrot
                                                 IF (projector_physical_direct_schur_eval(r) <= row_floor) CYCLE
-                                                rx_shift = DOT_PRODUCT(projector_physical_direct_schur_vec(:, r), rtd)
+                                                rx_shift = DOT_PRODUCT(projector_physical_direct_schur_evec(:, r), rtd)
                                                 rhs(:) = rhs(:) + &
                                                    (rx_shift/projector_physical_direct_schur_eval(r))* &
-                                                   projector_physical_direct_schur_vec(:, r)
+                                                   projector_physical_direct_schur_evec(:, r)
                                              END DO
                                              projector_physical_direct_spectral_dot = DOT_PRODUCT(rtd, rhs)
                                              projector_physical_direct_spectral_norm = DOT_PRODUCT(rhs, rhs)
@@ -10338,7 +10344,7 @@ CONTAINS
                                                                      projector_physical_direct_sol)
                                              DO r = 1, nrot
                                                 projected_term = &
-                                                   DOT_PRODUCT(projector_physical_direct_curv_vec(:, r), &
+                                                   DOT_PRODUCT(projector_physical_direct_curv_evec(:, r), &
                                                                projector_physical_direct_sol)
                                                 diag_shift = projected_term*projected_term
                                                 IF (projector_physical_direct_curv_eval(r) < 0.0_dp) THEN
@@ -11636,7 +11642,7 @@ CONTAINS
                                               EPSILON(projector_physical_direct_metric_norm_rotation)) THEN
                                              projector_physical_direct_soft_cut = &
                                                 projector_physical_direct_metric_norm_ratio
-                                             rhs(:) = MATMUL(TRANSPOSE(projector_physical_direct_schur_vec), &
+                                             rhs(:) = MATMUL(TRANSPOSE(projector_physical_direct_schur_evec), &
                                                              projector_physical_direct_sol)
                                              projector_physical_direct_soft_norm_fraction = 0.0_dp
                                              projector_physical_direct_soft_metric_fraction = 0.0_dp
@@ -14332,8 +14338,8 @@ CONTAINS
                         END IF
                         schur_diag_min = MIN(schur_diag_min, schur(r, r))
                      END DO
-                     projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
-                     CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
+                     projector_physical_direct_schur_evec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                     CALL diamat_all(projector_physical_direct_schur_evec, projector_physical_direct_schur_eval)
                      projector_physical_direct_schur_eval_min = MINVAL(projector_physical_direct_schur_eval)
                      projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                      DO r = 1, nrot
@@ -14372,7 +14378,7 @@ CONTAINS
                         projector_physical_direct_metric_norm_energy = &
                            MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                         projector_physical_direct_metric_norm_rotation = &
-                           kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                           kpoint_ot_modal_abs_quad(projector_physical_direct_schur_evec, &
                                                     projector_physical_direct_schur_eval, sol)
                         projector_physical_direct_metric_normp = &
                            projector_physical_direct_metric_norm_energy + &
@@ -14481,8 +14487,8 @@ CONTAINS
                         END IF
                         schur_diag_min = MIN(schur_diag_min, schur(r, r))
                      END DO
-                     projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
-                     CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
+                     projector_physical_direct_schur_evec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                     CALL diamat_all(projector_physical_direct_schur_evec, projector_physical_direct_schur_eval)
                      projector_physical_direct_schur_eval_min = MINVAL(projector_physical_direct_schur_eval)
                      projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                      DO r = 1, nrot
@@ -14521,7 +14527,7 @@ CONTAINS
                         projector_physical_direct_metric_norm_energy = &
                            MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                         projector_physical_direct_metric_norm_rotation = &
-                           kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                           kpoint_ot_modal_abs_quad(projector_physical_direct_schur_evec, &
                                                     projector_physical_direct_schur_eval, sol)
                         projector_physical_direct_metric_normp = &
                            projector_physical_direct_metric_norm_energy + &
@@ -14637,8 +14643,8 @@ CONTAINS
                            END IF
                            schur_diag_min = MIN(schur_diag_min, schur(r, r))
                         END DO
-                        projector_physical_direct_schur_vec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
-                        CALL diamat_all(projector_physical_direct_schur_vec, projector_physical_direct_schur_eval)
+                        projector_physical_direct_schur_evec(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                        CALL diamat_all(projector_physical_direct_schur_evec, projector_physical_direct_schur_eval)
                         projector_physical_direct_schur_eval_min = MINVAL(projector_physical_direct_schur_eval)
                         projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                         DO r = 1, nrot
@@ -14679,7 +14685,7 @@ CONTAINS
                            projector_physical_direct_metric_norm_energy = &
                               MAX(0.0_dp, projector_physical_direct_metric_norm_energy)
                            projector_physical_direct_metric_norm_rotation = &
-                              kpoint_ot_modal_abs_quad(projector_physical_direct_schur_vec, &
+                              kpoint_ot_modal_abs_quad(projector_physical_direct_schur_evec, &
                                                        projector_physical_direct_schur_eval, sol)
                            projector_physical_direct_metric_normp = &
                               projector_physical_direct_metric_norm_energy + &
@@ -14907,10 +14913,12 @@ CONTAINS
                      response_density_plateau, response_density_plateau_exact, &
                      response_exact, response_exact_physical, response_exact_raw, &
                      response_occ, response_occ_physical, response_physical_model, response_split, rot_hessian, &
-                     projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
+                     projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
+                     projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
                      rot_hessian_coupled, rot_hessian_projector, &
-                     projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
+                     projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
+                     projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
                      rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
                      rot_hessian_projector_physical_offdiag_active, &
