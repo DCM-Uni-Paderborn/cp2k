@@ -8494,7 +8494,9 @@ CONTAINS
          END IF
          IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
             step_gauge_quality = &
-               kpoint_ot_schur_step_gauge_quality(local_ot_env(1)%schur_step_gauge_ratio_ema, &
+               kpoint_ot_schur_step_gauge_quality(local_ot_env(1)%schur_step_gauge_ratio, &
+                                                  local_ot_env(1)%schur_step_gauge_ratio_ema, &
+                                                  local_ot_env(1)%schur_step_gauge_residual_quality, &
                                                   local_ot_env(1)%schur_step_gauge_residual_quality_ema, &
                                                   local_ot_env(1)%schur_step_gauge_quality_samples)
          END IF
@@ -15741,24 +15743,30 @@ CONTAINS
       END FUNCTION kpoint_ot_schur_metric_trust_quality
 
 ! **************************************************************************************************
-!> \brief tail quality from accepted gauge-like rotation content
-!> \param gauge_ratio_ema accepted inactive gauge/gap step-norm ratio
-!> \param residual_quality_ema accepted residual-drop quality for those steps
+!> \brief shadow tail quality from accepted gauge-like rotation content
+!> \param gauge_ratio last accepted inactive gauge/gap step-norm ratio
+!> \param gauge_ratio_ema smoothed inactive gauge/gap step-norm ratio
+!> \param residual_quality last accepted residual-drop quality for those steps
+!> \param residual_quality_ema smoothed residual-drop quality for those steps
 !> \param samples number of accepted samples in the gauge/gap history
-!> \return conservative quality factor for coupled tail candidate selection
+!> \return conservative shadow quality for future coupled tail candidate selection
 ! **************************************************************************************************
-      FUNCTION kpoint_ot_schur_step_gauge_quality(gauge_ratio_ema, residual_quality_ema, &
-                                                  samples) RESULT(quality)
-      REAL(KIND=dp), INTENT(IN)                         :: gauge_ratio_ema, residual_quality_ema
+      FUNCTION kpoint_ot_schur_step_gauge_quality(gauge_ratio, gauge_ratio_ema, residual_quality, &
+                                                  residual_quality_ema, samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: gauge_ratio, gauge_ratio_ema, &
+                                                            residual_quality, residual_quality_ema
       INTEGER, INTENT(IN)                               :: samples
       REAL(KIND=dp)                                     :: gauge_weight, quality, residual_weight
 
          quality = 1.0_dp
          IF (samples < ot_kp_schur_calibration_min_samples) RETURN
-         IF (gauge_ratio_ema <= 1.5_dp .OR. residual_quality_ema >= 0.25_dp) RETURN
+         IF (MIN(gauge_ratio, gauge_ratio_ema) <= 1.5_dp .OR. &
+             MAX(residual_quality, residual_quality_ema) >= 0.25_dp) RETURN
 
-         gauge_weight = MIN(1.0_dp, MAX(0.0_dp, (gauge_ratio_ema - 1.5_dp)/6.5_dp))
-         residual_weight = MIN(1.0_dp, MAX(0.0_dp, (0.25_dp - residual_quality_ema)/0.25_dp))
+         gauge_weight = MIN(1.0_dp, &
+                            MAX(0.0_dp, (MIN(gauge_ratio, gauge_ratio_ema) - 1.5_dp)/6.5_dp))
+         residual_weight = MIN(1.0_dp, &
+                               MAX(0.0_dp, (0.25_dp - MAX(residual_quality, residual_quality_ema))/0.25_dp))
          quality = 1.0_dp - 0.20_dp*gauge_weight*residual_weight
          quality = MIN(1.0_dp, MAX(ot_kp_schur_calibrated_quality_min_ratio, quality))
 
