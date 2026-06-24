@@ -1,10 +1,10 @@
 ! Slow/manual companion to the cheap ADDED_MOS AUTO k-point OT smoke test.
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
-! Local 2026-06 HIGH reference after the active Direct residual filter:
+! Local 2026-06 HIGH reference after the split residual-competition guard:
 ! initial AUTO buffer 4, grow to 8 and 16, then final restart convergence
-! in 28 OT steps.  Total scf_env_do_scf_inner_loop calls: 343.
-! E_total = Mermin = -8.14585274158708 Ha, with no first/last-band warnings
+! in 21 OT steps.  Total OT lines across AUTO rebuilds: 334.
+! E_total = Mermin = -8.14585275862888 Ha, with no first/last-band warnings
 ! and no AUTO-exhausted warning.
 &GLOBAL
   PRINT_LEVEL HIGH
