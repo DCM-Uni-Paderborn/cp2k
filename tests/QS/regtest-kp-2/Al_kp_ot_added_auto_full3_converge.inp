@@ -4,10 +4,11 @@
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
 ! Local 2026-06 HIGH reference after the k-point AUTO post-resize convergence
-! gate: AUTO grows to 8 and 16, then converges in 112 SCF steps.  E_total =
-! Mermin = -8.15998707964612 Ha, with no first/last-band warnings and no
-! AUTO-exhausted warning.  The gauge-free eigenvalue-density response remains
-! active in the tail, matching the symmetry-reduced companion within 1E-7 Ha.
+! gate: AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path.
+! E_total = Mermin = -8.1599870796 Ha, with no first/last-band warnings and
+! no AUTO-exhausted warning.  The gauge-free eigenvalue-density response
+! remains active in the tail, matching the symmetry-reduced companion within
+! 1E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge

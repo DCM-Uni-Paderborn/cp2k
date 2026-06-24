@@ -187,6 +187,7 @@ MODULE qs_scf
                                               qs_scf_check_outer_exit,&
                                               qs_scf_density_mixing,&
                                               qs_scf_inner_finalize,&
+                                              qs_scf_kp_added_mos_auto_post_resize_steps,&
                                               qs_scf_new_mos,&
                                               qs_scf_new_mos_kp,&
                                               qs_scf_rho_update,&
@@ -218,7 +219,6 @@ MODULE qs_scf
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf'
-   INTEGER, PARAMETER, PRIVATE          :: kp_added_mos_auto_post_resize_steps = 20
    LOGICAL, PRIVATE                     :: reuse_precond = .FALSE.
    LOGICAL, PRIVATE                     :: used_history = .FALSE.
 
@@ -584,7 +584,7 @@ CONTAINS
                iter_count = MAX(0, iter_count - 1)
                IF (.NOT. just_energy) scf_env%iter_count = MAX(0, scf_env%iter_count - 1)
                IF (do_kpoints) THEN
-                  post_added_mos_auto_resize_steps = kp_added_mos_auto_post_resize_steps
+                  post_added_mos_auto_resize_steps = qs_scf_kp_added_mos_auto_post_resize_steps()
                ELSE
                   post_added_mos_auto_resize_steps = 1
                END IF

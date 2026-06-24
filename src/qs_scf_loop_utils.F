@@ -174,9 +174,22 @@ MODULE qs_scf_loop_utils
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
              qs_scf_density_mixing, qs_scf_check_inner_exit, &
-             qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update
+             qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
+             qs_scf_kp_added_mos_auto_post_resize_steps
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief post-resize convergence gate length for k-point ADDED_MOS AUTO
+!> \return number of SCF iterations kept open after a k-point AUTO resize
+! **************************************************************************************************
+   FUNCTION qs_scf_kp_added_mos_auto_post_resize_steps() RESULT(nsteps)
+
+      INTEGER                                            :: nsteps
+
+      nsteps = ot_kp_added_mos_auto_tail_probe_steps
+
+   END FUNCTION qs_scf_kp_added_mos_auto_post_resize_steps
 
 ! **************************************************************************************************
 !> \brief computes properties for a given hamiltonian using the current wfn

@@ -3,10 +3,10 @@
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-06 HIGH reference after the k-point AUTO post-resize convergence
-! gate: AUTO grows to 8 and 16, then converges in 100 SCF steps.  E_total =
-! Mermin = -8.15998698905080 Ha, with no first/last-band warnings and no
-! AUTO-exhausted warning.  The gauge-free eigenvalue-density response remains
-! active in the tail, matching the full-grid companion within 1E-7 Ha.
+! gate: AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path.
+! E_total = Mermin = -8.1599869891 Ha, with no first/last-band warnings and
+! no AUTO-exhausted warning.  The gauge-free eigenvalue-density response
+! remains active in the tail, matching the full-grid companion within 1E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
