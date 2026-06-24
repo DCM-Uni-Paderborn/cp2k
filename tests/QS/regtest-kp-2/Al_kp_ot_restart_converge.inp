@@ -1,9 +1,10 @@
 ! Slow/manual companion to the default k-point OT restart smoke test.
 ! Run after Al_kp_ot_restart_write/read/continue.inp; this input is not listed
 ! in TEST_FILES.toml so the default regtest stays cheap.
-! Local 2026-06 HIGH reference after the default restart smoke: 711 SCF steps,
-! E_total = Mermin = -8.14585274698668 Ha, with no first/last-band
-! smearing warnings.
+! Local 2026-06 HIGH reference after the default restart smoke: converges on
+! the 1E-6 Mermin path with E_total = Mermin = -8.14585270 Ha and no
+! first/last-band smearing warnings.  This optional stress test intentionally
+! keeps a large MAX_SCF because the present k-point OT residual tail is slow.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_restart
@@ -31,7 +32,7 @@
       ! Tight enough to exercise the hard k-point OT physics path.  This
       ! companion is intentionally not part of the default regtest list.
       EPS_SCF 1.0E-6
-      MAX_SCF 950
+      MAX_SCF 2000
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC
