@@ -210,6 +210,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_response_blend("complex projector mixed Direct response blend", &
                                                     5.0E-14_dp, nfail)
+   CALL check_projector_direct_floor_density_schur( &
+      "complex projector Direct floor-density Schur blend", 5.0E-13_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
                                                   5.0E-12_dp, nfail)
    CALL check_projector_modal_response_negative_floor( &
@@ -7942,6 +7944,94 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_mixed_direct_response_blend
+
+! **************************************************************************************************
+!> \brief Check that the floor-density Direct blend is Schur/RHS consistent.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_floor_density_schur(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
+
+      INTEGER                                            :: r, s
+      REAL(KIND=dp)                                      :: err, rhs_err, w
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_direct, b_floor, b_phys, &
+                                                            r_density, r_direct, r_floor, r_phys
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_direct, rhs_expected
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_metric, schur_direct, schur_expected
+
+      w = 0.35_dp
+      grad_e(:) = [0.11_dp, -0.07_dp, 0.05_dp, -0.03_dp]
+      grad_rot(:) = [0.21_dp, -0.18_dp, 0.09_dp]
+      rot_metric(:, :) = RESHAPE([ &
+                                  0.91_dp, 0.05_dp, -0.04_dp, &
+                                  0.05_dp, 0.76_dp, 0.03_dp, &
+                                  -0.04_dp, 0.03_dp, 0.69_dp], [nrot, nrot])
+      b_phys(:, :) = RESHAPE([ &
+                              0.13_dp, -0.04_dp, 0.02_dp, -0.01_dp, &
+                              -0.08_dp, 0.12_dp, -0.03_dp, 0.05_dp, &
+                              0.04_dp, -0.06_dp, 0.09_dp, -0.02_dp], [ne, nrot])
+      r_phys(:, :) = RESHAPE([ &
+                              0.17_dp, -0.05_dp, 0.03_dp, -0.02_dp, &
+                              -0.06_dp, 0.10_dp, -0.04_dp, 0.07_dp, &
+                              0.02_dp, -0.08_dp, 0.11_dp, -0.01_dp], [ne, nrot])
+      b_density(:, :) = RESHAPE([ &
+                                 -0.03_dp, 0.07_dp, -0.01_dp, 0.04_dp, &
+                                 0.05_dp, -0.02_dp, 0.08_dp, -0.03_dp, &
+                                 -0.04_dp, 0.03_dp, -0.07_dp, 0.02_dp], [ne, nrot])
+      r_density(:, :) = RESHAPE([ &
+                                 -0.02_dp, 0.05_dp, -0.03_dp, 0.06_dp, &
+                                 0.07_dp, -0.01_dp, 0.04_dp, -0.05_dp, &
+                                 -0.01_dp, 0.06_dp, -0.08_dp, 0.03_dp], [ne, nrot])
+      b_floor(:, :) = RESHAPE([ &
+                               -0.01_dp, 0.03_dp, 0.02_dp, -0.02_dp, &
+                               0.04_dp, -0.04_dp, 0.05_dp, -0.01_dp, &
+                               -0.03_dp, 0.02_dp, -0.04_dp, 0.04_dp], [ne, nrot])
+      r_floor(:, :) = RESHAPE([ &
+                               0.01_dp, 0.02_dp, -0.01_dp, -0.03_dp, &
+                               0.03_dp, -0.05_dp, 0.02_dp, 0.01_dp, &
+                               -0.02_dp, 0.01_dp, -0.03_dp, 0.05_dp], [ne, nrot])
+
+      b_direct(:, :) = (1.0_dp - w)*b_density(:, :) + w*b_floor(:, :)
+      r_direct(:, :) = (1.0_dp - w)*r_density(:, :) + w*r_floor(:, :)
+
+      DO r = 1, nrot
+         rhs_direct(r) = grad_rot(r) + DOT_PRODUCT(r_phys(:, r), grad_e) + &
+                         DOT_PRODUCT(r_direct(:, r), grad_e)
+         rhs_expected(r) = grad_rot(r) + DOT_PRODUCT(r_phys(:, r) + r_direct(:, r), grad_e)
+      END DO
+      schur_direct(:, :) = rot_metric(:, :)
+      schur_expected(:, :) = rot_metric(:, :)
+      DO s = 1, nrot
+         DO r = 1, nrot
+            schur_direct(r, s) = schur_direct(r, s) - 0.5_dp* &
+               (DOT_PRODUCT(b_phys(:, r), r_phys(:, s)) + DOT_PRODUCT(b_phys(:, s), r_phys(:, r)))
+            schur_direct(r, s) = schur_direct(r, s) - 0.5_dp* &
+               (DOT_PRODUCT(b_phys(:, r), r_direct(:, s)) + DOT_PRODUCT(b_direct(:, r), r_phys(:, s)) + &
+                DOT_PRODUCT(b_direct(:, r), r_direct(:, s)) + DOT_PRODUCT(b_phys(:, s), r_direct(:, r)) + &
+                DOT_PRODUCT(b_direct(:, s), r_phys(:, r)) + DOT_PRODUCT(b_direct(:, s), r_direct(:, r)))
+            schur_expected(r, s) = schur_expected(r, s) - 0.5_dp* &
+               (DOT_PRODUCT(b_phys(:, r) + b_direct(:, r), r_phys(:, s) + r_direct(:, s)) + &
+                DOT_PRODUCT(b_phys(:, s) + b_direct(:, s), r_phys(:, r) + r_direct(:, r)))
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(schur_direct(:, :) - schur_expected(:, :)))
+      rhs_err = MAXVAL(ABS(rhs_direct(:) - rhs_expected(:)))
+      IF (err > tol .OR. rhs_err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with schur/rhs error", err, rhs_err
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with schur/rhs error", err, rhs_err
+      END IF
+
+   END SUBROUTINE check_projector_direct_floor_density_schur
 
 ! **************************************************************************************************
 !> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
