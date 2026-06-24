@@ -172,6 +172,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
+   CALL check_projector_density_audit_trust_quality( &
+      "complex projector density audit trust quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_trace_compensation("complex projector direct trace compensation", &
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_split_history_quality("complex projector trace-split Direct quality", &
@@ -6790,6 +6792,67 @@ CONTAINS
    END SUBROUTINE check_projector_density_global_metric_trust
 
 ! **************************************************************************************************
+!> \brief Check that low-curvature density-audit trust measures consistency, not amplification.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_audit_trust_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: consistent_quality, err, expected_huge_quality, &
+         expected_low_quality, expected_over_quality, huge_quality, inactive_quality, &
+         low_amp_over_quality, low_quality, over_quality, young_quality
+
+      young_quality = dense_density_audit_trust_quality(0.95_dp, 0.95_dp, &
+                                                        10.0_dp, 10.0_dp, 7)
+      inactive_quality = dense_density_audit_trust_quality(0.20_dp, 0.20_dp, &
+                                                           10.0_dp, 10.0_dp, 16)
+      consistent_quality = dense_density_audit_trust_quality(0.80_dp, 0.80_dp, &
+                                                             8.0_dp, 8.0_dp, 16)
+      low_quality = dense_density_audit_trust_quality(0.80_dp, 0.16_dp, &
+                                                      8.0_dp, 1.60_dp, 16)
+      over_quality = dense_density_audit_trust_quality(0.999_dp, 52.947_dp, &
+                                                       53.0_dp, 2809.0_dp, 32)
+      low_amp_over_quality = dense_density_audit_trust_quality(0.999_dp, 52.947_dp, &
+                                                               0.112_dp, 4.704_dp, 32)
+      huge_quality = dense_density_audit_trust_quality(1.0_dp, 1.0E4_dp, &
+                                                       1.0E6_dp, 1.0E12_dp, 32)
+
+      expected_low_quality = 1.0_dp - ((0.80_dp - 0.25_dp)/0.75_dp)* &
+                             (LOG(8.0_dp)/LOG(1.0E6_dp))*(1.0_dp - 0.20_dp)
+      expected_over_quality = 1.0_dp - ((0.999_dp - 0.25_dp)/0.75_dp)* &
+                              (LOG(53.0_dp)/LOG(1.0E6_dp))*(1.0_dp - 0.10_dp)
+      expected_huge_quality = 0.10_dp
+
+      err = ABS(young_quality - 1.0_dp)
+      err = MAX(err, ABS(inactive_quality - 1.0_dp))
+      err = MAX(err, ABS(consistent_quality - 1.0_dp))
+      err = MAX(err, ABS(low_quality - expected_low_quality))
+      err = MAX(err, ABS(over_quality - expected_over_quality))
+      err = MAX(err, ABS(low_amp_over_quality - expected_over_quality))
+      err = MAX(err, ABS(huge_quality - expected_huge_quality))
+
+      IF (err > tol .OR. low_quality >= consistent_quality .OR. &
+          over_quality >= low_quality .OR. &
+          ABS(low_amp_over_quality - over_quality) > tol .OR. huge_quality >= over_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/inactive/consistent/low/over/lowamp/huge", &
+            err, young_quality, inactive_quality, consistent_quality, low_quality, &
+            over_quality, low_amp_over_quality, huge_quality
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/inactive/consistent/low/over/lowamp/huge", &
+            err, young_quality, inactive_quality, consistent_quality, low_quality, &
+            over_quality, low_amp_over_quality, huge_quality
+      END IF
+
+   END SUBROUTINE check_projector_density_audit_trust_quality
+
+! **************************************************************************************************
 !> \brief Check that Direct trace compensation follows the selected delta model.
 !> \param label ...
 !> \param tol ...
@@ -8689,6 +8752,64 @@ CONTAINS
                          MAX(1.0_dp, 1.0_dp + diag_ratio)
 
    END FUNCTION dense_projector_coupled_tail_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of accepted-drop trust for low-curvature density response.
+!> \param lowcurv_ema ...
+!> \param lowcurv_quality_ema ...
+!> \param amplification_ema ...
+!> \param amplification_quality_ema ...
+!> \param samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_audit_trust_quality(lowcurv_ema, lowcurv_quality_ema, &
+                                              amplification_ema, amplification_quality_ema, &
+                                              samples) RESULT(trust_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: lowcurv_ema, lowcurv_quality_ema, &
+                                                            amplification_ema, amplification_quality_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: trust_quality
+
+      REAL(KIND=dp), PARAMETER                           :: min_quality = 0.10_dp
+      INTEGER, PARAMETER                                 :: min_samples = 8
+      REAL(KIND=dp)                                      :: amplification_quality, amplification_weight, &
+                                                            component_quality, lowcurv_quality, &
+                                                            lowcurv_weight, raw_amplification_quality, &
+                                                            raw_lowcurv_quality
+
+      trust_quality = 1.0_dp
+      IF (samples < min_samples) RETURN
+      IF (lowcurv_ema <= 0.25_dp) RETURN
+
+      lowcurv_quality = 0.0_dp
+      amplification_quality = 0.0_dp
+      raw_lowcurv_quality = 0.0_dp
+      raw_amplification_quality = 0.0_dp
+      IF (ABS(lowcurv_ema) > EPSILON(lowcurv_ema)) &
+         raw_lowcurv_quality = ABS(lowcurv_quality_ema)/ABS(lowcurv_ema)
+      IF (ABS(amplification_ema) > EPSILON(amplification_ema)) &
+         raw_amplification_quality = ABS(amplification_quality_ema)/ABS(amplification_ema)
+      IF (raw_lowcurv_quality > EPSILON(1.0_dp)) &
+         lowcurv_quality = MIN(raw_lowcurv_quality, 1.0_dp/raw_lowcurv_quality)
+      IF (raw_amplification_quality > EPSILON(1.0_dp)) &
+         amplification_quality = MIN(raw_amplification_quality, 1.0_dp/raw_amplification_quality)
+      component_quality = lowcurv_quality
+      IF (amplification_quality > EPSILON(amplification_quality)) &
+         component_quality = MIN(component_quality, amplification_quality)
+      IF (component_quality <= EPSILON(component_quality)) RETURN
+
+      component_quality = MIN(1.0_dp, MAX(min_quality, component_quality))
+      lowcurv_weight = MIN(1.0_dp, MAX(0.0_dp, (lowcurv_ema - 0.25_dp)/0.75_dp))
+      amplification_weight = MIN(1.0_dp, MAX(0.0_dp, LOG(MAX(1.0_dp, amplification_ema))/ &
+                                             LOG(1.0E6_dp)))
+      amplification_weight = MAX(amplification_weight, &
+                                 MIN(1.0_dp, MAX(0.0_dp, &
+                                    LOG(MAX(1.0_dp, raw_lowcurv_quality, &
+                                            raw_amplification_quality))/LOG(1.0E6_dp))))
+      trust_quality = 1.0_dp - lowcurv_weight*amplification_weight*(1.0_dp - component_quality)
+      trust_quality = MIN(1.0_dp, MAX(min_quality, trust_quality))
+
+   END FUNCTION dense_density_audit_trust_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct trace model-gap term.

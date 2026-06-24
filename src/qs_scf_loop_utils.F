@@ -15898,19 +15898,29 @@ CONTAINS
       INTEGER, INTENT(IN)                               :: samples
       REAL(KIND=dp)                                     :: amplification_quality, amplification_weight, &
                                                             component_quality, lowcurv_quality, &
-                                                            lowcurv_weight, trust_quality
+                                                            lowcurv_weight, raw_amplification_quality, &
+                                                            raw_lowcurv_quality, trust_quality
 
          trust_quality = 1.0_dp
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
-         IF (lowcurv_ema <= 0.25_dp .OR. amplification_ema <= 1.0_dp) RETURN
+         IF (lowcurv_ema <= 0.25_dp) RETURN
 
          lowcurv_quality = 0.0_dp
          amplification_quality = 0.0_dp
+         raw_lowcurv_quality = 0.0_dp
+         raw_amplification_quality = 0.0_dp
          IF (ABS(lowcurv_ema) > EPSILON(lowcurv_ema)) &
-            lowcurv_quality = ABS(lowcurv_quality_ema)/ABS(lowcurv_ema)
+            raw_lowcurv_quality = ABS(lowcurv_quality_ema)/ABS(lowcurv_ema)
          IF (ABS(amplification_ema) > EPSILON(amplification_ema)) &
-            amplification_quality = ABS(amplification_quality_ema)/ABS(amplification_ema)
-         component_quality = MIN(lowcurv_quality, amplification_quality)
+            raw_amplification_quality = ABS(amplification_quality_ema)/ABS(amplification_ema)
+         IF (raw_lowcurv_quality > EPSILON(1.0_dp)) &
+            lowcurv_quality = MIN(raw_lowcurv_quality, 1.0_dp/raw_lowcurv_quality)
+         IF (raw_amplification_quality > EPSILON(1.0_dp)) &
+            amplification_quality = MIN(raw_amplification_quality, &
+                                        1.0_dp/raw_amplification_quality)
+         component_quality = lowcurv_quality
+         IF (amplification_quality > EPSILON(amplification_quality)) &
+            component_quality = MIN(component_quality, amplification_quality)
          IF (component_quality <= EPSILON(component_quality)) RETURN
 
          component_quality = MIN(1.0_dp, MAX(ot_kp_schur_projector_response_quality_min_ratio, &
@@ -15918,6 +15928,10 @@ CONTAINS
          lowcurv_weight = MIN(1.0_dp, MAX(0.0_dp, (lowcurv_ema - 0.25_dp)/0.75_dp))
          amplification_weight = MIN(1.0_dp, MAX(0.0_dp, LOG(MAX(1.0_dp, amplification_ema))/ &
                                                 LOG(1.0E6_dp)))
+         amplification_weight = MAX(amplification_weight, &
+                                    MIN(1.0_dp, MAX(0.0_dp, &
+                                       LOG(MAX(1.0_dp, raw_lowcurv_quality, &
+                                               raw_amplification_quality))/LOG(1.0E6_dp))))
 
          trust_quality = 1.0_dp - lowcurv_weight*amplification_weight*(1.0_dp - component_quality)
          trust_quality = MIN(1.0_dp, MAX(ot_kp_schur_projector_response_quality_min_ratio, trust_quality))
