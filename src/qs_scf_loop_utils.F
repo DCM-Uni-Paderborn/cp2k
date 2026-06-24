@@ -6199,6 +6199,12 @@ CONTAINS
          plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
          plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
          plateau_gap_mode_step_negative_fraction
+      REAL(KIND=dp) :: rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
+         rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, &
+         rot_grad_fermi_weight, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
+         rot_grad_gauge_im, rot_grad_gauge_re, rot_grad_gauge_weight, &
+         rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
+         rot_grad_pair_fraction, rot_grad_rest_fraction, rot_grad_sq
       REAL(KIND=dp) :: inactive_offdiag_mode_abs_quad, inactive_offdiag_mode_eval_max, &
          inactive_offdiag_mode_eval_min, inactive_offdiag_mode_negative_fraction, &
          inactive_offdiag_mode_negative_quad, inactive_offdiag_mode_positive_quad, &
@@ -6250,7 +6256,8 @@ CONTAINS
                                                             projector_response_rx_e, projector_response_sol, &
                                                             projector_response_z_e, rot_floor, row_floor_shift, rtd, &
                                                             rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
-                                                            var_projector_active_weight, var_projector_weight, z_e, &
+                                                            var_occ_gap_weight, var_projector_active_weight, &
+                                                            var_projector_weight, z_e, &
                                                             z_density_plateau_trial, &
                                                             z_density_full_audit_trial, &
                                                             z_density_full_global_trial, &
@@ -6457,7 +6464,7 @@ CONTAINS
                                        projector_physical_direct_spectral_sol(nrot), &
                                        projector_offdiag_sol(nrot), projector_inactive_offdiag_sol(nrot), &
                                        projector_response_sol(nrot), split_sol(nrot), &
-                               var_projector_active_weight(nrot), &
+                               var_occ_gap_weight(nrot), var_projector_active_weight(nrot), &
                                var_projector_weight(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot))
@@ -6543,6 +6550,7 @@ CONTAINS
             projector_response_rx_e(:) = 0.0_dp
             projector_response_z_e(:) = 0.0_dp
          var_projector_active_weight(:) = 0.0_dp
+         var_occ_gap_weight(:) = 0.0_dp
          var_projector_weight(:) = 0.0_dp
          grad_rot(:) = 0.0_dp
          rhs(:) = 0.0_dp
@@ -7347,6 +7355,10 @@ CONTAINS
                                                                              channel_occ_curv_max)
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
+                     var_occ_gap_weight(ivar) = MIN(1.0_dp, &
+                                                    ABS(trial_occupation(imo, ikpoint, ispin) - &
+                                                        trial_occupation(jmo, ikpoint, ispin))/ &
+                                                    MAX(maxocc, EPSILON(maxocc)))
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
@@ -7360,6 +7372,10 @@ CONTAINS
                      var_ej(ivar) = e_offset(local_channel) + jmo - 1
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
+                     var_occ_gap_weight(ivar) = MIN(1.0_dp, &
+                                                    ABS(trial_occupation(imo, ikpoint, ispin) - &
+                                                        trial_occupation(jmo, ikpoint, ispin))/ &
+                                                    MAX(maxocc, EPSILON(maxocc)))
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
@@ -7385,6 +7401,76 @@ CONTAINS
          END DO
 
             CPASSERT(ivar == nrot)
+            rot_grad_active_re = 0.0_dp
+            rot_grad_active_im = 0.0_dp
+            rot_grad_inactive_re = 0.0_dp
+            rot_grad_inactive_im = 0.0_dp
+            rot_grad_gap_re = 0.0_dp
+            rot_grad_gap_im = 0.0_dp
+            rot_grad_gauge_re = 0.0_dp
+            rot_grad_gauge_im = 0.0_dp
+            rot_grad_active_weight_sum = 0.0_dp
+            rot_grad_inactive_weight_sum = 0.0_dp
+            rot_grad_gap_weight = 0.0_dp
+            rot_grad_gauge_weight = 0.0_dp
+            rot_grad_active_fraction_max = 0.0_dp
+            DO r = 1, nrot
+               rot_grad_pair_fraction = 0.0_dp
+               IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) &
+                  rot_grad_pair_fraction = var_projector_active_weight(r)/var_projector_weight(r)
+               rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
+               rot_grad_rest_fraction = 1.0_dp - rot_grad_pair_fraction
+               rot_grad_fermi_weight = rot_grad_pair_fraction
+               rot_grad_sq = grad_rot(r)*grad_rot(r)
+               rot_grad_gap_weight = rot_grad_gap_weight + rot_grad_rest_fraction*var_occ_gap_weight(r)
+               rot_grad_gauge_weight = rot_grad_gauge_weight + &
+                                       rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))
+               IF (var_kind(r) == 1) THEN
+                  rot_grad_active_re = rot_grad_active_re + rot_grad_pair_fraction*rot_grad_sq
+                  rot_grad_inactive_re = rot_grad_inactive_re + rot_grad_rest_fraction*rot_grad_sq
+                  rot_grad_gap_re = rot_grad_gap_re + rot_grad_rest_fraction*var_occ_gap_weight(r)*rot_grad_sq
+                  rot_grad_gauge_re = rot_grad_gauge_re + &
+                                      rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))*rot_grad_sq
+               ELSE
+                  rot_grad_active_im = rot_grad_active_im + rot_grad_pair_fraction*rot_grad_sq
+                  rot_grad_inactive_im = rot_grad_inactive_im + rot_grad_rest_fraction*rot_grad_sq
+                  rot_grad_gap_im = rot_grad_gap_im + rot_grad_rest_fraction*var_occ_gap_weight(r)*rot_grad_sq
+                  rot_grad_gauge_im = rot_grad_gauge_im + &
+                                      rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))*rot_grad_sq
+               END IF
+               rot_grad_active_weight_sum = rot_grad_active_weight_sum + rot_grad_fermi_weight
+               rot_grad_inactive_weight_sum = rot_grad_inactive_weight_sum + rot_grad_rest_fraction
+               rot_grad_active_fraction_max = MAX(rot_grad_active_fraction_max, rot_grad_pair_fraction)
+            END DO
+            CALL para_env_inter_kp%sum(rot_grad_active_re)
+            CALL para_env_inter_kp%sum(rot_grad_active_im)
+            CALL para_env_inter_kp%sum(rot_grad_inactive_re)
+            CALL para_env_inter_kp%sum(rot_grad_inactive_im)
+            CALL para_env_inter_kp%sum(rot_grad_gap_re)
+            CALL para_env_inter_kp%sum(rot_grad_gap_im)
+            CALL para_env_inter_kp%sum(rot_grad_gauge_re)
+            CALL para_env_inter_kp%sum(rot_grad_gauge_im)
+            CALL para_env_inter_kp%sum(rot_grad_active_weight_sum)
+            CALL para_env_inter_kp%sum(rot_grad_inactive_weight_sum)
+            CALL para_env_inter_kp%sum(rot_grad_gap_weight)
+            CALL para_env_inter_kp%sum(rot_grad_gauge_weight)
+            CALL para_env_inter_kp%max(rot_grad_active_fraction_max)
+            rot_grad_active_fraction_avg = 0.0_dp
+            IF (rot_grad_active_weight_sum + rot_grad_inactive_weight_sum > EPSILON(1.0_dp)) &
+               rot_grad_active_fraction_avg = rot_grad_active_weight_sum/ &
+                  (rot_grad_active_weight_sum + rot_grad_inactive_weight_sum)
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
+                  " OT Schur rotation gradient active audit group re im inactive_re inactive_im favg fmax wact winact:", &
+                  target_group, rot_grad_active_re, rot_grad_active_im, rot_grad_inactive_re, &
+                  rot_grad_inactive_im, rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
+                  rot_grad_active_weight_sum, rot_grad_inactive_weight_sum
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
+                  " OT Schur rotgrad occ audit grp gap_re gap_im gauge_re gauge_im wgap wgauge fermi_re fermi_im:", &
+                  target_group, rot_grad_gap_re, rot_grad_gap_im, rot_grad_gauge_re, &
+                  rot_grad_gauge_im, rot_grad_gap_weight, rot_grad_gauge_weight, &
+                  rot_grad_active_re, rot_grad_active_im
             IF (failed) THEN
                DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
                            z_density_full_audit_trial, &
@@ -7419,7 +7505,7 @@ CONTAINS
                                             projector_physical_direct_sol, &
                                             projector_physical_sol, projector_offdiag_sol, &
                                             projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
-                                    var_projector_active_weight, var_projector_weight)
+                                    var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_density_full, &
                         energy_cross_density_full_audit, energy_cross_density_full_global, &
@@ -14693,7 +14779,7 @@ CONTAINS
                                                   projector_physical_direct_spectral_sol, &
                                                   projector_physical_sol, projector_offdiag_sol, &
                                                   projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
-                                 var_projector_active_weight, var_projector_weight)
+                                 var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, energy_cross_physical, &
                      energy_cross_raw, &
