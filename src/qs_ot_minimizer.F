@@ -48,7 +48,9 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_history_jump_beta = 1.0E1_dp, &
                                         ot_cg_kp_history_spike_old_norm = 1.0E-8_dp, &
                                         ot_cg_kp_history_spike_new_norm = 1.0E-6_dp, &
-                                        ot_cg_kp_history_jump_new_norm = 1.0E-3_dp
+                                        ot_cg_kp_history_jump_new_norm = 1.0E-3_dp, &
+                                        ot_cg_kp_projector_jump_ratio = 8.0E1_dp, &
+                                        ot_cg_kp_projector_jump_new_norm = 1.0E-4_dp
 
 CONTAINS
 !
@@ -1134,7 +1136,8 @@ CONTAINS
                                                             schur_last_flavor
       LOGICAL                                            :: complex_kpoint_history, do_ener, do_ks, &
                                                             history_spike_reset, negative_beta, reset_to_sd, &
-                                                            schur_history_change, schur_history_mixed
+                                                            schur_history_change, schur_history_mixed, &
+                                                            schur_projector_jump_reset
       REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
                                                             gnorm_ratio, &
                                                             gnorm_matrix_im, gnorm_matrix_re, &
@@ -1352,16 +1355,27 @@ CONTAINS
       negative_beta = beta_pr < 0.0_dp
       beta_pr = MAX(beta_pr, 0.0_dp) ! reset to SD
       gnorm_ratio = qs_ot_env(1)%gnorm/MAX(qs_ot_env(1)%gnorm_old, EPSILON(1.0_dp))
+      ! Projector-like Schur flavors can validly alternate in the metallic tail.
+      ! Do not carry a huge CG beta across that local response-model change.
+      schur_projector_jump_reset = complex_kpoint_history .AND. &
+                                   qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+                                   qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+                                   beta_pr > ot_cg_kp_history_jump_beta .AND. &
+                                   qs_ot_env(1)%gnorm > ot_cg_kp_projector_jump_new_norm .AND. &
+                                   gnorm_ratio > ot_cg_kp_projector_jump_ratio .AND. &
+                                   schur_attempt == 3 .AND. schur_last_attempt == 3 .AND. &
+                                   schur_flavor >= 35 .AND. schur_last_flavor >= 35
       history_spike_reset = complex_kpoint_history .AND. &
                             qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                             qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
                             beta_pr > 0.0_dp .AND. &
-                            qs_ot_env(1)%gnorm > ot_cg_kp_history_spike_new_norm .AND. &
-                            ((qs_ot_env(1)%gnorm_old < ot_cg_kp_history_spike_old_norm .AND. &
-                              gnorm_ratio > ot_cg_kp_history_spike_ratio) .OR. &
-                             (beta_pr > ot_cg_kp_history_jump_beta .AND. &
-                              qs_ot_env(1)%gnorm > ot_cg_kp_history_jump_new_norm .AND. &
-                              gnorm_ratio > ot_cg_kp_history_jump_ratio))
+                            (schur_projector_jump_reset .OR. &
+                             (qs_ot_env(1)%gnorm > ot_cg_kp_history_spike_new_norm .AND. &
+                              ((qs_ot_env(1)%gnorm_old < ot_cg_kp_history_spike_old_norm .AND. &
+                                gnorm_ratio > ot_cg_kp_history_spike_ratio) .OR. &
+                               (beta_pr > ot_cg_kp_history_jump_beta .AND. &
+                                qs_ot_env(1)%gnorm > ot_cg_kp_history_jump_new_norm .AND. &
+                                gnorm_ratio > ot_cg_kp_history_jump_ratio))))
       IF (history_spike_reset) THEN
          beta_pr = 0.0_dp
          reset_to_sd = .TRUE.
