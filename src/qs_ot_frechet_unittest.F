@@ -1543,7 +1543,7 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
       INTEGER                                            :: i, ivar, j, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: active_err, err
+      REAL(KIND=dp)                                      :: active_err, active_projector_weight, curv_max, err
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale
       REAL(KIND=dp), DIMENSION(n, n, nkp)                :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, &
                                                             x_re
@@ -1601,6 +1601,7 @@ CONTAINS
 
       occ_curv(:) = [0.31_dp, 0.72_dp, 0.19_dp]
       occ_scale(:) = [1.42_dp, 0.77_dp, 0.31_dp]
+      curv_max = MAXVAL(occ_curv)
       CALL dense_blended_projector_response(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
                                             projector_weight, var_i, var_j, var_kind, basis_response)
       CALL dense_blended_projector_physical_response(x_re(:, :, 1), x_im(:, :, 1), base(:, :, 1), &
@@ -1623,10 +1624,13 @@ CONTAINS
          chc_m(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base(:, :, 1), u))
          CALL dense_spectral_occ_projector_from_chc(chc_p, occ_scale, occ_mat_p)
          CALL dense_spectral_occ_projector_from_chc(chc_m, occ_scale, occ_mat_m)
+         active_projector_weight = dense_pair_projector_weight(projector_weight, &
+                                                               occ_curv(var_i(s)), &
+                                                               occ_curv(var_j(s)), curv_max)
          reference(:, s) = (1.0_dp - projector_weight)*(diag_p(:, 1) - diag_m(:, 1))/(2.0_dp*fd_step) + &
                            projector_weight*(eig_p(:, 1) - eig_m(:, 1))/(2.0_dp*fd_step)
          DO i = 1, n
-            reference(i, s) = reference(i, s) - projector_weight* &
+            reference(i, s) = reference(i, s) - active_projector_weight* &
                               0.5_dp*REAL(occ_mat_p(i, i) - occ_mat_m(i, i), KIND=dp)/ &
                               (2.0_dp*fd_step*occ_curv(i))
          END DO
@@ -1889,11 +1893,13 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc_m, chc_p, evec, occ_mat_m, &
                                                             occ_mat_p, u
       INTEGER                                            :: band, n, s
-      REAL(KIND=dp)                                      :: projector_response, raw_response
+      REAL(KIND=dp)                                      :: active_projector_weight, curv_max, projector_response, &
+                                                            raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals_m, evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: x_m_im, x_m_re, x_p_im, x_p_re
 
       n = SIZE(x_re, 1)
+      curv_max = MAXVAL(occ_curv)
       ALLOCATE (chc_p(n, n), chc_m(n, n), evec(n, n), occ_mat_p(n, n), occ_mat_m(n, n), u(n, n), &
                 evals_p(n), evals_m(n))
       ALLOCATE (x_p_re(n, n), x_p_im(n, n), x_m_re(n, n), x_m_im(n, n))
@@ -1916,6 +1922,8 @@ CONTAINS
             CALL dense_spectral_occ_projector_from_chc(chc_p, occ_scale, occ_mat_p)
             CALL dense_spectral_occ_projector_from_chc(chc_m, occ_scale, occ_mat_m)
          END IF
+         active_projector_weight = dense_pair_projector_weight(projector_weight, occ_curv(var_i(s)), &
+                                                               occ_curv(var_j(s)), curv_max)
 
          DO band = 1, n
             raw_response = (REAL(chc_p(band, band), KIND=dp) - &
@@ -1925,8 +1933,8 @@ CONTAINS
                projector_response = (evals_p(band) - evals_m(band))/(2.0_dp*fd_step)
             response(band, s) = (1.0_dp - projector_weight)*raw_response + &
                                 projector_weight*projector_response
-            IF (projector_weight > 0.0_dp .AND. ABS(occ_curv(band)) > EPSILON(occ_curv(band))) &
-               response(band, s) = response(band, s) - projector_weight* &
+            IF (active_projector_weight > 0.0_dp .AND. ABS(occ_curv(band)) > EPSILON(occ_curv(band))) &
+               response(band, s) = response(band, s) - active_projector_weight* &
                                    0.5_dp*REAL(occ_mat_p(band, band) - occ_mat_m(band, band), KIND=dp)/ &
                                    (2.0_dp*fd_step*occ_curv(band))
          END DO

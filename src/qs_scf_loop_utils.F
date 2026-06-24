@@ -16385,12 +16385,13 @@ CONTAINS
                                                             occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, &
                                                             projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
-      REAL(KIND=dp)                                      :: channel_occ_curv_max, &
+      REAL(KIND=dp)                                      :: active_projector_weight, channel_occ_curv_max, &
                                                             density_plateau_full_response, &
                                                             density_plateau_response, density_response, &
                                                             projector_response, projector_weight, raw_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eps_m, eps_p, projector_evals, projector_evals_m, &
-                                                            projector_evals_p, density_full_column, &
+                                                            projector_evals_p, density_active_projector_column, &
+                                                            density_full_column, &
                                                             density_mixed_column, &
                                                             density_plateau_column, density_projector_column
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -16415,7 +16416,7 @@ CONTAINS
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
-         ALLOCATE (density_full_column(nmo), density_mixed_column(nmo), &
+         ALLOCATE (density_active_projector_column(nmo), density_full_column(nmo), density_mixed_column(nmo), &
                    density_plateau_column(nmo), density_projector_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
@@ -16475,6 +16476,10 @@ CONTAINS
                x_m_im(jmo, imo) = x_m_im(jmo, imo) - fd_step
             END SELECT
 
+            active_projector_weight = kpoint_ot_pair_projector_weight(projector_weight, &
+                                                                      occ_curv_channel(imo), &
+                                                                      occ_curv_channel(jmo), &
+                                                                      channel_occ_curv_max)
             CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat, grad_p_re, grad_p_im, eps_p)
             CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat, grad_m_re, grad_m_im, eps_m)
 
@@ -16494,6 +16499,7 @@ CONTAINS
                CALL diag_complex(chc_p, projector_evec, projector_evals_p)
                CALL diag_complex(chc_m, projector_evec, projector_evals_m)
             END IF
+            density_active_projector_column(:) = 0.0_dp
             density_projector_column(:) = 0.0_dp
             DO ie = 1, nmo
                raw_response = (REAL(chc_p(ie, ie), KIND=dp) - REAL(chc_m(ie, ie), KIND=dp))/(2.0_dp*fd_step)
@@ -16502,6 +16508,7 @@ CONTAINS
                   projector_response = (projector_evals_p(ie) - projector_evals_m(ie))/(2.0_dp*fd_step)
                response_occ_physical(first_energy + ie - 1, s) = &
                   (1.0_dp - projector_weight)*raw_response + projector_weight*projector_response
+               density_active_projector_column(ie) = -active_projector_weight*projector_response
                density_projector_column(ie) = -projector_weight*projector_response
             END DO
             CALL dense_history_safe_occ_projector(chc_p, occupation_numbers, kpoint_weight, &
@@ -16549,7 +16556,7 @@ CONTAINS
                      ! active bands.  This moves true occupation curvature into
                      ! the auxiliary-energy Schur block without reintroducing
                      ! low-curvature projector-gauge amplification.
-                     density_plateau_column(ie) = density_projector_column(ie)
+                     density_plateau_column(ie) = density_active_projector_column(ie)
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      density_mixed_column(ie) = &
@@ -16569,7 +16576,7 @@ CONTAINS
                      ! the spin/k group.  Keep channel-uniform components here so
                      ! physical inter-k charge transfer is not removed before the
                      ! global chemical-potential projection.
-                     density_plateau_full_response = density_plateau_column(ie)
+                     density_plateau_full_response = density_projector_column(ie)
                      density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                         occ_curv_channel(ie)
                      IF (compute_density_full_audit) &
@@ -16665,7 +16672,8 @@ CONTAINS
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
-         DEALLOCATE (density_full_column, density_mixed_column, density_plateau_column, density_projector_column)
+         DEALLOCATE (density_active_projector_column, density_full_column, density_mixed_column, density_plateau_column, &
+                     density_projector_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
