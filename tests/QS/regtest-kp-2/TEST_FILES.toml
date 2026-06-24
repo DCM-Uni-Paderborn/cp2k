@@ -17,7 +17,8 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
-                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"}]
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_added_auto_sym3.inp"          = [{matcher="E_total", tol=1.0E-10, ref=-7.18786948631201},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.18786948631201},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-2.5505891957E-4},
@@ -29,7 +30,8 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
-                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"}]
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_added_auto_full3.inp"         = [{matcher="E_total", tol=1.0E-10, ref=-7.49654335181061},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.49654335181061},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.8067701299E-4},
@@ -41,7 +43,8 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
-                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"}]
+                                           {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 # Slow/manual ADDED_MOS AUTO tail companions: run
 # Al_kp_ot_added_auto_converge.inp and Al_kp_ot_added_auto_sym3_converge.inp
 # by hand. They are intentionally not listed here, so the default regtest stays
@@ -64,7 +67,8 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.76538616998703},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 # These restart read/continue jobs are deliberately short, non-converged
 # restart-I/O smokes.  Keep the smearing and restart guards strict, but allow
 # small OMP reduction/path differences in the early OT energy.
@@ -72,14 +76,16 @@
                                            {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.05303056527211},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14577088835857},
                                            {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14577088835857},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104032E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.1128E-4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_restart_sym3_write.inp"       = [{matcher="E_total", tol=1.0E-10, ref=-4.71419621162264},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-4.71419621162264},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.6168715074E-4},
@@ -87,7 +93,8 @@
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_restart_sym3_read.inp"        = [{matcher="E_total", tol=1.0E-10, ref=-6.75182370204148},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-6.75182370204148},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.6135403267E-4},
@@ -96,7 +103,8 @@
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
-                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
+                                           {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="Unsupported content type"}]
 # Slow/manual converged-physics companion: run Al_kp_ot_restart_converge.inp
 # after the write/read/continue chain. It is intentionally not listed here,
 # so the default restart/smearing regtest stays cheap while the optional
