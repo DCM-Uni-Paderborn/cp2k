@@ -1746,8 +1746,10 @@ CONTAINS
       IF (projector_weight <= 0.0_dp) RETURN
 
       IF (delta < ot_kp_schur_projector_response_full_delta) THEN
+         ! Keep the canonical-density projector active through the residual tail.
+         ! Quadratic damping makes the projector itself the limiting fixed-point
+         ! error just above tight SCF thresholds.
          tail_scale = MAX(0.0_dp, delta/ot_kp_schur_projector_response_full_delta)
-         tail_scale = tail_scale**2
          projector_weight = projector_weight*tail_scale
       END IF
 
@@ -1765,7 +1767,10 @@ CONTAINS
       REAL(KIND=dp)                                      :: model_delta
 
       model_delta = MAX(0.0_dp, delta)
-      IF (qs_ot_env%line_search_count > 0 .AND. qs_ot_env%schur_model_pending .AND. &
+      ! Cap only true follow-up probes of the same line search.  The first
+      ! point of a new search direction must see a fresh residual; otherwise
+      ! CG spikes keep the canonical density projector on a stale smaller delta.
+      IF (qs_ot_env%line_search_count > 1 .AND. qs_ot_env%schur_model_pending .AND. &
           qs_ot_env%schur_model_delta > 0.0_dp) THEN
          model_delta = MIN(model_delta, qs_ot_env%schur_model_delta)
       END IF
@@ -4871,6 +4876,15 @@ CONTAINS
                      projector_spectral_selected_predicted_drop
                   local_ot_env(1)%schur_projector_spectral_selected_measured_sum = &
                      local_ot_env(1)%schur_projector_spectral_selected_measured_sum + measured_drop
+                  ! A positive but badly overpredicted spectral probe still
+                  ! damages the tight residual tail.  Count it as a selected
+                  ! calibration failure so subsequent steps fall back to the
+                  ! coupled/density response history instead of re-probing.
+                  IF (projector_spectral_selected_quality_ratio < &
+                      0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) &
+                     local_ot_env(1)%schur_projector_spectral_selected_failure_samples = &
+                        MIN(local_ot_env(1)%schur_projector_spectral_selected_failure_samples + 1, &
+                            HUGE(samples) - 1)
                ELSE
                   local_ot_env(1)%schur_projector_spectral_selected_failure_samples = &
                      MIN(local_ot_env(1)%schur_projector_spectral_selected_failure_samples + 1, &
@@ -7956,16 +7970,18 @@ CONTAINS
          exact_density_direct_response_ready = exact_density_response_ready
          energy_cross_density_direct(:, :) = energy_cross_density(:, :)
          response_density_direct_exact(:, :) = response_density_exact(:, :)
-         IF (exact_density_response_ready .AND. exact_density_full_audit_ready .AND. &
+         ! Once the accepted full-density response history is mature and good,
+         ! keep the Direct model blend history controlled.  Individual trial
+         ! line-search probes can miss the local Direct response and should
+         ! not switch this correction on/off between probes in the same tail.
+         IF (exact_density_full_audit_ready .AND. &
              local_ot_env(1)%schur_projector_density_full_global_quality_samples >= &
              ot_kp_schur_projector_response_min_samples .AND. &
              local_ot_env(1)%schur_projector_density_full_global_drop_sum > &
              ot_kp_schur_projector_density_full_min_drop .AND. &
              local_ot_env(1)%schur_projector_density_full_global_measured_sum > 0.0_dp .AND. &
              local_ot_env(1)%schur_projector_density_full_global_quality_ema >= &
-             ot_kp_schur_projector_response_quality_min_ratio .AND. &
-             local_ot_env(1)%schur_projector_density_full_global_quality >= &
-             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
+             ot_kp_schur_projector_response_quality_min_ratio) THEN
             density_full_global_history_trust_quality = &
                kpoint_ot_schur_metric_trust_quality( &
                   local_ot_env(1)%schur_projector_density_full_global_weighted_trust_ema, 0.0_dp)
@@ -7991,16 +8007,26 @@ CONTAINS
                    MAX(0.0_dp, MIN(1.0_dp, density_full_global_history_trust_quality)))
             IF (projector_physical_direct_floor_density_weight > &
                 EPSILON(projector_physical_direct_floor_density_weight)) THEN
-               energy_cross_density_direct(:, :) = &
-                  (1.0_dp - projector_physical_direct_floor_density_weight)* &
-                  energy_cross_density(:, :) + &
-                  projector_physical_direct_floor_density_weight* &
-                  energy_cross_density_full_audit(:, :)
-               response_density_direct_exact(:, :) = &
-                  (1.0_dp - projector_physical_direct_floor_density_weight)* &
-                  response_density_exact(:, :) + &
-                  projector_physical_direct_floor_density_weight* &
-                  response_density_full_audit_exact(:, :)
+               exact_density_direct_response_ready = .TRUE.
+               IF (exact_density_response_ready) THEN
+                  energy_cross_density_direct(:, :) = &
+                     (1.0_dp - projector_physical_direct_floor_density_weight)* &
+                     energy_cross_density(:, :) + &
+                     projector_physical_direct_floor_density_weight* &
+                     energy_cross_density_full_audit(:, :)
+                  response_density_direct_exact(:, :) = &
+                     (1.0_dp - projector_physical_direct_floor_density_weight)* &
+                     response_density_exact(:, :) + &
+                     projector_physical_direct_floor_density_weight* &
+                     response_density_full_audit_exact(:, :)
+               ELSE
+                  energy_cross_density_direct(:, :) = &
+                     projector_physical_direct_floor_density_weight* &
+                     energy_cross_density_full_audit(:, :)
+                  response_density_direct_exact(:, :) = &
+                     projector_physical_direct_floor_density_weight* &
+                     response_density_full_audit_exact(:, :)
+               END IF
             END IF
          END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &

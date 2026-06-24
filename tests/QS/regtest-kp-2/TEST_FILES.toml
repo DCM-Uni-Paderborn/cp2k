@@ -56,9 +56,9 @@
 # Current HIGH companion references after the Direct floor-density response
 # blend:
 # the Sym3 path grows to 8 and 16 and has E_total = Mermin =
-# -8.15998694521847 Ha.  The full-grid companion follows the same AUTO growth
+# -8.15998707837622 Ha.  The full-grid companion follows the same AUTO growth
 # sequence and has E_total = Mermin = -8.15998707551141 Ha.  The two optional
-# paths agree within 3E-7 Ha.  In both tails the full eigenvalue response stays
+# paths agree within 1E-8 Ha.  In both tails the full eigenvalue response stays
 # active while the density source is pair-active filtered, and no first/last-band
 # or AUTO-exhausted warning is printed.  Exact SCF step counts are intentionally
 # not part of these optional companion references.
@@ -106,15 +106,14 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-# Slow/manual converged-physics companion: run Al_kp_ot_restart_converge.inp
-# after the write/read/continue chain. It is intentionally not listed here,
-# so the default restart/smearing regtest stays cheap while the optional
-# physics tail can still be checked against the 1E-6 Mermin path, including
-# the NO_TEXT first/last-band smearing guards. Current local HIGH reference:
-# E_total = Mermin = -8.14585273622787 Ha in 600 OT steps after the
-# split residual-competition guard.  The companion also guards against
-# first/last-band smearing warnings and the previously reported
-# "Unsupported content type" failure signature.
+# Slow/manual residual-tail companion: run Al_kp_ot_restart_converge.inp after
+# the write/read/continue chain. It is intentionally not listed here, so the
+# default restart/smearing regtest stays cheap. Current local HIGH diagnostic:
+# restart I/O is stable and the tight tail is reached without first/last-band
+# smearing warnings or the previously reported "Unsupported content type"
+# signature, but the final 1E-6 Mermin path is not yet a committed physics
+# reference.  The remaining tail sits around 1--2E-6 after the Direct density
+# response, spectral-probe guard, and projector-tail CG reset.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]

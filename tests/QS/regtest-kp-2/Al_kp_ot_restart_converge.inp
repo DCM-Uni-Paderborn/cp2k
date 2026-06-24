@@ -1,9 +1,13 @@
 ! Slow/manual companion to the default k-point OT restart smoke test.
 ! Run after Al_kp_ot_restart_write/read/continue.inp; this input is not listed
 ! in TEST_FILES.toml so the default regtest stays cheap.
-! Local 2026-06 HIGH reference after floor-limited global density response:
-! converges on the 1E-6 Mermin path in 133 OT steps with E_total = Mermin =
-! -8.1599870775 Ha and no first/last-band smearing warnings.
+! Current 2026-06 HIGH diagnostic: restart write/read/continue reaches the
+! tight metallic tail without first/last-band smearing warnings or the
+! "Unsupported content type" signature.  The final 1E-6 Mermin path is not a
+! committed physics reference yet; after the Direct density response,
+! spectral-probe guard, and projector-tail CG reset, the residual tail sits
+! near 1--2E-6 and still needs a better finite-complex projector/occupation
+! response Hessian.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_restart
