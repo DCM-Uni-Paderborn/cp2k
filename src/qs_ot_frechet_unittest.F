@@ -423,7 +423,7 @@ CONTAINS
       CALL setup_sparse_pattern_data(z)
       CALL apply_dense_frechet(evals, z, dense_ref)
 
-      ALLOCATE (pgrid(1, 1), row_dist(2), col_dist(2), row_blk_size(2), col_blk_size(2))
+      ALLOCATE (pgrid(0:0, 0:0), row_dist(2), col_dist(2), row_blk_size(2), col_blk_size(2))
       pgrid(:, :) = 0
       row_dist(:) = 0
       col_dist(:) = 0
