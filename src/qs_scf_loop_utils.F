@@ -164,6 +164,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
                                         ot_kp_schur_projector_negative_balance_floor = 1.5E-1_dp, &
+                                        ot_kp_schur_projector_negative_balance_max = 5.0E-1_dp, &
                                         ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
                                         ot_kp_schur_projector_trace_active_max_weight = 9.5E-1_dp, &
                                         ot_kp_schur_projector_density_full_min_drop = 1.0E-12_dp, &
@@ -15656,6 +15657,47 @@ CONTAINS
 
       END FUNCTION kpoint_ot_projector_response_residual_weight
 
+! **************************************************************************************************
+!> \brief sign-aware finite Projector-response balance for negative curvature modes
+!> \param positive_sum positive-mode projected response norm
+!> \param raw_negative_sum negative-mode projected response norm
+!> \param history_quality accepted finite-response Mermin-drop quality
+!> \param history_trust accepted finite-response trust quality
+!> \param history_response_ratio response-mismatch/predicted-drop history
+!> \return negative-mode balance in [0,1]
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_negative_response_balance(positive_sum, raw_negative_sum, history_quality, &
+                                                             history_trust, history_response_ratio) RESULT(balance)
+      REAL(KIND=dp), INTENT(IN)                         :: history_quality, history_response_ratio, history_trust, &
+                                                            positive_sum, raw_negative_sum
+      REAL(KIND=dp)                                     :: balance
+
+      REAL(KIND=dp)                                     :: coherent_negative, history_scale, modal_floor, &
+                                                            negative_fraction, response_total, scalar_floor
+
+         balance = 0.0_dp
+         IF (raw_negative_sum <= EPSILON(raw_negative_sum)) RETURN
+
+         balance = SQRT(MAX(0.0_dp, positive_sum)/raw_negative_sum)
+         history_scale = MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
+                         SQRT(MAX(1.0_dp, history_response_ratio/ &
+                                       ot_kp_schur_projector_response_ratio_gate))
+         scalar_floor = ot_kp_schur_projector_negative_balance_floor* &
+                        MIN(1.0_dp, MAX(0.0_dp, history_quality))*history_scale
+         response_total = positive_sum + raw_negative_sum
+         IF (response_total > EPSILON(response_total)) THEN
+            negative_fraction = raw_negative_sum/response_total
+            coherent_negative = MAX(0.0_dp, 2.0_dp*negative_fraction - 1.0_dp)
+            modal_floor = SQRT(coherent_negative)* &
+                          SQRT(MIN(1.0_dp, MAX(0.0_dp, history_quality)))*history_scale
+            scalar_floor = MAX(scalar_floor, &
+                               MIN(ot_kp_schur_projector_negative_balance_max, modal_floor))
+         END IF
+         balance = MAX(balance, scalar_floor)
+         balance = MIN(1.0_dp, MAX(0.0_dp, balance))
+
+      END FUNCTION kpoint_ot_projector_negative_response_balance
+
 !> \brief audit an accepted-history calibrated finite-response correction in Projector modes
 !> \param rot_hessian diagonal/canonical rotation Hessian
 !> \param rot_hessian_projector finite complex Projector-Hessian
@@ -15732,7 +15774,7 @@ CONTAINS
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp)                                      :: base_weight, coeff_det, coeff_negative, coeff_positive, &
                                                             eval_abs_avg, h12, h11, h22, g1, g2, mode_norm, mode_sign, &
-                                                            mode_weight, negative_balance, negative_balance_floor, &
+                                                            mode_weight, negative_balance, &
                                                             negative_norm, negative_weight_sum, positive_sum, &
                                                             positive_weight_sum, raw_negative_sum, response_total_sum, &
                                                             residual_weight, spectral_weight, step_weight, step_weight_sum
@@ -15810,18 +15852,9 @@ CONTAINS
          IF (response_total_sum > EPSILON(response_total_sum)) &
             raw_negative_fraction = raw_negative_sum/response_total_sum
          positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
-         negative_balance = 0.0_dp
-         negative_balance_floor = 0.0_dp
-         IF (raw_negative_sum > EPSILON(raw_negative_sum)) THEN
-            negative_balance = SQRT(positive_sum/raw_negative_sum)
-            negative_balance_floor = ot_kp_schur_projector_negative_balance_floor* &
-                                     MIN(1.0_dp, MAX(0.0_dp, history_quality))* &
-                                     MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
-                                     SQRT(MAX(1.0_dp, history_response_ratio/ &
-                                                   ot_kp_schur_projector_response_ratio_gate))
-            negative_balance = MAX(negative_balance, negative_balance_floor)
-         END IF
-         negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
+         negative_balance = kpoint_ot_projector_negative_response_balance(positive_sum, raw_negative_sum, &
+                                                                          history_quality, history_trust, &
+                                                                          history_response_ratio)
 
          step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
          IF (PRESENT(diag_step_weight_sum)) diag_step_weight_sum = step_weight_sum

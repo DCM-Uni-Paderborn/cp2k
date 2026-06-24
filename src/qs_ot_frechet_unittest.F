@@ -26,7 +26,8 @@ PROGRAM qs_ot_frechet_unittest
    IMPLICIT NONE
 
    INTEGER                                            :: io_unit, mynode, nfail
-   REAL(KIND=dp), PARAMETER                           :: projector_response_negative_balance_floor = 1.5E-1_dp
+   REAL(KIND=dp), PARAMETER                           :: projector_response_negative_balance_floor = 1.5E-1_dp, &
+                                                         projector_response_negative_balance_max = 5.0E-1_dp
    TYPE(mp_comm_type)                                 :: mp_comm
 
    nfail = 0
@@ -7807,9 +7808,7 @@ CONTAINS
          IF (eval_diag(imode) < 0.0_dp) raw_neg_sum = raw_neg_sum + mode_norm
       END DO
       raw_neg_fraction_ref = raw_neg_sum/response_total_sum
-      neg_balance = SQRT((response_total_sum - raw_neg_sum)/raw_neg_sum)
-      neg_balance = MAX(neg_balance, projector_response_negative_balance_floor)
-      neg_balance = MIN(1.0_dp, MAX(0.0_dp, neg_balance))
+      neg_balance = dense_projector_negative_response_balance(response_total_sum - raw_neg_sum, raw_neg_sum)
 
       step_weight_sum = DOT_PRODUCT(step_diag(:), step_diag(:))
       pos_weight_sum = 0.0_dp
@@ -7932,9 +7931,9 @@ CONTAINS
 
       INTEGER                                            :: i, imode
       REAL(KIND=dp) :: active, applied_weight, applied_weight_ref, base_weight, correction_drop, &
-         correction_drop_ref, cross_drop, err, eval_abs_avg, mode_weight, negative_coeff, &
-         negative_drop, negative_fraction, negative_fraction_ref, negative_weight_sum, &
-         positive_coeff, positive_drop, raw_negative, spectral_weight, step_weight_sum
+         correction_drop_ref, cross_drop, err, eval_abs_avg, mode_weight, negative_balance_ref, &
+         negative_coeff, negative_drop, negative_fraction, negative_fraction_ref, negative_weight_sum, &
+         positive_coeff, positive_drop, raw_negative, raw_negative_sum, spectral_weight, step_weight_sum
       REAL(KIND=dp), DIMENSION(ne)                       :: candidate, candidate_ref, curv, &
                                                             energy_base, grad_e, mode_rx, &
                                                             response_base, response_neg_ref
@@ -7955,11 +7954,17 @@ CONTAINS
 
       response_neg_ref(:) = 0.0_dp
       eval_abs_avg = SUM(ABS(evals(:)))/REAL(nrot, KIND=dp)
+      raw_negative_sum = 0.0_dp
+      DO imode = 1, nrot
+         mode_rx(:) = step_rot(imode)*response_delta(:, imode)
+         raw_negative_sum = raw_negative_sum + MAX(0.0_dp, DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:)))
+      END DO
+      negative_balance_ref = dense_projector_negative_response_balance(0.0_dp, raw_negative_sum)
       step_weight_sum = DOT_PRODUCT(step_rot(:), step_rot(:))
       negative_weight_sum = 0.0_dp
       DO imode = 1, nrot
          spectral_weight = 1.0_dp/MAX(1.0_dp, ABS(evals(imode))/eval_abs_avg)
-         spectral_weight = spectral_weight*projector_response_negative_balance_floor
+         spectral_weight = spectral_weight*negative_balance_ref
          mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
          mode_rx(:) = step_rot(imode)*response_delta(:, imode)
          response_neg_ref(:) = response_neg_ref(:) + mode_weight*mode_rx(:)
@@ -8000,6 +8005,36 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_modal_response_negative_floor
+
+! **************************************************************************************************
+!> \brief Dense copy of the sign-aware negative Projector-response mode balance.
+!> \param positive_sum ...
+!> \param raw_negative_sum ...
+!> \return negative-mode balance in [0,1]
+! **************************************************************************************************
+   FUNCTION dense_projector_negative_response_balance(positive_sum, raw_negative_sum) RESULT(balance)
+      REAL(KIND=dp), INTENT(IN)                          :: positive_sum, raw_negative_sum
+      REAL(KIND=dp)                                      :: balance
+
+      REAL(KIND=dp)                                      :: coherent_negative, modal_floor, negative_fraction, &
+                                                            response_total, scalar_floor
+
+      balance = 0.0_dp
+      IF (raw_negative_sum <= EPSILON(raw_negative_sum)) RETURN
+
+      balance = SQRT(MAX(0.0_dp, positive_sum)/raw_negative_sum)
+      scalar_floor = projector_response_negative_balance_floor
+      response_total = positive_sum + raw_negative_sum
+      IF (response_total > EPSILON(response_total)) THEN
+         negative_fraction = raw_negative_sum/response_total
+         coherent_negative = MAX(0.0_dp, 2.0_dp*negative_fraction - 1.0_dp)
+         modal_floor = SQRT(coherent_negative)
+         scalar_floor = MAX(scalar_floor, MIN(projector_response_negative_balance_max, modal_floor))
+      END IF
+      balance = MAX(balance, scalar_floor)
+      balance = MIN(1.0_dp, MAX(0.0_dp, balance))
+
+   END FUNCTION dense_projector_negative_response_balance
 
 ! **************************************************************************************************
 !> \brief Dense copy of the finite Projector-Hessian modal response algebra.
@@ -8087,11 +8122,7 @@ CONTAINS
       IF (response_total_sum > EPSILON(response_total_sum)) &
          raw_negative_fraction = raw_negative_sum/response_total_sum
       positive_sum = MAX(0.0_dp, response_total_sum - raw_negative_sum)
-      negative_balance = 0.0_dp
-      IF (raw_negative_sum > EPSILON(raw_negative_sum)) negative_balance = SQRT(positive_sum/raw_negative_sum)
-      IF (raw_negative_sum > EPSILON(raw_negative_sum)) &
-         negative_balance = MAX(negative_balance, projector_response_negative_balance_floor)
-      negative_balance = MIN(1.0_dp, MAX(0.0_dp, negative_balance))
+      negative_balance = dense_projector_negative_response_balance(positive_sum, raw_negative_sum)
 
       step_weight_sum = DOT_PRODUCT(mode_coeff(:), mode_coeff(:))
       negative_weight_sum = 0.0_dp
