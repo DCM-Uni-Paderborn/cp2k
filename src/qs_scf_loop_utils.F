@@ -8122,6 +8122,14 @@ CONTAINS
                            0.0_dp, &
                            ot_kp_schur_projector_response_quality_min_ratio, &
                            ot_kp_schur_projector_response_quality_max_ratio)
+                     projector_physical_direct_density_quality_for_selection = &
+                        kpoint_ot_direct_selected_history_quality( &
+                           projector_physical_direct_density_quality_for_selection, &
+                           local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
+                           local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
+                           local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                           local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                           ot_kp_schur_calibration_min_samples)
                      projector_physical_direct_density_shadow_quality_for_selection = &
                         projector_physical_direct_density_quality_for_selection
                      density_descent_quality_for_selection = &
@@ -13279,6 +13287,11 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_metric = &
                         local_ot_env(1)%schur_projector_physical_metric + &
                         projector_physical_model_calibrated_drop*projector_physical_direct_metric_norm_ratio
+                  IF (projector_physical_direct_density_candidate_selected .AND. &
+                      accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
+                     local_ot_env(1)%schur_projector_physical_direct_selected = &
+                        local_ot_env(1)%schur_projector_physical_direct_selected + &
+                        accepted_model_calibrated_drop
                   local_ot_env(1)%schur_projector_physical_weight = &
                      MAX(local_ot_env(1)%schur_projector_physical_weight, projector_physical_response_weight)
                   local_ot_env(1)%schur_projector_physical_correction_drop = &
