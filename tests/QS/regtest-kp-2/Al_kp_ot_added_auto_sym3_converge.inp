@@ -2,12 +2,12 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-06 HIGH reference after the pair-active k-point AUTO density
-! response gate: AUTO grows to 8 and 16, then converges on the 1E-6 Mermin
-! path. E_total = Mermin = -8.15998687284258 Ha, with no first/last-band
-! warnings and no AUTO-exhausted warning. The full eigenvalue response remains
-! active while the density source is pair-active filtered, matching the
-! full-grid companion within 3E-7 Ha.
+! Local 2026-06 HIGH reference after the initial AUTO direct trace guard:
+! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path.
+! E_total = Mermin = -8.15998694521847 Ha, with no first/last-band warnings
+! and no AUTO-exhausted warning. The full eigenvalue response remains active
+! while the density source is pair-active filtered, matching the full-grid
+! companion within 3E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
