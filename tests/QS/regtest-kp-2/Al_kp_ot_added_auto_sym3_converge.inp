@@ -2,12 +2,11 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-06 HIGH reference after global fixed-N density-response
-! calibration: 91 final-tail SCF steps, 193 total inner-loop calls including
-! AUTO rebuilds.  E_total = Mermin = -8.15998707936502 Ha, with AUTO growth
-! from 4 to 8 and 16, no first/last-band warnings, and no AUTO-exhausted
-! warning.  The gauge-free eigenvalue-density response remains active in the
-! tail, matching the full-grid companion.
+! Local 2026-06 HIGH reference after the k-point AUTO post-resize convergence
+! gate: AUTO grows to 8 and 16, then converges in 100 SCF steps.  E_total =
+! Mermin = -8.15998698905080 Ha, with no first/last-band warnings and no
+! AUTO-exhausted warning.  The gauge-free eigenvalue-density response remains
+! active in the tail, matching the full-grid companion within 1E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge

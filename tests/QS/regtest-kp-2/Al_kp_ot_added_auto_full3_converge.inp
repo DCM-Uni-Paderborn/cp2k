@@ -3,13 +3,11 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It checks the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-06 HIGH reference after global fixed-N density-response
-! calibration: AUTO grows to 8 and 16; the last AUTO tail reaches index 82
-! before the final grow and then converges in one restarted SCF step, with
-! 163 total inner-loop calls including AUTO rebuilds.  E_total = Mermin =
-! -8.15998537551514 Ha, with no first/last-band warnings and no AUTO-exhausted
-! warning.  The gauge-free eigenvalue-density response remains active in the
-! tail, matching the symmetry-reduced companion.
+! Local 2026-06 HIGH reference after the k-point AUTO post-resize convergence
+! gate: AUTO grows to 8 and 16, then converges in 112 SCF steps.  E_total =
+! Mermin = -8.15998707964612 Ha, with no first/last-band warnings and no
+! AUTO-exhausted warning.  The gauge-free eigenvalue-density response remains
+! active in the tail, matching the symmetry-reduced companion within 1E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge

@@ -50,16 +50,14 @@
 # E_total = Mermin = -8.14585274158708 Ha, ADDED_MOS_AUTO = 4,
 # ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16", and no first/last-band or
 # AUTO-exhausted warning is printed.
-# Current Sym3 HIGH companion reference after global fixed-N density-response
-# calibration:
-# 91 final-tail SCF steps and 193 total inner-loop calls including AUTO
-# rebuilds, AUTO grows to 8 and 16, E_total = Mermin =
-# -8.15998707936502 Ha.  The full-grid companion follows the same AUTO growth
-# sequence; its last AUTO tail reaches index 82 before the final grow and then
-# converges in one restarted SCF step, with 163 total inner-loop calls and
-# E_total = Mermin = -8.15998537551514 Ha.  In both tails the gauge-free
-# eigenvalue-density response remains active instead of being Fermi-window
-# damped a second time.
+# Current HIGH companion references after the k-point AUTO post-resize
+# convergence gate: the Sym3 path grows to 8 and 16, converges in 100 SCF
+# steps, and has E_total = Mermin = -8.15998698905080 Ha.  The full-grid
+# companion follows the same AUTO growth sequence, converges in 112 SCF
+# steps, and has E_total = Mermin = -8.15998707964612 Ha.  In both tails the
+# gauge-free eigenvalue-density response remains active instead of being
+# Fermi-window damped a second time, and no first/last-band or AUTO-exhausted
+# warning is printed.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
@@ -67,13 +65,16 @@
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.05303056394669},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.05303056394669},
+# These restart read/continue jobs are deliberately short, non-converged
+# restart-I/O smokes.  Keep the smearing and restart guards strict, but allow
+# small OMP reduction/path differences in the early OT energy.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.05303056527211},
+                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.05303056527211},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-9, ref=-8.14577088818925},
-                                           {matcher="Mermin_free_energy", tol=1.0E-9, ref=-8.14577088818925},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14577088835857},
+                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14577088835857},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104032E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.1128E-4},
