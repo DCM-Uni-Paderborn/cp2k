@@ -128,16 +128,21 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_response_trust_min_factor = 1.0E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 80, &
                                   ot_kp_added_mos_auto_tail_probe_steps = 20, &
+                                  ot_kp_added_mos_auto_direct_veto_max_added = 4, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
                                         ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_min = 50.0_dp, &
                                         ot_kp_added_mos_auto_basis_signal_frac = 7.5E-1_dp, &
+                                        ot_kp_added_mos_auto_direct_veto_basis_frac = 7.0E-2_dp, &
+                                        ot_kp_added_mos_auto_direct_veto_norm_ratio = 1.0E4_dp, &
+                                        ot_kp_added_mos_auto_direct_veto_trace_frac = 1.0E-3_dp, &
                                         ot_kp_added_mos_auto_residual_spike_factor = 8.0_dp, &
                                         ot_kp_added_mos_auto_strong_tail_basis_frac = 2.0E-1_dp, &
-                                        ot_kp_added_mos_auto_fractional_tail_basis_frac = 1.2E-1_dp, &
-                                        ot_kp_added_mos_auto_fractional_tail_residual_factor = 2.0_dp, &
+                                        ot_kp_added_mos_auto_fractional_tail_basis_frac = 7.0E-2_dp, &
+                                        ot_kp_added_mos_auto_fractional_tail_residual_factor = 4.0_dp, &
+                                        ot_kp_added_mos_auto_fractional_tail_peak_frac = 8.0E-2_dp, &
                                         ot_kp_added_mos_auto_strong_tail_frac = 2.5E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_max_attempts = 12
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_floor = 1.0E-10_dp, &
@@ -827,6 +832,8 @@ CONTAINS
 
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                      kp_range, wkp, para_env_inter_kp, scf_control%smear, &
+                                                     scf_control%added_mos_auto, scf_control%added_mos, &
+                                                     scf_control%eps_scf, &
                                                      trial_eigenvalues, trial_occupation, trial_mu)
       CALL qs_scf_loop_prepare_ot_kp_energy_trust(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                   wkp, scf_control%smear, &
@@ -1377,6 +1384,7 @@ CONTAINS
                             scf_env%iter_delta <= edge_grow_limit
       fractional_tail_limited = nonedge_residual_probe .AND. &
                                 max_fractional >= ot_kp_fermi_window_tail_fraction .AND. &
+                                max_fractional >= ot_kp_added_mos_auto_fractional_tail_peak_frac .AND. &
                                 basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
                                 ot_kp_added_mos_auto_basis_signal_min .AND. &
                                 scf_env%iter_delta <= ot_kp_added_mos_auto_fractional_tail_residual_factor* &
@@ -1394,7 +1402,7 @@ CONTAINS
                             basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
                             ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
-      IF (basis_probe_limited .OR. strong_tail_limited) THEN
+      IF (basis_probe_limited .OR. strong_tail_limited .OR. fractional_tail_limited) THEN
          trigger_step = MIN(trigger_step, ot_kp_added_mos_auto_tail_probe_steps)
       END IF
       IF (scf_env%iter_count < trigger_step) RETURN
@@ -3028,12 +3036,16 @@ CONTAINS
 !> \param wkp ...
 !> \param para_env_inter_kp ...
 !> \param smear ...
+!> \param added_mos_auto ...
+!> \param added_mos ...
+!> \param eps_scf ...
 !> \param trial_eigenvalues ...
 !> \param trial_occupation ...
 !> \param trial_mu ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                        kp_range, wkp, para_env_inter_kp, smear, &
+                                                        kp_range, wkp, para_env_inter_kp, smear, added_mos_auto, &
+                                                        added_mos, eps_scf, &
                                                         trial_eigenvalues, trial_occupation, trial_mu)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -3043,6 +3055,9 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       TYPE(smear_type), INTENT(IN)                       :: smear
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: added_mos_auto
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: added_mos
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_eigenvalues, trial_occupation
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
 
@@ -3210,7 +3225,8 @@ CONTAINS
       END IF
 
       IF (active_preconditioner) THEN
-         CALL precondition_kpoint_ot_schur(schur_group_done)
+         CALL precondition_kpoint_ot_schur(schur_group_done, ANY(added_mos_auto), &
+                                           MAXVAL(added_mos), eps_scf)
          CALL precondition_kpoint_ot_energy_diagonal(schur_group_done)
       END IF
 
@@ -5450,13 +5466,31 @@ CONTAINS
 !> \brief ...
 !> \param group_done ...
 ! **************************************************************************************************
-      SUBROUTINE precondition_kpoint_ot_schur(group_done)
+      SUBROUTINE precondition_kpoint_ot_schur(group_done, added_mos_auto_channel, &
+                                              added_mos_current, eps_scf_channel)
+      LOGICAL, INTENT(IN)                                :: added_mos_auto_channel
+      INTEGER, INTENT(IN)                                :: added_mos_current
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf_channel
       LOGICAL, DIMENSION(:), INTENT(OUT)                 :: group_done
 
       INTEGER                                            :: group
+      LOGICAL                                            :: added_mos_auto_tail_enabled
+      REAL(KIND=dp)                                      :: added_mos_auto_tail_residual_limit
 
          group_done(:) = .FALSE.
          IF (.NOT. local_ot_env(1)%settings%do_rotation) RETURN
+         added_mos_auto_tail_enabled = .FALSE.
+         added_mos_auto_tail_residual_limit = 0.0_dp
+         IF (added_mos_auto_channel .AND. &
+             added_mos_current <= ot_kp_added_mos_auto_direct_veto_max_added .AND. &
+             smear%do_smear .AND. eps_scf_channel > 0.0_dp) THEN
+            added_mos_auto_tail_enabled = .TRUE.
+            added_mos_auto_tail_residual_limit = &
+               ot_kp_added_mos_auto_fractional_tail_residual_factor* &
+               MAX(MAX(ot_kp_added_mos_auto_tail_eps_factor*eps_scf_channel, &
+                       ot_kp_added_mos_auto_tail_probe_factor*SQRT(eps_scf_channel)), &
+                   ot_kp_added_mos_auto_edge_probe_factor*SQRT(eps_scf_channel))
+         END IF
          CALL update_kpoint_ot_schur_line_search_quality()
          IF (.NOT. local_ot_env(1)%energy_only .AND. &
              (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
@@ -5568,9 +5602,11 @@ CONTAINS
                local_ot_env(1)%schur_projector_spectral_norm = 0.0_dp
                local_ot_env(1)%schur_projector_spectral_floor = 0.0_dp
                local_ot_env(1)%schur_projector_spectral_emin = 0.0_dp
-            END IF
+         END IF
          DO group = 1, ngroups
-            CALL precondition_kpoint_ot_schur_group(group, group_done(group))
+            CALL precondition_kpoint_ot_schur_group(group, group_done(group), &
+                                                    added_mos_auto_tail_enabled, &
+                                                    added_mos_auto_tail_residual_limit)
          END DO
       END SUBROUTINE precondition_kpoint_ot_schur
 
@@ -5579,8 +5615,12 @@ CONTAINS
 !> \param target_group ...
 !> \param group_done ...
 ! **************************************************************************************************
-      SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done)
+      SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done, &
+                                                    added_mos_auto_tail_enabled, &
+                                                    added_mos_auto_tail_residual_limit)
       INTEGER, INTENT(IN)                                :: target_group
+      LOGICAL, INTENT(IN)                                :: added_mos_auto_tail_enabled
+      REAL(KIND=dp), INTENT(IN)                          :: added_mos_auto_tail_residual_limit
       LOGICAL, INTENT(OUT)                               :: group_done
 
       INTEGER, PARAMETER                                 :: max_schur_rot = 800
@@ -5634,6 +5674,8 @@ CONTAINS
                                                                        projector_physical_direct_mixed_enabled, &
                                                                        projector_physical_direct_mixed_promoted, &
                                                                        projector_physical_direct_candidate_used, &
+                                                                       projector_physical_direct_basis_tail_limited, &
+                                                                       projector_physical_direct_trace_tail_limited, &
                                                                        projector_physical_direct_tail_probe_ready, &
                                                                        projector_physical_direct_normcap_shadow_ready, &
                                                                        projector_physical_direct_density_candidate_ready, &
@@ -6890,6 +6932,8 @@ CONTAINS
             projector_phys_direct_lcomp_trial_frac = 0.0_dp
             projector_phys_direct_lcomp_trial_max = 0.0_dp
             projector_physical_direct_basis_signal = 0.0_dp
+            projector_physical_direct_basis_tail_limited = .FALSE.
+            projector_physical_direct_trace_tail_limited = .FALSE.
             projector_physical_direct_delta_diag_avg = 0.0_dp
             projector_physical_direct_trace_base_diag_avg = 0.0_dp
             projector_physical_direct_trace_local_separate_weight = 0.0_dp
@@ -8400,6 +8444,8 @@ CONTAINS
                projector_phys_direct_lcomp_trial_frac = 0.0_dp
                projector_phys_direct_lcomp_trial_max = 0.0_dp
                projector_physical_direct_basis_signal = 0.0_dp
+               projector_physical_direct_basis_tail_limited = .FALSE.
+               projector_physical_direct_trace_tail_limited = .FALSE.
                projector_physical_direct_diag_shift_avg = 0.0_dp
                projector_physical_direct_diag_shift_max = 0.0_dp
                projector_physical_direct_diag_shift_sum = 0.0_dp
@@ -9678,6 +9724,15 @@ CONTAINS
                                           local_ot_env(1)%added_mos_auto_basis_signal = &
                                              MAX(local_ot_env(1)%added_mos_auto_basis_signal, &
                                                  projector_physical_direct_basis_signal)
+                                       END IF
+                                       projector_physical_direct_basis_tail_limited = .FALSE.
+                                       projector_physical_direct_trace_tail_limited = .FALSE.
+                                       IF (added_mos_auto_tail_enabled) THEN
+                                          projector_physical_direct_basis_tail_limited = &
+                                             projector_physical_direct_basis_signal >= &
+                                             ot_kp_added_mos_auto_direct_veto_basis_frac* &
+                                             ot_kp_added_mos_auto_basis_signal_min .AND. &
+                                             residual_delta <= added_mos_auto_tail_residual_limit
                                        END IF
                                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                                           projector_physical_direct_diag_compensation = &
@@ -11638,6 +11693,24 @@ CONTAINS
                                                 EPSILON(projector_physical_direct_model_drop) .AND. &
                                                 projector_physical_direct_response_weighted_step <= response_trust .AND. &
                                                 projector_physical_direct_response_abs_step <= response_abs_trust
+                                             IF (added_mos_auto_tail_enabled) THEN
+                                                projector_physical_direct_trace_tail_limited = &
+                                                   projector_physical_direct_norm_ratio >= &
+                                                   ot_kp_added_mos_auto_direct_veto_norm_ratio .AND. &
+                                                   MAX(ABS(projector_physical_direct_trace_actual_norm), &
+                                                       ABS(projector_physical_direct_trace_full_norm)) > &
+                                                   EPSILON(1.0_dp) .AND. &
+                                                   ABS(projector_physical_direct_trace_active_norm) <= &
+                                                   ot_kp_added_mos_auto_direct_veto_trace_frac* &
+                                                   MAX(ABS(projector_physical_direct_trace_actual_norm), &
+                                                       ABS(projector_physical_direct_trace_full_norm)) .AND. &
+                                                   projector_physical_direct_model_calibrated_drop >= &
+                                                   added_mos_auto_tail_residual_limit
+                                             END IF
+                                             IF (projector_physical_direct_basis_tail_limited) &
+                                                projector_physical_direct_candidate_ready = .FALSE.
+                                             IF (projector_physical_direct_trace_tail_limited) &
+                                                projector_physical_direct_candidate_ready = .FALSE.
                                              END IF
                                           END IF
                                        END IF
