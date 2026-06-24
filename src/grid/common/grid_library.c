@@ -68,6 +68,9 @@ void grid_library_init(void) {
   max_threads = omp_get_max_threads();
   per_thread_globals = malloc(max_threads * sizeof(grid_library_globals *));
   assert(per_thread_globals != NULL);
+  for (int ithread = 0; ithread < max_threads; ithread++) {
+    per_thread_globals[ithread] = NULL;
+  }
 
 // Using parallel regions to ensure memory is allocated near a thread's core.
 #pragma omp parallel default(none) shared(per_thread_globals)                  \
@@ -77,6 +80,13 @@ void grid_library_init(void) {
     per_thread_globals[ithread] = malloc(sizeof(grid_library_globals));
     assert(per_thread_globals[ithread] != NULL);
     memset(per_thread_globals[ithread], 0, sizeof(grid_library_globals));
+  }
+  for (int ithread = 0; ithread < max_threads; ithread++) {
+    if (per_thread_globals[ithread] == NULL) {
+      per_thread_globals[ithread] = malloc(sizeof(grid_library_globals));
+      assert(per_thread_globals[ithread] != NULL);
+      memset(per_thread_globals[ithread], 0, sizeof(grid_library_globals));
+    }
   }
 
   library_initialized = true;
