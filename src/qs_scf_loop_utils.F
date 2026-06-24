@@ -4859,19 +4859,40 @@ CONTAINS
                ot_kp_schur_projector_response_quality_min_ratio .AND. &
                local_ot_env(1)%schur_projector_physical_quality >= &
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+            ! Let robust spectral shadow history promote the candidate early,
+            ! but only after one accepted spectral step has anchored the scale.
             local_ot_env(1)%schur_projector_spectral_candidate_enabled = &
-               local_ot_env(1)%schur_projector_spectral_selected_quality_samples >= &
-               ot_kp_schur_projector_response_min_samples .AND. &
                local_ot_env(1)%schur_projector_spectral_selected_failure_samples == 0 .AND. &
-               local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
-               EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
-               local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
                local_ot_env(1)%schur_projector_spectral_dot_ema > 0.0_dp .AND. &
                local_ot_env(1)%schur_projector_spectral_norm_ema > 0.0_dp .AND. &
-               local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
-               ot_kp_schur_projector_response_quality_min_ratio .AND. &
-               local_ot_env(1)%schur_projector_spectral_selected_quality >= &
-               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+               ((local_ot_env(1)%schur_projector_spectral_selected_quality_samples >= &
+                 ot_kp_schur_projector_response_min_samples .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
+                 EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
+                 ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_quality >= &
+                 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .OR. &
+                (local_ot_env(1)%schur_projector_spectral_selected_quality_samples > 0 .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
+                 EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
+                 ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                 local_ot_env(1)%schur_projector_spectral_selected_quality >= &
+                 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                 local_ot_env(1)%schur_projector_spectral_quality_samples >= &
+                 ot_kp_schur_projector_response_min_samples .AND. &
+                 local_ot_env(1)%schur_projector_spectral_drop_sum > &
+                 EPSILON(local_ot_env(1)%schur_projector_spectral_drop_sum) .AND. &
+                 local_ot_env(1)%schur_projector_spectral_measured_sum > 0.0_dp .AND. &
+                 local_ot_env(1)%schur_projector_spectral_floor_ema > &
+                 EPSILON(local_ot_env(1)%schur_projector_spectral_floor_ema) .AND. &
+                 local_ot_env(1)%schur_projector_spectral_quality_ema >= &
+                 ot_kp_schur_projector_spectral_probe_quality_min .AND. &
+                 local_ot_env(1)%schur_projector_spectral_quality >= &
+                 0.5_dp*ot_kp_schur_projector_spectral_probe_quality_min))
 
             local_ot_env(1)%schur_split_candidate_enabled = local_ot_env(1)%schur_model_quality_ready
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
