@@ -218,6 +218,7 @@ MODULE qs_scf
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf'
+   INTEGER, PARAMETER, PRIVATE          :: kp_added_mos_auto_post_resize_steps = 20
    LOGICAL, PRIVATE                     :: reuse_precond = .FALSE.
    LOGICAL, PRIVATE                     :: used_history = .FALSE.
 
@@ -392,6 +393,7 @@ CONTAINS
       CHARACTER(LEN=default_string_length)               :: description, name
       INTEGER                                            :: ext_master_id, handle, handle2, i_tmp, &
                                                             ic, ispin, iter_count, output_unit, &
+                                                            post_added_mos_auto_resize_steps, &
                                                             scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
          exit_inner_loop, exit_outer_loop, inner_loop_converged, &
@@ -508,6 +510,7 @@ CONTAINS
       ! *** such as lagrangian multipliers
       scf_env%outer_scf%iter_count = 0
       iter_count = 0
+      post_added_mos_auto_resize_steps = 0
       total_steps = 0
       energy%tot_old = 0.0_dp
 
@@ -580,6 +583,11 @@ CONTAINS
                total_steps = MAX(0, total_steps - 1)
                iter_count = MAX(0, iter_count - 1)
                IF (.NOT. just_energy) scf_env%iter_count = MAX(0, scf_env%iter_count - 1)
+               IF (do_kpoints) THEN
+                  post_added_mos_auto_resize_steps = kp_added_mos_auto_post_resize_steps
+               ELSE
+                  post_added_mos_auto_resize_steps = 1
+               END IF
                CALL timestop(handle2)
                CYCLE scf_outer_loop
             END IF
@@ -605,6 +613,16 @@ CONTAINS
                 (dft_control%qs_control%xtb .AND. .NOT. dft_control%qs_control%xtb_control%do_tblite)) THEN
                scf_env%iter_delta = MAX(scf_env%iter_delta, &
                                         charge_mixing_scc_error(scf_env%mixing_store, scf_control%eps_scf))
+            END IF
+            ! K-point ADDED_MOS AUTO resizes and diagonalizes the virtual
+            ! space against the current density.  With OT/no density mixing
+            ! the orbital residual can be below EPS_SCF before the density
+            ! has reacted in the enlarged MO space, so keep the convergence
+            ! gate closed for the short AUTO probe window.
+            IF (post_added_mos_auto_resize_steps > 0 .AND. .NOT. just_energy) THEN
+               scf_env%iter_delta = MAX(scf_env%iter_delta, &
+                                        scf_control%eps_scf*(1.0_dp + 10.0_dp*EPSILON(1.0_dp)))
+               post_added_mos_auto_resize_steps = post_added_mos_auto_resize_steps - 1
             END IF
             IF (tblite_native_mixer) THEN
                scf_env%iter_param = dft_control%qs_control%xtb_control%tblite_mixer_damping
