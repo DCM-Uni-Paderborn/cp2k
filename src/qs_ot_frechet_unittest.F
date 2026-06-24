@@ -6913,7 +6913,7 @@ CONTAINS
                                                             min_quality = 0.10_dp
 
       REAL(KIND=dp) :: early_bad_quality, early_good_quality, err, mature_bad_quality, &
-                       no_samples_quality
+                       no_samples_quality, probe_early_quality, probe_mature_quality
 
       no_samples_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
                                                                  0.05_dp, 3, 4, 8, &
@@ -6927,22 +6927,31 @@ CONTAINS
       early_good_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 20.0_dp, &
                                                                  1.20_dp, 4, 4, 8, &
                                                                  min_quality, max_quality)
+      probe_early_quality = dense_direct_selected_probe_quality(min_quality, 0.053_dp, &
+                                                                4, 4, 8, max_quality)
+      probe_mature_quality = dense_direct_selected_probe_quality(min_quality, 0.053_dp, &
+                                                                 16, 4, 8, max_quality)
 
       err = ABS(no_samples_quality - 1.0_dp)
       err = MAX(err, ABS(early_bad_quality - (1.0_dp - (1.0_dp/13.0_dp)*(1.0_dp - min_quality))))
       err = MAX(err, ABS(mature_bad_quality - min_quality))
       err = MAX(err, ABS(early_good_quality - (1.0_dp + (1.0_dp/13.0_dp)*(max_quality - 1.0_dp))))
+      err = MAX(err, ABS(probe_early_quality - ((12.0_dp*min_quality + 0.053_dp)/13.0_dp)))
+      err = MAX(err, ABS(probe_mature_quality - 0.053_dp))
 
       IF (err > tol .OR. early_bad_quality <= mature_bad_quality .OR. &
-          early_bad_quality <= min_quality .OR. early_good_quality <= no_samples_quality) THEN
+          early_bad_quality <= min_quality .OR. early_good_quality <= no_samples_quality .OR. &
+          probe_early_quality >= min_quality .OR. probe_mature_quality >= min_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/no/early/mature/good", err, no_samples_quality, &
-            early_bad_quality, mature_bad_quality, early_good_quality
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/early/mature/good/probe/matureprobe", err, no_samples_quality, &
+            early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
+            probe_mature_quality
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/no/early/mature/good", err, no_samples_quality, &
-            early_bad_quality, mature_bad_quality, early_good_quality
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/early/mature/good/probe/matureprobe", err, no_samples_quality, &
+            early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
+            probe_mature_quality
       END IF
 
    END SUBROUTINE check_projector_direct_selected_history_quality
@@ -6959,7 +6968,8 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL                                            :: bootstrap_ready, enabled_veto, promoted_veto, &
-                                                            selected_bad, selected_good, trust_veto
+                                                            selected_bad, selected_good, selected_low_positive, &
+                                                            selected_low_wait, trust_veto
       REAL(KIND=dp)                                      :: err
 
       bootstrap_ready = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
@@ -6975,25 +6985,32 @@ CONTAINS
                                                  2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
                                                  0.10_dp, 8.0E-1_dp, 2.0E-2_dp, 0.0_dp)
       selected_bad = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
-                                                   2.0E-5_dp, 4, 5, 0.04_dp, 0.04_dp, &
+                                                   2.0E-5_dp, 4, 5, 0.0_dp, 0.0_dp, &
                                                    0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      selected_low_positive = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                            2.0E-5_dp, 16, 5, 0.056_dp, 0.053_dp, &
+                                                            0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      selected_low_wait = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                        2.0E-5_dp, 17, 5, 0.056_dp, 0.053_dp, &
+                                                        0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_good = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
-                                                    2.0E-5_dp, 4, 5, 0.14_dp, 0.08_dp, &
+                                                    2.0E-5_dp, 16, 5, 0.14_dp, 0.08_dp, &
                                                     0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
 
       err = 0.0_dp
       IF (.NOT. bootstrap_ready .OR. promoted_veto .OR. enabled_veto .OR. trust_veto .OR. &
-          selected_bad .OR. .NOT. selected_good) err = 1.0_dp
+          selected_bad .OR. selected_low_wait .OR. .NOT. selected_low_positive .OR. &
+          .NOT. selected_good) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
-            "failed with boot/prom/en/trust/bad/good", bootstrap_ready, promoted_veto, &
-            enabled_veto, trust_veto, selected_bad, selected_good
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "failed with boot/prom/en/trust/bad/wait/low/good", bootstrap_ready, promoted_veto, &
+            enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, selected_good
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
-            "OK with boot/prom/en/trust/bad/good", bootstrap_ready, promoted_veto, &
-            enabled_veto, trust_veto, selected_bad, selected_good
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "OK with boot/prom/en/trust/bad/wait/low/good", bootstrap_ready, promoted_veto, &
+            enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, selected_good
       END IF
 
    END SUBROUTINE check_projector_direct_tail_probe_bootstrap
@@ -8257,6 +8274,39 @@ CONTAINS
    END FUNCTION dense_direct_selected_history_quality
 
 ! **************************************************************************************************
+!> \brief Dense mirror of selected-history Direct probe quality.
+!> \param base_quality ...
+!> \param selected_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param response_min_samples ...
+!> \param max_quality ...
+!> \return maturity-blended probe quality without a promotion-quality floor
+! **************************************************************************************************
+   FUNCTION dense_direct_selected_probe_quality(base_quality, selected_quality, samples, min_samples, &
+                                                response_min_samples, max_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, max_quality, selected_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples, response_min_samples
+      REAL(KIND=dp)                                      :: quality
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: maturity, selected_quality_clipped
+
+      quality = base_quality
+      IF (samples < min_samples) RETURN
+
+      selected_quality_clipped = MAX(0.0_dp, MIN(max_quality, selected_quality))
+      maturity_samples = MAX(1, 2*response_min_samples - min_samples + 1)
+      maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                 REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+      quality = (1.0_dp - maturity)*base_quality + maturity*selected_quality_clipped
+      quality = MAX(0.0_dp, MIN(max_quality, quality))
+
+   END FUNCTION dense_direct_selected_probe_quality
+
+! **************************************************************************************************
 !> \brief Dense mirror of the physical Direct tail-probe bootstrap gate.
 !> \param candidate_used ...
 !> \param promoted ...
@@ -8294,8 +8344,13 @@ CONTAINS
       IF (abs_trust_ratio > 7.5E-1_dp) RETURN
       IF (model_gap_ratio > 7.5E-1_dp) RETURN
 
-      probe_ready = selected_quality_samples < 4 .OR. &
-                    (selected_quality_ema >= 1.0E-1_dp .AND. selected_quality >= 5.0E-2_dp)
+      IF (selected_quality_samples < 4) THEN
+         probe_ready = .TRUE.
+         RETURN
+      END IF
+
+      probe_ready = selected_quality_ema >= 5.0E-2_dp .AND. selected_quality >= 5.0E-2_dp .AND. &
+                    MOD(coupled_quality_samples, 16) == 0
 
    END FUNCTION dense_direct_tail_probe_ready
 

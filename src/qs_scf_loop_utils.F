@@ -1887,6 +1887,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: abs_trust_ratio, model_gap_ratio, residual_delta, &
                                                             selected_quality, selected_quality_ema, shadow_quality, &
                                                             weighted_trust_ratio
+      INTEGER                                            :: sparse_probe_interval
+      LOGICAL                                            :: selected_quality_positive
       LOGICAL                                            :: probe_ready
 
       probe_ready = .FALSE.
@@ -1899,9 +1901,16 @@ CONTAINS
       IF (abs_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
       IF (model_gap_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
 
-      probe_ready = selected_quality_samples < ot_kp_schur_calibration_min_samples .OR. &
-                    (selected_quality_ema >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                     selected_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio)
+      IF (selected_quality_samples < ot_kp_schur_calibration_min_samples) THEN
+         probe_ready = .TRUE.
+         RETURN
+      END IF
+
+      selected_quality_positive = &
+         selected_quality_ema >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+         selected_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+      sparse_probe_interval = MAX(1, 4*ot_kp_schur_calibration_min_samples)
+      probe_ready = selected_quality_positive .AND. MOD(coupled_quality_samples, sparse_probe_interval) == 0
 
    END FUNCTION kpoint_ot_direct_tail_probe_ready
 
@@ -8069,11 +8078,9 @@ CONTAINS
                         projector_physical_direct_tail_history_scale = &
                            SQRT(MIN(1.0_dp, projector_physical_direct_tail_history_quality))
                         projector_physical_direct_quality_for_selection = &
-                           kpoint_ot_direct_selected_history_quality( &
+                           kpoint_ot_direct_selected_probe_quality( &
                               projector_physical_trace_split_quality, &
-                              local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
-                              local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
-                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                              projector_physical_direct_tail_history_quality, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
                               ot_kp_schur_calibration_min_samples)
                         projector_physical_direct_history_quality = &
@@ -15212,6 +15219,37 @@ CONTAINS
                        MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
 
       END FUNCTION kpoint_ot_direct_selected_history_quality
+
+! **************************************************************************************************
+!> \brief selected-history calibration for continued Direct tail probes
+!> \param base_quality trace/mixed Direct quality before selected-history evidence
+!> \param selected_quality measured/predicted quality from accepted selected probes
+!> \param samples number of selected Direct accepted samples
+!> \param min_samples minimum samples before selected history contributes
+!> \return maturity-blended Direct quality without the promotion-quality floor
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_selected_probe_quality(base_quality, selected_quality, samples, min_samples) &
+         RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: base_quality, selected_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp)                                     :: quality
+
+      INTEGER                                           :: maturity_samples
+      REAL(KIND=dp)                                     :: maturity, selected_quality_clipped
+
+         quality = base_quality
+         IF (samples < min_samples) RETURN
+
+         selected_quality_clipped = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                                    selected_quality))
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - min_samples + 1)
+         maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+         quality = (1.0_dp - maturity)*base_quality + maturity*selected_quality_clipped
+         quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
+
+      END FUNCTION kpoint_ot_direct_selected_probe_quality
 
 ! **************************************************************************************************
 !> \brief ...
