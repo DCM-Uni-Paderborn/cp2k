@@ -154,6 +154,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
+                                        ot_kp_schur_split_tail_residual_min_ratio = 9.0E-1_dp, &
                                         ot_kp_schur_projector_response_advantage_ratio = 1.10_dp, &
                                         ot_kp_schur_projector_spectral_probe_quality_min = 1.0E-1_dp, &
                                         ot_kp_schur_projector_spectral_probe_trust_fraction = 7.5E-1_dp, &
@@ -5656,6 +5657,7 @@ CONTAINS
                                                                         projector_response_candidate_selected, &
                                                             split_candidate_ready, split_candidate_selected, &
                                                             split_candidate_diagnostic, split_candidate_enabled, &
+                                                            split_residual_competitive, &
                                                             trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, accepted_model_gap_ratio, &
          accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
@@ -7158,6 +7160,7 @@ CONTAINS
          split_quality_for_calibration = 1.0_dp
          split_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_residual_quality = 1.0_dp
+         split_residual_competitive = .TRUE.
          constrained_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_trust_quality = 1.0_dp
          split_density_projector_fraction = 0.0_dp
@@ -12418,7 +12421,18 @@ CONTAINS
                   split_dense_expected_ratio = 0.0_dp
                IF (dense_expected_drop > EPSILON(dense_expected_drop)) &
                   split_dense_expected_ratio = split_expected_drop/dense_expected_drop
-               split_candidate_selected = attempt_failed .OR. split_expected_drop > dense_expected_drop
+               split_residual_competitive = .TRUE.
+               IF (.NOT. attempt_failed .AND. &
+                   residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                   local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
+                  split_residual_competitive = &
+                     local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
+                     split_residual_quality >= &
+                     ot_kp_schur_split_tail_residual_min_ratio*dense_residual_quality
+               END IF
+               split_candidate_selected = attempt_failed .OR. &
+                                          (split_residual_competitive .AND. &
+                                           split_expected_drop > dense_expected_drop)
                IF (new_search_point .AND. split_candidate_ready .AND. .NOT. split_candidate_selected .AND. &
                    split_model_drop > EPSILON(split_model_drop)) THEN
                   local_ot_env(1)%schur_split_shadow_pending = .TRUE.
@@ -13970,13 +13984,14 @@ CONTAINS
                      IF (ABS(dense_print_model_gap_ratio) < SQRT(TINY(dense_print_model_gap_ratio)) .OR. &
                          ABS(dense_print_model_gap_ratio) > SQRT(HUGE(dense_print_model_gap_ratio))) &
                         dense_print_model_gap_ratio = 0.0_dp
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),3(1X,L1),17(1X,ES16.8))') &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),4(1X,L1),17(1X,ES16.8))') &
                      " OT Schur candidate selection used flavor split_used dense_code split_ready constr_selected "// &
-                     "split_selected split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
+                     "split_selected split_res_ok split_exp dense_exp dense_q drop cdrop split_qsel constr_qsel "// &
                      "split_tq dense_tq constr_tq exp_ratio dense_mgap dense_mdrop dense_mtrust dense_mratio "// &
                      "split_rq dense_rq:", &
                      schur_used_attempt, selected_flavor, split_selected_attempt, dense_reject_reason, &
                      split_candidate_ready, constrained_candidate_selected, split_candidate_selected, &
+                     split_residual_competitive, &
                      split_expected_drop, dense_expected_drop, &
                      dense_quality_for_selection, accepted_model_drop, accepted_model_calibrated_drop, &
                      split_quality_for_selection, constrained_quality_for_selection, split_trust_quality, &
