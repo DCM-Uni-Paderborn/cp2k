@@ -55,12 +55,12 @@
 # AUTO-exhausted warning is printed.
 # Current HIGH companion references after the k-point AUTO post-resize
 # convergence gate: the Sym3 path grows to 8 and 16 and has E_total = Mermin =
-# -8.1599869891 Ha.  The full-grid companion follows the same AUTO growth
-# sequence and has E_total = Mermin = -8.1599870796 Ha.  In both tails the
-# gauge-free eigenvalue-density response remains active instead of being
-# Fermi-window damped a second time, and no first/last-band or AUTO-exhausted
-# warning is printed.  Exact SCF step counts are intentionally not part of
-# these optional companion references.
+# -8.15998687287617 Ha.  The full-grid companion follows the same AUTO growth
+# sequence and has E_total = Mermin = -8.15998707619435 Ha.  The two optional
+# paths agree within 3E-7 Ha.  In both tails the gauge-free eigenvalue-density
+# response remains active instead of being Fermi-window damped a second time,
+# and no first/last-band or AUTO-exhausted warning is printed.  Exact SCF step
+# counts are intentionally not part of these optional companion references.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
