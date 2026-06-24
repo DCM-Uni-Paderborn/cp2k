@@ -5630,6 +5630,8 @@ CONTAINS
                                                             reject_model_gap = 6, reject_quality_gate = 7
       REAL(KIND=dp), PARAMETER                           :: max_norm_ratio = 1.0E6_dp, &
                                                             schur_frontier_curvature_floor = 5.0E-1_dp, &
+                                                            schur_gauge_curvature_floor = 1.5_dp, &
+                                                            schur_gauge_occ_gap_max = 5.0E-2_dp, &
                                                             schur_min_coupled_scale = 5.0E-1_dp, &
                                                             schur_model_gap_factor = 5.0E-1_dp, &
                                                             schur_response_penalty_scale = 1.0_dp, &
@@ -5739,7 +5741,7 @@ CONTAINS
          occ_tail_i, occ_tail_j, &
          occ_projected_term, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, &
-         occ_response_diag_sum, pair_projector_weight, projected_term, projector_coupled_weight, &
+         occ_response_diag_sum, pair_occ_gap, pair_projector_weight, projected_term, projector_coupled_weight, &
          projector_diagref_quality_for_selection, projector_diagref_weight, rayleigh_edge_gap, residual_delta, &
          physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
          projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
@@ -6199,6 +6201,9 @@ CONTAINS
          plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, &
          plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
          plateau_gap_mode_step_negative_fraction
+      REAL(KIND=dp) :: accepted_step_fermi_im, accepted_step_fermi_re, &
+         accepted_step_gap_im, accepted_step_gap_re, accepted_step_gauge_im, accepted_step_gauge_re, &
+         accepted_step_gap_weight, accepted_step_gauge_weight, accepted_step_sq
       REAL(KIND=dp) :: rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
          rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, &
          rot_grad_fermi_weight, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
@@ -7353,15 +7358,19 @@ CONTAINS
                                                                              occ_curv(var_ei(ivar)), &
                                                                              occ_curv(var_ej(ivar)), &
                                                                              channel_occ_curv_max)
+                     pair_occ_gap = MIN(1.0_dp, &
+                                        ABS(trial_occupation(imo, ikpoint, ispin) - &
+                                            trial_occupation(jmo, ikpoint, ispin))/ &
+                                        MAX(maxocc, EPSILON(maxocc)))
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
-                     var_occ_gap_weight(ivar) = MIN(1.0_dp, &
-                                                    ABS(trial_occupation(imo, ikpoint, ispin) - &
-                                                        trial_occupation(jmo, ikpoint, ispin))/ &
-                                                    MAX(maxocc, EPSILON(maxocc)))
+                     var_occ_gap_weight(ivar) = pair_occ_gap
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
+                     IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) <= EPSILON(1.0_dp) .AND. &
+                         pair_occ_gap <= schur_gauge_occ_gap_max) &
+                        rot_floor(ivar) = schur_gauge_curvature_floor
 
                      ivar = ivar + 1
                      var_channel(ivar) = local_channel
@@ -7372,13 +7381,13 @@ CONTAINS
                      var_ej(ivar) = e_offset(local_channel) + jmo - 1
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
-                     var_occ_gap_weight(ivar) = MIN(1.0_dp, &
-                                                    ABS(trial_occupation(imo, ikpoint, ispin) - &
-                                                        trial_occupation(jmo, ikpoint, ispin))/ &
-                                                    MAX(maxocc, EPSILON(maxocc)))
+                     var_occ_gap_weight(ivar) = pair_occ_gap
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
+                     IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) <= EPSILON(1.0_dp) .AND. &
+                         pair_occ_gap <= schur_gauge_occ_gap_max) &
+                        rot_floor(ivar) = schur_gauge_curvature_floor
                   END DO
                END DO
                   CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
@@ -13580,6 +13589,58 @@ CONTAINS
                DEALLOCATE (grad_re, grad_im)
             END DO
             group_done = .TRUE.
+            IF (logger%iter_info%print_level >= high_print_level) THEN
+               accepted_step_gap_re = 0.0_dp
+               accepted_step_gap_im = 0.0_dp
+               accepted_step_gauge_re = 0.0_dp
+               accepted_step_gauge_im = 0.0_dp
+               accepted_step_fermi_re = 0.0_dp
+               accepted_step_fermi_im = 0.0_dp
+               accepted_step_gap_weight = 0.0_dp
+               accepted_step_gauge_weight = 0.0_dp
+               DO r = 1, nrot
+                  rot_grad_pair_fraction = 0.0_dp
+                  IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) &
+                     rot_grad_pair_fraction = var_projector_active_weight(r)/var_projector_weight(r)
+                  rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
+                  rot_grad_rest_fraction = 1.0_dp - rot_grad_pair_fraction
+                  rot_grad_fermi_weight = rot_grad_pair_fraction
+                  accepted_step_sq = sol(r)*sol(r)
+                  accepted_step_gap_weight = accepted_step_gap_weight + &
+                                             rot_grad_rest_fraction*var_occ_gap_weight(r)
+                  accepted_step_gauge_weight = accepted_step_gauge_weight + &
+                                               rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))
+                  IF (var_kind(r) == 1) THEN
+                     accepted_step_fermi_re = accepted_step_fermi_re + rot_grad_fermi_weight*accepted_step_sq
+                     accepted_step_gap_re = accepted_step_gap_re + &
+                                            rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
+                     accepted_step_gauge_re = accepted_step_gauge_re + &
+                                              rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
+                                              accepted_step_sq
+                  ELSE
+                     accepted_step_fermi_im = accepted_step_fermi_im + rot_grad_fermi_weight*accepted_step_sq
+                     accepted_step_gap_im = accepted_step_gap_im + &
+                                            rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
+                     accepted_step_gauge_im = accepted_step_gauge_im + &
+                                              rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
+                                              accepted_step_sq
+                  END IF
+               END DO
+               CALL para_env_inter_kp%sum(accepted_step_gap_re)
+               CALL para_env_inter_kp%sum(accepted_step_gap_im)
+               CALL para_env_inter_kp%sum(accepted_step_gauge_re)
+               CALL para_env_inter_kp%sum(accepted_step_gauge_im)
+               CALL para_env_inter_kp%sum(accepted_step_fermi_re)
+               CALL para_env_inter_kp%sum(accepted_step_fermi_im)
+               CALL para_env_inter_kp%sum(accepted_step_gap_weight)
+               CALL para_env_inter_kp%sum(accepted_step_gauge_weight)
+               accepted_step_gap_re = SQRT(MAX(0.0_dp, accepted_step_gap_re))
+               accepted_step_gap_im = SQRT(MAX(0.0_dp, accepted_step_gap_im))
+               accepted_step_gauge_re = SQRT(MAX(0.0_dp, accepted_step_gauge_re))
+               accepted_step_gauge_im = SQRT(MAX(0.0_dp, accepted_step_gauge_im))
+               accepted_step_fermi_re = SQRT(MAX(0.0_dp, accepted_step_fermi_re))
+               accepted_step_fermi_im = SQRT(MAX(0.0_dp, accepted_step_fermi_im))
+            END IF
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
                diag_shift_avg = diag_shift_sum/REAL(MAX(1, nrot), KIND=dp)
                response_abs_trust_ratio = 0.0_dp
@@ -13599,6 +13660,11 @@ CONTAINS
                   response_weighted_trust_ratio, response_abs_trust, response_abs_trust_ratio, &
                   response_trust_factor, residual_delta, density_projector_fraction, diag_shift_sum, diag_shift_avg, &
                   diag_shift_max, schur_diag_min, rot_floor_min, trust_rejected
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
+                  " OT Schur accepted step occ audit grp gap_re gap_im gauge_re gauge_im wgap wgauge fermi_re fermi_im:", &
+                  target_group, accepted_step_gap_re, accepted_step_gap_im, accepted_step_gauge_re, &
+                  accepted_step_gauge_im, accepted_step_gap_weight, accepted_step_gauge_weight, &
+                  accepted_step_fermi_re, accepted_step_fermi_im
                IF (split_candidate_diagnostic) THEN
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,L1),27(1X,ES16.8))') &
                   " OT Schur split audit group code samples gate new energy scale drop cdrop pred meas "// &
