@@ -1862,6 +1862,50 @@ CONTAINS
    END FUNCTION kpoint_ot_physical_density_response
 
 ! **************************************************************************************************
+!> \brief tail bootstrap gate for the physical Direct k-point Schur candidate
+!> \param candidate_used ...
+!> \param promoted ...
+!> \param candidate_enabled ...
+!> \param residual_delta ...
+!> \param coupled_quality_samples ...
+!> \param selected_quality_samples ...
+!> \param selected_quality_ema ...
+!> \param selected_quality ...
+!> \param shadow_quality ...
+!> \param weighted_trust_ratio ...
+!> \param abs_trust_ratio ...
+!> \param model_gap_ratio ...
+!> \return true if a trust-safe Direct tail probe may collect selected history
+! **************************************************************************************************
+   FUNCTION kpoint_ot_direct_tail_probe_ready(candidate_used, promoted, candidate_enabled, residual_delta, &
+                                             coupled_quality_samples, selected_quality_samples, &
+                                             selected_quality_ema, selected_quality, shadow_quality, &
+                                             weighted_trust_ratio, abs_trust_ratio, model_gap_ratio) &
+      RESULT(probe_ready)
+      LOGICAL, INTENT(IN)                                :: candidate_used, candidate_enabled, promoted
+      INTEGER, INTENT(IN)                                :: coupled_quality_samples, selected_quality_samples
+      REAL(KIND=dp), INTENT(IN)                          :: abs_trust_ratio, model_gap_ratio, residual_delta, &
+                                                            selected_quality, selected_quality_ema, shadow_quality, &
+                                                            weighted_trust_ratio
+      LOGICAL                                            :: probe_ready
+
+      probe_ready = .FALSE.
+      IF (.NOT. candidate_used) RETURN
+      IF (promoted .OR. candidate_enabled) RETURN
+      IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+      IF (coupled_quality_samples < ot_kp_schur_calibration_min_samples) RETURN
+      IF (shadow_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+      IF (weighted_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+      IF (abs_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+      IF (model_gap_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+
+      probe_ready = selected_quality_samples < ot_kp_schur_calibration_min_samples .OR. &
+                    (selected_quality_ema >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                     selected_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio)
+
+   END FUNCTION kpoint_ot_direct_tail_probe_ready
+
+! **************************************************************************************************
 !> \brief shared pair slope for near-degenerate occupation-gauge filtering
 !> \param occ_curv_i ...
 !> \param occ_curv_j ...
@@ -11589,29 +11633,19 @@ CONTAINS
                                                 projector_physical_direct_response_negative_coeff
                                           END IF
                                        END IF
-                                       IF (projector_physical_direct_candidate_used .AND. &
-                                           .NOT. projector_physical_direct_promoted .AND. &
-                                           .NOT. local_ot_env(1)%schur_projector_physical_candidate_enabled .AND. &
-                                           residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-                                           local_ot_env(1)%schur_coupled_quality_samples >= &
-                                           ot_kp_schur_calibration_min_samples .AND. &
-                                           local_ot_env(1)%schur_coupled_residual_quality_ema <= 0.5_dp .AND. &
-                                           projector_physical_direct_shadow_quality_for_promotion >= &
-                                           ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                           projector_physical_direct_response_weighted_trust_ratio <= &
-                                           ot_kp_schur_projector_spectral_probe_trust_fraction .AND. &
-                                           projector_physical_direct_response_abs_trust_ratio <= &
-                                           ot_kp_schur_projector_spectral_probe_trust_fraction .AND. &
-                                           projector_physical_direct_model_gap_ratio <= &
-                                           ot_kp_schur_projector_spectral_probe_trust_fraction) THEN
-                                          projector_physical_direct_tail_probe_ready = &
-                                             local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples < &
-                                             ot_kp_schur_calibration_min_samples .OR. &
-                                             (local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema >= &
-                                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                              local_ot_env(1)%schur_projector_physical_direct_selected_quality >= &
-                                              0.5_dp*ot_kp_schur_projector_response_quality_min_ratio)
-                                       END IF
+                                       projector_physical_direct_tail_probe_ready = &
+                                          kpoint_ot_direct_tail_probe_ready( &
+                                             projector_physical_direct_candidate_used, &
+                                             projector_physical_direct_promoted, &
+                                             local_ot_env(1)%schur_projector_physical_candidate_enabled, &
+                                             residual_delta, local_ot_env(1)%schur_coupled_quality_samples, &
+                                             local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                                             local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                                             local_ot_env(1)%schur_projector_physical_direct_selected_quality, &
+                                             projector_physical_direct_shadow_quality_for_promotion, &
+                                             projector_physical_direct_response_weighted_trust_ratio, &
+                                             projector_physical_direct_response_abs_trust_ratio, &
+                                             projector_physical_direct_model_gap_ratio)
                                     END IF
                                     z_e(:) = z_e(:) + rx_e(:)
 

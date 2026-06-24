@@ -177,6 +177,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-14_dp, nfail)
    CALL check_projector_direct_selected_history_quality( &
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_tail_probe_bootstrap( &
+      "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
    CALL check_projector_trace_diag_component_scale("complex projector trace-diag Direct scale", &
@@ -6946,6 +6948,57 @@ CONTAINS
    END SUBROUTINE check_projector_direct_selected_history_quality
 
 ! **************************************************************************************************
+!> \brief Check that a trust-safe Direct tail candidate can collect selected history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_tail_probe_bootstrap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bootstrap_ready, enabled_veto, promoted_veto, &
+                                                            selected_bad, selected_good, trust_veto
+      REAL(KIND=dp)                                      :: err
+
+      bootstrap_ready = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                      2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                      0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      promoted_veto = dense_direct_tail_probe_ready(.TRUE., .TRUE., .FALSE., &
+                                                    2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                    0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      enabled_veto = dense_direct_tail_probe_ready(.TRUE., .FALSE., .TRUE., &
+                                                   2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                   0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      trust_veto = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                 2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                 0.10_dp, 8.0E-1_dp, 2.0E-2_dp, 0.0_dp)
+      selected_bad = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                   2.0E-5_dp, 4, 5, 0.04_dp, 0.04_dp, &
+                                                   0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      selected_good = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                    2.0E-5_dp, 4, 5, 0.14_dp, 0.08_dp, &
+                                                    0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+
+      err = 0.0_dp
+      IF (.NOT. bootstrap_ready .OR. promoted_veto .OR. enabled_veto .OR. trust_veto .OR. &
+          selected_bad .OR. .NOT. selected_good) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "failed with boot/prom/en/trust/bad/good", bootstrap_ready, promoted_veto, &
+            enabled_veto, trust_veto, selected_bad, selected_good
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "OK with boot/prom/en/trust/bad/good", bootstrap_ready, promoted_veto, &
+            enabled_veto, trust_veto, selected_bad, selected_good
+      END IF
+
+   END SUBROUTINE check_projector_direct_tail_probe_bootstrap
+
+! **************************************************************************************************
 !> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
 !> \param label ...
 !> \param tol ...
@@ -8202,6 +8255,49 @@ CONTAINS
       quality = MAX(min_quality, MIN(max_quality, quality))
 
    END FUNCTION dense_direct_selected_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of the physical Direct tail-probe bootstrap gate.
+!> \param candidate_used ...
+!> \param promoted ...
+!> \param candidate_enabled ...
+!> \param residual_delta ...
+!> \param coupled_quality_samples ...
+!> \param selected_quality_samples ...
+!> \param selected_quality_ema ...
+!> \param selected_quality ...
+!> \param shadow_quality ...
+!> \param weighted_trust_ratio ...
+!> \param abs_trust_ratio ...
+!> \param model_gap_ratio ...
+!> \return true if a trust-safe Direct tail probe may collect selected history
+! **************************************************************************************************
+   FUNCTION dense_direct_tail_probe_ready(candidate_used, promoted, candidate_enabled, residual_delta, &
+                                          coupled_quality_samples, selected_quality_samples, &
+                                          selected_quality_ema, selected_quality, shadow_quality, &
+                                          weighted_trust_ratio, abs_trust_ratio, model_gap_ratio) &
+      RESULT(probe_ready)
+      LOGICAL, INTENT(IN)                                :: candidate_enabled, candidate_used, promoted
+      INTEGER, INTENT(IN)                                :: coupled_quality_samples, selected_quality_samples
+      REAL(KIND=dp), INTENT(IN)                          :: abs_trust_ratio, model_gap_ratio, residual_delta, &
+                                                            selected_quality, selected_quality_ema, shadow_quality, &
+                                                            weighted_trust_ratio
+      LOGICAL                                            :: probe_ready
+
+      probe_ready = .FALSE.
+      IF (.NOT. candidate_used) RETURN
+      IF (promoted .OR. candidate_enabled) RETURN
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (coupled_quality_samples < 4) RETURN
+      IF (shadow_quality < 1.0E-1_dp) RETURN
+      IF (weighted_trust_ratio > 7.5E-1_dp) RETURN
+      IF (abs_trust_ratio > 7.5E-1_dp) RETURN
+      IF (model_gap_ratio > 7.5E-1_dp) RETURN
+
+      probe_ready = selected_quality_samples < 4 .OR. &
+                    (selected_quality_ema >= 1.0E-1_dp .AND. selected_quality >= 5.0E-2_dp)
+
+   END FUNCTION dense_direct_tail_probe_ready
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.
