@@ -1871,13 +1871,12 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       ! Keep the finite projector eigen-response strongly damped outside the
-      ! Fermi window, but do not damp the gauge-safe dP/occupation-curvature
-      ! correction by the same shape a second time.  That correction is already
-      ! active-window limited and globally fixed-N projected by the Schur energy
-      ! block; over-damping it leaves the residual tail dominated by a missing
-      ! physical density response.
-      density_response = active_weight*(response_shape*density_projector_response + &
-                                        active_fraction*(density_safe_response - density_projector_response))
+      ! Fermi window.  The gauge-safe dP/occupation-curvature correction is
+      ! already active-window limited and globally fixed-N projected by the
+      ! Schur energy block, so applying the sqrt-weight to it again removes the
+      ! physical density response that dominates the metallic residual tail.
+      density_response = active_weight*response_shape*density_projector_response + &
+                         active_fraction*(density_safe_response - density_projector_response)
 
    END FUNCTION kpoint_ot_physical_density_response
 

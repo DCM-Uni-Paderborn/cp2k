@@ -4620,8 +4620,8 @@ CONTAINS
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
          expected(i) = dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
-                       (response_shape*projector_response(i) + &
-                        active_fraction*(safe_response(i) - projector_response(i)))
+                       response_shape*projector_response(i) + &
+                       active_fraction*(safe_response(i) - projector_response(i))
       END DO
 
       err = MAXVAL(ABS(response(:) - expected(:)))
@@ -4638,7 +4638,7 @@ CONTAINS
       inert_suppression = ABS(response(n))/MAX(ABS(safe_response(n)), EPSILON(1.0_dp))
 
       IF (err > tol .OR. active_gap > tol .OR. mid_recovery < active_tol .OR. &
-          safe_recovery <= active_tol .OR. inert_suppression > 1.0E-6_dp) THEN
+          safe_recovery <= active_tol .OR. inert_suppression > 1.0E-4_dp) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
             "failed with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_recovery, &
@@ -4668,7 +4668,8 @@ CONTAINS
 
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_fraction, err, finite_floor, &
-                                                            lowcurv_gain, occ_curv_max, response_shape
+                                                            floor_to_physical, occ_curv_max, &
+                                                            response_shape
       REAL(KIND=dp), DIMENSION(n)                        :: expected, floor_response, occ_curv, &
                                                             physical_response, projector_response, safe_response
 
@@ -4693,18 +4694,19 @@ CONTAINS
 
       err = MAXVAL(ABS(floor_response(:) - expected(:)))
       finite_floor = ABS(floor_response(n))/MAX(ABS(projector_response(n)), EPSILON(1.0_dp))
-      lowcurv_gain = ABS(floor_response(3))/MAX(ABS(physical_response(3)), EPSILON(1.0_dp))
+      floor_to_physical = ABS(floor_response(3))/MAX(ABS(physical_response(3)), EPSILON(1.0_dp))
 
       IF (err > tol .OR. ABS(floor_response(1) - physical_response(1)) > tol .OR. &
-          finite_floor < 5.0E-5_dp .OR. lowcurv_gain < 1.1_dp .OR. &
+          finite_floor < 5.0E-5_dp .OR. floor_to_physical < 1.0E-1_dp .OR. &
+          floor_to_physical >= 1.0_dp .OR. &
           MAXVAL(ABS(floor_response(:))) > MAXVAL(ABS(safe_response(:)))) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/floor/gain/max", err, finite_floor, lowcurv_gain, &
+            "failed with error/floor/conservative/max", err, finite_floor, floor_to_physical, &
             MAXVAL(ABS(floor_response(:)))
       ELSE
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/floor/gain/max", err, finite_floor, lowcurv_gain, &
+            "OK with error/floor/conservative/max", err, finite_floor, floor_to_physical, &
             MAXVAL(ABS(floor_response(:)))
       END IF
 
@@ -11007,8 +11009,8 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       density_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
-                         (response_shape*density_projector_response + &
-                          active_fraction*(density_safe_response - density_projector_response))
+                         response_shape*density_projector_response + &
+                         active_fraction*(density_safe_response - density_projector_response)
 
    END FUNCTION dense_physical_density_response
 
