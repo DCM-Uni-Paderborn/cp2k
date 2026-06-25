@@ -14934,8 +14934,8 @@ CONTAINS
                      projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                      DO r = 1, nrot
                         rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
-                        IF (exact_density_response_ready) &
-                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
+                        IF (exact_density_direct_response_ready) &
+                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_direct_exact(:, r), grad_e)
                      END DO
                      sol(:) = rhs(:)
                      CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
@@ -15053,14 +15053,14 @@ CONTAINS
                            projected_term = 0.5_dp* &
                               (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
                                DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
-                           IF (exact_density_response_ready) &
+                           IF (exact_density_direct_response_ready) &
                               projected_term = projected_term + 0.5_dp* &
-                                 (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
-                                  DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
-                                  DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                                 (DOT_PRODUCT(energy_cross_physical(:, r), response_density_direct_exact(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_density_direct(:, r), response_exact_physical(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_density_direct(:, r), response_density_direct_exact(:, s)) + &
+                                  DOT_PRODUCT(energy_cross_physical(:, s), response_density_direct_exact(:, r)) + &
+                                  DOT_PRODUCT(energy_cross_density_direct(:, s), response_exact_physical(:, r)) + &
+                                  DOT_PRODUCT(energy_cross_density_direct(:, s), response_density_direct_exact(:, r)))
                            schur(r, s) = schur(r, s) - projected_term
                         END DO
                      END DO
@@ -15084,8 +15084,8 @@ CONTAINS
                      projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                      DO r = 1, nrot
                         rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
-                        IF (exact_density_response_ready) &
-                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
+                        IF (exact_density_direct_response_ready) &
+                           rhs(r) = rhs(r) + DOT_PRODUCT(response_density_direct_exact(:, r), grad_e)
                      END DO
                      sol(:) = rhs(:)
                      CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
@@ -15100,7 +15100,8 @@ CONTAINS
                      IF (solved) THEN
                         rx_e(:) = MATMUL(response_exact_raw, sol)
                         rx_model(:) = MATMUL(response_exact_physical, sol)
-                        IF (exact_density_response_ready) rx_model(:) = rx_model(:) + MATMUL(response_density_exact, sol)
+                        IF (exact_density_direct_response_ready) &
+                           rx_model(:) = rx_model(:) + MATMUL(response_density_direct_exact, sol)
                         CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                               occ_curv_projection_sum, channel_nmo, e_offset)
                         CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
@@ -15209,14 +15210,14 @@ CONTAINS
                               projected_term = 0.5_dp* &
                                  (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
                                   DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
-                              IF (exact_density_response_ready) &
+                              IF (exact_density_direct_response_ready) &
                                  projected_term = projected_term + 0.5_dp* &
-                                    (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
-                                     DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
-                                     DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
-                                     DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
-                                     DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
-                                     DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                                    (DOT_PRODUCT(energy_cross_physical(:, r), response_density_direct_exact(:, s)) + &
+                                     DOT_PRODUCT(energy_cross_density_direct(:, r), response_exact_physical(:, s)) + &
+                                     DOT_PRODUCT(energy_cross_density_direct(:, r), response_density_direct_exact(:, s)) + &
+                                     DOT_PRODUCT(energy_cross_physical(:, s), response_density_direct_exact(:, r)) + &
+                                     DOT_PRODUCT(energy_cross_density_direct(:, s), response_exact_physical(:, r)) + &
+                                     DOT_PRODUCT(energy_cross_density_direct(:, s), response_density_direct_exact(:, r)))
                               schur(r, s) = schur(r, s) - projected_term
                            END DO
                         END DO
@@ -15240,8 +15241,8 @@ CONTAINS
                         projector_physical_direct_schur_eval_max = MAXVAL(projector_physical_direct_schur_eval)
                         DO r = 1, nrot
                            rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact_physical(:, r), grad_e)
-                           IF (exact_density_response_ready) &
-                              rhs(r) = rhs(r) + DOT_PRODUCT(response_density_exact(:, r), grad_e)
+                           IF (exact_density_direct_response_ready) &
+                              rhs(r) = rhs(r) + DOT_PRODUCT(response_density_direct_exact(:, r), grad_e)
                         END DO
                         sol(:) = rhs(:)
                         CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
@@ -15257,8 +15258,8 @@ CONTAINS
                            rx_e(:) = MATMUL(response_exact_raw, sol)
                            rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, sol) + &
                                          z_weight*MATMUL(response_exact_physical, sol)
-                           IF (exact_density_response_ready) &
-                              rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, sol)
+                           IF (exact_density_direct_response_ready) &
+                              rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_direct_exact, sol)
                            CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                                  occ_curv_projection_sum, channel_nmo, e_offset)
                            CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
@@ -15393,14 +15394,14 @@ CONTAINS
                         projected_term = 0.5_dp* &
                            (DOT_PRODUCT(energy_cross_physical(:, r), response_exact_physical(:, s)) + &
                             DOT_PRODUCT(energy_cross_physical(:, s), response_exact_physical(:, r)))
-                        IF (exact_density_response_ready) &
+                        IF (exact_density_direct_response_ready) &
                            projected_term = projected_term + 0.5_dp* &
-                              (DOT_PRODUCT(energy_cross_physical(:, r), response_density_exact(:, s)) + &
-                               DOT_PRODUCT(energy_cross_density(:, r), response_exact_physical(:, s)) + &
-                               DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
-                               DOT_PRODUCT(energy_cross_physical(:, s), response_density_exact(:, r)) + &
-                               DOT_PRODUCT(energy_cross_density(:, s), response_exact_physical(:, r)) + &
-                               DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                              (DOT_PRODUCT(energy_cross_physical(:, r), response_density_direct_exact(:, s)) + &
+                               DOT_PRODUCT(energy_cross_density_direct(:, r), response_exact_physical(:, s)) + &
+                               DOT_PRODUCT(energy_cross_density_direct(:, r), response_density_direct_exact(:, s)) + &
+                               DOT_PRODUCT(energy_cross_physical(:, s), response_density_direct_exact(:, r)) + &
+                               DOT_PRODUCT(energy_cross_density_direct(:, s), response_exact_physical(:, r)) + &
+                               DOT_PRODUCT(energy_cross_density_direct(:, s), response_density_direct_exact(:, r)))
                         schur(r, s) = schur(r, s) - projected_term
                      END DO
                   END DO
@@ -15413,12 +15414,8 @@ CONTAINS
                   rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
                   rx_model(:) = (1.0_dp - z_weight)*MATMUL(response_exact_raw, accepted_sol) + &
                                 z_weight*MATMUL(response_exact_physical, accepted_sol)
-                  IF (exact_density_full_audit_ready) THEN
-                     rx_model(:) = rx_model(:) + &
-                                   z_weight*MATMUL(response_density_full_audit_exact, accepted_sol)
-                  ELSE IF (exact_density_response_ready) THEN
-                     rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_exact, accepted_sol)
-                  END IF
+                  IF (exact_density_direct_response_ready) &
+                     rx_model(:) = rx_model(:) + z_weight*MATMUL(response_density_direct_exact, accepted_sol)
                   CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
                   CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
