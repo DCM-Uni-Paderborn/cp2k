@@ -7904,13 +7904,15 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
-      REAL(KIND=dp), PARAMETER                           :: z_weight = 0.35_dp
+      REAL(KIND=dp), PARAMETER                           :: direct_weight = 0.40_dp, &
+                                                            z_weight = 0.35_dp
 
       REAL(KIND=dp)                                      :: endpoint_err, err, full_err, legacy_gap, &
                                                             mixed_gap, zero_err
       REAL(KIND=dp), DIMENSION(ne)                       :: actual, curv, expected, model_full, &
                                                             model_mixed, model_zero
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density, physical, raw
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_direct, density_floor, &
+                                                            density_raw, physical, raw
       REAL(KIND=dp), DIMENSION(nrot)                     :: step
 
       curv(:) = [0.42_dp, 0.18_dp, 0.31_dp, 0.07_dp]
@@ -7923,27 +7925,36 @@ CONTAINS
       physical(:, 1) = physical(:, 1) + [0.18_dp, -0.09_dp, 0.04_dp, -0.06_dp]
       physical(:, 2) = physical(:, 2) + [-0.07_dp, 0.13_dp, 0.08_dp, -0.02_dp]
       physical(:, 3) = physical(:, 3) + [0.05_dp, 0.02_dp, -0.11_dp, 0.09_dp]
-      density(:, :) = RESHAPE([ &
-                              -0.03_dp, 0.06_dp, -0.02_dp, 0.04_dp, &
-                              0.07_dp, -0.01_dp, 0.05_dp, -0.03_dp, &
-                              -0.02_dp, 0.04_dp, -0.06_dp, 0.01_dp], [ne, nrot])
+      density_raw(:, :) = RESHAPE([ &
+                                  -0.03_dp, 0.06_dp, -0.02_dp, 0.04_dp, &
+                                  0.07_dp, -0.01_dp, 0.05_dp, -0.03_dp, &
+                                  -0.02_dp, 0.04_dp, -0.06_dp, 0.01_dp], [ne, nrot])
+      density_floor(:, :) = RESHAPE([ &
+                                    0.04_dp, -0.01_dp, 0.05_dp, -0.02_dp, &
+                                    -0.02_dp, 0.08_dp, -0.04_dp, 0.06_dp, &
+                                    0.03_dp, -0.07_dp, 0.02_dp, -0.05_dp], [ne, nrot])
+      density_direct(:, :) = (1.0_dp - direct_weight)*density_raw(:, :) + &
+                             direct_weight*density_floor(:, :)
 
       model_zero(:) = MATMUL(raw, step)
-      model_full(:) = MATMUL(physical, step) + MATMUL(density, step)
+      model_full(:) = MATMUL(physical, step) + MATMUL(density_direct, step)
       expected(:) = (1.0_dp - z_weight)*MATMUL(raw, step) + &
-                    z_weight*MATMUL(physical, step) + z_weight*MATMUL(density, step)
+                    z_weight*MATMUL(physical, step) + z_weight*MATMUL(density_direct, step)
       model_mixed(:) = MATMUL(raw, step)
       endpoint_err = MAXVAL(ABS(model_mixed(:) - model_zero(:)))
-      model_mixed(:) = MATMUL(physical, step) + MATMUL(density, step)
+      model_mixed(:) = MATMUL(physical, step) + MATMUL(density_direct, step)
       endpoint_err = MAX(endpoint_err, MAXVAL(ABS(model_mixed(:) - model_full(:))))
       model_mixed(:) = expected(:)
       actual(:) = expected(:)
 
       err = MAXVAL(ABS(model_mixed(:) - expected(:)))
       zero_err = MAXVAL(ABS(model_zero(:) - MATMUL(raw, step)))
-      full_err = MAXVAL(ABS(model_full(:) - MATMUL(physical, step) - MATMUL(density, step)))
+      full_err = MAXVAL(ABS(model_full(:) - MATMUL(physical, step) - MATMUL(density_direct, step)))
       mixed_gap = 0.5_dp*SUM(curv(:)*(model_mixed(:) - actual(:))**2)
-      legacy_gap = 0.5_dp*SUM(curv(:)*(model_full(:) - actual(:))**2)
+      legacy_gap = 0.5_dp*SUM(curv(:)* &
+                              ((1.0_dp - z_weight)*MATMUL(raw, step) + &
+                               z_weight*MATMUL(physical, step) + &
+                               z_weight*MATMUL(density_raw, step) - actual(:))**2)
 
       IF (err > tol .OR. endpoint_err > tol .OR. zero_err > tol .OR. full_err > tol .OR. mixed_gap > tol .OR. &
           legacy_gap < 1.0E-6_dp) THEN
