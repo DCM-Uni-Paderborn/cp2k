@@ -123,6 +123,7 @@ MODULE qs_scf_types
       INTEGER :: density_descent_quality_samples = 0
       INTEGER :: density_descent_selected_quality_samples = 0
       INTEGER :: response_selected_quality_samples = 0
+      INTEGER :: density_full_selected_quality_samples = 0
       INTEGER :: physical_direct_quality_samples = 0
       INTEGER :: physical_direct_selected_quality_samples = 0
       INTEGER :: phys_direct_density_sel_quality_samples = 0
@@ -155,6 +156,13 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: response_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: response_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: response_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp
