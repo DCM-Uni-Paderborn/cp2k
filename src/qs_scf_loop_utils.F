@@ -17914,7 +17914,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)      :: cluster_evec, cluster_kernel, cluster_work, &
                                                              response_block
       INTEGER                                             :: a, b, first, last, m, n
-      REAL(KIND=dp)                                       :: cluster_curv, curv, mu_den, mu_num, mu_shift
+      REAL(KIND=dp)                                       :: curv, mu_den, mu_num, mu_shift
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: cluster_eval, modal_curv
 
          n = SIZE(evals)
@@ -17932,11 +17932,6 @@ CONTAINS
             END DO
             m = last - first + 1
             IF (m > 1) THEN
-               cluster_curv = HUGE(1.0_dp)
-               DO a = first, last
-                  cluster_curv = MIN(cluster_curv, MAX(0.0_dp, occ_curv_channel(a)))
-               END DO
-               IF (cluster_curv > EPSILON(cluster_curv)) THEN
                ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
@@ -17948,7 +17943,6 @@ CONTAINS
                   mu_den = mu_den + modal_curv(a)
                END DO
                DEALLOCATE (cluster_work, cluster_evec, cluster_eval, modal_curv)
-            END IF
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
                IF (curv > EPSILON(curv)) THEN
@@ -17971,33 +17965,27 @@ CONTAINS
             m = last - first + 1
             IF (m > 1) THEN
                kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-               cluster_curv = HUGE(1.0_dp)
-               DO a = first, last
-                  cluster_curv = MIN(cluster_curv, MAX(0.0_dp, occ_curv_channel(a)))
+               ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
+                         response_block(m, m), cluster_eval(m), modal_curv(m))
+               cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
+                                            CONJG(TRANSPOSE(work(first:last, first:last))))
+               CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                            modal_curv)
+               cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               DO a = 1, m
+                  cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
+                                               (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
                END DO
-               IF (cluster_curv > EPSILON(cluster_curv)) THEN
-                  ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
-                            response_block(m, m), cluster_eval(m), modal_curv(m))
-                  cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
-                                               CONJG(TRANSPOSE(work(first:last, first:last))))
-                  CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                               modal_curv)
-                  cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               response_block(:, :) = MATMUL(cluster_evec, &
+                                             MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
+               DO b = 1, m
                   DO a = 1, m
-                     cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
-                                                  (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
+                     kernel(first + a - 1, first + b - 1) = response_block(a, b)
                   END DO
-                  response_block(:, :) = MATMUL(cluster_evec, &
-                                                MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
-                  DO b = 1, m
-                     DO a = 1, m
-                        kernel(first + a - 1, first + b - 1) = response_block(a, b)
-                     END DO
-                  END DO
-                  DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &
-                              modal_curv)
-               END IF
+               END DO
+               DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &
+                           modal_curv)
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
                kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
