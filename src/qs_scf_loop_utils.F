@@ -14139,16 +14139,6 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_metric = &
                         local_ot_env(1)%schur_projector_physical_metric + &
                         projector_physical_model_calibrated_drop*projector_physical_direct_metric_norm_ratio
-                  IF (projector_physical_direct_density_candidate_selected .AND. &
-                      accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
-                     local_ot_env(1)%schur_projector_physical_direct_selected = &
-                        local_ot_env(1)%schur_projector_physical_direct_selected + &
-                        accepted_model_calibrated_drop
-                  IF (projector_physical_direct_density_candidate_selected .AND. &
-                      accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
-                     local_ot_env(1)%schur_projector_phys_direct_density_sel = &
-                        local_ot_env(1)%schur_projector_phys_direct_density_sel + &
-                        accepted_model_calibrated_drop
                   local_ot_env(1)%schur_projector_physical_weight = &
                      MAX(local_ot_env(1)%schur_projector_physical_weight, projector_physical_response_weight)
                   local_ot_env(1)%schur_projector_physical_correction_drop = &
@@ -14157,6 +14147,15 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_negative = &
                      MAX(local_ot_env(1)%schur_projector_physical_negative, &
                          projector_physical_response_correction_negative)
+               END IF
+               IF (projector_physical_direct_density_candidate_selected .AND. &
+                   accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
+                  local_ot_env(1)%schur_projector_physical_direct_selected = &
+                     local_ot_env(1)%schur_projector_physical_direct_selected + &
+                     accepted_model_calibrated_drop
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel = &
+                     local_ot_env(1)%schur_projector_phys_direct_density_sel + &
+                     accepted_model_calibrated_drop
                END IF
             END IF
 
