@@ -17814,54 +17814,15 @@ CONTAINS
                                                      gauge_gap)
                docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
                kernel(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(docc_mat, evec))
-               diag_response_shift = 0.0_dp
-               occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
-               IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
-                  DO i = 1, n
-                     diag_response_shift = diag_response_shift + &
-                                           MAX(0.0_dp, occ_curv_channel(i))*REAL(work(i, i), KIND=dp)
-                  END DO
-                  diag_response_shift = diag_response_shift/occ_curv_sum
-               END IF
-               ! Keep gauge-sensitive finite differences for off-diagonal projector response only.
-               ! The density response is the analytic fixed-N Mermin diagonal in the CHC basis.
-               DO i = 1, n
-                  coeff = -2.0_dp*projector_weight*MAX(0.0_dp, occ_curv_channel(i))
-                  kernel(i, i) = CMPLX(coeff*(REAL(work(i, i), KIND=dp) - diag_response_shift), &
-                                       0.0_dp, KIND=dp)
-               END DO
-               ! The finite-difference projector value still contains the
-               ! arbitrary eigenvector gauge inside a near-degenerate cluster.
-               ! Replace only those cluster off-diagonals by the fixed-N
-               ! Mermin plateau derivative; non-cluster entries retain the
-               ! smooth finite-difference projector response.
-               DO j = 1, n
-                  DO i = 1, n
-                     IF (i == j) CYCLE
-                     same_gauge_cluster = .TRUE.
-                     DO idx = MIN(i, j), MAX(i, j) - 1
-                        IF (ABS(evals(idx + 1) - evals(idx)) > gauge_gap) &
-                           same_gauge_cluster = .FALSE.
-                     END DO
-                     IF (.NOT. same_gauge_cluster) CYCLE
-                     denom = evals(i) - evals(j)
-                     IF (ABS(denom) > gap_tol) THEN
-                        coeff = (occ_slope(i) - occ_slope(j))/denom
-                     ELSE IF (ABS(occ_slope(i) - occ_slope(j)) <= occ_tol) THEN
-                        coeff = 0.0_dp
-                     ELSE
-                        coeff = (occ_slope(i) - occ_slope(j))/SIGN(gap_tol, denom)
-                     END IF
-                     coeff = MIN(0.0_dp, coeff)
-                     slope_cap = kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(j))
-                     IF (slope_cap > EPSILON(slope_cap)) THEN
-                        coeff = MAX(coeff, -slope_cap)
-                     ELSE
-                        coeff = 0.0_dp
-                     END IF
-                     kernel(i, j) = projector_weight*coeff*work(i, j)
-                  END DO
-               END DO
+               ! The finite-difference projector value still contains arbitrary
+               ! eigenvector gauge inside a near-degenerate cluster.  Replace
+               ! those whole cluster blocks by the fixed-N Mermin response to
+               ! the Hermitian perturbation projected into the cluster.  This is
+               ! covariant under REF-basis rotations and keeps true level
+               ! splitting response without feeding projector-basis noise into
+               ! the physical Schur curvature.
+               CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, gauge_gap, &
+                                                            projector_weight, kernel)
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
                docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
                DEALLOCATE (occ_mat_p, occ_mat_m)
@@ -17933,6 +17894,115 @@ CONTAINS
          DEALLOCATE (evec, kernel, work, evals, occ_scale, occ_slope)
 
       END SUBROUTINE dense_history_safe_occ_projector_derivative
+
+! **************************************************************************************************
+!> \brief Replace near-degenerate projector-gauge blocks by a fixed-N physical response.
+!> \param evals ...
+!> \param work ...
+!> \param occ_curv_channel ...
+!> \param gauge_gap ...
+!> \param projector_weight ...
+!> \param kernel ...
+! **************************************************************************************************
+      SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, gauge_gap, &
+                                                        projector_weight, kernel)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: evals, occ_curv_channel
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)       :: work
+      REAL(KIND=dp), INTENT(IN)                           :: gauge_gap, projector_weight
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)    :: kernel
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)      :: cluster_evec, cluster_kernel, cluster_work, &
+                                                             response_block
+      INTEGER                                             :: a, b, first, last, m, n
+      REAL(KIND=dp)                                       :: cluster_curv, curv, mu_den, mu_num, mu_shift
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: cluster_eval
+
+         n = SIZE(evals)
+         IF (n <= 0) RETURN
+         IF (projector_weight <= 0.0_dp) RETURN
+
+         mu_num = 0.0_dp
+         mu_den = 0.0_dp
+         first = 1
+         DO WHILE (first <= n)
+            last = first
+            DO WHILE (last < n)
+               IF (ABS(evals(last + 1) - evals(last)) > gauge_gap) EXIT
+               last = last + 1
+            END DO
+            m = last - first + 1
+            IF (m > 1) THEN
+               cluster_curv = HUGE(1.0_dp)
+               DO a = first, last
+                  cluster_curv = MIN(cluster_curv, MAX(0.0_dp, occ_curv_channel(a)))
+               END DO
+               IF (cluster_curv > EPSILON(cluster_curv)) THEN
+                  ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m))
+                  cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
+                                               CONJG(TRANSPOSE(work(first:last, first:last))))
+                  CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+                  DO a = 1, m
+                     mu_num = mu_num + cluster_curv*cluster_eval(a)
+                     mu_den = mu_den + cluster_curv
+                  END DO
+                  DEALLOCATE (cluster_work, cluster_evec, cluster_eval)
+               END IF
+            ELSE
+               curv = MAX(0.0_dp, occ_curv_channel(first))
+               IF (curv > EPSILON(curv)) THEN
+                  mu_num = mu_num + curv*REAL(work(first, first), KIND=dp)
+                  mu_den = mu_den + curv
+               END IF
+            END IF
+            first = last + 1
+         END DO
+         mu_shift = 0.0_dp
+         IF (mu_den > EPSILON(mu_den)) mu_shift = mu_num/mu_den
+
+         first = 1
+         DO WHILE (first <= n)
+            last = first
+            DO WHILE (last < n)
+               IF (ABS(evals(last + 1) - evals(last)) > gauge_gap) EXIT
+               last = last + 1
+            END DO
+            m = last - first + 1
+            IF (m > 1) THEN
+               kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               cluster_curv = HUGE(1.0_dp)
+               DO a = first, last
+                  cluster_curv = MIN(cluster_curv, MAX(0.0_dp, occ_curv_channel(a)))
+               END DO
+               IF (cluster_curv > EPSILON(cluster_curv)) THEN
+                  ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
+                            response_block(m, m), cluster_eval(m))
+                  cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
+                                               CONJG(TRANSPOSE(work(first:last, first:last))))
+                  CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+                  cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+                  DO a = 1, m
+                     cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*cluster_curv* &
+                                                  (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
+                  END DO
+                  response_block(:, :) = MATMUL(cluster_evec, &
+                                                MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
+                  DO b = 1, m
+                     DO a = 1, m
+                        kernel(first + a - 1, first + b - 1) = response_block(a, b)
+                     END DO
+                  END DO
+                  DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval)
+               END IF
+            ELSE
+               curv = MAX(0.0_dp, occ_curv_channel(first))
+               kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
+                                            (REAL(work(first, first), KIND=dp) - mu_shift), &
+                                            0.0_dp, KIND=dp)
+            END IF
+            first = last + 1
+         END DO
+
+      END SUBROUTINE dense_fixed_n_projector_cluster_kernel
 
 ! **************************************************************************************************
 !> \brief ...
