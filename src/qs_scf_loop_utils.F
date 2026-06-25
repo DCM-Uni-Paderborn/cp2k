@@ -6164,6 +6164,8 @@ CONTAINS
             projector_physical_direct_diagref_weight, &
             projector_physical_direct_diag_balance, &
             projector_physical_direct_floor_density_maturity, &
+            projector_physical_direct_floor_density_quality, &
+            projector_physical_direct_floor_density_trust_quality, &
             projector_physical_direct_floor_density_weight, &
             projector_physical_direct_density_direction_scale, &
             projector_physical_direct_density_expected_drop, &
@@ -7397,6 +7399,8 @@ CONTAINS
             projector_physical_trace_split_quality = 0.0_dp
             projector_physical_direct_density_audit_quality = 1.0_dp
             projector_physical_direct_floor_density_maturity = 0.0_dp
+            projector_physical_direct_floor_density_quality = 0.0_dp
+            projector_physical_direct_floor_density_trust_quality = 1.0_dp
             projector_physical_direct_floor_density_weight = 0.0_dp
             projector_physical_response_abs_step = 0.0_dp
             projector_physical_response_abs_trust_ratio = 0.0_dp
@@ -8139,6 +8143,8 @@ CONTAINS
          END IF
          density_full_global_history_trust_quality = 1.0_dp
          density_full_global_quality_for_selection = 0.0_dp
+         projector_physical_direct_floor_density_quality = 0.0_dp
+         projector_physical_direct_floor_density_trust_quality = 1.0_dp
          exact_density_direct_response_ready = exact_density_response_ready
          energy_cross_density_direct(:, :) = energy_cross_density(:, :)
          response_density_direct_exact(:, :) = response_density_exact(:, :)
@@ -8166,6 +8172,10 @@ CONTAINS
                   ot_kp_schur_projector_response_min_samples, 0.0_dp, &
                   ot_kp_schur_projector_response_quality_min_ratio, &
                   ot_kp_schur_projector_response_quality_max_ratio)
+            projector_physical_direct_floor_density_quality = &
+               density_full_global_quality_for_selection
+            projector_physical_direct_floor_density_trust_quality = &
+               density_full_global_history_trust_quality
             projector_physical_direct_floor_density_maturity = &
                REAL(local_ot_env(1)%schur_projector_density_full_global_quality_samples - &
                     ot_kp_schur_projector_response_min_samples + 1, KIND=dp)/ &
@@ -8205,8 +8215,9 @@ CONTAINS
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,5(1X,ES16.8),1X,I8)') &
                " OT Schur projector phys direct density mix group weight mature qhist tqhist absavg samples:", &
                target_group, projector_physical_direct_floor_density_weight, &
-               projector_physical_direct_floor_density_maturity, density_full_global_quality_for_selection, &
-               density_full_global_history_trust_quality, &
+               projector_physical_direct_floor_density_maturity, &
+               projector_physical_direct_floor_density_quality, &
+               projector_physical_direct_floor_density_trust_quality, &
                projector_density_full_global_abs_avg, &
                local_ot_env(1)%schur_projector_density_full_global_quality_samples
          ! Keep the validated full physical trace backbone for cross-channel
@@ -11260,6 +11271,15 @@ CONTAINS
                                                    kpoint_ot_schur_trust_quality( &
                                                       projector_physical_direct_density_response_weighted_trust_ratio, &
                                                       projector_physical_direct_density_response_abs_trust_ratio, 0.0_dp)
+                                                IF (projector_physical_direct_floor_density_weight > &
+                                                    EPSILON(projector_physical_direct_floor_density_weight) .AND. &
+                                                    projector_physical_direct_floor_density_quality >= &
+                                                    ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                    projector_physical_direct_floor_density_trust_quality >= &
+                                                    ot_kp_schur_projector_response_quality_min_ratio) &
+                                                   projector_physical_direct_density_quality_for_selection = &
+                                                      MAX(projector_physical_direct_density_quality_for_selection, &
+                                                          projector_physical_direct_floor_density_quality)
                                                 projector_physical_direct_density_shadow_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &
                                                       projector_physical_direct_density_model_calibrated_drop, &
@@ -11273,12 +11293,18 @@ CONTAINS
                                                       projector_physical_direct_density_trust_quality* &
                                                       projector_physical_direct_density_audit_quality)
                                                 projector_physical_direct_density_candidate_ready = &
-                                                   local_ot_env(1)%schur_projector_density_quality_samples >= &
-                                                   ot_kp_schur_projector_response_min_samples .AND. &
-                                                   local_ot_env(1)%schur_projector_density_quality_ema >= &
-                                                   ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                                                   local_ot_env(1)%schur_projector_density_quality >= &
-                                                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                   ((local_ot_env(1)%schur_projector_density_quality_samples >= &
+                                                     ot_kp_schur_projector_response_min_samples .AND. &
+                                                     local_ot_env(1)%schur_projector_density_quality_ema >= &
+                                                     ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                     local_ot_env(1)%schur_projector_density_quality >= &
+                                                     0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .OR. &
+                                                    (projector_physical_direct_floor_density_weight > &
+                                                     EPSILON(projector_physical_direct_floor_density_weight) .AND. &
+                                                     projector_physical_direct_floor_density_quality >= &
+                                                     ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                                     projector_physical_direct_floor_density_trust_quality >= &
+                                                     ot_kp_schur_projector_response_quality_min_ratio)) .AND. &
                                                    projector_physical_direct_density_expected_drop > &
                                                    EPSILON(projector_physical_direct_density_expected_drop) .AND. &
                                                    projector_physical_direct_density_response_weighted_step <= &
@@ -11287,6 +11313,21 @@ CONTAINS
                                                    response_abs_trust
                                              END IF
                                           END IF
+                                          IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                              logger%para_env%is_source()) &
+                                             WRITE (cp_logger_get_default_unit_nr(logger), &
+                                                    '(A,1X,I3,2(1X,L1),7(1X,ES16.8))') &
+                                             " OT Schur projector phys direct density gate group ready selected "// &
+                                             "exp qsel cdrop rratio aratio tq scale:", &
+                                             target_group, projector_physical_direct_density_candidate_ready, &
+                                             projector_physical_direct_density_candidate_selected, &
+                                             projector_physical_direct_density_expected_drop, &
+                                             projector_physical_direct_density_quality_for_selection, &
+                                             projector_physical_direct_density_model_calibrated_drop, &
+                                             projector_physical_direct_density_response_weighted_trust_ratio, &
+                                             projector_physical_direct_density_response_abs_trust_ratio, &
+                                             projector_physical_direct_density_trust_quality, &
+                                             projector_physical_direct_density_direction_scale
                                           IF (exact_density_full_response_ready) THEN
                                              schur(:, :) = rot_hessian_coupled(:, :) + &
                                                            projector_coupled_weight* &
