@@ -8793,6 +8793,11 @@ CONTAINS
                               ot_kp_schur_calibration_min_samples, &
                               0.0_dp, 0.0_dp, &
                               ot_kp_schur_projector_response_quality_max_ratio)
+                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                           projector_physical_direct_density_selected_history_quality = &
+                              projector_physical_direct_density_selected_history_quality* &
+                              MAX(0.0_dp, MIN(1.0_dp, &
+                                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema))
                         projector_physical_direct_density_quality_for_selection = &
                            kpoint_ot_direct_selected_probe_quality( &
                               projector_physical_direct_density_quality_for_selection, &
