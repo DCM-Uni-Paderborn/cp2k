@@ -8600,6 +8600,11 @@ CONTAINS
                               ot_kp_schur_calibration_min_samples, &
                               0.0_dp, 0.0_dp, &
                               ot_kp_schur_projector_response_quality_max_ratio)
+                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                           projector_physical_direct_tail_history_quality = &
+                              projector_physical_direct_tail_history_quality* &
+                              MAX(0.0_dp, MIN(1.0_dp, &
+                                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema))
                         projector_physical_direct_tail_history_scale = &
                            SQRT(MIN(1.0_dp, projector_physical_direct_tail_history_quality))
                         projector_physical_direct_quality_for_selection = &
@@ -8615,6 +8620,11 @@ CONTAINS
                               local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
                               local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
                               ot_kp_schur_calibration_min_samples)
+                        IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                           projector_physical_direct_history_quality = &
+                              projector_physical_direct_history_quality* &
+                              MAX(0.0_dp, MIN(1.0_dp, &
+                                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema))
                         projector_physical_direct_history_scale = &
                            kpoint_ot_direct_history_step_scale( &
                               projector_physical_direct_history_quality, &
@@ -12177,6 +12187,11 @@ CONTAINS
                                                 projector_physical_direct_trust_scale
                                              projector_physical_direct_line_step = &
                                                 direction_scale
+                                             IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                                                projector_physical_direct_quality_for_selection = &
+                                                   projector_physical_direct_quality_for_selection* &
+                                                   MAX(0.0_dp, MIN(1.0_dp, &
+                                                       projector_physical_direct_history_quality))
                                              ! The physical-direct candidate is selected only after
                                              ! accepted-drop history proves it conservative.  Keep the
                                              ! Euclidean z.z=g.z scale diagnostic separate from the
