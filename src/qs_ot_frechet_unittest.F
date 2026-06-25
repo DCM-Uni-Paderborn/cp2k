@@ -238,6 +238,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector fd fixed-N trace", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_degenerate_physical_split( &
       "history-safe occupation-projector degenerate physical split", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_modal_curvature_split( &
+      "history-safe occupation-projector modal curvature split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -10387,9 +10389,10 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, cluster_kernel, cluster_response, &
                                                             cluster_work, dchc, docc_safe, evec
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: block_err, charge_leak, cluster_curv, &
-                                                            legacy_gap, mu_shift, outside_err
-      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, split_eval
+      REAL(KIND=dp)                                      :: block_err, charge_leak, legacy_gap, &
+                                                            mu_den, mu_num, mu_shift, outside_err
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, modal_curv, occ_curv, occ_scale, &
+                                                            split_eval
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.23_dp, 0.47_dp]
       occ_scale(:) = [1.18_dp, 0.39_dp, 0.20_dp, 0.07_dp]
@@ -10410,16 +10413,16 @@ CONTAINS
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_safe, occ_curv, gauge_gap)
 
-      cluster_curv = MIN(occ_curv(1), occ_curv(2))
       cluster_work(1:2, 1:2) = dchc(1:2, 1:2)
       CALL diag_complex(cluster_work(1:2, 1:2), evec(1:2, 1:2), split_eval(1:2))
-      mu_shift = (cluster_curv*(split_eval(1) + split_eval(2)) + &
-                  occ_curv(3)*REAL(dchc(3, 3), KIND=dp) + &
-                  occ_curv(4)*REAL(dchc(4, 4), KIND=dp))/ &
-                 (2.0_dp*cluster_curv + occ_curv(3) + occ_curv(4))
+      CALL dense_fixed_n_projector_modal_curvature(evec(1:2, 1:2), occ_curv(1:2), modal_curv(1:2))
+      mu_num = modal_curv(1)*split_eval(1) + modal_curv(2)*split_eval(2) + &
+               occ_curv(3)*REAL(dchc(3, 3), KIND=dp) + occ_curv(4)*REAL(dchc(4, 4), KIND=dp)
+      mu_den = modal_curv(1) + modal_curv(2) + occ_curv(3) + occ_curv(4)
+      mu_shift = mu_num/mu_den
       cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO i = 1, 2
-         cluster_kernel(i, i) = CMPLX(-2.0_dp*projector_weight*cluster_curv* &
+         cluster_kernel(i, i) = CMPLX(-2.0_dp*projector_weight*modal_curv(i)* &
                                       (split_eval(i) - mu_shift), 0.0_dp, KIND=dp)
       END DO
       cluster_response(1:2, 1:2) = MATMUL(evec(1:2, 1:2), &
@@ -10449,6 +10452,106 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_degenerate_physical_split
+
+! **************************************************************************************************
+!> \brief Check that mixed active/inert clusters keep modal physical curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_modal_curvature_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: chc, cluster_kernel, cluster_min_kernel, &
+         cluster_min_response, cluster_response, cluster_work, dchc, docc_safe, evec
+      INTEGER                                            :: a, b, i
+      REAL(KIND=dp) :: block_err, charge_leak, curv_floor, expected_norm, min_norm, modal_gain, &
+         mu_den, mu_min_den, mu_min_num, mu_num, mu_shift, mu_shift_min
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, modal_curv, occ_curv, occ_scale, &
+                                                            split_eval
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.24_dp, 0.49_dp]
+      occ_scale(:) = [1.15_dp, 0.24_dp, 0.19_dp, 0.05_dp]
+      occ_curv(:) = [0.050_dp, 0.004_dp, 0.018_dp, 0.006_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 1) = CMPLX(0.04_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.02_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.015_dp, 0.0_dp, KIND=dp)
+      dchc(4, 4) = CMPLX(-0.01_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.27_dp, -0.21_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+
+      cluster_work(1:2, 1:2) = dchc(1:2, 1:2)
+      CALL diag_complex(cluster_work(1:2, 1:2), evec(1:2, 1:2), split_eval(1:2))
+      modal_curv(1:2) = 0.0_dp
+      DO a = 1, 2
+         DO b = 1, 2
+            modal_curv(a) = modal_curv(a) + ABS(evec(b, a))**2*occ_curv(b)
+         END DO
+         modal_curv(a) = SQRT(MIN(occ_curv(1), occ_curv(2))*modal_curv(a))
+      END DO
+
+      mu_num = modal_curv(1)*split_eval(1) + modal_curv(2)*split_eval(2) + &
+               occ_curv(3)*REAL(dchc(3, 3), KIND=dp) + occ_curv(4)*REAL(dchc(4, 4), KIND=dp)
+      mu_den = modal_curv(1) + modal_curv(2) + occ_curv(3) + occ_curv(4)
+      mu_shift = mu_num/mu_den
+      cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, 2
+         cluster_kernel(i, i) = CMPLX(-2.0_dp*projector_weight*modal_curv(i)* &
+                                      (split_eval(i) - mu_shift), 0.0_dp, KIND=dp)
+      END DO
+      cluster_response(1:2, 1:2) = MATMUL(evec(1:2, 1:2), &
+                                          MATMUL(cluster_kernel(1:2, 1:2), &
+                                                 CONJG(TRANSPOSE(evec(1:2, 1:2)))))
+
+      curv_floor = MIN(occ_curv(1), occ_curv(2))
+      mu_min_num = curv_floor*(split_eval(1) + split_eval(2)) + &
+                   occ_curv(3)*REAL(dchc(3, 3), KIND=dp) + occ_curv(4)*REAL(dchc(4, 4), KIND=dp)
+      mu_min_den = 2.0_dp*curv_floor + occ_curv(3) + occ_curv(4)
+      mu_shift_min = mu_min_num/mu_min_den
+      cluster_min_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, 2
+         cluster_min_kernel(i, i) = CMPLX(-2.0_dp*projector_weight*curv_floor* &
+                                          (split_eval(i) - mu_shift_min), 0.0_dp, KIND=dp)
+      END DO
+      cluster_min_response(1:2, 1:2) = MATMUL(evec(1:2, 1:2), &
+                                              MATMUL(cluster_min_kernel(1:2, 1:2), &
+                                                     CONJG(TRANSPOSE(evec(1:2, 1:2)))))
+
+      block_err = MAXVAL(ABS(docc_safe(1:2, 1:2) - cluster_response(1:2, 1:2)))
+      charge_leak = ABS(REAL(docc_safe(1, 1) + docc_safe(2, 2) + docc_safe(3, 3) + &
+                             docc_safe(4, 4), KIND=dp))
+      expected_norm = MAXVAL(ABS(cluster_response(1:2, 1:2)))
+      min_norm = MAXVAL(ABS(cluster_min_response(1:2, 1:2)))
+      modal_gain = expected_norm - min_norm
+
+      IF (block_err > tol .OR. charge_leak > tol .OR. modal_gain < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with block/charge/gain/expected/min", block_err, charge_leak, modal_gain, &
+            expected_norm, min_norm
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with block/charge/gain/expected/min", block_err, charge_leak, modal_gain, &
+            expected_norm, min_norm
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_modal_curvature_split
 
 ! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
@@ -11346,7 +11449,7 @@ CONTAINS
       INTEGER                                            :: a, b, first, last, m, n
       REAL(KIND=dp)                                      :: cluster_curv, curv, mu_den, mu_num, &
                                                             mu_shift
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv
 
       n = SIZE(evals)
       IF (n <= 0) RETURN
@@ -11368,15 +11471,16 @@ CONTAINS
                cluster_curv = MIN(cluster_curv, MAX(0.0_dp, occ_curv(a)))
             END DO
             IF (cluster_curv > EPSILON(cluster_curv)) THEN
-               ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m))
+               ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
                DO a = 1, m
-                  mu_num = mu_num + cluster_curv*cluster_eval(a)
-                  mu_den = mu_den + cluster_curv
+                  mu_num = mu_num + modal_curv(a)*cluster_eval(a)
+                  mu_den = mu_den + modal_curv(a)
                END DO
-               DEALLOCATE (cluster_work, cluster_evec, cluster_eval)
+               DEALLOCATE (cluster_work, cluster_evec, cluster_eval, modal_curv)
             END IF
          ELSE
             curv = MAX(0.0_dp, occ_curv(first))
@@ -11406,13 +11510,14 @@ CONTAINS
             END DO
             IF (cluster_curv > EPSILON(cluster_curv)) THEN
                ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
-                         response_block(m, m), cluster_eval(m))
+                         response_block(m, m), cluster_eval(m), modal_curv(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
                cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                DO a = 1, m
-                  cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*cluster_curv* &
+                  cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
                                                (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
                END DO
                response_block(:, :) = MATMUL(cluster_evec, &
@@ -11422,7 +11527,8 @@ CONTAINS
                      kernel(first + a - 1, first + b - 1) = response_block(a, b)
                   END DO
                END DO
-               DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval)
+               DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &
+                           modal_curv)
             END IF
          ELSE
             curv = MAX(0.0_dp, occ_curv(first))
@@ -11434,6 +11540,42 @@ CONTAINS
       END DO
 
    END SUBROUTINE dense_fixed_n_projector_cluster_kernel
+
+! **************************************************************************************************
+!> \brief Gauge-damped modal curvature in one near-degenerate Projector cluster.
+!> \param cluster_evec ...
+!> \param occ_curv ...
+!> \param modal_curv ...
+! **************************************************************************************************
+   SUBROUTINE dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: cluster_evec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
+
+      INTEGER                                            :: a, b, m
+      REAL(KIND=dp)                                      :: curv, curv_floor, modal_raw
+
+      m = SIZE(occ_curv)
+      modal_curv(:) = 0.0_dp
+      IF (m <= 0) RETURN
+
+      curv_floor = HUGE(1.0_dp)
+      DO b = 1, m
+         curv = MAX(0.0_dp, occ_curv(b))
+         IF (curv > EPSILON(curv)) curv_floor = MIN(curv_floor, curv)
+      END DO
+      IF (curv_floor >= HUGE(1.0_dp)/2.0_dp) RETURN
+
+      DO a = 1, m
+         modal_raw = 0.0_dp
+         DO b = 1, m
+            modal_raw = modal_raw + ABS(cluster_evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+         END DO
+         IF (modal_raw > EPSILON(modal_raw)) &
+            modal_curv(a) = SQRT(curv_floor*modal_raw)
+      END DO
+
+   END SUBROUTINE dense_fixed_n_projector_modal_curvature
 
 ! **************************************************************************************************
 !> \brief ...

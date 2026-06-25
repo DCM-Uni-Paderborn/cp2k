@@ -17915,7 +17915,7 @@ CONTAINS
                                                              response_block
       INTEGER                                             :: a, b, first, last, m, n
       REAL(KIND=dp)                                       :: cluster_curv, curv, mu_den, mu_num, mu_shift
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: cluster_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: cluster_eval, modal_curv
 
          n = SIZE(evals)
          IF (n <= 0) RETURN
@@ -17937,16 +17937,18 @@ CONTAINS
                   cluster_curv = MIN(cluster_curv, MAX(0.0_dp, occ_curv_channel(a)))
                END DO
                IF (cluster_curv > EPSILON(cluster_curv)) THEN
-                  ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m))
-                  cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
-                                               CONJG(TRANSPOSE(work(first:last, first:last))))
-                  CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-                  DO a = 1, m
-                     mu_num = mu_num + cluster_curv*cluster_eval(a)
-                     mu_den = mu_den + cluster_curv
-                  END DO
-                  DEALLOCATE (cluster_work, cluster_evec, cluster_eval)
-               END IF
+               ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m))
+               cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
+                                            CONJG(TRANSPOSE(work(first:last, first:last))))
+               CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                             modal_curv)
+               DO a = 1, m
+                  mu_num = mu_num + modal_curv(a)*cluster_eval(a)
+                  mu_den = mu_den + modal_curv(a)
+               END DO
+               DEALLOCATE (cluster_work, cluster_evec, cluster_eval, modal_curv)
+            END IF
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
                IF (curv > EPSILON(curv)) THEN
@@ -17975,13 +17977,15 @@ CONTAINS
                END DO
                IF (cluster_curv > EPSILON(cluster_curv)) THEN
                   ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
-                            response_block(m, m), cluster_eval(m))
+                            response_block(m, m), cluster_eval(m), modal_curv(m))
                   cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                                CONJG(TRANSPOSE(work(first:last, first:last))))
                   CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                               modal_curv)
                   cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                   DO a = 1, m
-                     cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*cluster_curv* &
+                     cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
                                                   (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
                   END DO
                   response_block(:, :) = MATMUL(cluster_evec, &
@@ -17991,7 +17995,8 @@ CONTAINS
                         kernel(first + a - 1, first + b - 1) = response_block(a, b)
                      END DO
                   END DO
-                  DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval)
+                  DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &
+                              modal_curv)
                END IF
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
@@ -18003,6 +18008,42 @@ CONTAINS
          END DO
 
       END SUBROUTINE dense_fixed_n_projector_cluster_kernel
+
+! **************************************************************************************************
+!> \brief Gauge-damped modal curvature in one near-degenerate Projector cluster.
+!> \param cluster_evec ...
+!> \param occ_curv ...
+!> \param modal_curv ...
+! **************************************************************************************************
+      SUBROUTINE dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: cluster_evec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
+
+      INTEGER                                            :: a, b, m
+      REAL(KIND=dp)                                      :: curv, curv_floor, modal_raw
+
+         m = SIZE(occ_curv)
+         modal_curv(:) = 0.0_dp
+         IF (m <= 0) RETURN
+
+         curv_floor = HUGE(1.0_dp)
+         DO b = 1, m
+            curv = MAX(0.0_dp, occ_curv(b))
+            IF (curv > EPSILON(curv)) curv_floor = MIN(curv_floor, curv)
+         END DO
+         IF (curv_floor >= HUGE(1.0_dp)/2.0_dp) RETURN
+
+         DO a = 1, m
+            modal_raw = 0.0_dp
+            DO b = 1, m
+               modal_raw = modal_raw + ABS(cluster_evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+            END DO
+            IF (modal_raw > EPSILON(modal_raw)) &
+               modal_curv(a) = SQRT(curv_floor*modal_raw)
+         END DO
+
+      END SUBROUTINE dense_fixed_n_projector_modal_curvature
 
 ! **************************************************************************************************
 !> \brief ...
