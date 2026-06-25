@@ -1249,7 +1249,12 @@ CONTAINS
             cache%valid = ot_env%has_kpoint_context .AND. &
                           (ot_env%schur_projector_density_quality_samples > 0 .OR. &
                            ot_env%schur_projector_density_audit_samples > 0 .OR. &
-                           ot_env%schur_projector_density_descent_quality_samples > 0)
+                           ot_env%schur_projector_density_descent_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_physical_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_physical_direct_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_physical_direct_selected_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_phys_direct_density_sel_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_mixed_direct_quality_samples > 0)
             IF (.NOT. cache%valid) CYCLE
             cache%spin_index = ot_env%spin_index
             cache%kpoint_index = ot_env%kpoint_index
@@ -1257,6 +1262,15 @@ CONTAINS
             cache%density_audit_samples = ot_env%schur_projector_density_audit_samples
             cache%density_descent_quality_samples = &
                ot_env%schur_projector_density_descent_quality_samples
+            cache%physical_quality_samples = ot_env%schur_projector_physical_quality_samples
+            cache%physical_direct_quality_samples = &
+               ot_env%schur_projector_physical_direct_quality_samples
+            cache%physical_direct_selected_quality_samples = &
+               ot_env%schur_projector_physical_direct_selected_quality_samples
+            cache%physical_direct_density_sel_quality_samples = &
+               ot_env%schur_projector_phys_direct_density_sel_quality_samples
+            cache%mixed_direct_quality_samples = &
+               ot_env%schur_projector_mixed_direct_quality_samples
             cache%density_quality = ot_env%schur_projector_density_quality
             cache%density_quality_ema = ot_env%schur_projector_density_quality_ema
             cache%density_drop_sum = ot_env%schur_projector_density_drop_sum
@@ -1286,6 +1300,72 @@ CONTAINS
                ot_env%schur_projector_density_descent_support_ema
             cache%density_descent_support_ready = &
                ot_env%schur_projector_density_descent_support_ready
+            cache%physical_quality = ot_env%schur_projector_physical_quality
+            cache%physical_quality_ema = ot_env%schur_projector_physical_quality_ema
+            cache%physical_drop_sum = ot_env%schur_projector_physical_drop_sum
+            cache%physical_measured_sum = ot_env%schur_projector_physical_measured_sum
+            cache%physical_trace_actual_ema = ot_env%schur_projector_physical_trace_actual_ema
+            cache%physical_trace_raw_ema = ot_env%schur_projector_physical_trace_raw_ema
+            cache%physical_trace_active_ema = ot_env%schur_projector_physical_trace_active_ema
+            cache%physical_trace_actual_diag_ema = &
+               ot_env%schur_projector_physical_trace_actual_diag_ema
+            cache%physical_trace_actual_free_ema = &
+               ot_env%schur_projector_physical_trace_actual_free_ema
+            cache%physical_trace_raw_diag_ema = &
+               ot_env%schur_projector_physical_trace_raw_diag_ema
+            cache%physical_trace_raw_free_ema = &
+               ot_env%schur_projector_physical_trace_raw_free_ema
+            cache%physical_trace_active_diag_ema = &
+               ot_env%schur_projector_physical_trace_active_diag_ema
+            cache%physical_trace_active_free_ema = &
+               ot_env%schur_projector_physical_trace_active_free_ema
+            cache%physical_trace_actual_quality_ema = &
+               ot_env%schur_projector_physical_trace_actual_quality_ema
+            cache%physical_trace_raw_quality_ema = &
+               ot_env%schur_projector_physical_trace_raw_quality_ema
+            cache%physical_trace_active_quality_ema = &
+               ot_env%schur_projector_physical_trace_active_quality_ema
+            cache%physical_trace_actual_diag_quality_ema = &
+               ot_env%schur_projector_physical_trace_actual_diag_quality_ema
+            cache%physical_trace_actual_free_quality_ema = &
+               ot_env%schur_projector_physical_trace_actual_free_quality_ema
+            cache%physical_trace_raw_diag_quality_ema = &
+               ot_env%schur_projector_physical_trace_raw_diag_quality_ema
+            cache%physical_trace_raw_free_quality_ema = &
+               ot_env%schur_projector_physical_trace_raw_free_quality_ema
+            cache%physical_trace_active_diag_quality_ema = &
+               ot_env%schur_projector_physical_trace_active_diag_quality_ema
+            cache%physical_trace_active_free_quality_ema = &
+               ot_env%schur_projector_physical_trace_active_free_quality_ema
+            cache%physical_direct_quality = ot_env%schur_projector_physical_direct_quality
+            cache%physical_direct_quality_shadow_ema = &
+               ot_env%schur_projector_physical_direct_quality_shadow_ema
+            cache%physical_direct_drop_sum = ot_env%schur_projector_physical_direct_drop_sum
+            cache%physical_direct_measured_sum = &
+               ot_env%schur_projector_physical_direct_measured_sum
+            cache%physical_direct_selected_quality = &
+               ot_env%schur_projector_physical_direct_selected_quality
+            cache%physical_direct_selected_quality_ema = &
+               ot_env%schur_projector_physical_direct_selected_quality_ema
+            cache%physical_direct_selected_residual_quality_ema = &
+               ot_env%schur_projector_physical_direct_selected_residual_quality_ema
+            cache%physical_direct_selected_drop_sum = &
+               ot_env%schur_projector_physical_direct_selected_drop_sum
+            cache%physical_direct_selected_measured_sum = &
+               ot_env%schur_projector_physical_direct_selected_measured_sum
+            cache%physical_direct_density_sel_quality = &
+               ot_env%schur_projector_phys_direct_density_sel_quality
+            cache%physical_direct_density_sel_quality_ema = &
+               ot_env%schur_projector_phys_direct_density_sel_quality_ema
+            cache%physical_direct_density_sel_drop_sum = &
+               ot_env%schur_projector_phys_direct_density_sel_drop_sum
+            cache%physical_direct_density_sel_measured_sum = &
+               ot_env%schur_projector_phys_direct_density_sel_measured_sum
+            cache%mixed_direct_quality = ot_env%schur_projector_mixed_direct_quality
+            cache%mixed_direct_quality_ema = ot_env%schur_projector_mixed_direct_quality_ema
+            cache%mixed_direct_drop_sum = ot_env%schur_projector_mixed_direct_drop_sum
+            cache%mixed_direct_measured_sum = ot_env%schur_projector_mixed_direct_measured_sum
+            cache%mixed_direct_weight_ema = ot_env%schur_projector_mixed_direct_weight_ema
          END ASSOCIATE
       END DO
 
@@ -1315,6 +1395,7 @@ CONTAINS
             qs_ot_env%schur_projector_density_pending = .FALSE.
             qs_ot_env%schur_projector_density_audit_pending = .FALSE.
             qs_ot_env%schur_projector_density_descent_pending = .FALSE.
+            qs_ot_env%schur_projector_physical_pending = .FALSE.
             qs_ot_env%schur_projector_density_drop = 0.0_dp
             qs_ot_env%schur_projector_density_lowcurv = 0.0_dp
             qs_ot_env%schur_projector_density_audit_amplification = 0.0_dp
@@ -1322,11 +1403,40 @@ CONTAINS
             qs_ot_env%schur_projector_density_descent_drop = 0.0_dp
             qs_ot_env%schur_projector_density_descent_coeff = 0.0_dp
             qs_ot_env%schur_projector_density_descent_support = cache%density_descent_support
+            qs_ot_env%schur_projector_physical_drop = 0.0_dp
+            qs_ot_env%schur_projector_physical_metric = 0.0_dp
+            qs_ot_env%schur_projector_physical_weight = 0.0_dp
+            qs_ot_env%schur_projector_physical_correction_drop = 0.0_dp
+            qs_ot_env%schur_projector_physical_compensation = 0.0_dp
+            qs_ot_env%schur_projector_physical_negative = 0.0_dp
+            qs_ot_env%schur_projector_physical_direct = 0.0_dp
+            qs_ot_env%schur_projector_physical_selected = 0.0_dp
+            qs_ot_env%schur_projector_physical_shift = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_actual = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_raw = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_active = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_actual_diag = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_actual_free = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_raw_diag = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_raw_free = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_active_diag = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_active_free = 0.0_dp
+            qs_ot_env%schur_projector_mixed_direct_drop = 0.0_dp
+            qs_ot_env%schur_projector_mixed_direct_weight = 0.0_dp
 
             qs_ot_env%schur_projector_density_quality_samples = cache%density_quality_samples
             qs_ot_env%schur_projector_density_audit_samples = cache%density_audit_samples
             qs_ot_env%schur_projector_density_descent_quality_samples = &
                cache%density_descent_quality_samples
+            qs_ot_env%schur_projector_physical_quality_samples = cache%physical_quality_samples
+            qs_ot_env%schur_projector_physical_direct_quality_samples = &
+               cache%physical_direct_quality_samples
+            qs_ot_env%schur_projector_physical_direct_selected_quality_samples = &
+               cache%physical_direct_selected_quality_samples
+            qs_ot_env%schur_projector_phys_direct_density_sel_quality_samples = &
+               cache%physical_direct_density_sel_quality_samples
+            qs_ot_env%schur_projector_mixed_direct_quality_samples = &
+               cache%mixed_direct_quality_samples
             qs_ot_env%schur_projector_density_quality = cache%density_quality
             qs_ot_env%schur_projector_density_quality_ema = cache%density_quality_ema
             qs_ot_env%schur_projector_density_drop_sum = cache%density_drop_sum
@@ -1354,6 +1464,72 @@ CONTAINS
                cache%density_descent_support_ema
             qs_ot_env%schur_projector_density_descent_support_ready = &
                cache%density_descent_support_ready
+            qs_ot_env%schur_projector_physical_quality = cache%physical_quality
+            qs_ot_env%schur_projector_physical_quality_ema = cache%physical_quality_ema
+            qs_ot_env%schur_projector_physical_drop_sum = cache%physical_drop_sum
+            qs_ot_env%schur_projector_physical_measured_sum = cache%physical_measured_sum
+            qs_ot_env%schur_projector_physical_trace_actual_ema = cache%physical_trace_actual_ema
+            qs_ot_env%schur_projector_physical_trace_raw_ema = cache%physical_trace_raw_ema
+            qs_ot_env%schur_projector_physical_trace_active_ema = cache%physical_trace_active_ema
+            qs_ot_env%schur_projector_physical_trace_actual_diag_ema = &
+               cache%physical_trace_actual_diag_ema
+            qs_ot_env%schur_projector_physical_trace_actual_free_ema = &
+               cache%physical_trace_actual_free_ema
+            qs_ot_env%schur_projector_physical_trace_raw_diag_ema = &
+               cache%physical_trace_raw_diag_ema
+            qs_ot_env%schur_projector_physical_trace_raw_free_ema = &
+               cache%physical_trace_raw_free_ema
+            qs_ot_env%schur_projector_physical_trace_active_diag_ema = &
+               cache%physical_trace_active_diag_ema
+            qs_ot_env%schur_projector_physical_trace_active_free_ema = &
+               cache%physical_trace_active_free_ema
+            qs_ot_env%schur_projector_physical_trace_actual_quality_ema = &
+               cache%physical_trace_actual_quality_ema
+            qs_ot_env%schur_projector_physical_trace_raw_quality_ema = &
+               cache%physical_trace_raw_quality_ema
+            qs_ot_env%schur_projector_physical_trace_active_quality_ema = &
+               cache%physical_trace_active_quality_ema
+            qs_ot_env%schur_projector_physical_trace_actual_diag_quality_ema = &
+               cache%physical_trace_actual_diag_quality_ema
+            qs_ot_env%schur_projector_physical_trace_actual_free_quality_ema = &
+               cache%physical_trace_actual_free_quality_ema
+            qs_ot_env%schur_projector_physical_trace_raw_diag_quality_ema = &
+               cache%physical_trace_raw_diag_quality_ema
+            qs_ot_env%schur_projector_physical_trace_raw_free_quality_ema = &
+               cache%physical_trace_raw_free_quality_ema
+            qs_ot_env%schur_projector_physical_trace_active_diag_quality_ema = &
+               cache%physical_trace_active_diag_quality_ema
+            qs_ot_env%schur_projector_physical_trace_active_free_quality_ema = &
+               cache%physical_trace_active_free_quality_ema
+            qs_ot_env%schur_projector_physical_direct_quality = cache%physical_direct_quality
+            qs_ot_env%schur_projector_physical_direct_quality_shadow_ema = &
+               cache%physical_direct_quality_shadow_ema
+            qs_ot_env%schur_projector_physical_direct_drop_sum = cache%physical_direct_drop_sum
+            qs_ot_env%schur_projector_physical_direct_measured_sum = &
+               cache%physical_direct_measured_sum
+            qs_ot_env%schur_projector_physical_direct_selected_quality = &
+               cache%physical_direct_selected_quality
+            qs_ot_env%schur_projector_physical_direct_selected_quality_ema = &
+               cache%physical_direct_selected_quality_ema
+            qs_ot_env%schur_projector_physical_direct_selected_residual_quality_ema = &
+               cache%physical_direct_selected_residual_quality_ema
+            qs_ot_env%schur_projector_physical_direct_selected_drop_sum = &
+               cache%physical_direct_selected_drop_sum
+            qs_ot_env%schur_projector_physical_direct_selected_measured_sum = &
+               cache%physical_direct_selected_measured_sum
+            qs_ot_env%schur_projector_phys_direct_density_sel_quality = &
+               cache%physical_direct_density_sel_quality
+            qs_ot_env%schur_projector_phys_direct_density_sel_quality_ema = &
+               cache%physical_direct_density_sel_quality_ema
+            qs_ot_env%schur_projector_phys_direct_density_sel_drop_sum = &
+               cache%physical_direct_density_sel_drop_sum
+            qs_ot_env%schur_projector_phys_direct_density_sel_measured_sum = &
+               cache%physical_direct_density_sel_measured_sum
+            qs_ot_env%schur_projector_mixed_direct_quality = cache%mixed_direct_quality
+            qs_ot_env%schur_projector_mixed_direct_quality_ema = cache%mixed_direct_quality_ema
+            qs_ot_env%schur_projector_mixed_direct_drop_sum = cache%mixed_direct_drop_sum
+            qs_ot_env%schur_projector_mixed_direct_measured_sum = cache%mixed_direct_measured_sum
+            qs_ot_env%schur_projector_mixed_direct_weight_ema = cache%mixed_direct_weight_ema
             EXIT
          END ASSOCIATE
       END DO
