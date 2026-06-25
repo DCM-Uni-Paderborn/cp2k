@@ -1859,7 +1859,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, density_safe_response, &
                                                             occ_curv, occ_curv_max
       REAL(KIND=dp)                                      :: active_fraction, active_weight, &
-                                                            density_response, response_shape
+                                                            density_response, response_shape, safe_shape
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -1870,13 +1870,14 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
       ! Keep the finite projector eigen-response strongly damped outside the
       ! Fermi window.  The gauge-safe dP/occupation-curvature correction is
-      ! already active-window limited and globally fixed-N projected by the
-      ! Schur energy block, so applying the sqrt-weight to it again removes the
-      ! physical density response that dominates the metallic residual tail.
+      ! already globally fixed-N projected by the Schur energy block.  Blend it
+      ! with a smooth active-window shape so mid-Fermi bands keep more physical
+      ! occupation response without reintroducing low-curvature gauge motion.
       density_response = active_weight*response_shape*density_projector_response + &
-                         active_fraction*(density_safe_response - density_projector_response)
+                         safe_shape*(density_safe_response - density_projector_response)
 
    END FUNCTION kpoint_ot_physical_density_response
 
