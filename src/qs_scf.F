@@ -183,15 +183,10 @@ MODULE qs_scf
                                               qs_rho_type
    USE qs_scf_diagonalization,          ONLY: do_general_diag_kp
    USE qs_scf_initialization,           ONLY: qs_scf_env_initialize
-   USE qs_scf_loop_utils,               ONLY: qs_scf_check_inner_exit,&
-                                              qs_scf_check_outer_exit,&
-                                              qs_scf_density_mixing,&
-                                              qs_scf_inner_finalize,&
-                                              qs_scf_kp_added_mos_auto_post_resize_steps,&
-                                              qs_scf_new_mos,&
-                                              qs_scf_new_mos_kp,&
-                                              qs_scf_rho_update,&
-                                              qs_scf_set_loop_flags
+   USE qs_scf_loop_utils,               ONLY: &
+        qs_scf_check_inner_exit, qs_scf_check_outer_exit, qs_scf_density_mixing, &
+        qs_scf_inner_finalize, qs_scf_kp_added_mos_auto_post_resize_steps, qs_scf_new_mos, &
+        qs_scf_new_mos_kp, qs_scf_rho_update, qs_scf_set_loop_flags
    USE qs_scf_output,                   ONLY: qs_scf_cdft_info,&
                                               qs_scf_cdft_initial_info,&
                                               qs_scf_loop_info,&
@@ -391,10 +386,8 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'scf_env_do_scf'
 
       CHARACTER(LEN=default_string_length)               :: description, name
-      INTEGER                                            :: ext_master_id, handle, handle2, i_tmp, &
-                                                            ic, ispin, iter_count, output_unit, &
-                                                            post_added_mos_auto_resize_steps, &
-                                                            scf_energy_message_tag, total_steps
+      INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, output_unit, &
+         post_added_mos_auto_resize_steps, scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
          exit_inner_loop, exit_outer_loop, inner_loop_converged, &
          internal_tblite_density_full_step, internal_tblite_mixer, just_energy, &
@@ -2334,6 +2327,131 @@ CONTAINS
          qs_ot_env%ds_min = scf_env%qs_ot_restart%channel(ot_channel)%ds_min
          qs_ot_env%broyden_adaptive_sigma = &
             scf_env%qs_ot_restart%channel(ot_channel)%broyden_adaptive_sigma
+         IF (scf_env%qs_ot_restart%format_version >= 4) THEN
+            qs_ot_env%schur_projector_density_pending = .FALSE.
+            qs_ot_env%schur_projector_density_audit_pending = .FALSE.
+            qs_ot_env%schur_projector_density_descent_pending = .FALSE.
+            qs_ot_env%schur_projector_physical_direct_selected = 0.0_dp
+            qs_ot_env%schur_projector_density_descent_selected = 0.0_dp
+            qs_ot_env%schur_projector_density_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_quality_samples
+            qs_ot_env%schur_projector_density_audit_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_samples
+            qs_ot_env%schur_projector_density_descent_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality_samples
+            qs_ot_env%schur_projector_density_descent_selected_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality_samples
+            qs_ot_env%schur_projector_physical_direct_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality_samples
+            qs_ot_env%schur_projector_physical_direct_selected_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_quality_samples
+            qs_ot_env%schur_projector_phys_direct_density_sel_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality_samples
+            qs_ot_env%schur_projector_mixed_direct_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_quality_samples
+            qs_ot_env%schur_projector_spectral_selected_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality_samples
+            qs_ot_env%schur_projector_spectral_selected_failure_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_failure_samples
+            qs_ot_env%schur_projector_density_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_quality
+            qs_ot_env%schur_projector_density_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_quality_ema
+            qs_ot_env%schur_projector_density_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_drop_sum
+            qs_ot_env%schur_projector_density_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_measured_sum
+            qs_ot_env%schur_projector_density_lowcurv_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_lowcurv_ema
+            qs_ot_env%schur_projector_density_lowcurv_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_lowcurv_quality_ema
+            qs_ot_env%schur_projector_density_audit_amplification_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_amplification_ema
+            qs_ot_env%schur_projector_density_audit_amplification_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_amplification_quality_ema
+            qs_ot_env%schur_projector_density_audit_lowcurv_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_lowcurv_ema
+            qs_ot_env%schur_projector_density_audit_lowcurv_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_lowcurv_quality_ema
+            qs_ot_env%schur_projector_density_descent_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality
+            qs_ot_env%schur_projector_density_descent_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality_ema
+            qs_ot_env%schur_projector_density_descent_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_drop_sum
+            qs_ot_env%schur_projector_density_descent_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_measured_sum
+            qs_ot_env%schur_projector_density_descent_coeff_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_coeff_ema
+            qs_ot_env%schur_projector_density_descent_support = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support
+            qs_ot_env%schur_projector_density_descent_support_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support_ema
+            qs_ot_env%schur_projector_density_descent_support_ready = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support_ready
+            qs_ot_env%schur_projector_density_descent_selected_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality
+            qs_ot_env%schur_projector_density_descent_selected_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality_ema
+            qs_ot_env%schur_projector_density_descent_selected_residual_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_residual_quality
+            qs_ot_env%schur_projector_density_descent_selected_residual_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_residual_quality_ema
+            qs_ot_env%schur_projector_density_descent_selected_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_drop_sum
+            qs_ot_env%schur_projector_density_descent_selected_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_measured_sum
+            qs_ot_env%schur_projector_physical_direct_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality
+            qs_ot_env%schur_projector_physical_direct_quality_shadow_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality_shadow_ema
+            qs_ot_env%schur_projector_physical_direct_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_drop_sum
+            qs_ot_env%schur_projector_physical_direct_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_measured_sum
+            qs_ot_env%schur_projector_physical_direct_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_ema
+            qs_ot_env%schur_projector_physical_direct_selected_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_quality
+            qs_ot_env%schur_projector_physical_direct_selected_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_quality_ema
+            qs_ot_env%schur_projector_physical_direct_selected_residual_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_residual_quality
+            qs_ot_env%schur_projector_physical_direct_selected_residual_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_residual_quality_ema
+            qs_ot_env%schur_projector_physical_direct_selected_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_drop_sum
+            qs_ot_env%schur_projector_physical_direct_selected_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_measured_sum
+            qs_ot_env%schur_projector_phys_direct_density_sel_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality
+            qs_ot_env%schur_projector_phys_direct_density_sel_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality_ema
+            qs_ot_env%schur_projector_phys_direct_density_sel_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_drop_sum
+            qs_ot_env%schur_projector_phys_direct_density_sel_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_measured_sum
+            qs_ot_env%schur_projector_mixed_direct_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_quality
+            qs_ot_env%schur_projector_mixed_direct_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_quality_ema
+            qs_ot_env%schur_projector_mixed_direct_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_drop_sum
+            qs_ot_env%schur_projector_mixed_direct_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_measured_sum
+            qs_ot_env%schur_projector_mixed_direct_weight = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_weight
+            qs_ot_env%schur_projector_mixed_direct_weight_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_weight_ema
+            qs_ot_env%schur_projector_spectral_selected_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality
+            qs_ot_env%schur_projector_spectral_selected_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality_ema
+            qs_ot_env%schur_projector_spectral_selected_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_drop_sum
+            qs_ot_env%schur_projector_spectral_selected_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_measured_sum
+         END IF
       END IF
 
    END SUBROUTINE apply_qs_ot_kpoint_restart

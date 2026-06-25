@@ -1922,23 +1922,25 @@ CONTAINS
 !> \param selected_quality_ema ...
 !> \param selected_quality ...
 !> \param shadow_quality ...
+!> \param coupled_residual_quality_ema ...
 !> \param weighted_trust_ratio ...
 !> \param abs_trust_ratio ...
 !> \param model_gap_ratio ...
 !> \return true if a trust-safe Direct tail probe may collect selected history
 ! **************************************************************************************************
    FUNCTION kpoint_ot_direct_tail_probe_ready(candidate_used, promoted, candidate_enabled, residual_delta, &
-                                             coupled_quality_samples, selected_quality_samples, &
-                                             selected_quality_ema, selected_quality, shadow_quality, &
-                                             weighted_trust_ratio, abs_trust_ratio, model_gap_ratio) &
+                                              coupled_quality_samples, selected_quality_samples, &
+                                              selected_quality_ema, selected_quality, shadow_quality, &
+                                             coupled_residual_quality_ema, weighted_trust_ratio, abs_trust_ratio, &
+                                             model_gap_ratio) &
       RESULT(probe_ready)
       LOGICAL, INTENT(IN)                                :: candidate_used, candidate_enabled, promoted
       INTEGER, INTENT(IN)                                :: coupled_quality_samples, selected_quality_samples
-      REAL(KIND=dp), INTENT(IN)                          :: abs_trust_ratio, model_gap_ratio, residual_delta, &
-                                                            selected_quality, selected_quality_ema, shadow_quality, &
-                                                            weighted_trust_ratio
+      REAL(KIND=dp), INTENT(IN)                          :: abs_trust_ratio, coupled_residual_quality_ema, &
+                                                            model_gap_ratio, residual_delta, selected_quality, &
+                                                            selected_quality_ema, shadow_quality, weighted_trust_ratio
       INTEGER                                            :: sparse_probe_interval
-      LOGICAL                                            :: selected_quality_positive
+      LOGICAL                                            :: residual_tail_stalled, selected_quality_positive
       LOGICAL                                            :: probe_ready
 
       probe_ready = .FALSE.
@@ -1961,6 +1963,14 @@ CONTAINS
          selected_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
       sparse_probe_interval = MAX(1, 4*ot_kp_schur_calibration_min_samples)
       probe_ready = selected_quality_positive .AND. MOD(coupled_quality_samples, sparse_probe_interval) == 0
+      IF (.NOT. probe_ready) THEN
+         residual_tail_stalled = coupled_residual_quality_ema < 0.25_dp
+         selected_quality_positive = &
+            selected_quality_ema >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+            selected_quality >= 0.25_dp*ot_kp_schur_projector_response_quality_min_ratio
+         probe_ready = residual_tail_stalled .AND. selected_quality_positive .AND. &
+                       MOD(coupled_quality_samples, MAX(1, 2*ot_kp_schur_calibration_min_samples)) == 0
+      END IF
 
    END FUNCTION kpoint_ot_direct_tail_probe_ready
 
@@ -3882,13 +3892,21 @@ CONTAINS
             IF (samples == 1) THEN
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_ema = &
                   projector_inactive_offdiag_selected_quality_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema = &
+                  residual_quality_ratio
             ELSE
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_ema = &
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                   local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_ema + &
                   ot_kp_schur_quality_ema_alpha* &
                   projector_inactive_offdiag_selected_quality_ratio
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*residual_quality_ratio
             END IF
+            local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality = &
+               residual_quality_ratio
             local_ot_env(1)%schur_projector_inactive_offdiag_selected_drop_sum = &
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_drop_sum + &
                projector_inactive_offdiag_selected_predicted_drop
@@ -4730,13 +4748,21 @@ CONTAINS
                IF (samples == 1) THEN
                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema = &
                      projector_physical_direct_selected_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema = &
+                     residual_quality_ratio
                ELSE
                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema + &
                      ot_kp_schur_quality_ema_alpha* &
                      projector_physical_direct_selected_quality_ratio
+                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*residual_quality_ratio
                END IF
+               local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality = &
+                  residual_quality_ratio
                local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum = &
                   local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum + &
                   projector_physical_direct_selected_predicted_drop
@@ -5132,11 +5158,13 @@ CONTAINS
                local_ot_env(1)%schur_projector_inactive_offdiag_negative_ema, &
                projector_inactive_offdiag_step_negative, &
                local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
-               " OT Schur LS projector inactive-offdiag selected history n ratio ema pred meas latest:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+               " OT Schur LS projector inactive-offdiag selected history n ratio ema resid rema pred meas latest:", &
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_samples, &
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality, &
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_ema, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema, &
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_drop_sum, &
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_measured_sum, &
                projector_inactive_offdiag_selected_predicted_drop
@@ -5296,11 +5324,13 @@ CONTAINS
                   local_ot_env(1)%schur_projector_physical_direct_drop_sum, &
                   local_ot_env(1)%schur_projector_physical_direct_measured_sum, &
                   projector_physical_direct_predicted_drop
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
-                  " OT Schur LS projector physical direct selected history n ratio ema pred meas latest:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+                  " OT Schur LS projector physical direct selected history n ratio ema resid rema pred meas latest:", &
                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
                   local_ot_env(1)%schur_projector_physical_direct_selected_quality, &
                   local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality, &
+                  local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema, &
                   local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
                   local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
                   projector_physical_direct_selected_predicted_drop
@@ -5554,6 +5584,9 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param group_done ...
+!> \param added_mos_auto_channel ...
+!> \param added_mos_current ...
+!> \param eps_scf_channel ...
 ! **************************************************************************************************
       SUBROUTINE precondition_kpoint_ot_schur(group_done, added_mos_auto_channel, &
                                               added_mos_current, eps_scf_channel)
@@ -5711,6 +5744,8 @@ CONTAINS
 !> \brief ...
 !> \param target_group ...
 !> \param group_done ...
+!> \param added_mos_auto_tail_enabled ...
+!> \param added_mos_auto_tail_residual_limit ...
 ! **************************************************************************************************
       SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done, &
                                                     added_mos_auto_tail_enabled, &
@@ -8721,6 +8756,15 @@ CONTAINS
                         projector_inactive_offdiag_history_quality* &
                         projector_inactive_offdiag_history_trust
                   END IF
+                  IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
+                      local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) &
+                     residual_reference_quality = ot_kp_schur_quality_min_ratio
+                  IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples) &
+                     residual_reference_quality = MAX(residual_reference_quality, &
+                                                      local_ot_env(1)%schur_split_residual_quality_ema)
+                  IF (local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) &
+                     residual_reference_quality = MAX(residual_reference_quality, &
+                                                      local_ot_env(1)%schur_coupled_residual_quality_ema)
                   IF (local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_samples >= &
                       ot_kp_schur_calibration_min_samples) THEN
                      projector_inactive_offdiag_selected_quality_for_selection = &
@@ -8733,6 +8777,14 @@ CONTAINS
                            1.0_dp, &
                            ot_kp_schur_projector_response_quality_min_ratio, &
                            ot_kp_schur_projector_response_quality_max_ratio)
+                     IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                         residual_reference_quality > EPSILON(residual_reference_quality)) &
+                        projector_inactive_offdiag_selected_quality_for_selection = &
+                           projector_inactive_offdiag_selected_quality_for_selection* &
+                           MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                               MIN(1.0_dp, &
+                                   local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema/ &
+                                   residual_reference_quality))
                   END IF
                   split_quality_for_selection = &
                      kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
@@ -12235,6 +12287,7 @@ CONTAINS
                                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
                                              local_ot_env(1)%schur_projector_physical_direct_selected_quality, &
                                              projector_physical_direct_shadow_quality_for_promotion, &
+                                             local_ot_env(1)%schur_coupled_residual_quality_ema, &
                                              projector_physical_direct_response_weighted_trust_ratio, &
                                              projector_physical_direct_response_abs_trust_ratio, &
                                              projector_physical_direct_model_gap_ratio)

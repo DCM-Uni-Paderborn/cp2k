@@ -119,6 +119,58 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: delta = 0.0_dp, gnorm = 0.0_dp, gnorm_old = 0.0_dp
       REAL(KIND=dp) :: etotal = 0.0_dp, gradient = 0.0_dp, ds_min = 0.0_dp
       REAL(KIND=dp) :: broyden_adaptive_sigma = 0.0_dp
+      INTEGER :: density_quality_samples = 0, density_audit_samples = 0
+      INTEGER :: density_descent_quality_samples = 0
+      INTEGER :: density_descent_selected_quality_samples = 0
+      INTEGER :: physical_direct_quality_samples = 0
+      INTEGER :: physical_direct_selected_quality_samples = 0
+      INTEGER :: phys_direct_density_sel_quality_samples = 0
+      INTEGER :: mixed_direct_quality_samples = 0
+      INTEGER :: spectral_selected_quality_samples = 0, spectral_selected_failure_samples = 0
+      LOGICAL :: density_descent_support_ready = .FALSE.
+      REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_lowcurv_ema = 0.0_dp, density_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_quality = 0.0_dp, density_descent_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_coeff_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_support = 0.0_dp, density_descent_support_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_descent_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_quality = 0.0_dp, mixed_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_drop_sum = 0.0_dp, mixed_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_weight = 0.0_dp, mixed_direct_weight_ema = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_measured_sum = 0.0_dp
       TYPE(cp_fm_type), POINTER :: matrix_x => NULL(), matrix_x_im => NULL()
       TYPE(cp_fm_type), POINTER :: rot_mat_x => NULL(), rot_mat_x_im => NULL()
       TYPE(cp_fm_type), POINTER :: matrix_dx => NULL(), matrix_dx_im => NULL()
@@ -188,7 +240,7 @@ MODULE qs_scf_types
       TYPE(qs_ot_type), POINTER, DIMENSION(:)  :: qs_ot_env => NULL()
       TYPE(qs_ot_restart_cache_type) :: qs_ot_restart = qs_ot_restart_cache_type()
       TYPE(qs_ot_schur_density_calibration_cache_type) :: qs_ot_schur_density_calibration = &
-         qs_ot_schur_density_calibration_cache_type()
+                                                          qs_ot_schur_density_calibration_cache_type()
       TYPE(qs_diis_buffer_type), POINTER :: scf_diis_buffer => NULL()
       TYPE(subspace_env_type), POINTER :: subspace_env => NULL()
       TYPE(davidson_type), POINTER, DIMENSION(:) :: block_davidson_env => NULL()
