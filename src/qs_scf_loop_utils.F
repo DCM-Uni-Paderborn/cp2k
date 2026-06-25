@@ -3404,6 +3404,8 @@ CONTAINS
                                                                projector_density_quality_ratio, &
                                                                projector_response_predicted_drop, &
                                                                projector_response_quality_ratio, &
+                                                               projector_response_selected_predicted_drop, &
+                                                               projector_response_selected_quality_ratio, &
                                                             residual_current_delta, residual_drop, &
                                                             residual_quality_ratio, &
                                                             split_shadow_calibrated_predicted_drop, &
@@ -3947,6 +3949,43 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_drop_sum + projector_response_predicted_drop
             local_ot_env(1)%schur_projector_response_measured_sum = &
                local_ot_env(1)%schur_projector_response_measured_sum + measured_drop
+         END IF
+         projector_response_selected_predicted_drop = &
+            local_ot_env(1)%schur_projector_response_selected
+         projector_response_selected_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. projector_response_selected_predicted_drop > &
+             EPSILON(projector_response_selected_predicted_drop) .AND. &
+             measured_drop > 0.0_dp) THEN
+            projector_response_selected_quality_ratio = &
+               measured_drop/projector_response_selected_predicted_drop
+            local_ot_env(1)%schur_projector_response_selected_quality = &
+               projector_response_selected_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_projector_response_selected_quality_samples + 1, &
+                          HUGE(samples) - 1)
+            local_ot_env(1)%schur_projector_response_selected_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_projector_response_selected_quality_ema = &
+                  projector_response_selected_quality_ratio
+               local_ot_env(1)%schur_projector_response_selected_residual_quality_ema = &
+                  residual_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_projector_response_selected_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_response_selected_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha* &
+                  projector_response_selected_quality_ratio
+               local_ot_env(1)%schur_projector_response_selected_residual_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_response_selected_residual_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*residual_quality_ratio
+            END IF
+            local_ot_env(1)%schur_projector_response_selected_residual_quality = &
+               residual_quality_ratio
+            local_ot_env(1)%schur_projector_response_selected_drop_sum = &
+               local_ot_env(1)%schur_projector_response_selected_drop_sum + &
+               projector_response_selected_predicted_drop
+            local_ot_env(1)%schur_projector_response_selected_measured_sum = &
+               local_ot_env(1)%schur_projector_response_selected_measured_sum + measured_drop
          END IF
             local_ot_env(1)%schur_projector_response_candidate_enabled = &
                local_ot_env(1)%schur_projector_response_quality_samples >= &
@@ -5179,6 +5218,16 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_weight_ema, &
                local_ot_env(1)%schur_projector_response_negative_ema, &
                local_ot_env(1)%schur_projector_response_candidate_enabled
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+               " OT Schur LS projector response selected history n ratio ema resid rema pred meas latest:", &
+               local_ot_env(1)%schur_projector_response_selected_quality_samples, &
+               local_ot_env(1)%schur_projector_response_selected_quality, &
+               local_ot_env(1)%schur_projector_response_selected_quality_ema, &
+               local_ot_env(1)%schur_projector_response_selected_residual_quality, &
+               local_ot_env(1)%schur_projector_response_selected_residual_quality_ema, &
+               local_ot_env(1)%schur_projector_response_selected_drop_sum, &
+               local_ot_env(1)%schur_projector_response_selected_measured_sum, &
+               projector_response_selected_predicted_drop
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,11(1X,ES16.8))') &
                " OT Schur LS projector plateau-gap n ratio ema pred meas latest weight wema neg nema step sema:", &
                local_ot_env(1)%schur_projector_plateau_gap_quality_samples, &
@@ -5675,6 +5724,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_inactive_offdiag_step_negative = 0.0_dp
             local_ot_env(1)%schur_projector_inactive_offdiag_selected = 0.0_dp
             local_ot_env(1)%schur_projector_response_drop = 0.0_dp
+            local_ot_env(1)%schur_projector_response_selected = 0.0_dp
                local_ot_env(1)%schur_projector_response_weight = 0.0_dp
                local_ot_env(1)%schur_projector_response_correction_drop = 0.0_dp
                local_ot_env(1)%schur_projector_response_negative = 0.0_dp
@@ -8546,6 +8596,23 @@ CONTAINS
                                                0.0_dp, &
                                                ot_kp_schur_projector_response_quality_min_ratio, &
                                                ot_kp_schur_projector_response_quality_max_ratio)
+            IF (local_ot_env(1)%schur_projector_response_selected_quality_samples >= &
+                ot_kp_schur_calibration_min_samples) THEN
+               projector_response_quality_for_selection = &
+                  kpoint_ot_schur_history_quality( &
+                     local_ot_env(1)%schur_projector_response_selected_drop_sum, &
+                     local_ot_env(1)%schur_projector_response_selected_measured_sum, &
+                     local_ot_env(1)%schur_projector_response_selected_quality_ema, &
+                     local_ot_env(1)%schur_projector_response_selected_quality_samples, &
+                     ot_kp_schur_calibration_min_samples, &
+                     projector_response_quality_for_selection, &
+                     ot_kp_schur_projector_response_quality_min_ratio, &
+                     ot_kp_schur_projector_response_quality_max_ratio)
+               IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                  projector_response_quality_for_selection = projector_response_quality_for_selection* &
+                     MAX(0.0_dp, MIN(1.0_dp, &
+                         local_ot_env(1)%schur_projector_response_selected_residual_quality_ema))
+            END IF
             projector_diagref_quality_for_selection = &
                kpoint_ot_schur_history_quality(local_ot_env(1)%schur_projector_diagref_drop_sum, &
                                                local_ot_env(1)%schur_projector_diagref_measured_sum, &
@@ -13673,6 +13740,9 @@ CONTAINS
                   projector_mode_response_correction_drop
                local_ot_env(1)%schur_projector_response_negative = &
                   MAX(local_ot_env(1)%schur_projector_response_negative, accepted_projector_response_negative)
+               IF (projector_response_candidate_selected) &
+                  local_ot_env(1)%schur_projector_response_selected = &
+                     local_ot_env(1)%schur_projector_response_selected + accepted_projector_response_drop
             END IF
             IF (accepted_projector_plateau_gap_drop > EPSILON(accepted_projector_plateau_gap_drop)) THEN
                local_ot_env(1)%schur_projector_plateau_gap_pending = .TRUE.

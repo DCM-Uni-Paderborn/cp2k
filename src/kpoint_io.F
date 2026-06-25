@@ -64,7 +64,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 4
+   INTEGER, PARAMETER                   :: ot_restart_version = 5
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -522,7 +522,7 @@ CONTAINS
 
       INTEGER                                            :: ichannel, ihist, nchannel, ndiis, nener, &
                                                             nmo, nmo_ortho
-      INTEGER, DIMENSION(11)                             :: schur_int_payload
+      INTEGER, DIMENSION(12)                             :: schur_int_payload
       INTEGER, DIMENSION(13)                             :: int_payload
       LOGICAL :: has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, has_ener_x, &
          has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
@@ -530,7 +530,7 @@ CONTAINS
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
       LOGICAL, DIMENSION(27)                             :: log_payload
-      REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
 
       nchannel = SIZE(qs_ot_env)
@@ -623,6 +623,7 @@ CONTAINS
                               qs_ot_env(ichannel)%schur_projector_density_audit_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_descent_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_descent_selected_quality_samples, &
+                              qs_ot_env(ichannel)%schur_projector_response_selected_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_physical_direct_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_physical_direct_selected_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_phys_direct_density_sel_quality_samples, &
@@ -680,7 +681,14 @@ CONTAINS
                                qs_ot_env(ichannel)%schur_projector_spectral_selected_quality, &
                                qs_ot_env(ichannel)%schur_projector_spectral_selected_quality_ema, &
                                qs_ot_env(ichannel)%schur_projector_spectral_selected_drop_sum, &
-                               qs_ot_env(ichannel)%schur_projector_spectral_selected_measured_sum]
+                               qs_ot_env(ichannel)%schur_projector_spectral_selected_measured_sum, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected_quality, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected_quality_ema, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected_residual_quality, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected_residual_quality_ema, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected_drop_sum, &
+                               qs_ot_env(ichannel)%schur_projector_response_selected_measured_sum]
 
          IF (ires > 0) THEN
             WRITE (ires) int_payload
@@ -812,11 +820,13 @@ CONTAINS
       CHARACTER(LEN=LEN(ot_restart_marker))              :: marker
       INTEGER                                            :: ichannel, ihist, ios, nchannel, ndiis, &
                                                             nener, version_read
-      INTEGER, DIMENSION(11)                             :: schur_int_payload
+      INTEGER, DIMENSION(11)                             :: schur_int_payload_v4
+      INTEGER, DIMENSION(12)                             :: schur_int_payload
       INTEGER, DIMENSION(13)                             :: int_payload
       LOGICAL                                            :: payload_found
       LOGICAL, DIMENSION(27)                             :: log_payload
-      REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
+      REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
 
       payload_found = .FALSE.
@@ -851,9 +861,17 @@ CONTAINS
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_pos
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_energy
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_grad
-            IF (version_read >= 4) THEN
+            IF (version_read >= 5) THEN
                READ (rst_unit) schur_int_payload
                READ (rst_unit) schur_real_payload
+            ELSE IF (version_read == 4) THEN
+               READ (rst_unit) schur_int_payload_v4
+               READ (rst_unit) schur_real_payload_v4
+               schur_int_payload(:) = 0
+               schur_real_payload(:) = 0.0_dp
+               schur_int_payload(1:4) = schur_int_payload_v4(1:4)
+               schur_int_payload(6:12) = schur_int_payload_v4(5:11)
+               schur_real_payload(1:51) = schur_real_payload_v4
             END IF
          END IF
          IF (version_read < 4) THEN
@@ -922,16 +940,18 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_quality_samples = schur_int_payload(3)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_selected_quality_samples = &
             schur_int_payload(4)
-         scf_env%qs_ot_restart%channel(ichannel)%physical_direct_quality_samples = schur_int_payload(5)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality_samples = &
+            schur_int_payload(5)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_direct_quality_samples = schur_int_payload(6)
          scf_env%qs_ot_restart%channel(ichannel)%physical_direct_selected_quality_samples = &
-            schur_int_payload(6)
-         scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_quality_samples = &
             schur_int_payload(7)
-         scf_env%qs_ot_restart%channel(ichannel)%mixed_direct_quality_samples = schur_int_payload(8)
-         scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_quality_samples = schur_int_payload(9)
-         scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_failure_samples = schur_int_payload(10)
+         scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_quality_samples = &
+            schur_int_payload(8)
+         scf_env%qs_ot_restart%channel(ichannel)%mixed_direct_quality_samples = schur_int_payload(9)
+         scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_quality_samples = schur_int_payload(10)
+         scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_failure_samples = schur_int_payload(11)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_support_ready = &
-            schur_int_payload(11) /= 0
+            schur_int_payload(12) /= 0
          scf_env%qs_ot_restart%channel(ichannel)%density_quality = schur_real_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%density_quality_ema = schur_real_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%density_drop_sum = schur_real_payload(3)
@@ -1001,6 +1021,15 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_quality_ema = schur_real_payload(49)
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_drop_sum = schur_real_payload(50)
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_measured_sum = schur_real_payload(51)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected = schur_real_payload(52)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality = schur_real_payload(53)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality_ema = schur_real_payload(54)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_residual_quality = &
+            schur_real_payload(55)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_residual_quality_ema = &
+            schur_real_payload(56)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_drop_sum = schur_real_payload(57)
+         scf_env%qs_ot_restart%channel(ichannel)%response_selected_measured_sum = schur_real_payload(58)
 
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_x) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)

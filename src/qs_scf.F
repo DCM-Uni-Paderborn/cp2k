@@ -2333,6 +2333,7 @@ CONTAINS
             qs_ot_env%schur_projector_density_descent_pending = .FALSE.
             qs_ot_env%schur_projector_physical_direct_selected = 0.0_dp
             qs_ot_env%schur_projector_density_descent_selected = 0.0_dp
+            qs_ot_env%schur_projector_response_selected = 0.0_dp
             qs_ot_env%schur_projector_density_quality_samples = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_quality_samples
             qs_ot_env%schur_projector_density_audit_samples = &
@@ -2341,6 +2342,8 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality_samples
             qs_ot_env%schur_projector_density_descent_selected_quality_samples = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality_samples
+            qs_ot_env%schur_projector_response_selected_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality_samples
             qs_ot_env%schur_projector_physical_direct_quality_samples = &
                scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality_samples
             qs_ot_env%schur_projector_physical_direct_selected_quality_samples = &
@@ -2401,6 +2404,18 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_drop_sum
             qs_ot_env%schur_projector_density_descent_selected_measured_sum = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_measured_sum
+            qs_ot_env%schur_projector_response_selected_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality
+            qs_ot_env%schur_projector_response_selected_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality_ema
+            qs_ot_env%schur_projector_response_selected_residual_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_residual_quality
+            qs_ot_env%schur_projector_response_selected_residual_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_residual_quality_ema
+            qs_ot_env%schur_projector_response_selected_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_drop_sum
+            qs_ot_env%schur_projector_response_selected_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_measured_sum
             qs_ot_env%schur_projector_physical_direct_quality = &
                scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality
             qs_ot_env%schur_projector_physical_direct_quality_shadow_ema = &
