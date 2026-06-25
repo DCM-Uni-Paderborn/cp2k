@@ -124,6 +124,7 @@ MODULE qs_scf_types
       INTEGER :: density_descent_selected_quality_samples = 0
       INTEGER :: response_selected_quality_samples = 0
       INTEGER :: density_full_selected_quality_samples = 0
+      INTEGER :: physical_quality_samples = 0
       INTEGER :: physical_direct_quality_samples = 0
       INTEGER :: physical_direct_selected_quality_samples = 0
       INTEGER :: phys_direct_density_sel_quality_samples = 0
@@ -163,6 +164,26 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: density_full_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: density_full_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_quality = 0.0_dp, physical_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_drop_sum = 0.0_dp, physical_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_free_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp

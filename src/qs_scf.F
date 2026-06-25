@@ -2507,10 +2507,29 @@ CONTAINS
             qs_ot_env%schur_projector_density_pending = .FALSE.
             qs_ot_env%schur_projector_density_audit_pending = .FALSE.
             qs_ot_env%schur_projector_density_descent_pending = .FALSE.
+            qs_ot_env%schur_projector_physical_pending = .FALSE.
             qs_ot_env%schur_projector_physical_direct_selected = 0.0_dp
             qs_ot_env%schur_projector_density_descent_selected = 0.0_dp
             qs_ot_env%schur_projector_response_selected = 0.0_dp
             qs_ot_env%schur_projector_density_full_selected = 0.0_dp
+            qs_ot_env%schur_projector_physical_drop = 0.0_dp
+            qs_ot_env%schur_projector_physical_metric = 0.0_dp
+            qs_ot_env%schur_projector_physical_weight = 0.0_dp
+            qs_ot_env%schur_projector_physical_correction_drop = 0.0_dp
+            qs_ot_env%schur_projector_physical_compensation = 0.0_dp
+            qs_ot_env%schur_projector_physical_negative = 0.0_dp
+            qs_ot_env%schur_projector_physical_direct = 0.0_dp
+            qs_ot_env%schur_projector_physical_selected = 0.0_dp
+            qs_ot_env%schur_projector_physical_shift = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_actual = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_raw = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_active = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_actual_diag = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_actual_free = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_raw_diag = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_raw_free = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_active_diag = 0.0_dp
+            qs_ot_env%schur_projector_physical_trace_active_free = 0.0_dp
             qs_ot_env%schur_projector_density_quality_samples = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_quality_samples
             qs_ot_env%schur_projector_density_audit_samples = &
@@ -2523,6 +2542,8 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality_samples
             qs_ot_env%schur_projector_density_full_selected_quality_samples = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality_samples
+            qs_ot_env%schur_projector_physical_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_quality_samples
             qs_ot_env%schur_projector_physical_direct_quality_samples = &
                scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality_samples
             qs_ot_env%schur_projector_physical_direct_selected_quality_samples = &
@@ -2571,6 +2592,50 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support_ema
             qs_ot_env%schur_projector_density_descent_support_ready = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support_ready
+            qs_ot_env%schur_projector_physical_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_quality
+            qs_ot_env%schur_projector_physical_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_quality_ema
+            qs_ot_env%schur_projector_physical_drop_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_drop_sum
+            qs_ot_env%schur_projector_physical_measured_sum = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_measured_sum
+            qs_ot_env%schur_projector_physical_trace_actual_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_ema
+            qs_ot_env%schur_projector_physical_trace_raw_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_ema
+            qs_ot_env%schur_projector_physical_trace_active_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_ema
+            qs_ot_env%schur_projector_physical_trace_actual_diag_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_diag_ema
+            qs_ot_env%schur_projector_physical_trace_actual_free_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_free_ema
+            qs_ot_env%schur_projector_physical_trace_raw_diag_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_diag_ema
+            qs_ot_env%schur_projector_physical_trace_raw_free_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_free_ema
+            qs_ot_env%schur_projector_physical_trace_active_diag_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_diag_ema
+            qs_ot_env%schur_projector_physical_trace_active_free_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_free_ema
+            qs_ot_env%schur_projector_physical_trace_actual_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_quality_ema
+            qs_ot_env%schur_projector_physical_trace_raw_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_quality_ema
+            qs_ot_env%schur_projector_physical_trace_active_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_quality_ema
+            qs_ot_env%schur_projector_physical_trace_actual_diag_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_diag_quality_ema
+            qs_ot_env%schur_projector_physical_trace_actual_free_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_free_quality_ema
+            qs_ot_env%schur_projector_physical_trace_raw_diag_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_diag_quality_ema
+            qs_ot_env%schur_projector_physical_trace_raw_free_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_free_quality_ema
+            qs_ot_env%schur_projector_physical_trace_active_diag_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_diag_quality_ema
+            qs_ot_env%schur_projector_physical_trace_active_free_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_free_quality_ema
             qs_ot_env%schur_projector_density_descent_selected_quality = &
                scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality
             qs_ot_env%schur_projector_density_descent_selected_quality_ema = &
