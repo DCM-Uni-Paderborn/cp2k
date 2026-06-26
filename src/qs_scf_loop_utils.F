@@ -1914,7 +1914,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief gauge-free physical diagonal projector-density response
 !> \param density_projector_response finite projector eigenvalue response
-!> \param density_safe_response gauge-safe dP/occupation-curvature response, audit only
+!> \param density_safe_response gauge-safe dP/occupation-curvature response
 !> \param occ_curv ...
 !> \param occ_curv_max ...
 !> \return floor-limited eigenvalue response without projector-basis dP gauge amplification
@@ -1926,7 +1926,9 @@ CONTAINS
                                                             occ_curv_max
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp)                                      :: active_fraction, response_shape
+      REAL(KIND=dp)                                      :: active_fraction, projector_abs, &
+                                                            response_shape, safe_abs, safe_blend, &
+                                                            safe_cap, safe_component
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -1936,12 +1938,24 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      ! The density channel must carry physical occupation response, not the
-      ! projector-basis dP diagonal.  The latter is gauge-sensitive in nearly
-      ! degenerate metallic subspaces and is kept in the audit channels.  Use
-      ! the finite spectral density response with only a smooth low-curvature
-      ! floor so inactive bands do not dominate the fixed-N Schur solve.
-      density_response = response_shape*density_projector_response
+      safe_component = density_projector_response
+      IF (density_projector_response*density_safe_response > 0.0_dp .OR. &
+          (ABS(density_projector_response) <= EPSILON(density_projector_response) .AND. &
+           ABS(density_safe_response) > EPSILON(density_safe_response))) THEN
+         projector_abs = ABS(density_projector_response)
+         safe_abs = ABS(density_safe_response)
+         safe_cap = MAX(4.0_dp*projector_abs, &
+                        ot_kp_schur_projector_response_ratio_gate*safe_abs)
+         safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
+         safe_blend = active_fraction
+         safe_component = (1.0_dp - safe_blend)*density_projector_response + &
+                          safe_blend*safe_component
+      END IF
+      ! The density channel follows the finite spectral response, but augments it
+      ! with the gauge-safe diagonal occupation response when both point along
+      ! the same physical density direction.  The cap keeps near-degenerate
+      ! projector-basis motion from becoming an unbounded fixed-N Schur source.
+      density_response = response_shape*safe_component
 
    END FUNCTION kpoint_ot_physical_density_response
 
@@ -17937,10 +17951,10 @@ CONTAINS
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! The physical density-response channel follows the finite
-                     ! projector eigenvalue response.  The gauge-safe dP
-                     ! derivative remains an audit source only; injecting it
-                     ! into the production density channel makes the metallic
-                     ! active-window response gauge dependent.
+                     ! projector eigenvalue response, with only a sign-consistent
+                     ! bounded contribution from the gauge-safe dP derivative.
+                     ! The raw derivative remains exposed through the audit
+                     ! channels below.
                      density_plateau_column(ie) = density_projector_column(ie)
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
@@ -17957,9 +17971,10 @@ CONTAINS
                END DO
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
-                     ! Keep the production density response tied to the finite
-                     ! spectral density motion.  The raw diagonal derivative is
-                     ! still exposed through the audit channel below.
+                     ! Keep the production density response tied to finite
+                     ! spectral density motion plus the bounded physical
+                     ! occupation-response component.  The raw diagonal
+                     ! derivative is still exposed through the audit channel.
                      density_plateau_response = density_mixed_column(ie)
                      ! The full plateau-density response enters the dense Mermin
                      ! energy block below, whose fixed-N projector is global over
