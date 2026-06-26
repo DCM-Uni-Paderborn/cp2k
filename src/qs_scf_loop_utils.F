@@ -18222,7 +18222,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
-      REAL(KIND=dp), PARAMETER                           :: significant_component_fraction = 0.25_dp
+      REAL(KIND=dp), PARAMETER                           :: significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
       REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, curv_max, &

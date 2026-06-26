@@ -11165,15 +11165,15 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 2
-      REAL(KIND=dp), PARAMETER                           :: active_fraction = 0.99_dp, &
-                                                            active_tol = 0.85_dp, &
-                                                            moderate_fraction = 0.90_dp, &
-                                                            moderate_tol = 0.80_dp
+      REAL(KIND=dp), PARAMETER :: active_fraction = 0.99_dp, active_tol = 0.85_dp, &
+         dominant_fraction = 0.75_dp, dominant_tol = 0.85_dp, moderate_fraction = 0.90_dp, &
+         moderate_tol = 0.80_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
-      REAL(KIND=dp)                                      :: active_ratio, inert_ratio, &
-                                                            moderate_ratio, raw_active, raw_inert, &
-                                                            unit_active, unit_inert
+      REAL(KIND=dp)                                      :: active_ratio, dominant_ratio, &
+                                                            inert_ratio, moderate_ratio, &
+                                                            raw_active, raw_inert, unit_active, &
+                                                            unit_inert
       REAL(KIND=dp), DIMENSION(n)                        :: modal_curv, occ_curv
 
       unit_active = SQRT(active_fraction)
@@ -11230,6 +11230,34 @@ CONTAINS
       ELSE
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
             "OK with moderate/inert/mactive/minert", moderate_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      END IF
+
+      unit_active = SQRT(dominant_fraction)
+      unit_inert = SQRT(1.0_dp - dominant_fraction)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit_inert, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-unit_inert, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_curv)
+
+      raw_active = dominant_fraction*occ_curv(1) + (1.0_dp - dominant_fraction)*occ_curv(2)
+      raw_inert = (1.0_dp - dominant_fraction)*occ_curv(1) + dominant_fraction*occ_curv(2)
+      dominant_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
+      inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
+
+      IF (dominant_ratio < dominant_tol .OR. inert_ratio > 0.25_dp .OR. &
+          modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
+          raw_inert <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with dominant/inert/mactive/minert", dominant_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with dominant/inert/mactive/minert", dominant_ratio, inert_ratio, &
             modal_curv(1), modal_curv(2)
       END IF
 
@@ -12247,7 +12275,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
-      REAL(KIND=dp), PARAMETER :: significant_component_fraction = 0.25_dp
+      REAL(KIND=dp), PARAMETER :: significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
       REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, &
