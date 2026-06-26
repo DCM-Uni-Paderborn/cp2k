@@ -1750,7 +1750,7 @@ CONTAINS
          ! Quadratic damping makes the projector itself the limiting fixed-point
          ! error just above tight SCF thresholds.
          tail_scale = MAX(0.0_dp, delta/ot_kp_schur_projector_response_full_delta)
-         projector_weight = projector_weight*tail_scale
+         projector_weight = projector_weight*tail_scale**2
       END IF
 
    END FUNCTION kpoint_ot_canonical_density_projector_weight
