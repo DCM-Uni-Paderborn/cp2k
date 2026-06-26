@@ -138,6 +138,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density eigen floor filter", 5.0E-14_dp, nfail)
    CALL check_projector_active_rotation_pair_weight( &
       "complex projector active rotation pair weight", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_pair_projector_weight( &
+      "complex projector physical pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_active_filter_descent_recovery( &
@@ -5378,6 +5380,58 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_active_rotation_pair_weight
+
+! **************************************************************************************************
+!> \brief Check that trusted density history can lift physical gap pairs without opening gauge pairs.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_pair_projector_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: projector_weight = 0.60_dp
+
+      REAL(KIND=dp)                                      :: err, fermi_weight, full_gap, gauge_pair, &
+                                                            half_gap, no_history, over_history, &
+                                                            trusted_gap
+
+      fermi_weight = 0.02_dp*projector_weight
+      trusted_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                         0.80_dp, 0.50_dp)
+      half_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                      0.50_dp, 0.50_dp)
+      full_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                      1.00_dp, 0.50_dp)
+      gauge_pair = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                        0.00_dp, 0.50_dp)
+      no_history = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                        0.80_dp, 0.00_dp)
+      over_history = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                          1.00_dp, 2.00_dp)
+
+      err = ABS(trusted_gap - 0.40_dp*projector_weight)
+      err = MAX(err, ABS(half_gap - 0.25_dp*projector_weight))
+      err = MAX(err, ABS(full_gap - 0.50_dp*projector_weight))
+      err = MAX(err, ABS(gauge_pair - fermi_weight))
+      err = MAX(err, ABS(no_history - fermi_weight))
+      err = MAX(err, ABS(over_history - projector_weight))
+
+      IF (err > tol .OR. trusted_gap <= fermi_weight .OR. gauge_pair > trusted_gap .OR. &
+          no_history > trusted_gap) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/trusted/half/full/gauge/nohist", err, trusted_gap, half_gap, &
+            full_gap, gauge_pair, no_history
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/trusted/half/full/gauge/nohist", err, trusted_gap, half_gap, &
+            full_gap, gauge_pair, no_history
+      END IF
+
+   END SUBROUTINE check_projector_physical_pair_projector_weight
 
 ! **************************************************************************************************
 !> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
@@ -11534,6 +11588,32 @@ CONTAINS
       pair_weight = projector_weight*active_fraction
 
    END FUNCTION dense_pair_projector_weight
+
+! **************************************************************************************************
+!> \brief history-qualified physical projector weight for one dense rotation variable
+!> \param projector_weight ...
+!> \param active_weight ...
+!> \param occ_gap_weight ...
+!> \param density_weight ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_physical_pair_projector_weight(projector_weight, active_weight, occ_gap_weight, &
+                                                 density_weight) RESULT(pair_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, active_weight, &
+                                                            occ_gap_weight, density_weight
+      REAL(KIND=dp)                                      :: pair_weight
+
+      REAL(KIND=dp)                                      :: gap_fraction, response_weight
+
+      pair_weight = MAX(0.0_dp, active_weight)
+      IF (projector_weight <= 0.0_dp) RETURN
+
+      gap_fraction = MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
+      response_weight = MIN(1.0_dp, MAX(0.0_dp, density_weight))
+      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*response_weight)
+      pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
+
+   END FUNCTION dense_physical_pair_projector_weight
 
 ! **************************************************************************************************
 !> \brief active Fermi-window weight for dense projector-density response fixtures.

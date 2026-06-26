@@ -1802,6 +1802,30 @@ CONTAINS
    END FUNCTION kpoint_ot_pair_projector_weight
 
 ! **************************************************************************************************
+!> \brief history-qualified physical projector weight for one rotation variable
+!> \param projector_weight ...
+!> \param active_weight ...
+!> \param occ_gap_weight ...
+!> \param density_weight ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION kpoint_ot_physical_pair_projector_weight(projector_weight, active_weight, occ_gap_weight, &
+                                                     density_weight) RESULT(pair_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, active_weight, &
+                                                            occ_gap_weight, density_weight
+      REAL(KIND=dp)                                      :: gap_fraction, pair_weight, response_weight
+
+      pair_weight = MAX(0.0_dp, active_weight)
+      IF (projector_weight <= 0.0_dp) RETURN
+
+      gap_fraction = MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
+      response_weight = MIN(1.0_dp, MAX(0.0_dp, density_weight))
+      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*response_weight)
+      pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
+
+   END FUNCTION kpoint_ot_physical_pair_projector_weight
+
+! **************************************************************************************************
 !> \brief active Fermi-window weight for the diagonal projector-density response
 !> \param occ_curv ...
 !> \param occ_curv_max ...
@@ -6002,6 +6026,7 @@ CONTAINS
             projector_physical_active_covariant_delta_max, projector_physical_active_covariant_diag_avg, &
             projector_physical_active_trace_balance, projector_physical_active_weight_avg, &
             projector_physical_active_weight_fraction, projector_physical_active_weight_max, &
+            projector_physical_active_weight_r, projector_physical_active_weight_s, &
             projector_physical_covariant_abs_avg, projector_physical_covariant_delta, &
             projector_physical_covariant_delta_max, projector_physical_covariant_diag_avg, &
             projector_physical_density_abs_avg, projector_physical_density_delta_max, &
@@ -8237,17 +8262,27 @@ CONTAINS
          rot_hessian_projector_physical_active(:, :) = rot_hessian_projector_physical(:, :)
          DO s = 1, nrot
             DO r = 1, nrot
+               projector_physical_active_weight_r = &
+                  kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
+                                                           var_projector_active_weight(r), &
+                                                           var_occ_gap_weight(r), &
+                                                           projector_physical_direct_floor_density_weight)
+               projector_physical_active_weight_s = &
+                  kpoint_ot_physical_pair_projector_weight(var_projector_weight(s), &
+                                                           var_projector_active_weight(s), &
+                                                           var_occ_gap_weight(s), &
+                                                           projector_physical_direct_floor_density_weight)
                projector_physical_covariant_delta = &
                   -0.5_dp*(var_projector_weight(r) + var_projector_weight(s))*rot_hessian(r, s)
                projector_physical_active_covariant_delta = &
-                  -0.5_dp*(var_projector_active_weight(r) + &
-                           var_projector_active_weight(s))*rot_hessian(r, s)
+                  -0.5_dp*(projector_physical_active_weight_r + &
+                           projector_physical_active_weight_s)*rot_hessian(r, s)
                IF (var_channel(r) /= var_channel(s)) CYCLE
                projector_offdiag_active_weight = 0.0_dp
                IF (var_projector_weight(r) + var_projector_weight(s) > &
                    EPSILON(projector_offdiag_active_weight)) THEN
                   projector_offdiag_active_weight = &
-                     (var_projector_active_weight(r) + var_projector_active_weight(s))/ &
+                     (projector_physical_active_weight_r + projector_physical_active_weight_s)/ &
                      MAX(var_projector_weight(r) + var_projector_weight(s), EPSILON(1.0_dp))
                   projector_offdiag_active_weight = &
                      MIN(1.0_dp, MAX(0.0_dp, projector_offdiag_active_weight))
@@ -8281,8 +8316,13 @@ CONTAINS
                rot_hessian_projector_physical_diagref(r, r) - rot_hessian(r, r)
             projector_physical_diagref_gap_diag_avg = projector_physical_diagref_gap_diag_avg + &
                rot_hessian_projector_physical_diagref(r, r) - rot_hessian_projector_physical(r, r)
+            projector_physical_active_weight_r = &
+               kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
+                                                        var_projector_active_weight(r), &
+                                                        var_occ_gap_weight(r), &
+                                                        projector_physical_direct_floor_density_weight)
             projector_physical_covariant_delta = -var_projector_weight(r)*rot_hessian(r, r)
-            projector_physical_active_covariant_delta = -var_projector_active_weight(r)*rot_hessian(r, r)
+            projector_physical_active_covariant_delta = -projector_physical_active_weight_r*rot_hessian(r, r)
             projector_physical_residual_delta = rot_hessian_projector_physical(r, r) - rot_hessian(r, r) - &
                                                 projector_physical_covariant_delta
             projector_physical_covariant_diag_avg = projector_physical_covariant_diag_avg + &
@@ -8293,18 +8333,28 @@ CONTAINS
                                                    projector_physical_residual_delta
             IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) THEN
                projector_physical_active_weight_avg = projector_physical_active_weight_avg + &
-                                                      var_projector_active_weight(r)/var_projector_weight(r)
+                                                      projector_physical_active_weight_r/var_projector_weight(r)
                projector_physical_active_weight_max = MAX(projector_physical_active_weight_max, &
-                                                          var_projector_active_weight(r)/var_projector_weight(r))
-               IF (var_projector_active_weight(r) > EPSILON(var_projector_active_weight(r))) &
+                                                          projector_physical_active_weight_r/var_projector_weight(r))
+               IF (projector_physical_active_weight_r > EPSILON(projector_physical_active_weight_r)) &
                   projector_physical_active_weight_fraction = projector_physical_active_weight_fraction + 1.0_dp
             END IF
             DO s = 1, nrot
+               projector_physical_active_weight_r = &
+                  kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
+                                                           var_projector_active_weight(r), &
+                                                           var_occ_gap_weight(r), &
+                                                           projector_physical_direct_floor_density_weight)
+               projector_physical_active_weight_s = &
+                  kpoint_ot_physical_pair_projector_weight(var_projector_weight(s), &
+                                                           var_projector_active_weight(s), &
+                                                           var_occ_gap_weight(s), &
+                                                           projector_physical_direct_floor_density_weight)
                projector_physical_covariant_delta = -0.5_dp*(var_projector_weight(r) + &
                                                              var_projector_weight(s))*rot_hessian(r, s)
                projector_physical_active_covariant_delta = &
-                  -0.5_dp*(var_projector_active_weight(r) + &
-                           var_projector_active_weight(s))*rot_hessian(r, s)
+                  -0.5_dp*(projector_physical_active_weight_r + &
+                           projector_physical_active_weight_s)*rot_hessian(r, s)
                projector_physical_residual_delta = rot_hessian_projector_physical(r, s) - rot_hessian(r, s) - &
                                                    projector_physical_covariant_delta
                projector_hessian_abs_avg = projector_hessian_abs_avg + &
