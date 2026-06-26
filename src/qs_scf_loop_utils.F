@@ -11226,7 +11226,13 @@ CONTAINS
                                              projector_physical_direct_density_norm_energy = &
                                                 MAX(0.0_dp, projector_physical_direct_density_norm_energy)
                                              projector_physical_direct_density_norm_rotation = &
-                                                MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                                MAX(0.0_dp, &
+                                                    kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
+                                                                             projector_physical_direct_sol))
+                                             IF (projector_physical_direct_density_norm_rotation <= &
+                                                 EPSILON(projector_physical_direct_density_norm_rotation)) &
+                                                projector_physical_direct_density_norm_rotation = &
+                                                   MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
                                              projector_physical_direct_density_normp = &
                                                 projector_physical_direct_density_norm_energy + &
                                                 projector_physical_direct_density_norm_rotation
@@ -11547,7 +11553,13 @@ CONTAINS
                                                 density_full_direct_norm_energy = &
                                                    MAX(0.0_dp, density_full_direct_norm_energy)
                                                 density_full_direct_norm_rotation = &
-                                                   MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                                   MAX(0.0_dp, &
+                                                       kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
+                                                                                projector_physical_direct_sol))
+                                                IF (density_full_direct_norm_rotation <= &
+                                                    EPSILON(density_full_direct_norm_rotation)) &
+                                                   density_full_direct_norm_rotation = &
+                                                      MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
                                                 density_full_direct_normp = density_full_direct_norm_energy + &
                                                                             density_full_direct_norm_rotation
                                                 IF (density_full_direct_gdotp > 0.0_dp .AND. &
@@ -12208,7 +12220,12 @@ CONTAINS
                                           ! Indefinite physical Schur curvature is a trust signal,
                                           ! not a reason to suppress the candidate completely.
                                           projector_physical_direct_metric_norm_rotation = &
-                                             ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                             ABS(kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
+                                                                          projector_physical_direct_sol))
+                                          IF (projector_physical_direct_metric_norm_rotation <= &
+                                             EPSILON(projector_physical_direct_metric_norm_rotation)) &
+                                             projector_physical_direct_metric_norm_rotation = &
+                                                ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
                                           IF (projector_physical_direct_metric_norm_rotation <= &
                                              EPSILON(projector_physical_direct_metric_norm_rotation)) &
                                              projector_physical_direct_metric_norm_rotation = &
@@ -17241,6 +17258,33 @@ CONTAINS
          drop = 0.5_dp*scale*scale*MAX(0.0_dp, drop)
 
       END FUNCTION kpoint_ot_response_mismatch_drop
+
+! **************************************************************************************************
+!> \brief ...
+!> \param hessian ...
+!> \param step_vec ...
+!> \return ...
+! **************************************************************************************************
+      FUNCTION kpoint_ot_symmetric_quad(hessian, step_vec) RESULT(quad)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_vec
+      REAL(KIND=dp)                                      :: quad
+
+      INTEGER                                            :: i, j, nrot_local
+
+         quad = 0.0_dp
+         nrot_local = SIZE(hessian, 1)
+         IF (nrot_local <= 0) RETURN
+         IF (SIZE(hessian, 2) /= nrot_local) RETURN
+         IF (SIZE(step_vec) /= nrot_local) RETURN
+
+         DO j = 1, nrot_local
+            DO i = 1, nrot_local
+               quad = quad + 0.5_dp*(hessian(i, j) + hessian(j, i))*step_vec(i)*step_vec(j)
+            END DO
+         END DO
+
+      END FUNCTION kpoint_ot_symmetric_quad
 
 ! **************************************************************************************************
 !> \brief ...

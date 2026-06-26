@@ -200,6 +200,8 @@ PROGRAM qs_ot_frechet_unittest
                                                  5.0E-14_dp, nfail)
    CALL check_projector_direct_history_step_scale("complex projector Direct history step scale", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_direct_scaled_metric_norm("complex projector Direct scaled metric norm", &
+                                                  5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
       "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_promotion("complex projector mixed Direct promotion", &
@@ -7686,6 +7688,65 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief Check that scaled Direct steps use the Schur quadratic, not the unscaled RHS product.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_scaled_metric_norm(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: damp_scale = 0.55_dp, &
+                                                            grow_scale = 1.15_dp
+
+      REAL(KIND=dp) :: damp_expected, damp_new_drop, damp_old_drop, damp_rhs_quad, &
+         damp_schur_quad, err, grow_expected, grow_new_drop, grow_old_drop, grow_rhs_quad, &
+         grow_schur_quad
+      REAL(KIND=dp), DIMENSION(n)                        :: q_base, q_damp, q_grow, rhs
+      REAL(KIND=dp), DIMENSION(n, n)                     :: h
+
+      h(:, :) = RESHAPE([0.72_dp, 0.06_dp, -0.04_dp, &
+                         0.06_dp, 0.48_dp, 0.05_dp, &
+                         -0.04_dp, 0.05_dp, 0.63_dp], [n, n])
+      q_base(:) = [0.18_dp, -0.11_dp, 0.07_dp]
+      rhs(:) = MATMUL(h, q_base)
+
+      q_damp(:) = damp_scale*q_base(:)
+      damp_rhs_quad = DOT_PRODUCT(rhs, q_damp)
+      damp_schur_quad = DOT_PRODUCT(q_damp, MATMUL(h, q_damp))
+      damp_expected = damp_scale*damp_rhs_quad
+      damp_old_drop = damp_rhs_quad - 0.5_dp*damp_rhs_quad
+      damp_new_drop = damp_rhs_quad - 0.5_dp*damp_schur_quad
+
+      q_grow(:) = grow_scale*q_base(:)
+      grow_rhs_quad = DOT_PRODUCT(rhs, q_grow)
+      grow_schur_quad = DOT_PRODUCT(q_grow, MATMUL(h, q_grow))
+      grow_expected = grow_scale*grow_rhs_quad
+      grow_old_drop = grow_rhs_quad - 0.5_dp*grow_rhs_quad
+      grow_new_drop = grow_rhs_quad - 0.5_dp*grow_schur_quad
+
+      err = ABS(damp_schur_quad - damp_expected)
+      err = MAX(err, ABS(grow_schur_quad - grow_expected))
+
+      IF (err > tol .OR. damp_new_drop <= damp_old_drop .OR. grow_new_drop >= grow_old_drop) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/drhs/dschur/ddrop/grhs/gschur/gdrop", err, &
+            damp_rhs_quad, damp_schur_quad, damp_new_drop - damp_old_drop, &
+            grow_rhs_quad, grow_schur_quad, grow_new_drop - grow_old_drop
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/drhs/dschur/ddrop/grhs/gschur/gdrop", err, &
+            damp_rhs_quad, damp_schur_quad, damp_new_drop - damp_old_drop, &
+            grow_rhs_quad, grow_schur_quad, grow_new_drop - grow_old_drop
+      END IF
+
+   END SUBROUTINE check_projector_direct_scaled_metric_norm
 
 ! **************************************************************************************************
 !> \brief Check accepted-drop consistency scaling of mixed Direct history.
