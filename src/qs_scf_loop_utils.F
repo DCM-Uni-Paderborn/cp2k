@@ -1944,8 +1944,7 @@ CONTAINS
            ABS(density_safe_response) > EPSILON(density_safe_response))) THEN
          projector_abs = ABS(density_projector_response)
          safe_abs = ABS(density_safe_response)
-         safe_cap = MAX(4.0_dp*projector_abs, &
-                        ot_kp_schur_projector_response_ratio_gate*safe_abs)
+         safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
          safe_component = (1.0_dp - safe_blend)*density_projector_response + &
@@ -1953,8 +1952,10 @@ CONTAINS
       END IF
       ! The density channel follows the finite spectral response, but augments it
       ! with the gauge-safe diagonal occupation response when both point along
-      ! the same physical density direction.  The cap keeps near-degenerate
-      ! projector-basis motion from becoming an unbounded fixed-N Schur source.
+      ! the same physical density direction.  The same active-window shape that
+      ! scales the final response also caps the safe component: fully active
+      ! Fermi-window channels keep their fixed-N curvature, while inert bands
+      ! still receive a quadratic low-curvature suppression.
       density_response = response_shape*safe_component
 
    END FUNCTION kpoint_ot_physical_density_response

@@ -4644,7 +4644,7 @@ CONTAINS
       INTEGER                                            :: i
       REAL(KIND=dp) :: active_fraction, active_recovery, bounded_response, err, inert_suppression, &
          mid_recovery, occ_curv_max, projector_abs, response_shape, safe_abs, safe_blend, &
-         safe_cap, safe_component, safe_rejection
+         safe_cap, safe_component, safe_rejection, zero_active, zero_inert
       REAL(KIND=dp), DIMENSION(n)                        :: expected, occ_curv, projector_response, &
                                                             response, safe_response
 
@@ -4660,10 +4660,12 @@ CONTAINS
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
          safe_component = projector_response(i)
-         IF (projector_response(i)*safe_response(i) > 0.0_dp) THEN
+         IF (projector_response(i)*safe_response(i) > 0.0_dp .OR. &
+             (ABS(projector_response(i)) <= EPSILON(projector_response(i)) .AND. &
+              ABS(safe_response(i)) > EPSILON(safe_response(i)))) THEN
             projector_abs = ABS(projector_response(i))
             safe_abs = ABS(safe_response(i))
-            safe_cap = MAX(4.0_dp*projector_abs, response_ratio_gate*safe_abs)
+            safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
             safe_component = SIGN(MIN(safe_abs, safe_cap), safe_response(i))
             safe_blend = active_fraction
             safe_component = (1.0_dp - safe_blend)*projector_response(i) + &
@@ -4681,18 +4683,23 @@ CONTAINS
                                                                            occ_curv(3), occ_curv_max, &
                                                                            response_ratio_gate))
       inert_suppression = ABS(response(n))/MAX(ABS(safe_response(n)), EPSILON(1.0_dp))
+      zero_active = dense_physical_density_response(0.0_dp, 0.125_dp, occ_curv(1), &
+                                                    occ_curv_max, response_ratio_gate)
+      zero_inert = dense_physical_density_response(0.0_dp, 0.125_dp, occ_curv(n), &
+                                                   occ_curv_max, response_ratio_gate)
 
-      IF (err > tol .OR. active_recovery < active_tol .OR. safe_rejection < active_tol .OR. &
+      IF (err > tol .OR. active_recovery < active_tol .OR. safe_rejection > tol .OR. &
           mid_recovery <= active_tol .OR. ABS(bounded_response) <= 0.0_dp .OR. &
-          inert_suppression > 1.0E-4_dp) THEN
+          inert_suppression > 1.0E-4_dp .OR. ABS(zero_active - 0.125_dp) > tol .OR. &
+          ABS(zero_inert) > 1.0E-4_dp*0.125_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_rejection, &
-            inert_suppression
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/mid/safegap/inert/zeroa/zeroi", err, response(1), mid_recovery, &
+            safe_rejection, inert_suppression, zero_active, zero_inert
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_rejection, &
-            inert_suppression
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/mid/safegap/inert/zeroa/zeroi", err, response(1), mid_recovery, &
+            safe_rejection, inert_suppression, zero_active, zero_inert
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_helper
@@ -12502,7 +12509,7 @@ CONTAINS
            ABS(density_safe_response) > EPSILON(density_safe_response))) THEN
          projector_abs = ABS(density_projector_response)
          safe_abs = ABS(density_safe_response)
-         safe_cap = MAX(4.0_dp*projector_abs, response_ratio_gate*safe_abs)
+         safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
          safe_component = (1.0_dp - safe_blend)*density_projector_response + &
