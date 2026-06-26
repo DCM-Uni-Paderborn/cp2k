@@ -6371,43 +6371,45 @@ CONTAINS
          projector_physical_direct_tail_history_quality, &
          projector_physical_direct_tail_history_scale, &
          projector_physical_direct_trace_active_actual_ratio, &
-         projector_physical_direct_trace_active_diag_quad
-      REAL(KIND=dp) :: projector_physical_direct_trace_active_free_quad, &
+         projector_physical_direct_trace_active_basis_weight
+      REAL(KIND=dp) :: projector_physical_direct_trace_active_diag_quad, &
+         projector_physical_direct_trace_active_free_quad, &
          projector_physical_direct_trace_active_norm, projector_physical_direct_trace_active_quad, &
          projector_physical_direct_trace_actual_diag_quad, &
          projector_physical_direct_trace_actual_free_quad, &
          projector_physical_direct_trace_actual_norm, projector_physical_direct_trace_actual_quad, &
          projector_physical_direct_trace_base_diag_avg, &
          projector_physical_direct_trace_diag_scale, projector_physical_direct_trace_excess_quad, &
-         projector_physical_direct_trace_free_scale, projector_physical_direct_trace_full_diag_quad
-      REAL(KIND=dp) :: projector_physical_direct_trace_full_free_quad, &
+         projector_physical_direct_trace_free_scale
+      REAL(KIND=dp) :: projector_physical_direct_trace_full_diag_quad, &
+         projector_physical_direct_trace_full_free_quad, &
          projector_physical_direct_trace_full_norm, projector_physical_direct_trace_full_quad, &
          projector_physical_direct_trace_local_separate_weight, &
          projector_physical_direct_trace_ratio, projector_physical_direct_trace_scale_diag_avg, &
          projector_physical_direct_trust_quality, projector_physical_direct_trust_scale, &
          projector_physical_direct_unit_abs_step, projector_physical_direct_unit_model_gap, &
          projector_physical_direct_unit_model_gap_drop, &
-         projector_physical_direct_unit_trace_gap_drop, &
-         projector_physical_direct_unit_weighted_step
-      REAL(KIND=dp) :: projector_physical_direction_scale, projector_physical_expected_drop, &
+         projector_physical_direct_unit_trace_gap_drop
+      REAL(KIND=dp) :: projector_physical_direct_unit_weighted_step, &
+         projector_physical_direction_scale, projector_physical_expected_drop, &
          projector_physical_gdot_energy, projector_physical_gdot_rotation, &
          projector_physical_gdotp, projector_physical_model_calibrated_drop, &
          projector_physical_model_drop, projector_physical_model_gap, &
          projector_physical_model_gap_drop, projector_physical_model_gap_ratio, &
          projector_physical_model_gap_trust, projector_physical_norm_energy, &
          projector_physical_norm_ratio, projector_physical_norm_rotation, &
-         projector_physical_normp, projector_physical_offdiag_abs_avg, &
-         projector_physical_offdiag_abs_ratio
-      REAL(KIND=dp) :: projector_physical_offdiag_active_abs_avg, &
-         projector_physical_offdiag_delta_max, projector_physical_offdiag_diag_avg, &
-         projector_physical_offdiag_inactive_abs_avg, projector_physical_offdiag_mode_abs_quad, &
-         projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
+         projector_physical_normp, projector_physical_offdiag_abs_avg
+      REAL(KIND=dp) :: projector_physical_offdiag_abs_ratio, &
+         projector_physical_offdiag_active_abs_avg, projector_physical_offdiag_delta_max, &
+         projector_physical_offdiag_diag_avg, projector_physical_offdiag_inactive_abs_avg, &
+         projector_physical_offdiag_mode_abs_quad, projector_physical_offdiag_mode_eval_max, &
+         projector_physical_offdiag_mode_eval_min, &
          projector_physical_offdiag_mode_negative_fraction, &
          projector_physical_offdiag_mode_negative_quad, &
          projector_physical_offdiag_mode_positive_quad, projector_physical_offdiag_mode_quad, &
-         projector_physical_offdiag_mode_quad_abs_ratio, &
-         projector_physical_offdiag_mode_quad_signed_ratio
-      REAL(KIND=dp) :: projector_physical_offdiag_mode_step_negative_fraction, &
+         projector_physical_offdiag_mode_quad_abs_ratio
+      REAL(KIND=dp) :: projector_physical_offdiag_mode_quad_signed_ratio, &
+         projector_physical_offdiag_mode_step_negative_fraction, &
          projector_physical_offdiag_plateau_abs_avg, projector_physical_offdiag_plateau_delta_max, &
          projector_physical_offdiag_plateau_diag_avg, &
          projector_physical_offdiag_plateau_gap_abs_avg, &
@@ -6415,9 +6417,8 @@ CONTAINS
          projector_physical_offdiag_plateau_gap_delta_max, &
          projector_physical_offdiag_plateau_gap_diag_avg, &
          projector_physical_offdiag_plateau_gap_inactive_abs_avg, &
-         projector_physical_quality_for_selection, projector_physical_residual_abs_avg, &
-         projector_physical_residual_delta
-      REAL(KIND=dp) :: projector_physical_residual_delta_max, &
+         projector_physical_quality_for_selection, projector_physical_residual_abs_avg
+      REAL(KIND=dp) :: projector_physical_residual_delta, projector_physical_residual_delta_max, &
          projector_physical_residual_diag_avg, projector_physical_response_abs_step, &
          projector_physical_response_abs_trust_ratio, &
          projector_physical_response_audit_base_weight, &
@@ -6426,66 +6427,67 @@ CONTAINS
          projector_physical_response_audit_positive_weight_sum, &
          projector_physical_response_audit_response_total_sum, &
          projector_physical_response_audit_step_weight_sum, &
-         projector_physical_response_correction_drop, &
-         projector_physical_response_correction_negative
-      REAL(KIND=dp) :: projector_physical_response_cross_drop, &
-         projector_physical_response_negative_coeff, projector_physical_response_negative_drop, &
-         projector_physical_response_positive_coeff, projector_physical_response_positive_drop, &
+         projector_physical_response_correction_drop
+      REAL(KIND=dp) :: projector_physical_response_correction_negative, &
+         projector_physical_response_cross_drop, projector_physical_response_negative_coeff, &
+         projector_physical_response_negative_drop, projector_physical_response_positive_coeff, &
+         projector_physical_response_positive_drop, &
          projector_physical_response_raw_negative_fraction, projector_physical_response_weight, &
          projector_physical_response_weighted_step, &
          projector_physical_response_weighted_trust_ratio, projector_physical_scale_quality, &
-         projector_physical_trace_balance, projector_physical_trace_split_quality, &
-         projector_physical_trust_quality, projector_physical_trust_scale
-      REAL(KIND=dp) :: projector_physical_unit_abs_step, projector_physical_unit_weighted_step, &
+         projector_physical_trace_balance, projector_physical_trace_split_quality
+      REAL(KIND=dp) :: projector_physical_trust_quality, projector_physical_trust_scale, &
+         projector_physical_unit_abs_step, projector_physical_unit_weighted_step, &
          projector_plateau_gap_quality_for_selection, projector_response_direction_scale, &
          projector_response_expected_drop, projector_response_gap_avg, projector_response_gap_max, &
          projector_response_gap_norm, projector_response_gdot_energy, &
          projector_response_gdot_rotation, projector_response_gdotp, &
          projector_response_model_calibrated_drop, projector_response_model_drop, &
-         projector_response_model_gap, projector_response_model_gap_drop, &
-         projector_response_model_gap_ratio, projector_response_model_gap_trust
-      REAL(KIND=dp) :: projector_response_norm_energy, projector_response_norm_ratio, &
+         projector_response_model_gap, projector_response_model_gap_drop
+      REAL(KIND=dp) :: projector_response_model_gap_ratio, projector_response_model_gap_trust, &
+         projector_response_norm_energy, projector_response_norm_ratio, &
          projector_response_norm_rotation, projector_response_normp, &
          projector_response_quality_for_selection, projector_response_response_abs_step, &
          projector_response_response_abs_trust_ratio, projector_response_response_weighted_step, &
          projector_response_response_weighted_trust_ratio, projector_response_scale_quality, &
          projector_response_trust_quality, projector_response_trust_scale, &
-         projector_response_unit_abs_step, projector_response_unit_weighted_step, &
-         rayleigh_edge_gap, residual_delta, residual_reference_quality
-      REAL(KIND=dp) :: response_abs_step, response_abs_trust, response_abs_trust_ratio, &
-         response_mixed_diag_avg, response_penalty_diag_sum, response_penalty_term, &
-         response_shift, response_step_max, response_trust, response_trust_base, &
-         response_trust_factor, response_trust_ratio, response_weighted_step, &
+         projector_response_unit_abs_step
+      REAL(KIND=dp) :: projector_response_unit_weighted_step, rayleigh_edge_gap, residual_delta, &
+         residual_reference_quality, response_abs_step, response_abs_trust, &
+         response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
+         response_penalty_term, response_shift, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, rot_grad_active_fraction_avg, &
          rot_grad_active_fraction_max, rot_grad_active_im, rot_grad_active_re, &
-         rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, rot_grad_gap_im, &
-         rot_grad_gap_re, rot_grad_gap_weight
-      REAL(KIND=dp) :: rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
-         rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
+         rot_grad_active_weight_sum
+      REAL(KIND=dp) :: rot_grad_energy_norm, rot_grad_fermi_weight, rot_grad_gap_im, &
+         rot_grad_gap_re, rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, &
+         rot_grad_gauge_re, rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
          rot_grad_inactive_weight_sum, rot_grad_pair_fraction, rot_grad_physical_norm, &
          rot_grad_rest_fraction, rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, &
          row_floor_avg, row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
          row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, rx_shift, &
-         rx_weight, scale_quality, schur_active_occ_min, schur_diag_min, schur_energy_window, &
-         spectral_resp_correction_drop
-      REAL(KIND=dp) :: spectral_resp_correction_negative, spectral_resp_cross_drop, &
-         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff, &
-         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
-         split_curvature_scale, split_dense_expected_ratio, split_density_projector_fraction, &
-         split_diag_shift_max, split_diag_shift_sum, split_direction_scale, split_expected_drop, &
-         split_gdot_energy, split_gdot_rotation, split_gdotp, split_model_calibrated_drop, &
-         split_model_drop, split_model_gap_ratio, split_norm_energy, split_norm_ratio
-      REAL(KIND=dp) :: split_norm_rotation, split_normp, split_occgap_shadow_drop, &
-         split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
+         rx_weight, scale_quality
+      REAL(KIND=dp) :: schur_active_occ_min, schur_diag_min, schur_energy_window, &
+         spectral_resp_correction_drop, spectral_resp_correction_negative, &
+         spectral_resp_cross_drop, spectral_resp_negative_coeff, spectral_resp_negative_drop, &
+         spectral_resp_positive_coeff, spectral_resp_positive_drop, &
+         spectral_resp_raw_negative_fraction, spectral_resp_weight, split_curvature_scale, &
+         split_dense_expected_ratio, split_density_projector_fraction, split_diag_shift_max, &
+         split_diag_shift_sum, split_direction_scale, split_expected_drop, split_gdot_energy, &
+         split_gdot_rotation, split_gdotp
+      REAL(KIND=dp) :: split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, &
+         split_norm_energy, split_norm_ratio, split_norm_rotation, split_normp, &
+         split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
          split_quality_for_selection, split_residual_delta, split_residual_quality, &
          split_response_abs_step, split_response_abs_trust, split_response_abs_trust_ratio, &
          split_response_step, split_response_trust, split_response_trust_factor, &
          split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, &
-         split_scale_quality, split_schur_diag_min, split_trust_quality, step_gauge_quality, &
-         tether_curv_diag_max, tether_curv_diag_sum
-      REAL(KIND=dp) :: tether_projected_term, tether_response, tether_response_diag_sum, &
-         tether_strength, tether_weight, total_curv_diag_max, total_curv_diag_sum, z_shift, &
-         z_weight
+         split_scale_quality
+      REAL(KIND=dp) :: split_schur_diag_min, split_trust_quality, step_gauge_quality, &
+         tether_curv_diag_max, tether_curv_diag_sum, tether_projected_term, tether_response, &
+         tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max, &
+         total_curv_diag_sum, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, constrained_sol, &
          constrained_z_e, curv, density_descent_rx_e, density_descent_z_e, &
          density_full_global_rx_e, density_full_global_sol, density_full_rx_e, density_full_sol, &
@@ -7338,6 +7340,7 @@ CONTAINS
          projector_physical_direct_unit_trace_gap_drop = 0.0_dp
          projector_physical_direct_unit_weighted_step = 0.0_dp
          projector_physical_direct_trace_active_actual_ratio = 0.0_dp
+         projector_physical_direct_trace_active_basis_weight = 0.0_dp
          projector_physical_direct_trace_active_diag_quad = 0.0_dp
          projector_physical_direct_trace_active_free_quad = 0.0_dp
          projector_physical_direct_trace_active_norm = 0.0_dp
@@ -10308,6 +10311,30 @@ CONTAINS
                      projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                   projector_physical_direct_active_delta_diag_avg = &
                      projector_physical_direct_active_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                  projector_physical_direct_trace_active_basis_weight = 0.0_dp
+                  IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                     projector_physical_direct_trace_active_basis_weight = &
+                     kpoint_ot_trace_active_basis_weight( &
+                     local_ot_env(1)%schur_projector_physical_trace_raw_ema, &
+                     local_ot_env(1)%schur_projector_physical_trace_active_ema, &
+                     local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
+                     local_ot_env(1)%schur_projector_mixed_direct_quality_samples)
+                  IF (projector_physical_direct_trace_active_basis_weight > &
+                      EPSILON(projector_physical_direct_trace_active_basis_weight)) THEN
+                     projector_physical_direct_delta(:, :) = &
+                        (1.0_dp - projector_physical_direct_trace_active_basis_weight)* &
+                        projector_physical_direct_delta(:, :) + &
+                        projector_physical_direct_trace_active_basis_weight*0.5_dp* &
+                        ((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
+                         TRANSPOSE(rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)))
+                     projector_physical_direct_delta_diag_avg = 0.0_dp
+                     DO r = 1, nrot
+                        projector_physical_direct_delta_diag_avg = &
+                           projector_physical_direct_delta_diag_avg + projector_physical_direct_delta(r, r)
+                     END DO
+                     projector_physical_direct_delta_diag_avg = &
+                        projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                  END IF
                   projector_physical_direct_trace_base_diag_avg = &
                      projector_physical_direct_delta_diag_avg
                   projector_physical_direct_diag_compensation = 0.0_dp
@@ -16901,6 +16928,39 @@ CONTAINS
          component_scale = MIN(component_scale, SQRT(MIN(1.0_dp, quality_ratio)))
 
       END FUNCTION kpoint_ot_trace_diag_component_scale
+
+!> \brief early tail blend toward active-covariant Direct curvature
+!> \param raw_trace_ema accepted raw finite Projector trace contribution
+!> \param active_trace_ema accepted active-window trace contribution
+!> \param history_quality accepted-drop quality of the active-mix shadow
+!> \param samples number of accepted active-mix shadow samples
+!> \return bounded non-promoting basis weight for the physical Direct Hessian
+! **************************************************************************************************
+      FUNCTION kpoint_ot_trace_active_basis_weight(raw_trace_ema, active_trace_ema, &
+                                                   history_quality, samples) RESULT(basis_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_trace_ema, active_trace_ema, &
+                                                            history_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: basis_weight
+
+      REAL(KIND=dp)                                      :: active_fraction, gauge_fraction, &
+                                                            quality_weight, raw_abs
+
+         basis_weight = 0.0_dp
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (history_quality < 0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         raw_abs = ABS(raw_trace_ema)
+         IF (raw_abs <= EPSILON(raw_abs)) RETURN
+
+         active_fraction = ABS(active_trace_ema)/raw_abs
+         active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+         gauge_fraction = 1.0_dp - active_fraction
+         quality_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, history_quality)))
+
+         basis_weight = MIN(0.25_dp, gauge_fraction*quality_weight)
+
+      END FUNCTION kpoint_ot_trace_active_basis_weight
 
 !> \brief active-response Direct blend from accepted raw/active trace separation
 !> \param raw_trace_ema accepted raw finite Projector trace contribution

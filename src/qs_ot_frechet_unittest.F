@@ -198,6 +198,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
+   CALL check_projector_trace_active_basis_weight("complex projector trace-active Direct basis", &
+                                                  5.0E-14_dp, nfail)
    CALL check_projector_trace_diag_component_scale("complex projector trace-diag Direct scale", &
                                                    5.0E-14_dp, nfail)
    CALL check_projector_trace_local_compensation("complex projector trace local compensation", &
@@ -7701,6 +7703,52 @@ CONTAINS
    END SUBROUTINE check_projector_trace_active_mix_weight
 
 ! **************************************************************************************************
+!> \brief Check non-promoting active-basis Direct trace blending.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_active_basis_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: active_trace = -5.5E-2_dp, &
+                                                            history_quality = 4.7E-2_dp, &
+                                                            raw_trace = -1.0_dp
+
+      REAL(KIND=dp)                                      :: al_like_weight, err, matched_weight, &
+                                                            no_raw_weight, poor_weight, &
+                                                            saturated_weight, young_weight
+
+      young_weight = dense_trace_active_basis_weight(raw_trace, active_trace, history_quality, 4)
+      poor_weight = dense_trace_active_basis_weight(raw_trace, active_trace, 2.0E-2_dp, 16)
+      no_raw_weight = dense_trace_active_basis_weight(0.0_dp, active_trace, history_quality, 16)
+      matched_weight = dense_trace_active_basis_weight(raw_trace, raw_trace, history_quality, 16)
+      al_like_weight = dense_trace_active_basis_weight(raw_trace, active_trace, history_quality, 16)
+      saturated_weight = dense_trace_active_basis_weight(raw_trace, 0.0_dp, 1.0_dp, 16)
+
+      err = ABS(young_weight)
+      err = MAX(err, ABS(poor_weight))
+      err = MAX(err, ABS(no_raw_weight))
+      err = MAX(err, ABS(matched_weight))
+      err = MAX(err, ABS(saturated_weight - 0.25_dp))
+
+      IF (err > tol .OR. al_like_weight <= 0.18_dp .OR. al_like_weight >= 0.22_dp .OR. &
+          saturated_weight > 0.25_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/poor/matched/al/sat", err, young_weight, poor_weight, &
+            matched_weight, al_like_weight, saturated_weight
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/poor/matched/al/sat", err, young_weight, poor_weight, &
+            matched_weight, al_like_weight, saturated_weight
+      END IF
+
+   END SUBROUTINE check_projector_trace_active_basis_weight
+
+! **************************************************************************************************
 !> \brief Check fixed-N trace-balance damping of the Direct trace diagonal component.
 !> \param label ...
 !> \param tol ...
@@ -9476,6 +9524,40 @@ CONTAINS
       mix_weight = MIN(0.95_dp, MAX(0.0_dp, mix_weight))
 
    END FUNCTION dense_trace_active_mix_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of the non-promoting active-basis Direct trace blend.
+!> \param raw_trace_ema ...
+!> \param active_trace_ema ...
+!> \param history_quality ...
+!> \param samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_trace_active_basis_weight(raw_trace_ema, active_trace_ema, history_quality, &
+                                            samples) RESULT(basis_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_trace_ema, active_trace_ema, &
+                                                            history_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: basis_weight
+
+      REAL(KIND=dp)                                      :: active_fraction, gauge_fraction, &
+                                                            quality_weight, raw_abs
+
+      basis_weight = 0.0_dp
+      IF (samples < 8) RETURN
+      IF (history_quality < 2.5E-2_dp) RETURN
+
+      raw_abs = ABS(raw_trace_ema)
+      IF (raw_abs <= EPSILON(raw_abs)) RETURN
+
+      active_fraction = ABS(active_trace_ema)/raw_abs
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      gauge_fraction = 1.0_dp - active_fraction
+      quality_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, history_quality)))
+
+      basis_weight = MIN(0.25_dp, gauge_fraction*quality_weight)
+
+   END FUNCTION dense_trace_active_basis_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of trace-bearing Direct curvature component scaling.
