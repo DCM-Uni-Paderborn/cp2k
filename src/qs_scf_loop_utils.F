@@ -7793,9 +7793,12 @@ CONTAINS
             rot_grad_energy_norm = DOT_PRODUCT(grad_e, grad_e)
             CALL para_env_inter_kp%sum(rot_grad_energy_norm)
             rot_grad_total_physical_norm = rot_grad_physical_norm + rot_grad_energy_norm
+            ! With a complete rotation audit the raw physical gradient is a safer
+            ! convergence metric than the preconditioned Schur search direction.
             physical_delta_group_ready = residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-                                         rot_grad_gauge_norm > &
-                                         MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp))
+                                         (.NOT. schur_active_subspace .OR. &
+                                          rot_grad_gauge_norm > &
+                                          MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp)))
             local_ot_env(1)%kpoint_physical_delta_groups = &
                local_ot_env(1)%kpoint_physical_delta_groups + 1
             local_ot_env(1)%kpoint_physical_gnorm = &
