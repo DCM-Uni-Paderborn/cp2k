@@ -8208,6 +8208,13 @@ CONTAINS
                   ot_kp_schur_projector_response_min_samples, 0.0_dp, &
                   ot_kp_schur_projector_response_quality_min_ratio, &
                   ot_kp_schur_projector_response_quality_max_ratio)
+            density_full_global_quality_for_selection = &
+               kpoint_ot_floor_bootstrap_history_quality( &
+                  density_full_global_quality_for_selection, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                  ot_kp_schur_projector_response_min_samples)
             projector_physical_direct_floor_density_quality = &
                density_full_global_quality_for_selection
             projector_physical_direct_floor_density_trust_quality = &
@@ -11374,7 +11381,6 @@ CONTAINS
                                                     ot_kp_schur_projector_response_quality_min_ratio) THEN
                                                    projector_physical_direct_density_quality_for_selection = &
                                                       kpoint_ot_direct_floor_selected_quality( &
-                                                         projector_physical_direct_density_quality_for_selection, &
                                                          projector_physical_direct_floor_density_quality, &
                                                          projector_physical_direct_density_selected_history_quality, &
                                                          local_ot_env(1)% &
@@ -16378,26 +16384,59 @@ CONTAINS
       END FUNCTION kpoint_ot_direct_selected_probe_quality
 
 ! **************************************************************************************************
-!> \brief apply selected Direct history after a floor/bootstrap quality boost
-!> \param base_quality quality before the floor/bootstrap contribution
-!> \param floor_quality bootstrap quality from a floor-density response
+!> \brief apply selected Direct history after floor/bootstrap quality calibration
+!> \param floor_quality calibrated bootstrap quality from a floor-density response
 !> \param selected_quality accepted selected-Direct Mermin-drop quality
 !> \param samples number of accepted selected-Direct samples
 !> \param min_samples minimum samples before selected history contributes
-!> \return floor-boosted quality consistent with accepted selected history
+!> \return floor-calibrated quality consistent with accepted selected history
 ! **************************************************************************************************
-      FUNCTION kpoint_ot_direct_floor_selected_quality(base_quality, floor_quality, selected_quality, &
-                                                       samples, min_samples) RESULT(quality)
-      REAL(KIND=dp), INTENT(IN)                         :: base_quality, floor_quality, selected_quality
+      FUNCTION kpoint_ot_direct_floor_selected_quality(floor_quality, selected_quality, samples, min_samples) &
+         RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: floor_quality, selected_quality
       INTEGER, INTENT(IN)                               :: samples, min_samples
       REAL(KIND=dp)                                     :: quality
 
-         quality = MAX(base_quality, floor_quality)
-         IF (floor_quality <= base_quality) RETURN
-
+         quality = floor_quality
          quality = kpoint_ot_direct_selected_probe_quality(quality, selected_quality, samples, min_samples)
 
       END FUNCTION kpoint_ot_direct_floor_selected_quality
+
+! **************************************************************************************************
+!> \brief recent accepted-drop cap for floor/bootstrap Direct-density quality
+!> \param history_quality aggregate accepted-drop quality
+!> \param recent_quality most recent accepted-drop quality
+!> \param ema_quality exponential moving average accepted-drop quality
+!> \param samples number of accepted floor/bootstrap samples
+!> \param min_samples minimum samples before recent quality contributes
+!> \return aggregate quality capped by recent/EMA Mermin-drop consistency
+! **************************************************************************************************
+      FUNCTION kpoint_ot_floor_bootstrap_history_quality(history_quality, recent_quality, ema_quality, &
+                                                         samples, min_samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: history_quality, recent_quality, ema_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp)                                     :: quality
+
+      REAL(KIND=dp)                                     :: recent_cap, recent_clipped, recent_ref
+
+         quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, history_quality))
+         IF (samples < min_samples) RETURN
+
+         recent_clipped = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, recent_quality))
+         IF (recent_clipped <= EPSILON(recent_clipped)) RETURN
+
+         recent_ref = quality
+         IF (ema_quality > EPSILON(ema_quality)) &
+            recent_ref = MIN(recent_ref, MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                             MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                                 ema_quality)))
+         recent_cap = SQRT(recent_clipped*MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                              recent_ref))
+         recent_cap = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                          MIN(ot_kp_schur_projector_response_quality_max_ratio, recent_cap))
+         quality = MIN(quality, recent_cap)
+
+      END FUNCTION kpoint_ot_floor_bootstrap_history_quality
 
 ! **************************************************************************************************
 !> \brief ...
