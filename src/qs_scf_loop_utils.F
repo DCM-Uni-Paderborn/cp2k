@@ -18102,7 +18102,7 @@ CONTAINS
                ! covariant under REF-basis rotations and keeps true level
                ! splitting response without feeding projector-basis noise into
                ! the physical Schur curvature.
-               CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, gauge_gap, &
+               CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
                                                             projector_weight, kernel)
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
                docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
@@ -18181,26 +18181,31 @@ CONTAINS
 !> \param evals ...
 !> \param work ...
 !> \param occ_curv_channel ...
+!> \param occ_slope ...
 !> \param gauge_gap ...
 !> \param projector_weight ...
 !> \param kernel ...
 ! **************************************************************************************************
-      SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, gauge_gap, &
+      SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
                                                         projector_weight, kernel)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: evals, occ_curv_channel
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)             :: evals, occ_curv_channel, occ_slope
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)       :: work
       REAL(KIND=dp), INTENT(IN)                           :: gauge_gap, projector_weight
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)    :: kernel
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)      :: cluster_evec, cluster_kernel, cluster_work, &
                                                              response_block
-      INTEGER                                             :: a, b, first, last, m, n
-      REAL(KIND=dp)                                       :: curv, mu_den, mu_num, mu_shift
+      INTEGER                                             :: a, b, first, j, last, m, n
+      LOGICAL                                             :: outside_gauge_cluster
+      REAL(KIND=dp)                                       :: cluster_curv, cluster_energy, cluster_occ, curv, &
+                                                              denom, gap_tol, mu_den, mu_num, mu_shift, &
+                                                              offdiag_coeff, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)            :: cluster_eval, modal_curv
 
          n = SIZE(evals)
          IF (n <= 0) RETURN
          IF (projector_weight <= 0.0_dp) RETURN
+         gap_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))
 
          mu_num = 0.0_dp
          mu_den = 0.0_dp
@@ -18263,6 +18268,35 @@ CONTAINS
                DO b = 1, m
                   DO a = 1, m
                      kernel(first + a - 1, first + b - 1) = response_block(a, b)
+                  END DO
+               END DO
+               cluster_energy = SUM(evals(first:last))/REAL(m, KIND=dp)
+               cluster_occ = SUM(occ_slope(first:last))/REAL(m, KIND=dp)
+               cluster_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
+               DO j = 1, n
+                  IF (j >= first .AND. j <= last) CYCLE
+                  outside_gauge_cluster = .FALSE.
+                  IF (j > 1) outside_gauge_cluster = &
+                     outside_gauge_cluster .OR. ABS(evals(j) - evals(j - 1)) <= gauge_gap
+                  IF (j < n) outside_gauge_cluster = &
+                     outside_gauge_cluster .OR. ABS(evals(j + 1) - evals(j)) <= gauge_gap
+                  IF (outside_gauge_cluster) CYCLE
+                  denom = cluster_energy - evals(j)
+                  IF (ABS(denom) > gap_tol) THEN
+                     offdiag_coeff = (cluster_occ - occ_slope(j))/denom
+                  ELSE
+                     offdiag_coeff = 0.0_dp
+                  END IF
+                  offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
+                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv, occ_curv_channel(j)))
+                  IF (slope_cap > EPSILON(slope_cap)) THEN
+                     offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
+                  ELSE
+                     offdiag_coeff = 0.0_dp
+                  END IF
+                  DO a = 1, m
+                     kernel(first + a - 1, j) = projector_weight*offdiag_coeff*work(first + a - 1, j)
+                     kernel(j, first + a - 1) = CONJG(kernel(first + a - 1, j))
                   END DO
                END DO
                DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &

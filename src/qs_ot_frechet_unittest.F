@@ -268,6 +268,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector fixed-N cluster shape", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_covariant_fd( &
       "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_offblock_response( &
+      "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -7430,10 +7432,9 @@ CONTAINS
                                                             min_quality = 0.10_dp
 
       REAL(KIND=dp) :: capped_floor_quality, early_bad_quality, early_bootstrap_quality, &
-         early_floor_quality, early_good_quality, err, mature_bad_quality, &
-         mature_bootstrap_quality, mature_floor_quality, no_samples_bootstrap_quality, &
-         no_samples_floor_quality, no_samples_quality, probe_early_quality, probe_mature_quality, &
-         recent_bootstrap_quality, stale_bootstrap_quality
+         early_floor_quality, early_good_quality, err, mature_bad_quality, mature_bootstrap_quality, &
+         mature_floor_quality, no_samples_bootstrap_quality, no_samples_floor_quality, no_samples_quality, &
+         probe_early_quality, probe_mature_quality, recent_bootstrap_quality, stale_bootstrap_quality
 
       no_samples_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
                                                                  0.05_dp, 3, 4, 8, &
@@ -11840,6 +11841,72 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_covariant_fd
 
 ! **************************************************************************************************
+!> \brief Check that near-degenerate cluster-to-singleton blocks use a covariant divided difference.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_offblock_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: coeff, cluster_curv, cluster_energy, &
+                                                            cluster_occ, err, herm_err, old_gap, slope_cap
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.21_dp, 0.48_dp]
+      occ_slope(:) = [0.82_dp, 0.78_dp, 0.17_dp, 0.04_dp]
+      occ_curv(:) = [0.038_dp, 0.034_dp, 0.011_dp, 0.004_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 1) = CMPLX(0.06_dp, 0.0_dp, KIND=dp)
+      work(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      work(1, 2) = CMPLX(0.22_dp, -0.15_dp, KIND=dp)
+      work(1, 3) = CMPLX(-0.18_dp, 0.09_dp, KIND=dp)
+      work(2, 3) = CMPLX(0.07_dp, -0.05_dp, KIND=dp)
+      work(3, 4) = CMPLX(0.03_dp, 0.02_dp, KIND=dp)
+      DO i = 2, n
+         work(i, 1:i - 1) = CONJG(work(1:i - 1, i))
+      END DO
+
+      kernel(:, :) = CMPLX(9.0_dp, -3.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel)
+
+      cluster_energy = 0.5_dp*(evals(1) + evals(2))
+      cluster_occ = 0.5_dp*(occ_slope(1) + occ_slope(2))
+      cluster_curv = 0.5_dp*(occ_curv(1) + occ_curv(2))
+      coeff = (cluster_occ - occ_slope(3))/(cluster_energy - evals(3))
+      coeff = MIN(0.0_dp, coeff)
+      slope_cap = 2.0_dp*MAX(cluster_curv, occ_curv(3))
+      coeff = MAX(coeff, -slope_cap)
+
+      err = MAX(ABS(kernel(1, 3) - projector_weight*coeff*work(1, 3)), &
+                ABS(kernel(2, 3) - projector_weight*coeff*work(2, 3)))
+      herm_err = MAX(ABS(kernel(3, 1) - CONJG(kernel(1, 3))), &
+                     ABS(kernel(3, 2) - CONJG(kernel(2, 3))))
+      old_gap = MAX(ABS(kernel(1, 3) - CMPLX(9.0_dp, -3.0_dp, KIND=dp)), &
+                    ABS(kernel(2, 3) - CMPLX(9.0_dp, -3.0_dp, KIND=dp)))
+
+      IF (err > tol .OR. herm_err > tol .OR. old_gap < 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/hermitian/oldgap", err, herm_err, old_gap
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/hermitian/oldgap", err, herm_err, old_gap
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_offblock_response
+
+! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
 !> \param occ_scale ...
 !> \param occ_tol ...
@@ -12347,7 +12414,8 @@ CONTAINS
                                                            projector_weight, occ_mat_m, occ_curv, gauge_gap)
             docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
             kernel(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(docc_mat, evec))
-            CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, gauge_gap, projector_weight, kernel)
+            CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_work, gauge_gap, &
+                                                        projector_weight, kernel)
             docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
             docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
             DEALLOCATE (evec, evals, kernel, work, occ_mat_p, occ_mat_m, occ_work)
@@ -12371,12 +12439,14 @@ CONTAINS
 !> \param evals ...
 !> \param work ...
 !> \param occ_curv ...
+!> \param occ_slope ...
 !> \param gauge_gap ...
 !> \param projector_weight ...
 !> \param kernel ...
 ! **************************************************************************************************
-   SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, gauge_gap, projector_weight, kernel)
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
+   SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                     projector_weight, kernel)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_slope
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: work
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), INTENT(IN)                          :: gauge_gap, projector_weight
@@ -12384,13 +12454,17 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_kernel, &
                                                             cluster_work, response_block
-      INTEGER                                            :: a, b, first, last, m, n
-      REAL(KIND=dp)                                      :: curv, mu_den, mu_num, mu_shift
+      INTEGER                                            :: a, b, first, j, last, m, n
+      LOGICAL                                            :: outside_gauge_cluster
+      REAL(KIND=dp)                                      :: cluster_curv, cluster_energy, cluster_occ, curv, &
+                                                            denom, gap_tol, mu_den, mu_num, mu_shift, &
+                                                            offdiag_coeff, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv
 
       n = SIZE(evals)
       IF (n <= 0) RETURN
       IF (projector_weight <= 0.0_dp) RETURN
+      gap_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))
 
       mu_num = 0.0_dp
       mu_den = 0.0_dp
@@ -12451,6 +12525,35 @@ CONTAINS
             DO b = 1, m
                DO a = 1, m
                   kernel(first + a - 1, first + b - 1) = response_block(a, b)
+               END DO
+            END DO
+            cluster_energy = SUM(evals(first:last))/REAL(m, KIND=dp)
+            cluster_occ = SUM(occ_slope(first:last))/REAL(m, KIND=dp)
+            cluster_curv = SUM(MAX(0.0_dp, occ_curv(first:last)))/REAL(m, KIND=dp)
+            DO j = 1, n
+               IF (j >= first .AND. j <= last) CYCLE
+               outside_gauge_cluster = .FALSE.
+               IF (j > 1) outside_gauge_cluster = &
+                  outside_gauge_cluster .OR. ABS(evals(j) - evals(j - 1)) <= gauge_gap
+               IF (j < n) outside_gauge_cluster = &
+                  outside_gauge_cluster .OR. ABS(evals(j + 1) - evals(j)) <= gauge_gap
+               IF (outside_gauge_cluster) CYCLE
+               denom = cluster_energy - evals(j)
+               IF (ABS(denom) > gap_tol) THEN
+                  offdiag_coeff = (cluster_occ - occ_slope(j))/denom
+               ELSE
+                  offdiag_coeff = 0.0_dp
+               END IF
+               offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
+               slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv, occ_curv(j)))
+               IF (slope_cap > EPSILON(slope_cap)) THEN
+                  offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
+               ELSE
+                  offdiag_coeff = 0.0_dp
+               END IF
+               DO a = 1, m
+                  kernel(first + a - 1, j) = projector_weight*offdiag_coeff*work(first + a - 1, j)
+                  kernel(j, first + a - 1) = CONJG(kernel(first + a - 1, j))
                END DO
             END DO
             DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &
