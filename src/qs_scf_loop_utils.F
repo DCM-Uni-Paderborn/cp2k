@@ -11371,10 +11371,16 @@ CONTAINS
                                                     projector_physical_direct_floor_density_quality >= &
                                                     ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                                     projector_physical_direct_floor_density_trust_quality >= &
-                                                    ot_kp_schur_projector_response_quality_min_ratio) &
+                                                    ot_kp_schur_projector_response_quality_min_ratio) THEN
                                                    projector_physical_direct_density_quality_for_selection = &
-                                                      MAX(projector_physical_direct_density_quality_for_selection, &
-                                                          projector_physical_direct_floor_density_quality)
+                                                      kpoint_ot_direct_floor_selected_quality( &
+                                                         projector_physical_direct_density_quality_for_selection, &
+                                                         projector_physical_direct_floor_density_quality, &
+                                                         projector_physical_direct_density_selected_history_quality, &
+                                                         local_ot_env(1)% &
+                                                            schur_projector_phys_direct_density_sel_quality_samples, &
+                                                         ot_kp_schur_calibration_min_samples)
+                                                END IF
                                                 projector_physical_direct_density_shadow_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &
                                                       projector_physical_direct_density_model_calibrated_drop, &
@@ -16370,6 +16376,28 @@ CONTAINS
          quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
 
       END FUNCTION kpoint_ot_direct_selected_probe_quality
+
+! **************************************************************************************************
+!> \brief apply selected Direct history after a floor/bootstrap quality boost
+!> \param base_quality quality before the floor/bootstrap contribution
+!> \param floor_quality bootstrap quality from a floor-density response
+!> \param selected_quality accepted selected-Direct Mermin-drop quality
+!> \param samples number of accepted selected-Direct samples
+!> \param min_samples minimum samples before selected history contributes
+!> \return floor-boosted quality consistent with accepted selected history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_floor_selected_quality(base_quality, floor_quality, selected_quality, &
+                                                       samples, min_samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                         :: base_quality, floor_quality, selected_quality
+      INTEGER, INTENT(IN)                               :: samples, min_samples
+      REAL(KIND=dp)                                     :: quality
+
+         quality = MAX(base_quality, floor_quality)
+         IF (floor_quality <= base_quality) RETURN
+
+         quality = kpoint_ot_direct_selected_probe_quality(quality, selected_quality, samples, min_samples)
+
+      END FUNCTION kpoint_ot_direct_floor_selected_quality
 
 ! **************************************************************************************************
 !> \brief ...

@@ -7434,8 +7434,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: max_quality = 1.25_dp, &
                                                             min_quality = 0.10_dp
 
-      REAL(KIND=dp) :: early_bad_quality, early_good_quality, err, mature_bad_quality, &
-         no_samples_quality, probe_early_quality, probe_mature_quality
+      REAL(KIND=dp) :: early_bad_quality, early_floor_quality, early_good_quality, err, &
+         mature_bad_quality, mature_floor_quality, no_samples_floor_quality, no_samples_quality, &
+         probe_early_quality, probe_mature_quality
 
       no_samples_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
                                                                  0.05_dp, 3, 4, 8, &
@@ -7453,6 +7454,12 @@ CONTAINS
                                                                 4, 4, 8, max_quality)
       probe_mature_quality = dense_direct_selected_probe_quality(min_quality, 0.053_dp, &
                                                                  16, 4, 8, max_quality)
+      no_samples_floor_quality = dense_direct_floor_selected_quality(min_quality, max_quality, &
+                                                                     0.053_dp, 3, 4, 8, max_quality)
+      early_floor_quality = dense_direct_floor_selected_quality(min_quality, max_quality, &
+                                                                0.053_dp, 4, 4, 8, max_quality)
+      mature_floor_quality = dense_direct_floor_selected_quality(min_quality, max_quality, &
+                                                                 0.053_dp, 16, 4, 8, max_quality)
 
       err = ABS(no_samples_quality - 1.0_dp)
       err = MAX(err, ABS(early_bad_quality - (1.0_dp - (1.0_dp/13.0_dp)*(1.0_dp - min_quality))))
@@ -7460,20 +7467,26 @@ CONTAINS
       err = MAX(err, ABS(early_good_quality - (1.0_dp + (1.0_dp/13.0_dp)*(max_quality - 1.0_dp))))
       err = MAX(err, ABS(probe_early_quality - ((12.0_dp*min_quality + 0.053_dp)/13.0_dp)))
       err = MAX(err, ABS(probe_mature_quality - 0.053_dp))
+      err = MAX(err, ABS(no_samples_floor_quality - max_quality))
+      err = MAX(err, ABS(early_floor_quality - ((12.0_dp*max_quality + 0.053_dp)/13.0_dp)))
+      err = MAX(err, ABS(mature_floor_quality - 0.053_dp))
 
       IF (err > tol .OR. early_bad_quality <= mature_bad_quality .OR. &
           early_bad_quality <= min_quality .OR. early_good_quality <= no_samples_quality .OR. &
-          probe_early_quality >= min_quality .OR. probe_mature_quality >= min_quality) THEN
+          probe_early_quality >= min_quality .OR. probe_mature_quality >= min_quality .OR. &
+          early_floor_quality <= mature_floor_quality .OR. mature_floor_quality >= min_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/no/early/mature/good/probe/matureprobe", err, no_samples_quality, &
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/early/mature/good/probe/matureprobe/floor0/floor1/floorm", &
+            err, no_samples_quality, &
             early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
-            probe_mature_quality
+            probe_mature_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/no/early/mature/good/probe/matureprobe", err, no_samples_quality, &
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/early/mature/good/probe/matureprobe/floor0/floor1/floorm", &
+            err, no_samples_quality, &
             early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
-            probe_mature_quality
+            probe_mature_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality
       END IF
 
    END SUBROUTINE check_projector_direct_selected_history_quality
@@ -9171,6 +9184,35 @@ CONTAINS
       quality = MAX(0.0_dp, MIN(max_quality, quality))
 
    END FUNCTION dense_direct_selected_probe_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of floor-boosted selected Direct probe quality.
+!> \param base_quality ...
+!> \param floor_quality ...
+!> \param selected_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param response_min_samples ...
+!> \param max_quality ...
+!> \return floor-boosted probe quality with selected-history consistency
+! **************************************************************************************************
+   FUNCTION dense_direct_floor_selected_quality(base_quality, floor_quality, selected_quality, &
+                                                samples, min_samples, response_min_samples, max_quality) &
+      RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, floor_quality, &
+                                                            selected_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples, &
+                                                            response_min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: max_quality
+      REAL(KIND=dp)                                      :: quality
+
+      quality = MAX(base_quality, floor_quality)
+      IF (floor_quality <= base_quality) RETURN
+
+      quality = dense_direct_selected_probe_quality(quality, selected_quality, samples, &
+                                                    min_samples, response_min_samples, max_quality)
+
+   END FUNCTION dense_direct_floor_selected_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the physical Direct tail-probe bootstrap gate.
