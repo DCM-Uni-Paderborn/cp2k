@@ -11468,13 +11468,13 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 2
       REAL(KIND=dp), PARAMETER :: active_fraction = 0.99_dp, active_tol = 0.85_dp, &
-         dominant_fraction = 0.75_dp, dominant_tol = 0.85_dp, mixed_fraction = 0.65_dp, &
-         mixed_tol = 0.80_dp, moderate_fraction = 0.90_dp, moderate_tol = 0.80_dp, &
-         raw_tol = 1.0E-12_dp
+         dominant_fraction = 0.75_dp, dominant_tol = 0.85_dp, edge_fraction = 0.55_dp, &
+         edge_tol = 0.45_dp, mixed_fraction = 0.65_dp, mixed_tol = 0.80_dp, &
+         moderate_fraction = 0.90_dp, moderate_tol = 0.80_dp, raw_tol = 1.0E-12_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
-      REAL(KIND=dp) :: active_ratio, dominant_ratio, inert_ratio, mixed_ratio, moderate_ratio, &
-         raw_active, raw_inert, unit_active, unit_inert
+      REAL(KIND=dp) :: active_ratio, dominant_ratio, edge_ratio, inert_ratio, mixed_ratio, &
+         moderate_ratio, raw_active, raw_inert, unit_active, unit_inert
       REAL(KIND=dp), DIMENSION(n)                        :: modal_curv, occ_curv
 
       unit_active = SQRT(active_fraction)
@@ -11591,6 +11591,35 @@ CONTAINS
       ELSE
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
             "OK with mixed/inert/mactive/minert", mixed_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      END IF
+
+      unit_active = SQRT(edge_fraction)
+      unit_inert = SQRT(1.0_dp - edge_fraction)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit_inert, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-unit_inert, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_curv)
+
+      raw_active = edge_fraction*occ_curv(1) + (1.0_dp - edge_fraction)*occ_curv(2)
+      raw_inert = (1.0_dp - edge_fraction)*occ_curv(1) + edge_fraction*occ_curv(2)
+      edge_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
+      inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
+
+      IF (edge_ratio < edge_tol .OR. edge_ratio > 1.0_dp + raw_tol .OR. &
+          inert_ratio > 0.25_dp .OR. &
+          modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
+          raw_inert <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with edge/inert/mactive/minert", edge_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with edge/inert/mactive/minert", edge_ratio, inert_ratio, &
             modal_curv(1), modal_curv(2)
       END IF
 
@@ -12751,12 +12780,12 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
-         active_curvature_fraction = 0.25_dp, inactive_component_fraction_min = 5.0E-2_dp, &
-         significant_component_fraction = 0.5_dp
+         active_component_transition_min = 0.50_dp, active_curvature_fraction = 0.25_dp, &
+         inactive_component_fraction_min = 5.0E-2_dp, significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
-      REAL(KIND=dp) :: active_component_fraction, component_weight, curv, curv_floor, curv_max, &
-         max_component_weight, modal_floor, modal_raw
+      REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
+         curv_floor, curv_max, max_component_weight, modal_damped, modal_floor, modal_raw
 
       m = SIZE(occ_curv)
       modal_curv(:) = 0.0_dp
@@ -12794,11 +12823,18 @@ CONTAINS
             END DO
             IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
             IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
+            modal_damped = MIN(modal_raw, SQRT(modal_floor*modal_raw))
             IF (active_component_fraction >= active_component_fraction_min .AND. &
                 active_component_fraction <= 1.0_dp - inactive_component_fraction_min) THEN
                modal_curv(a) = modal_raw
+            ELSE IF (active_component_fraction > active_component_transition_min .AND. &
+                     active_component_fraction < active_component_fraction_min) THEN
+               active_blend = (active_component_fraction - active_component_transition_min)/ &
+                              (active_component_fraction_min - active_component_transition_min)
+               active_blend = MIN(1.0_dp, MAX(0.0_dp, active_blend))
+               modal_curv(a) = (1.0_dp - active_blend)*modal_damped + active_blend*modal_raw
             ELSE
-               modal_curv(a) = MIN(modal_raw, SQRT(modal_floor*modal_raw))
+               modal_curv(a) = modal_damped
             END IF
          END IF
       END DO

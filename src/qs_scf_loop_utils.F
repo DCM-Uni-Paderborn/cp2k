@@ -18450,12 +18450,12 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
-         active_curvature_fraction = 0.25_dp, inactive_component_fraction_min = 5.0E-2_dp, &
-         significant_component_fraction = 0.5_dp
+         active_component_transition_min = 0.50_dp, active_curvature_fraction = 0.25_dp, &
+         inactive_component_fraction_min = 5.0E-2_dp, significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
-      REAL(KIND=dp) :: active_component_fraction, component_weight, curv, curv_floor, curv_max, &
-         max_component_weight, modal_floor, modal_raw
+      REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
+         curv_floor, curv_max, max_component_weight, modal_damped, modal_floor, modal_raw
 
          m = SIZE(occ_curv)
          modal_curv(:) = 0.0_dp
@@ -18493,11 +18493,18 @@ CONTAINS
                END DO
                IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
                IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
+               modal_damped = MIN(modal_raw, SQRT(modal_floor*modal_raw))
                IF (active_component_fraction >= active_component_fraction_min .AND. &
                    active_component_fraction <= 1.0_dp - inactive_component_fraction_min) THEN
                   modal_curv(a) = modal_raw
+               ELSE IF (active_component_fraction > active_component_transition_min .AND. &
+                        active_component_fraction < active_component_fraction_min) THEN
+                  active_blend = (active_component_fraction - active_component_transition_min)/ &
+                                 (active_component_fraction_min - active_component_transition_min)
+                  active_blend = MIN(1.0_dp, MAX(0.0_dp, active_blend))
+                  modal_curv(a) = (1.0_dp - active_blend)*modal_damped + active_blend*modal_raw
                ELSE
-                  modal_curv(a) = MIN(modal_raw, SQRT(modal_floor*modal_raw))
+                  modal_curv(a) = modal_damped
                END IF
             END IF
          END DO
