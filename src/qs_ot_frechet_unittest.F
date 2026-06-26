@@ -4652,7 +4652,7 @@ CONTAINS
          active_fraction = occ_curv(i)/MAX(occ_curv(i), response_ratio_gate*occ_curv_max)
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-         safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
+         safe_shape = response_shape
          bounded_response = dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
                             response_shape*projector_response(i)
          expected(i) = bounded_response + safe_shape*(safe_response(i) - bounded_response)
@@ -4713,7 +4713,7 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
+      safe_shape = response_shape
       legacy_response = bounded_response + safe_shape*(safe_response - 1.0_dp)
       safe_bound = MAX(ABS(safe_response), ABS(bounded_response))
       convex_gap = ABS(density_response) - safe_bound
@@ -12046,7 +12046,7 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
+      safe_shape = response_shape
       bounded_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
                          response_shape*density_projector_response
       density_response = bounded_response + safe_shape*(density_safe_response - bounded_response)

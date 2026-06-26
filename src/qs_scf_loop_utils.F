@@ -1895,7 +1895,7 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
+      safe_shape = response_shape
       ! Keep the finite projector eigen-response strongly damped outside the
       ! Fermi window.  The gauge-safe dP/occupation-curvature correction is
       ! already globally fixed-N projected by the Schur energy block.  Blend
