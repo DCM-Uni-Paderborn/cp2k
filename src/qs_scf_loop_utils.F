@@ -8225,6 +8225,61 @@ CONTAINS
             projector_physical_direct_floor_density_trust_quality, &
             projector_density_full_global_abs_avg, &
             local_ot_env(1)%schur_projector_density_full_global_quality_samples
+         ! Rebuild the off-diagonal projector-response active block with the
+         ! same history-qualified physical pair weights used by the Direct
+         ! Schur model below.  The early Fermi-window split is a conservative
+         ! bootstrap; once density-response history is mature, occupied/virtual
+         ! occupation-gap pairs carry physical response and should not remain
+         ! lumped into the inactive projector-gauge bucket.
+         rot_hessian_projector_physical_offdiag_active(:, :) = 0.0_dp
+         rot_hessian_projector_physical_offdiag_plateau_active(:, :) = 0.0_dp
+         DO s = 1, nrot
+            DO r = 1, nrot
+               IF (var_channel(r) /= var_channel(s)) CYCLE
+               projector_physical_active_weight_r = &
+                  kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
+                                                           var_projector_active_weight(r), &
+                                                           var_occ_gap_weight(r), &
+                                                           projector_physical_direct_floor_density_weight)
+               projector_physical_active_weight_s = &
+                  kpoint_ot_physical_pair_projector_weight(var_projector_weight(s), &
+                                                           var_projector_active_weight(s), &
+                                                           var_occ_gap_weight(s), &
+                                                           projector_physical_direct_floor_density_weight)
+               projector_offdiag_active_weight = 0.0_dp
+               IF (var_projector_weight(r) + var_projector_weight(s) > &
+                   EPSILON(projector_offdiag_active_weight)) THEN
+                  projector_offdiag_active_weight = &
+                     (projector_physical_active_weight_r + projector_physical_active_weight_s)/ &
+                     MAX(var_projector_weight(r) + var_projector_weight(s), EPSILON(1.0_dp))
+                  projector_offdiag_active_weight = &
+                     MIN(1.0_dp, MAX(0.0_dp, projector_offdiag_active_weight))
+               END IF
+               rot_hessian_projector_physical_offdiag_active(r, s) = &
+                  projector_offdiag_active_weight*rot_hessian_projector_physical_offdiag(r, s)
+               rot_hessian_projector_physical_offdiag_plateau_active(r, s) = &
+                  projector_offdiag_active_weight*rot_hessian_projector_physical_offdiag_plateau(r, s)
+            END DO
+         END DO
+         rot_hessian_projector_physical_offdiag_active(:, :) = 0.5_dp* &
+                                                               (rot_hessian_projector_physical_offdiag_active(:, :) + &
+                                                                TRANSPOSE(rot_hessian_projector_physical_offdiag_active(:, :)))
+         rot_hessian_projector_physical_offdiag_plateau_active(:, :) = 0.5_dp* &
+                                                                    (rot_hessian_projector_physical_offdiag_plateau_active(:, :) + &
+                                                             TRANSPOSE(rot_hessian_projector_physical_offdiag_plateau_active(:, :)))
+         projector_physical_offdiag_active_abs_avg = &
+            SUM(ABS(rot_hessian_projector_physical_offdiag_active(:, :)))
+         projector_physical_offdiag_inactive_abs_avg = &
+            SUM(ABS(rot_hessian_projector_physical_offdiag(:, :) - &
+                    rot_hessian_projector_physical_offdiag_active(:, :)))
+         projector_physical_offdiag_plateau_gap_active_abs_avg = &
+            SUM(ABS(rot_hessian_projector_physical_offdiag_plateau_active(:, :) - &
+                    rot_hessian_projector_physical_offdiag_active(:, :)))
+         projector_physical_offdiag_plateau_gap_inactive_abs_avg = &
+            SUM(ABS((rot_hessian_projector_physical_offdiag_plateau(:, :) - &
+                     rot_hessian_projector_physical_offdiag(:, :)) - &
+                    (rot_hessian_projector_physical_offdiag_plateau_active(:, :) - &
+                     rot_hessian_projector_physical_offdiag_active(:, :))))
          ! Keep the validated full physical trace backbone for cross-channel
          ! fixed-N terms, but filter the same-channel non-covariant residual
          ! with the active occupation-window pair weight.  This keeps genuine
@@ -9457,6 +9512,11 @@ CONTAINS
                   MAX(0.0_dp, -projector_coupled_weight*projector_hessian_delta_diag_avg)
             ELSE
                schur(:, :) = rot_hessian(:, :)
+               IF (exact_physical_response_ready .AND. &
+                   residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                   projector_physical_direct_floor_density_weight > &
+                   EPSILON(projector_physical_direct_floor_density_weight)) &
+                  schur(:, :) = schur(:, :) + rot_hessian_projector_physical_offdiag_active(:, :)
             END IF
             DO r = 1, nrot
                IF (schur_attempt <= 2) THEN
