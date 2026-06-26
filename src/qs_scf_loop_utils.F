@@ -11163,19 +11163,15 @@ CONTAINS
                                                       projector_physical_direct_spectral_scale_quality* &
                                                       projector_physical_direct_spectral_model_calibrated_drop
                                                 projector_physical_direct_spectral_norm_energy = &
-                                                   projector_physical_direct_spectral_direction_scale* &
-                                                   projector_physical_direct_spectral_direction_scale* &
-                                                   DOT_PRODUCT(projector_physical_direct_spectral_z_e, &
-                                                               projector_physical_direct_spectral_z_e)
+                                                   projector_physical_direct_spectral_metric_norm_energy
                                                 projector_physical_direct_spectral_norm_rotation = &
-                                                   projector_physical_direct_spectral_direction_scale* &
-                                                   projector_physical_direct_spectral_direction_scale* &
-                                                   DOT_PRODUCT(projector_physical_direct_spectral_sol, &
-                                                               projector_physical_direct_spectral_sol)
+                                                   projector_physical_direct_spectral_metric_norm_rotation
                                                 projector_physical_direct_spectral_normp = &
                                                    projector_physical_direct_spectral_norm_energy + &
                                                    projector_physical_direct_spectral_norm_rotation
                                                 projector_physical_direct_spectral_norm_ratio = &
+                                                   projector_physical_direct_spectral_direction_scale* &
+                                                   projector_physical_direct_spectral_direction_scale* &
                                                    projector_physical_direct_spectral_normp/MAX(gnorm, EPSILON(1.0_dp))
                                                 projector_physical_direct_spectral_expected_drop = &
                                                    kpoint_ot_schur_expected_drop( &

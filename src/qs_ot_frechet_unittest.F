@@ -204,6 +204,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_direct_scaled_metric_norm("complex projector Direct scaled metric norm", &
                                                   5.0E-14_dp, nfail)
+   CALL check_projector_spectral_metric_norm_scale("complex projector spectral metric norm scale", &
+                                                   5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
       "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_promotion("complex projector mixed Direct promotion", &
@@ -7810,6 +7812,49 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_scaled_metric_norm
+
+! **************************************************************************************************
+!> \brief Check that spectral candidates keep model curvature unscaled from the accepted step norm.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_spectral_metric_norm_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: gdotp = 0.46_dp, gnorm = 2.5_dp, &
+                                                            metric_energy = 0.21_dp, &
+                                                            metric_rotation = 0.34_dp, &
+                                                            scale = 0.37_dp
+
+      REAL(KIND=dp)                                      :: actual_normp, err, model_drop, &
+                                                            model_normp, norm_ratio, wrong_drop
+
+      model_normp = metric_energy + metric_rotation
+      actual_normp = scale*scale*model_normp
+      model_drop = scale*gdotp - 0.5_dp*actual_normp
+      norm_ratio = actual_normp/gnorm
+
+      ! Reusing the accepted-step norm as the unscaled model curvature would
+      ! apply the line-search scale twice and overestimate the spectral drop.
+      wrong_drop = scale*gdotp - 0.5_dp*scale*scale*actual_normp
+      err = ABS(model_drop - (scale*gdotp - 0.5_dp*scale*scale*model_normp))
+      err = MAX(err, ABS(norm_ratio - scale*scale*model_normp/gnorm))
+
+      IF (err > tol .OR. wrong_drop <= model_drop .OR. actual_normp >= model_normp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/model/actual/drop/wrong", err, model_normp, actual_normp, &
+            model_drop, wrong_drop
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/model/actual/drop/wrong", err, model_normp, actual_normp, &
+            model_drop, wrong_drop
+      END IF
+
+   END SUBROUTINE check_projector_spectral_metric_norm_scale
 
 ! **************************************************************************************************
 !> \brief Check accepted-drop consistency scaling of mixed Direct history.
