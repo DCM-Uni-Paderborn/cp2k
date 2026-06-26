@@ -5902,32 +5902,32 @@ CONTAINS
                                                             ipiv_energy, var_channel, var_ei, &
                                                             var_ej, var_i, var_j, var_kind
       LOGICAL :: active_pair, attempt_failed, constrained_candidate_enabled, &
-         constrained_candidate_ready, constrained_candidate_selected, &
+         constrained_candidate_ready, constrained_candidate_selected, dense_exact_scale_ready, &
          density_descent_candidate_ready, density_descent_candidate_selected, &
          density_full_candidate_ready, density_full_candidate_selected, &
          density_full_direct_candidate_ready, density_full_direct_candidate_selected, &
          density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
          density_full_global_candidate_selected, exact_attempt_response, &
-         exact_density_direct_response_ready, exact_density_floor_audit_ready, &
-         exact_density_full_audit_ready
-      LOGICAL :: exact_density_full_response_ready, exact_density_plateau_response_ready, &
-         exact_density_response_ready, exact_energy_model_ready, exact_physical_response_ready, &
-         failed, new_search_point, physical_delta_group_ready, &
-         projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, projector_offdiag_candidate_inactive, &
-         projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
-         projector_physical_candidate_ready, projector_physical_candidate_selected, &
-         projector_physical_direct_basis_tail_limited
-      LOGICAL :: projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
+         exact_density_direct_response_ready, exact_density_floor_audit_ready
+      LOGICAL :: exact_density_full_audit_ready, exact_density_full_response_ready, &
+         exact_density_plateau_response_ready, exact_density_response_ready, &
+         exact_energy_model_ready, exact_physical_response_ready, failed, new_search_point, &
+         physical_delta_group_ready, projector_density_full_audit_enabled, &
+         projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready, &
+         projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
+         projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
+         projector_physical_candidate_selected
+      LOGICAL :: projector_physical_direct_basis_tail_limited, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+         projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
          projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
-         projector_physical_direct_shadow_enabled, &
-         projector_physical_direct_spectral_candidate_ready
-      LOGICAL :: projector_physical_direct_spectral_candidate_selected, &
+         projector_physical_direct_shadow_enabled
+      LOGICAL :: projector_physical_direct_spectral_candidate_ready, &
+         projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
@@ -5935,9 +5935,9 @@ CONTAINS
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, response_model_available, schur_active_subspace, &
-         solved, split_candidate_diagnostic, split_candidate_enabled
-      LOGICAL :: split_candidate_ready, split_candidate_selected, split_residual_competitive, &
-         trust_rejected
+         solved
+      LOGICAL :: split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
+         split_candidate_selected, split_residual_competitive, trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, &
          accepted_model_gap_ratio, accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          accepted_projector_coupled_weight, accepted_projector_inactive_offdiag_abs_ratio, &
@@ -7120,6 +7120,7 @@ CONTAINS
          dense_norm_energy = 0.0_dp
          dense_norm_rotation = 0.0_dp
          dense_projector_coupled_weight = 0.0_dp
+         dense_exact_scale_ready = .FALSE.
          dense_quality_for_selection = 1.0_dp
          dense_reject_reason = 0
          dense_residual_quality = 1.0_dp
@@ -8935,6 +8936,14 @@ CONTAINS
                    MIN(1.0_dp, local_ot_env(1)%schur_coupled_residual_quality_ema/residual_reference_quality))
             split_quality_for_selection = split_quality_for_selection*split_residual_quality
             dense_quality_for_selection = dense_quality_for_selection*dense_residual_quality
+         END IF
+         dense_exact_scale_ready = residual_delta > ot_kp_schur_projector_coupled_tail_delta
+         IF (.NOT. dense_exact_scale_ready .AND. &
+             local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
+            dense_exact_scale_ready = &
+               local_ot_env(1)%schur_coupled_quality_ema >= ot_kp_schur_quality_min_ratio .AND. &
+               local_ot_env(1)%schur_coupled_quality >= 0.5_dp*ot_kp_schur_quality_min_ratio .AND. &
+               dense_residual_quality >= ot_kp_schur_calibrated_quality_min_ratio
          END IF
          IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
             step_gauge_quality = &
@@ -12672,7 +12681,7 @@ CONTAINS
                      END IF
                      IF (schur_attempt <= 3 .AND. direction_scale < schur_min_coupled_scale) THEN
                         IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
-                            projector_coupled_weight > 0.0_dp) THEN
+                            projector_coupled_weight > 0.0_dp .AND. dense_exact_scale_ready) THEN
                            model_calibrated_drop = scale_quality*model_calibrated_drop
                         ELSE
                            attempt_failed = .TRUE.
@@ -15011,6 +15020,11 @@ CONTAINS
                      dense_print_model_gap, dense_print_model_gap_drop, dense_print_model_gap_trust, &
                      dense_print_model_gap_ratio, &
                      split_residual_quality, dense_residual_quality
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,3(1X,ES16.8),1(1X,I6))') &
+                     " OT Schur dense exact scale gate ready quality ema residual_q samples:", &
+                     dense_exact_scale_ready, local_ot_env(1)%schur_coupled_quality, &
+                     local_ot_env(1)%schur_coupled_quality_ema, dense_residual_quality, &
+                     local_ot_env(1)%schur_coupled_quality_samples
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),16(1X,ES16.8))') &
                      " OT Schur scale audit group split_code constr_code used floor split_scale split_sq "// &
                      "split_ge split_gr split_ne split_nr constr_scale constr_sq constr_ge constr_gr constr_ne "// &
@@ -18310,7 +18324,7 @@ CONTAINS
       END SUBROUTINE dense_fixed_n_projector_cluster_kernel
 
 ! **************************************************************************************************
-!> \brief Gauge-damped modal curvature in one near-degenerate Projector cluster.
+!> \brief Active-selective modal curvature in one near-degenerate Projector cluster.
 !> \param cluster_evec ...
 !> \param occ_curv ...
 !> \param modal_curv ...
@@ -18320,12 +18334,13 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
-      REAL(KIND=dp), PARAMETER :: significant_component_fraction = 0.5_dp
+      REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
+         active_curvature_fraction = 0.25_dp, inactive_component_fraction_min = 5.0E-2_dp, &
+         significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
-      REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, &
-                                                            curv_max, max_component_weight, &
-                                                            modal_floor, modal_raw
+      REAL(KIND=dp) :: active_component_fraction, component_weight, curv, curv_floor, curv_max, &
+         max_component_weight, modal_floor, modal_raw
 
          m = SIZE(occ_curv)
          modal_curv(:) = 0.0_dp
@@ -18342,11 +18357,15 @@ CONTAINS
 
          DO a = 1, m
             modal_raw = 0.0_dp
+            active_component_fraction = 0.0_dp
             max_component_weight = 0.0_dp
             DO b = 1, m
                component_weight = ABS(cluster_evec(b, a))**2
+               curv = MAX(0.0_dp, occ_curv(b))
                max_component_weight = MAX(max_component_weight, component_weight)
-               modal_raw = modal_raw + component_weight*MAX(0.0_dp, occ_curv(b))
+               modal_raw = modal_raw + component_weight*curv
+               IF (curv >= active_curvature_fraction*curv_max) &
+                  active_component_fraction = active_component_fraction + component_weight
             END DO
             IF (modal_raw > EPSILON(modal_raw)) THEN
                modal_floor = HUGE(1.0_dp)
@@ -18359,7 +18378,12 @@ CONTAINS
                END DO
                IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
                IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
-               modal_curv(a) = MIN(modal_raw, SQRT(modal_floor*modal_raw))
+               IF (active_component_fraction >= active_component_fraction_min .AND. &
+                   active_component_fraction <= 1.0_dp - inactive_component_fraction_min) THEN
+                  modal_curv(a) = modal_raw
+               ELSE
+                  modal_curv(a) = MIN(modal_raw, SQRT(modal_floor*modal_raw))
+               END IF
             END IF
          END DO
 
