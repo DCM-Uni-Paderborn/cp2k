@@ -240,6 +240,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector degenerate physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_split( &
       "history-safe occupation-projector modal curvature split", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_modal_curvature_gauge_bound( &
+      "history-safe occupation-projector modal curvature gauge bound", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -10606,6 +10608,62 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_modal_curvature_split
+
+! **************************************************************************************************
+!> \brief Check that active/inert cluster modes stay gauge bounded.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_modal_curvature_gauge_bound(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            ratio_limit = 0.10_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
+      INTEGER                                            :: a, b
+      REAL(KIND=dp)                                      :: mean_curv, mean_gap, modal_max, raw_max, &
+                                                            raw_modal, raw_ratio, unit
+      REAL(KIND=dp), DIMENSION(n)                        :: modal_curv, occ_curv
+
+      unit = 1.0_dp/SQRT(2.0_dp)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(unit, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(-unit, 0.0_dp, KIND=dp)
+      evec(3, 3) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+
+      occ_curv(:) = [0.038_dp, 1.0E-5_dp, 0.004_dp]
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_curv)
+
+      raw_max = 0.0_dp
+      DO a = 1, n
+         raw_modal = 0.0_dp
+         DO b = 1, n
+            raw_modal = raw_modal + ABS(evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+         END DO
+         raw_max = MAX(raw_max, raw_modal)
+      END DO
+      mean_curv = SUM(MAX(0.0_dp, occ_curv(:)))/REAL(n, KIND=dp)
+      modal_max = MAXVAL(modal_curv(:))
+      raw_ratio = modal_max/MAX(raw_max, EPSILON(raw_max))
+      mean_gap = mean_curv - modal_max
+
+      IF (modal_max < active_tol .OR. raw_ratio >= ratio_limit .OR. mean_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with modal/rawratio/meangap/raw", modal_max, raw_ratio, mean_gap, raw_max
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with modal/rawratio/meangap/raw", modal_max, raw_ratio, mean_gap, raw_max
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_modal_curvature_gauge_bound
 
 ! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
