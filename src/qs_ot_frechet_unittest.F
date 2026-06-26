@@ -254,6 +254,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector degenerate physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_split( &
       "history-safe occupation-projector modal curvature split", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_modal_mu_closure( &
+      "history-safe occupation-projector modal mu closure", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_gauge_bound( &
       "history-safe occupation-projector modal curvature gauge bound", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_active_tail( &
@@ -11096,6 +11098,105 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_modal_curvature_split
+
+! **************************************************************************************************
+!> \brief Check that damped modal response curvature also closes the fixed-N mu projection.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_modal_mu_closure(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, cluster_work, dchc, docc_safe, evec
+      INTEGER                                            :: a, i
+      REAL(KIND=dp)                                      :: charge_leak, mu_raw, mu_response, &
+                                                            raw_charge_leak, response_charge_leak, &
+                                                            response_gap
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, modal_curv, modal_raw, occ_curv, &
+                                                            occ_scale, split_eval
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.24_dp, 0.49_dp]
+      occ_scale(:) = [1.15_dp, 0.24_dp, 0.19_dp, 0.05_dp]
+      occ_curv(:) = [0.038_dp, 1.0E-5_dp, 0.018_dp, 0.006_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 1) = CMPLX(0.04_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.02_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.015_dp, 0.0_dp, KIND=dp)
+      dchc(4, 4) = CMPLX(-0.01_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.27_dp, -0.21_dp, KIND=dp)
+      dchc(2, 1) = CONJG(dchc(1, 2))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+
+      cluster_work(1:2, 1:2) = dchc(1:2, 1:2)
+      CALL diag_complex(cluster_work(1:2, 1:2), evec(1:2, 1:2), split_eval(1:2))
+      CALL dense_fixed_n_projector_modal_curvature(evec(1:2, 1:2), occ_curv(1:2), modal_curv(1:2))
+
+      modal_raw(:) = 0.0_dp
+      DO a = 1, 2
+         DO i = 1, 2
+            modal_raw(a) = modal_raw(a) + ABS(evec(i, a))**2*MAX(0.0_dp, occ_curv(i))
+         END DO
+      END DO
+
+      mu_response = (modal_curv(1)*split_eval(1) + modal_curv(2)*split_eval(2) + &
+                     occ_curv(3)*REAL(dchc(3, 3), KIND=dp) + &
+                     occ_curv(4)*REAL(dchc(4, 4), KIND=dp))/ &
+                    (modal_curv(1) + modal_curv(2) + occ_curv(3) + occ_curv(4))
+      mu_raw = (modal_raw(1)*split_eval(1) + modal_raw(2)*split_eval(2) + &
+                occ_curv(3)*REAL(dchc(3, 3), KIND=dp) + &
+                occ_curv(4)*REAL(dchc(4, 4), KIND=dp))/ &
+               (modal_raw(1) + modal_raw(2) + occ_curv(3) + occ_curv(4))
+
+      response_charge_leak = 0.0_dp
+      raw_charge_leak = 0.0_dp
+      DO a = 1, 2
+         response_charge_leak = response_charge_leak - &
+                                2.0_dp*projector_weight*modal_curv(a)*(split_eval(a) - mu_response)
+         raw_charge_leak = raw_charge_leak - &
+                           2.0_dp*projector_weight*modal_curv(a)*(split_eval(a) - mu_raw)
+      END DO
+      DO i = 3, n
+         response_charge_leak = response_charge_leak - &
+                                2.0_dp*projector_weight*occ_curv(i)* &
+                                (REAL(dchc(i, i), KIND=dp) - mu_response)
+         raw_charge_leak = raw_charge_leak - &
+                           2.0_dp*projector_weight*occ_curv(i)* &
+                           (REAL(dchc(i, i), KIND=dp) - mu_raw)
+      END DO
+      charge_leak = ABS(REAL(docc_safe(1, 1) + docc_safe(2, 2) + docc_safe(3, 3) + &
+                             docc_safe(4, 4), KIND=dp))
+      response_charge_leak = ABS(response_charge_leak)
+      raw_charge_leak = ABS(raw_charge_leak)
+      response_gap = ABS(mu_response - mu_raw)
+
+      IF (charge_leak > tol .OR. response_charge_leak > tol .OR. &
+          raw_charge_leak < active_tol .OR. response_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with charge/response/raw/gap", charge_leak, response_charge_leak, &
+            raw_charge_leak, response_gap
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with charge/response/raw/gap", charge_leak, response_charge_leak, &
+            raw_charge_leak, response_gap
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_modal_mu_closure
 
 ! **************************************************************************************************
 !> \brief Check that active/inert cluster modes stay gauge bounded.
