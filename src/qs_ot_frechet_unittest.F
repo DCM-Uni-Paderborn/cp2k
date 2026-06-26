@@ -11884,11 +11884,15 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
+      COMPLEX(KIND=dp), DIMENSION(2)                     :: cluster_col, expected_col, modal_col
+      COMPLEX(KIND=dp), DIMENSION(2, 2)                  :: cluster_evec, cluster_work
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
-      INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: cluster_curv, cluster_energy, &
-                                                            cluster_occ, coeff, err, herm_err, &
-                                                            old_gap, slope_cap
+      INTEGER                                            :: a, b, i
+      REAL(KIND=dp)                                      :: coeff, component_weight, denom, err, &
+                                                            herm_err, old_coeff, old_gap, &
+                                                            scalar_gap, slope_cap
+      REAL(KIND=dp), DIMENSION(2)                        :: cluster_eval, modal_curv, modal_energy, &
+                                                            modal_occ
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.21_dp, 0.48_dp]
@@ -11910,28 +11914,55 @@ CONTAINS
       CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
                                                   projector_weight, kernel)
 
-      cluster_energy = 0.5_dp*(evals(1) + evals(2))
-      cluster_occ = 0.5_dp*(occ_slope(1) + occ_slope(2))
-      cluster_curv = 0.5_dp*(occ_curv(1) + occ_curv(2))
-      coeff = (cluster_occ - occ_slope(3))/(cluster_energy - evals(3))
-      coeff = MIN(0.0_dp, coeff)
-      slope_cap = 2.0_dp*MAX(cluster_curv, occ_curv(3))
-      coeff = MAX(coeff, -slope_cap)
+      cluster_work(:, :) = 0.5_dp*(work(1:2, 1:2) + CONJG(TRANSPOSE(work(1:2, 1:2))))
+      CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv)
+      modal_energy(:) = 0.0_dp
+      modal_occ(:) = 0.0_dp
+      DO a = 1, 2
+         DO b = 1, 2
+            component_weight = ABS(cluster_evec(b, a))**2
+            modal_energy(a) = modal_energy(a) + component_weight*evals(b)
+            modal_occ(a) = modal_occ(a) + component_weight*occ_slope(b)
+         END DO
+      END DO
+      cluster_col(:) = work(1:2, 3)
+      modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), cluster_col)
+      DO a = 1, 2
+         denom = modal_energy(a) - evals(3)
+         IF (ABS(denom) > SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))) THEN
+            coeff = (modal_occ(a) - occ_slope(3))/denom
+         ELSE
+            coeff = 0.0_dp
+         END IF
+         coeff = MIN(0.0_dp, coeff)
+         slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(3)))
+         coeff = MAX(coeff, -slope_cap)
+         modal_col(a) = coeff*modal_col(a)
+      END DO
+      expected_col(:) = projector_weight*MATMUL(cluster_evec, modal_col)
 
-      err = MAX(ABS(kernel(1, 3) - projector_weight*coeff*work(1, 3)), &
-                ABS(kernel(2, 3) - projector_weight*coeff*work(2, 3)))
+      old_coeff = ((occ_slope(1) + occ_slope(2))/2.0_dp - occ_slope(3))/ &
+                  ((evals(1) + evals(2))/2.0_dp - evals(3))
+      old_coeff = MIN(0.0_dp, old_coeff)
+      old_coeff = MAX(old_coeff, -2.0_dp*MAX((occ_curv(1) + occ_curv(2))/2.0_dp, occ_curv(3)))
+
+      err = MAX(ABS(kernel(1, 3) - expected_col(1)), &
+                ABS(kernel(2, 3) - expected_col(2)))
       herm_err = MAX(ABS(kernel(3, 1) - CONJG(kernel(1, 3))), &
                      ABS(kernel(3, 2) - CONJG(kernel(2, 3))))
       old_gap = MAX(ABS(kernel(1, 3) - CMPLX(9.0_dp, -3.0_dp, KIND=dp)), &
                     ABS(kernel(2, 3) - CMPLX(9.0_dp, -3.0_dp, KIND=dp)))
+      scalar_gap = MAX(ABS(expected_col(1) - projector_weight*old_coeff*work(1, 3)), &
+                       ABS(expected_col(2) - projector_weight*old_coeff*work(2, 3)))
 
-      IF (err > tol .OR. herm_err > tol .OR. old_gap < 1.0_dp) THEN
+      IF (err > tol .OR. herm_err > tol .OR. old_gap < 1.0_dp .OR. scalar_gap < 1.0E-5_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "failed with error/hermitian/oldgap", err, herm_err, old_gap
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/hermitian/oldgap/scalargap", err, herm_err, old_gap, scalar_gap
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "OK with error/hermitian/oldgap", err, herm_err, old_gap
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/hermitian/oldgap/scalargap", err, herm_err, old_gap, scalar_gap
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_cluster_offblock_response
@@ -12482,15 +12513,16 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: gauge_gap, projector_weight
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: kernel
 
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_kernel, &
                                                             cluster_work, response_block
       INTEGER                                            :: a, b, first, j, last, m, n
       LOGICAL                                            :: outside_gauge_cluster
-      REAL(KIND=dp)                                      :: cluster_curv, cluster_energy, &
-                                                            cluster_occ, curv, denom, gap_tol, &
+      REAL(KIND=dp)                                      :: component_weight, curv, denom, gap_tol, &
                                                             mu_den, mu_num, mu_shift, &
                                                             offdiag_coeff, slope_cap
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv, modal_energy, &
+                                                            modal_occ
 
       n = SIZE(evals)
       IF (n <= 0) RETURN
@@ -12540,12 +12572,22 @@ CONTAINS
          m = last - first + 1
          IF (m > 1) THEN
             kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-            ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
-                      response_block(m, m), cluster_eval(m), modal_curv(m))
+            ALLOCATE (cluster_col(m), cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
+                      modal_col(m), modal_energy(m), modal_occ(m), response_block(m, m), &
+                      response_col(m), cluster_eval(m), modal_curv(m))
             cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                          CONJG(TRANSPOSE(work(first:last, first:last))))
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
             CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
+            modal_energy(:) = 0.0_dp
+            modal_occ(:) = 0.0_dp
+            DO a = 1, m
+               DO b = 1, m
+                  component_weight = ABS(cluster_evec(b, a))**2
+                  modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
+                  modal_occ(a) = modal_occ(a) + component_weight*occ_slope(first + b - 1)
+               END DO
+            END DO
             cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
             DO a = 1, m
                cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
@@ -12558,9 +12600,6 @@ CONTAINS
                   kernel(first + a - 1, first + b - 1) = response_block(a, b)
                END DO
             END DO
-            cluster_energy = SUM(evals(first:last))/REAL(m, KIND=dp)
-            cluster_occ = SUM(occ_slope(first:last))/REAL(m, KIND=dp)
-            cluster_curv = SUM(MAX(0.0_dp, occ_curv(first:last)))/REAL(m, KIND=dp)
             DO j = 1, n
                IF (j >= first .AND. j <= last) CYCLE
                outside_gauge_cluster = .FALSE.
@@ -12569,26 +12608,32 @@ CONTAINS
                IF (j < n) outside_gauge_cluster = &
                   outside_gauge_cluster .OR. ABS(evals(j + 1) - evals(j)) <= gauge_gap
                IF (outside_gauge_cluster) CYCLE
-               denom = cluster_energy - evals(j)
-               IF (ABS(denom) > gap_tol) THEN
-                  offdiag_coeff = (cluster_occ - occ_slope(j))/denom
-               ELSE
-                  offdiag_coeff = 0.0_dp
-               END IF
-               offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
-               slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv, occ_curv(j)))
-               IF (slope_cap > EPSILON(slope_cap)) THEN
-                  offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
-               ELSE
-                  offdiag_coeff = 0.0_dp
-               END IF
+               cluster_col(:) = work(first:last, j)
+               modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), cluster_col)
                DO a = 1, m
-                  kernel(first + a - 1, j) = projector_weight*offdiag_coeff*work(first + a - 1, j)
+                  denom = modal_energy(a) - evals(j)
+                  IF (ABS(denom) > gap_tol) THEN
+                     offdiag_coeff = (modal_occ(a) - occ_slope(j))/denom
+                  ELSE
+                     offdiag_coeff = 0.0_dp
+                  END IF
+                  offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
+                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(j)))
+                  IF (slope_cap > EPSILON(slope_cap)) THEN
+                     offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
+                  ELSE
+                     offdiag_coeff = 0.0_dp
+                  END IF
+                  modal_col(a) = offdiag_coeff*modal_col(a)
+               END DO
+               response_col(:) = projector_weight*MATMUL(cluster_evec, modal_col)
+               DO a = 1, m
+                  kernel(first + a - 1, j) = response_col(a)
                   kernel(j, first + a - 1) = CONJG(kernel(first + a - 1, j))
                END DO
             END DO
-            DEALLOCATE (cluster_work, cluster_evec, cluster_kernel, response_block, cluster_eval, &
-                        modal_curv)
+            DEALLOCATE (cluster_col, cluster_work, cluster_evec, cluster_kernel, modal_col, modal_energy, &
+                        modal_occ, response_block, response_col, cluster_eval, modal_curv)
          ELSE
             curv = MAX(0.0_dp, occ_curv(first))
             kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
