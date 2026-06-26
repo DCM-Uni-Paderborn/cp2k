@@ -6479,14 +6479,15 @@ CONTAINS
       INTEGER, DIMENSION(ne)                             :: ipiv
       INTEGER, DIMENSION(nrot)                           :: ipiv_rot
       INTEGER, DIMENSION(ntot)                           :: ipiv_aug
-      REAL(KIND=dp)                                      :: err, gap, occ_sum, shift
+      REAL(KIND=dp)                                      :: err, filter_gap, gap, occ_sum, shift
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, z_aug, z_base, &
-                                                            z_density_only, z_total
+                                                            z_density_only, z_filtered, z_total
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h, h_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_phys, b_total, &
                                                             density_response, phys_response, &
                                                             rhs_density, rhs_phys, rhs_total
-      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, q_aug, q_total
+      REAL(KIND=dp), DIMENSION(nrot)                     :: filter_weight, grad_rot, q_aug, &
+                                                            q_filtered, q_total
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_metric, schur_total
       REAL(KIND=dp), DIMENSION(ntot)                     :: rhs_aug
       REAL(KIND=dp), DIMENSION(ntot, ntot)               :: aug
@@ -6561,6 +6562,9 @@ CONTAINS
 
       z_total(:) = z_base(:) + MATMUL(rhs_total, q_total)
       z_density_only(:) = z_base(:) + MATMUL(rhs_density, q_total)
+      filter_weight(:) = [1.0_dp, 0.12_dp]
+      q_filtered(:) = filter_weight(:)*q_total(:)
+      z_filtered(:) = z_base(:) + MATMUL(rhs_total, q_filtered)
 
       aug(:, :) = 0.0_dp
       aug(1:ne, 1:ne) = h_ref(:, :)
@@ -6580,12 +6584,16 @@ CONTAINS
 
       err = MAX(MAXVAL(ABS(z_total(:) - z_aug(:))), MAXVAL(ABS(q_total(:) - q_aug(:))))
       gap = MAXVAL(ABS(z_total(:) - z_density_only(:)))
+      filter_gap = MAX(MAXVAL(ABS(z_total(:) - z_filtered(:))), &
+                       MAXVAL(ABS(q_total(:) - q_filtered(:))))
 
-      IF (err > tol .OR. gap <= 1.0E-5_dp) THEN
+      IF (err > tol .OR. gap <= 1.0E-5_dp .OR. filter_gap <= 1.0E-4_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/omitted_gap", err, gap
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/omitted_gap/filter_gap", err, gap, filter_gap
       ELSE
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/omitted_gap", err, gap
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/omitted_gap/filter_gap", err, gap, filter_gap
       END IF
 
    END SUBROUTINE check_projector_density_candidate_total_response
