@@ -7463,48 +7463,57 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL :: bootstrap_ready, enabled_veto, promoted_veto, selected_bad, selected_good, &
-         selected_low_positive, selected_low_wait, trust_veto
+         selected_low_positive, selected_low_wait, selected_stalled_probe, selected_stalled_wait, &
+         trust_veto
       REAL(KIND=dp)                                      :: err
 
       bootstrap_ready = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                       2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
-                                                      0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                      0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       promoted_veto = dense_direct_tail_probe_ready(.TRUE., .TRUE., .FALSE., &
                                                     2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
-                                                    0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                    0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       enabled_veto = dense_direct_tail_probe_ready(.TRUE., .FALSE., .TRUE., &
                                                    2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
-                                                   0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                   0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       trust_veto = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                  2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
-                                                 0.10_dp, 8.0E-1_dp, 2.0E-2_dp, 0.0_dp)
+                                                 0.10_dp, 0.30_dp, 8.0E-1_dp, 2.0E-2_dp, 0.0_dp)
       selected_bad = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                    2.0E-5_dp, 4, 5, 0.0_dp, 0.0_dp, &
-                                                   0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                   0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_low_positive = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                             2.0E-5_dp, 16, 5, 0.056_dp, 0.053_dp, &
-                                                            0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                            0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_low_wait = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                         2.0E-5_dp, 17, 5, 0.056_dp, 0.053_dp, &
-                                                        0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                        0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      selected_stalled_probe = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                             2.0E-5_dp, 24, 5, 0.056_dp, 0.030_dp, &
+                                                             0.10_dp, 0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      selected_stalled_wait = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                            2.0E-5_dp, 25, 5, 0.056_dp, 0.030_dp, &
+                                                            0.10_dp, 0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_good = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                     2.0E-5_dp, 16, 5, 0.14_dp, 0.08_dp, &
-                                                    0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+                                                    0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
 
       err = 0.0_dp
       IF (.NOT. bootstrap_ready .OR. promoted_veto .OR. enabled_veto .OR. trust_veto .OR. &
           selected_bad .OR. selected_low_wait .OR. .NOT. selected_low_positive .OR. &
-          .NOT. selected_good) err = 1.0_dp
+          .NOT. selected_stalled_probe .OR. selected_stalled_wait .OR. .NOT. selected_good) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
-            "failed with boot/prom/en/trust/bad/wait/low/good", bootstrap_ready, promoted_veto, &
-            enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, selected_good
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "failed with boot/prom/en/trust/bad/wait/low/stall/wait/good", bootstrap_ready, &
+            promoted_veto, enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, &
+            selected_stalled_probe, selected_stalled_wait, selected_good
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
-            "OK with boot/prom/en/trust/bad/wait/low/good", bootstrap_ready, promoted_veto, &
-            enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, selected_good
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "OK with boot/prom/en/trust/bad/wait/low/stall/wait/good", bootstrap_ready, &
+            promoted_veto, enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, &
+            selected_stalled_probe, selected_stalled_wait, selected_good
       END IF
 
    END SUBROUTINE check_projector_direct_tail_probe_bootstrap
@@ -9017,6 +9026,7 @@ CONTAINS
 !> \param selected_quality_ema ...
 !> \param selected_quality ...
 !> \param shadow_quality ...
+!> \param coupled_residual_quality_ema ...
 !> \param weighted_trust_ratio ...
 !> \param abs_trust_ratio ...
 !> \param model_gap_ratio ...
@@ -9025,7 +9035,8 @@ CONTAINS
    FUNCTION dense_direct_tail_probe_ready(candidate_used, promoted, candidate_enabled, residual_delta, &
                                           coupled_quality_samples, selected_quality_samples, &
                                           selected_quality_ema, selected_quality, shadow_quality, &
-                                          weighted_trust_ratio, abs_trust_ratio, model_gap_ratio) &
+                                          coupled_residual_quality_ema, weighted_trust_ratio, &
+                                          abs_trust_ratio, model_gap_ratio) &
       RESULT(probe_ready)
       LOGICAL, INTENT(IN)                                :: candidate_used, promoted, &
                                                             candidate_enabled
@@ -9033,8 +9044,11 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: coupled_quality_samples, &
                                                             selected_quality_samples
       REAL(KIND=dp), INTENT(IN) :: selected_quality_ema, selected_quality, shadow_quality, &
-         weighted_trust_ratio, abs_trust_ratio, model_gap_ratio
+         coupled_residual_quality_ema, weighted_trust_ratio, abs_trust_ratio, model_gap_ratio
       LOGICAL                                            :: probe_ready
+
+      LOGICAL                                            :: residual_tail_stalled, &
+                                                            selected_quality_positive
 
       probe_ready = .FALSE.
       IF (.NOT. candidate_used) RETURN
@@ -9051,8 +9065,14 @@ CONTAINS
          RETURN
       END IF
 
-      probe_ready = selected_quality_ema >= 5.0E-2_dp .AND. selected_quality >= 5.0E-2_dp .AND. &
-                    MOD(coupled_quality_samples, 16) == 0
+      selected_quality_positive = selected_quality_ema >= 5.0E-2_dp .AND. selected_quality >= 5.0E-2_dp
+      probe_ready = selected_quality_positive .AND. MOD(coupled_quality_samples, 16) == 0
+      IF (.NOT. probe_ready) THEN
+         residual_tail_stalled = coupled_residual_quality_ema < 0.25_dp
+         selected_quality_positive = selected_quality_ema >= 5.0E-2_dp .AND. selected_quality >= 2.5E-2_dp
+         probe_ready = residual_tail_stalled .AND. selected_quality_positive .AND. &
+                       MOD(coupled_quality_samples, 8) == 0
+      END IF
 
    END FUNCTION dense_direct_tail_probe_ready
 
