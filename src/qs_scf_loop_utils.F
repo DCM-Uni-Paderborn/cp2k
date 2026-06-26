@@ -10521,10 +10521,13 @@ CONTAINS
                                                 ot_kp_schur_projector_response_min_samples, &
                                                 projector_physical_direct_mixed_drop_ratio, &
                                                 projector_physical_direct_mixed_quality, &
-                                                local_ot_env(1)%schur_projector_mixed_direct_quality_ema)
+                                                local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
+                                                local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                                                local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples)
                                           ! The mixed active/physical Direct curvature has its own
-                                          ! accepted-drop audit.  Do not require selected Direct
-                                          ! samples here; that would make the bootstrap circular.
+                                          ! accepted-drop audit, but production use needs long
+                                          ! aggregate evidence plus selected-Direct support.  Early
+                                          ! shadow promotion was stable but slowed the residual tail.
                                           projector_physical_direct_mixed_enabled = &
                                              projector_physical_direct_mixed_promoted
                                           IF (projector_physical_direct_mixed_enabled) THEN
@@ -16427,18 +16430,25 @@ CONTAINS
 !> \param drop_ratio accepted measured/predicted sum ratio
 !> \param history_quality accepted-history quality used for candidate scaling
 !> \param ema_quality recent accepted-history quality
-!> \return true if aggregate evidence is mature enough for non-circular Direct use
+!> \param selected_quality accepted-drop quality of actually selected Direct steps
+!> \param selected_samples number of actually selected Direct samples
+!> \return true if shadow and selected-Direct evidence are mature enough for production use
 ! **************************************************************************************************
       FUNCTION kpoint_ot_mixed_direct_promoted(samples, min_samples, drop_ratio, history_quality, &
-                                               ema_quality) RESULT(promoted)
-      INTEGER, INTENT(IN)                               :: samples, min_samples
-      REAL(KIND=dp), INTENT(IN)                         :: drop_ratio, history_quality, ema_quality
+                                               ema_quality, selected_quality, selected_samples) RESULT(promoted)
+      INTEGER, INTENT(IN)                               :: samples, min_samples, selected_samples
+      REAL(KIND=dp), INTENT(IN)                         :: drop_ratio, history_quality, ema_quality, &
+                                                           selected_quality
+      INTEGER                                           :: promotion_samples
       LOGICAL                                           :: promoted
 
-         promoted = samples >= 5*min_samples .AND. &
+         promotion_samples = MAX(min_samples, 5*min_samples)
+         promoted = samples >= promotion_samples .AND. &
                     drop_ratio >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
                     history_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                    ema_quality >= 0.9_dp*ot_kp_schur_projector_response_quality_min_ratio
+                    ema_quality >= 0.9_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                    selected_samples >= min_samples .AND. &
+                    selected_quality >= ot_kp_schur_projector_response_quality_min_ratio
 
       END FUNCTION kpoint_ot_mixed_direct_promoted
 
