@@ -4636,8 +4636,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, response_ratio_gate = 2.0E-2_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp) :: active_fraction, active_gap, bounded_response, err, inert_suppression, &
-         mid_recovery, occ_curv_max, response_shape, safe_recovery, safe_shape
+      REAL(KIND=dp) :: active_exact_gap, active_fraction, bounded_response, err, &
+         inert_suppression, mid_recovery, occ_curv_max, response_shape, safe_rejection
       REAL(KIND=dp), DIMENSION(n)                        :: expected, occ_curv, projector_response, &
                                                             response, safe_response
 
@@ -4652,34 +4652,29 @@ CONTAINS
          active_fraction = occ_curv(i)/MAX(occ_curv(i), response_ratio_gate*occ_curv_max)
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-         safe_shape = response_shape
-         bounded_response = dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
-                            response_shape*projector_response(i)
-         expected(i) = bounded_response + safe_shape*(safe_response(i) - bounded_response)
+         expected(i) = response_shape*projector_response(i)
       END DO
 
       err = MAXVAL(ABS(response(:) - expected(:)))
-      active_gap = ABS(response(1) - safe_response(1))
+      active_exact_gap = ABS(response(1) - projector_response(1))
+      safe_rejection = ABS(response(1) - safe_response(1))
+      bounded_response = dense_bounded_density_response(projector_response(3), occ_curv(3), &
+                                                        occ_curv_max, response_ratio_gate)
       mid_recovery = ABS(response(3)) - ABS(dense_bounded_density_response(projector_response(3), &
                                                                            occ_curv(3), occ_curv_max, &
                                                                            response_ratio_gate))
-      active_fraction = occ_curv(3)/MAX(occ_curv(3), response_ratio_gate*occ_curv_max)
-      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
-      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_recovery = ABS(response(3) - &
-                          dense_active_density_response_weight(occ_curv(3), occ_curv_max)* &
-                          response_shape*projector_response(3))
       inert_suppression = ABS(response(n))/MAX(ABS(safe_response(n)), EPSILON(1.0_dp))
 
-      IF (err > tol .OR. active_gap > tol .OR. mid_recovery < active_tol .OR. &
-          safe_recovery <= active_tol .OR. inert_suppression > 1.0E-4_dp) THEN
+      IF (err > tol .OR. active_exact_gap > tol .OR. safe_rejection < active_tol .OR. &
+          mid_recovery <= active_tol .OR. ABS(bounded_response) <= 0.0_dp .OR. &
+          inert_suppression > 1.0E-4_dp) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_recovery, &
+            "failed with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_rejection, &
             inert_suppression
       ELSE
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_recovery, &
+            "OK with error/active/mid/safe/inert", err, response(1), mid_recovery, safe_rejection, &
             inert_suppression
       END IF
 
@@ -4698,9 +4693,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp) :: active_fraction, bounded_response, convex_gap, density_response, &
-         legacy_response, occ_curv, occ_curv_max, response_shape, safe_bound, safe_response, &
-         safe_shape
+      REAL(KIND=dp) :: active_fraction, bounded_response, density_response, expected_response, &
+         occ_curv, occ_curv_max, response_shape, safe_rejection, safe_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-4_dp
@@ -4713,22 +4707,20 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_shape = response_shape
-      legacy_response = bounded_response + safe_shape*(safe_response - 1.0_dp)
-      safe_bound = MAX(ABS(safe_response), ABS(bounded_response))
-      convex_gap = ABS(density_response) - safe_bound
+      expected_response = response_shape
+      safe_rejection = ABS(density_response - safe_response)
 
-      IF (ABS(bounded_response) < tol .OR. legacy_response >= -safe_bound .OR. &
-          convex_gap > tol .OR. density_response > bounded_response .OR. &
-          density_response < safe_response) THEN
+      IF (ABS(bounded_response) < tol .OR. &
+          ABS(density_response - expected_response) > tol .OR. &
+          density_response <= bounded_response .OR. safe_rejection < 0.5_dp) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with bounded/response/legacy/gap/safe", bounded_response, density_response, &
-            legacy_response, convex_gap, safe_response
+            "failed with bounded/response/expected/reject/safe", bounded_response, density_response, &
+            expected_response, safe_rejection, safe_response
       ELSE
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with bounded/response/legacy/gap/safe", bounded_response, density_response, &
-            legacy_response, convex_gap, safe_response
+            "OK with bounded/response/expected/reject/safe", bounded_response, density_response, &
+            expected_response, safe_rejection, safe_response
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_convexity
@@ -4750,7 +4742,7 @@ CONTAINS
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active_fraction, err, finite_floor, &
                                                             floor_to_physical, occ_curv_max, &
-                                                            response_shape
+                                                            response_shape, safe_rejection
       REAL(KIND=dp), DIMENSION(n)                        :: expected, floor_response, occ_curv, &
                                                             physical_response, projector_response, &
                                                             safe_response
@@ -4769,27 +4761,26 @@ CONTAINS
          active_fraction = occ_curv(i)/MAX(occ_curv(i), response_ratio_gate*occ_curv_max)
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-         expected(i) = response_shape*projector_response(i) + &
-                       dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
-                       response_shape*active_fraction*(safe_response(i) - projector_response(i))
+         expected(i) = response_shape*projector_response(i)
       END DO
 
       err = MAXVAL(ABS(floor_response(:) - expected(:)))
       finite_floor = ABS(floor_response(n))/MAX(ABS(projector_response(n)), EPSILON(1.0_dp))
       floor_to_physical = ABS(floor_response(3))/MAX(ABS(physical_response(3)), EPSILON(1.0_dp))
+      safe_rejection = MAXVAL(ABS(floor_response(:) - safe_response(:)))
 
       IF (err > tol .OR. ABS(floor_response(1) - physical_response(1)) > tol .OR. &
-          finite_floor < 5.0E-5_dp .OR. floor_to_physical < 1.0E-1_dp .OR. &
-          floor_to_physical >= 1.0_dp .OR. &
-          MAXVAL(ABS(floor_response(:))) > MAXVAL(ABS(safe_response(:)))) THEN
+          finite_floor < 5.0E-5_dp .OR. ABS(floor_to_physical - 1.0_dp) > tol .OR. &
+          safe_rejection < active_tol .OR. &
+          MAXVAL(ABS(floor_response(:))) > MAXVAL(ABS(projector_response(:))) + tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/floor/conservative/max", err, finite_floor, floor_to_physical, &
-            MAXVAL(ABS(floor_response(:)))
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/floor/equal/reject/max", err, finite_floor, floor_to_physical, &
+            safe_rejection, MAXVAL(ABS(floor_response(:)))
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/floor/conservative/max", err, finite_floor, floor_to_physical, &
-            MAXVAL(ABS(floor_response(:)))
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/floor/equal/reject/max", err, finite_floor, floor_to_physical, &
+            safe_rejection, MAXVAL(ABS(floor_response(:)))
       END IF
 
    END SUBROUTINE check_projector_density_floor_audit_response_helper
@@ -4812,7 +4803,7 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_raw, docc_safe
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: collapsed, err, occ_curv_max, retained, &
-                                                            safe_norm
+                                                            safe_norm, spectral_response
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale, projector_response, &
                                                             raw_density, safe_density, shift
 
@@ -4842,17 +4833,21 @@ CONTAINS
                                                  occ_curv(1), occ_curv_max, response_ratio_gate)
       collapsed = dense_physical_density_response(projector_response(1), raw_density(1), &
                                                   occ_curv(1), occ_curv_max, response_ratio_gate)
+      spectral_response = projector_response(1)
       safe_norm = MAXVAL(ABS(safe_density(:)))
       err = MAXVAL(ABS(raw_density(:)))
 
-      IF (err > tol .OR. ABS(retained) < active_tol .OR. &
-          ABS(collapsed) > 0.1_dp*ABS(retained) .OR. safe_norm < active_tol) THEN
+      IF (err > tol .OR. ABS(retained - spectral_response) > tol .OR. &
+          ABS(collapsed - spectral_response) > tol .OR. safe_norm < active_tol .OR. &
+          ABS(safe_density(1) - spectral_response) < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with raw/retained/collapsed/safe", err, retained, collapsed, safe_norm
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with raw/retained/collapsed/safe/spec", err, retained, collapsed, safe_norm, &
+            spectral_response
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with raw/retained/collapsed/safe", err, retained, collapsed, safe_norm
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with raw/retained/collapsed/safe/spec", err, retained, collapsed, safe_norm, &
+            spectral_response
       END IF
 
    END SUBROUTINE check_projector_physical_density_safe_source
@@ -12131,9 +12126,9 @@ CONTAINS
    END FUNCTION dense_bounded_density_response
 
 ! **************************************************************************************************
-!> \brief gauge-safe physical density response matching the production Schur helper.
+!> \brief gauge-free physical density response matching the production Schur helper.
 !> \param density_projector_response ...
-!> \param density_safe_response ...
+!> \param density_safe_response audit-only dP/curvature response ...
 !> \param occ_curv ...
 !> \param occ_curv_max ...
 !> \param response_ratio_gate ...
@@ -12146,8 +12141,7 @@ CONTAINS
                                                             occ_curv_max, response_ratio_gate
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp)                                      :: active_fraction, bounded_response, &
-                                                            response_shape, safe_shape
+      REAL(KIND=dp)                                      :: active_fraction, response_shape
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -12156,17 +12150,14 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_shape = response_shape
-      bounded_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
-                         response_shape*density_projector_response
-      density_response = bounded_response + safe_shape*(density_safe_response - bounded_response)
+      density_response = response_shape*density_projector_response
 
    END FUNCTION dense_physical_density_response
 
 ! **************************************************************************************************
 !> \brief shadow-only finite-floor density response matching the production Schur audit helper.
 !> \param density_projector_response ...
-!> \param density_safe_response ...
+!> \param density_safe_response audit-only dP/curvature response ...
 !> \param occ_curv ...
 !> \param occ_curv_max ...
 !> \param response_ratio_gate ...
@@ -12189,10 +12180,7 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      density_response = response_shape*density_projector_response + &
-                         dense_active_density_response_weight(occ_curv, occ_curv_max)* &
-                         response_shape*active_fraction* &
-                         (density_safe_response - density_projector_response)
+      density_response = response_shape*density_projector_response
 
    END FUNCTION dense_physical_density_floor_audit_response
 
