@@ -8,7 +8,7 @@
 ! E_total = Mermin = -8.15998707551141 Ha, with no first/last-band warnings
 ! and no AUTO-exhausted warning. The full eigenvalue response remains active
 ! while the density source is pair-active filtered, matching the
-! symmetry-reduced companion within 3E-7 Ha.
+! symmetry-reduced companion within 4E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge
