@@ -10609,6 +10609,20 @@ CONTAINS
                                           projector_physical_direct_delta(:, :) = 0.5_dp* &
                                              (projector_physical_direct_delta(:, :) + &
                                               TRANSPOSE(projector_physical_direct_delta(:, :)))
+                                          IF (residual_delta <= 0.25_dp* &
+                                              ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                              local_ot_env(1)%schur_projector_density_full_direct_quality_samples >= &
+                                              2*ot_kp_schur_projector_response_min_samples .AND. &
+                                              local_ot_env(1)%schur_projector_density_full_direct_quality_ema >= &
+                                              ot_kp_schur_projector_response_quality_min_ratio) THEN
+                                             ! Use the offdiag finite-complex Projector history only
+                                             ! as a late-tail Direct quality floor.  Earlier use
+                                             ! perturbs the robust full-density descent path.
+                                             projector_physical_direct_quality_for_selection = &
+                                                MAX(projector_physical_direct_quality_for_selection, &
+                                                    MIN(1.0_dp, MAX(0.0_dp, projector_offdiag_quality_for_selection))* &
+                                                    MIN(1.0_dp, MAX(0.0_dp, projector_physical_trace_split_quality)))
+                                          END IF
                                           projector_physical_direct_delta_diag_avg = 0.0_dp
                                           DO r = 1, nrot
                                              projector_physical_direct_delta_diag_avg = &
