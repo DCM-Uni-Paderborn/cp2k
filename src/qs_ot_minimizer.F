@@ -72,6 +72,8 @@ CONTAINS
 !> \brief ...
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
+!> \param matrix_hc_im ...
+!> \param para_env_inter_kp ...
 ! **************************************************************************************************
    SUBROUTINE ot_mini(qs_ot_env, matrix_hc, matrix_hc_im, para_env_inter_kp)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
@@ -447,8 +449,9 @@ CONTAINS
 
       INTEGER                                            :: i, n
       LOGICAL                                            :: has_response_trust
-      REAL(KIND=dp)                                      :: max_projected_step, raw_step_max, response_weight, &
-                                                            step_scale, step_shift, trusted_step_max
+      REAL(KIND=dp)                                      :: max_projected_step, raw_step_max, &
+                                                            response_weight, step_scale, &
+                                                            step_shift, trusted_step_max
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: limited_step, raw_step
 
       n = SIZE(direction)
@@ -516,12 +519,9 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
       INTEGER                                            :: ispin
-      REAL(KIND=dp)                                      :: entropy, frac_weight, min_abs_eps_mu, &
-                                                            raw_step_max, rayleigh_edge_gap, &
-                                                            rayleigh_gap, scale_min, tether_energy, &
-                                                            tether_grad_max, tether_shift_abs, &
-                                                            tether_strength, tether_weight_sum, &
-                                                            trusted_step_max
+      REAL(KIND=dp) :: entropy, frac_weight, min_abs_eps_mu, raw_step_max, rayleigh_edge_gap, &
+         rayleigh_gap, scale_min, tether_energy, tether_grad_max, tether_shift_abs, &
+         tether_strength, tether_weight_sum, trusted_step_max
       TYPE(cp_logger_type), POINTER                      :: logger
 
       logger => cp_get_default_logger()
@@ -689,9 +689,8 @@ CONTAINS
 
       INTEGER                                            :: best_index, count, handle, i
       LOGICAL                                            :: mermin_search
-      REAL(KIND=dp)                                      :: best_energy, denom, ds, fa, fb, fc, nom, pos, &
-                                                            best_drop, model_drop, model_quality, slope_mismatch, &
-                                                            slope_model, tol, val, xa, xb, xc
+      REAL(KIND=dp) :: best_drop, best_energy, denom, ds, fa, fb, fc, model_drop, model_quality, &
+         nom, pos, slope_mismatch, slope_model, tol, val, xa, xb, xc
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -982,6 +981,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param qs_ot_env ...
+!> \param para_env_inter_kp ...
 ! **************************************************************************************************
    SUBROUTINE ot_new_sd_direction(qs_ot_env, para_env_inter_kp)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
@@ -1127,6 +1127,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param qs_ot_env ...
+!> \param para_env_inter_kp ...
 ! **************************************************************************************************
    SUBROUTINE ot_new_cg_direction(qs_ot_env, para_env_inter_kp)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
@@ -1135,18 +1136,15 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_new_cg_direction'
 
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin, &
-                                                            schur_attempt, schur_flavor, schur_last_attempt, &
-                                                            schur_last_flavor
-      LOGICAL                                            :: complex_kpoint_history, do_ener, do_ks, &
-                                                            history_spike_reset, negative_beta, reset_to_sd, &
-                                                            schur_history_change, schur_history_mixed, &
-                                                            schur_projector_jump_reset, schur_projector_tail_reset
-      REAL(KIND=dp)                                      :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, &
-                                                            gnorm_ratio, &
-                                                            gnorm_matrix_im, gnorm_matrix_re, &
-                                                            gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
-                                                            physical_delta, physical_gnorm, raw_delta, &
-                                                            test_down, tmp
+                                                            schur_attempt, schur_flavor, &
+                                                            schur_last_attempt, schur_last_flavor
+      LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
+         reset_to_sd, schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
+         schur_projector_tail_reset
+      REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
+         gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
+         physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
+         test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1183,6 +1181,8 @@ CONTAINS
 
       gnorm_matrix_re = 0.0_dp
       gnorm_matrix_im = 0.0_dp
+      raw_matrix_gnorm_re = 0.0_dp
+      raw_matrix_gnorm_im = 0.0_dp
       gnorm_rot_re = 0.0_dp
       gnorm_rot_im = 0.0_dp
       gnorm_ener = 0.0_dp
@@ -1192,9 +1192,13 @@ CONTAINS
          DO ispin = 1, nspin
             CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old, tmp)
             gnorm_cross = gnorm_cross + tmp
+            CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx, tmp)
+            raw_matrix_gnorm_re = raw_matrix_gnorm_re + tmp
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_old_im, tmp)
                gnorm_cross = gnorm_cross + tmp
+               CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_im, tmp)
+               raw_matrix_gnorm_im = raw_matrix_gnorm_im + tmp
             END IF
          END DO
          IF (qs_ot_env(1)%settings%do_rotation) THEN
@@ -1216,6 +1220,8 @@ CONTAINS
          END DO
       END IF
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, gnorm_cross)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, raw_matrix_gnorm_re)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, raw_matrix_gnorm_im)
 
       IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
 
@@ -1352,7 +1358,7 @@ CONTAINS
              qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
              qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
              qs_ot_env(1)%kpoint_physical_delta_groups > 0) THEN
-            matrix_gnorm = MAX(0.0_dp, gnorm_matrix_re) + MAX(0.0_dp, gnorm_matrix_im)
+            matrix_gnorm = MAX(0.0_dp, raw_matrix_gnorm_re) + MAX(0.0_dp, raw_matrix_gnorm_im)
             physical_gnorm = matrix_gnorm + MAX(0.0_dp, qs_ot_env(1)%kpoint_physical_gnorm)
             physical_delta = SQRT(ABS(physical_gnorm)/nvar)
             qs_ot_env(1)%kpoint_physical_delta = physical_delta
@@ -1372,12 +1378,16 @@ CONTAINS
             gnorm_ener, qs_ot_env(1)%gnorm
          IF (qs_ot_env(1)%kpoint_physical_delta_groups > 0) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,I6,7(1X,ES16.8))') &
-               " OT CG physical residual ready groups raw effective physical matrix phys_rot phys_eps gauge:", &
-               qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_physical_delta_groups, &
-               qs_ot_env(1)%kpoint_raw_delta, qs_ot_env(1)%delta, qs_ot_env(1)%kpoint_physical_delta, &
-               MAX(0.0_dp, gnorm_matrix_re) + MAX(0.0_dp, gnorm_matrix_im), &
-               qs_ot_env(1)%kpoint_physical_rot_gnorm, &
-               qs_ot_env(1)%kpoint_physical_energy_gnorm, qs_ot_env(1)%kpoint_gauge_gnorm
+            " OT CG physical residual ready groups raw effective physical matrix phys_rot phys_eps gauge:", &
+            qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_physical_delta_groups, &
+            qs_ot_env(1)%kpoint_raw_delta, qs_ot_env(1)%delta, qs_ot_env(1)%kpoint_physical_delta, &
+            MAX(0.0_dp, raw_matrix_gnorm_re) + MAX(0.0_dp, raw_matrix_gnorm_im), &
+            qs_ot_env(1)%kpoint_physical_rot_gnorm, &
+            qs_ot_env(1)%kpoint_physical_energy_gnorm, qs_ot_env(1)%kpoint_gauge_gnorm
+         IF (qs_ot_env(1)%kpoint_physical_delta_groups > 0) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+            " OT CG matrix residual raw_re raw_im precond_re precond_im:", &
+            raw_matrix_gnorm_re, raw_matrix_gnorm_im, gnorm_matrix_re, gnorm_matrix_im
       END IF
       beta_raw = beta_pr
       negative_beta = beta_pr < 0.0_dp
