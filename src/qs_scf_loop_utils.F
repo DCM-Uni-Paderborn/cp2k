@@ -18171,6 +18171,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
+      REAL(KIND=dp), PARAMETER                           :: significant_component_fraction = 0.25_dp
+
       INTEGER                                            :: a, b, m
       REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, curv_max, &
                                                             max_component_weight, modal_floor, modal_raw
@@ -18202,7 +18204,7 @@ CONTAINS
                   component_weight = ABS(cluster_evec(b, a))**2
                   curv = MAX(0.0_dp, occ_curv(b))
                   IF (curv > EPSILON(curv) .AND. &
-                      component_weight >= 0.1_dp*max_component_weight) &
+                      component_weight >= significant_component_fraction*max_component_weight) &
                      modal_floor = MIN(modal_floor, curv)
                END DO
                IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor

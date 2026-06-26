@@ -7871,10 +7871,8 @@ CONTAINS
       INTEGER, PARAMETER                                 :: min_samples = 8
       REAL(KIND=dp), PARAMETER                           :: min_quality = 0.10_dp
 
-      LOGICAL                                            :: aggregate_promoted, first_window_blocked, &
-                                                            ema_low_blocked, low_blocked, &
-                                                            selected_young_blocked, tail_selected_blocked, &
-                                                            tail_shadow_blocked, young_blocked
+      LOGICAL :: aggregate_promoted, ema_low_blocked, first_window_blocked, low_blocked, &
+         selected_young_blocked, tail_selected_blocked, tail_shadow_blocked, young_blocked
       REAL(KIND=dp)                                      :: promoted_value
 
       aggregate_promoted = dense_mixed_direct_promoted(42, min_samples, 0.102135336_dp, &
@@ -9288,17 +9286,22 @@ CONTAINS
 !> \param drop_ratio ...
 !> \param history_quality ...
 !> \param ema_quality ...
+!> \param selected_quality ...
+!> \param selected_samples ...
 !> \param min_quality ...
 !> \return ...
 ! **************************************************************************************************
    FUNCTION dense_mixed_direct_promoted(samples, min_samples, drop_ratio, history_quality, &
                                         ema_quality, selected_quality, selected_samples, &
                                         min_quality) RESULT(promoted)
-      INTEGER, INTENT(IN)                                :: samples, min_samples, selected_samples
+      INTEGER, INTENT(IN)                                :: samples, min_samples
       REAL(KIND=dp), INTENT(IN)                          :: drop_ratio, history_quality, &
-                                                            ema_quality, min_quality, selected_quality
-      INTEGER                                            :: promotion_samples
+                                                            ema_quality, selected_quality
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: min_quality
       LOGICAL                                            :: promoted
+
+      INTEGER                                            :: promotion_samples
 
       promotion_samples = MAX(min_samples, 5*min_samples)
       promoted = samples >= promotion_samples .AND. &
@@ -10988,11 +10991,14 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 2
       REAL(KIND=dp), PARAMETER                           :: active_fraction = 0.99_dp, &
-                                                            active_tol = 0.85_dp
+                                                            active_tol = 0.85_dp, &
+                                                            moderate_fraction = 0.90_dp, &
+                                                            moderate_tol = 0.80_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
-      REAL(KIND=dp)                                      :: active_ratio, inert_ratio, raw_active, &
-                                                            raw_inert, unit_active, unit_inert
+      REAL(KIND=dp)                                      :: active_ratio, inert_ratio, &
+                                                            moderate_ratio, raw_active, raw_inert, &
+                                                            unit_active, unit_inert
       REAL(KIND=dp), DIMENSION(n)                        :: modal_curv, occ_curv
 
       unit_active = SQRT(active_fraction)
@@ -11021,6 +11027,34 @@ CONTAINS
       ELSE
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
             "OK with active/inert/mactive/minert", active_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      END IF
+
+      unit_active = SQRT(moderate_fraction)
+      unit_inert = SQRT(1.0_dp - moderate_fraction)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit_inert, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-unit_inert, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_curv)
+
+      raw_active = moderate_fraction*occ_curv(1) + (1.0_dp - moderate_fraction)*occ_curv(2)
+      raw_inert = (1.0_dp - moderate_fraction)*occ_curv(1) + moderate_fraction*occ_curv(2)
+      moderate_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
+      inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
+
+      IF (moderate_ratio < moderate_tol .OR. inert_ratio > 0.25_dp .OR. &
+          modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
+          raw_inert <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with moderate/inert/mactive/minert", moderate_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with moderate/inert/mactive/minert", moderate_ratio, inert_ratio, &
             modal_curv(1), modal_curv(2)
       END IF
 
@@ -12038,6 +12072,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
+      REAL(KIND=dp), PARAMETER :: significant_component_fraction = 0.25_dp
+
       INTEGER                                            :: a, b, m
       REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, &
                                                             curv_max, max_component_weight, &
@@ -12070,7 +12106,7 @@ CONTAINS
                component_weight = ABS(cluster_evec(b, a))**2
                curv = MAX(0.0_dp, occ_curv(b))
                IF (curv > EPSILON(curv) .AND. &
-                   component_weight >= 0.1_dp*max_component_weight) &
+                   component_weight >= significant_component_fraction*max_component_weight) &
                   modal_floor = MIN(modal_floor, curv)
             END DO
             IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
