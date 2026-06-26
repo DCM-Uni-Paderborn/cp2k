@@ -11571,10 +11571,24 @@ CONTAINS
                                                          ot_kp_schur_projector_response_min_samples, 1.0_dp, &
                                                          ot_kp_schur_projector_response_quality_min_ratio, &
                                                          ot_kp_schur_projector_response_quality_max_ratio)
+                                                   density_full_direct_quality_for_selection = &
+                                                      kpoint_ot_floor_bootstrap_history_quality( &
+                                                         density_full_direct_quality_for_selection, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                         ot_kp_schur_projector_response_min_samples)
                                                    density_full_direct_history_quality = &
                                                       kpoint_ot_direct_history_quality( &
                                                          local_ot_env(1)%schur_projector_density_full_direct_drop_sum, &
                                                          local_ot_env(1)%schur_projector_density_full_direct_measured_sum, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                         ot_kp_schur_projector_response_min_samples)
+                                                   density_full_direct_history_quality = &
+                                                      kpoint_ot_floor_bootstrap_history_quality( &
+                                                         density_full_direct_history_quality, &
+                                                         local_ot_env(1)%schur_projector_density_full_direct_quality, &
                                                          local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
                                                          local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
                                                          ot_kp_schur_projector_response_min_samples)
