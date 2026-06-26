@@ -2651,9 +2651,11 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
 
-      INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: abs_metric, err, signed_metric
-      REAL(KIND=dp), DIMENSION(n)                        :: coeff, eval, step
+      INTEGER                                            :: i, neg_idx
+      REAL(KIND=dp)                                      :: abs_metric, err, negative_abs_metric, &
+                                                            negative_clamped_metric, &
+                                                            negative_signed_metric, signed_metric
+      REAL(KIND=dp), DIMENSION(n)                        :: coeff, eval, negative_step, step
       REAL(KIND=dp), DIMENSION(n, n)                     :: q, schur, schur_modes
 
       schur(:, :) = 0.0_dp
@@ -2684,16 +2686,24 @@ CONTAINS
       DO i = 1, n
          abs_metric = abs_metric + ABS(eval(i))*coeff(i)*coeff(i)
       END DO
+      neg_idx = MINLOC(eval, DIM=1)
+      negative_step(:) = schur_modes(:, neg_idx)
+      negative_signed_metric = DOT_PRODUCT(negative_step, MATMUL(schur, negative_step))
+      negative_clamped_metric = MAX(0.0_dp, negative_signed_metric)
+      negative_abs_metric = ABS(eval(neg_idx))
 
       err = ABS(abs_metric - SUM(ABS(eval(:))*coeff(:)*coeff(:)))
       IF (err > tol .OR. ABS(signed_metric) > 0.30_dp*abs_metric .OR. &
-          abs_metric <= 1.0_dp) THEN
+          abs_metric <= 1.0_dp .OR. negative_signed_metric >= -tol .OR. &
+          negative_clamped_metric > tol .OR. negative_abs_metric <= tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "failed with error/signed/abs", err, signed_metric, abs_metric
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/signed/abs/nsign/nclamp/nabs", err, signed_metric, abs_metric, &
+            negative_signed_metric, negative_clamped_metric, negative_abs_metric
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "OK with error/signed/abs", err, signed_metric, abs_metric
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/signed/abs/nsign/nclamp/nabs", err, signed_metric, abs_metric, &
+            negative_signed_metric, negative_clamped_metric, negative_abs_metric
       END IF
 
    END SUBROUTINE check_indefinite_schur_absolute_metric

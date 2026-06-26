@@ -11071,8 +11071,15 @@ CONTAINS
                                                 projector_physical_direct_spectral_metric_norm_energy)
                                              projector_physical_direct_spectral_metric_norm_energy = &
                                                 MAX(0.0_dp, projector_physical_direct_spectral_metric_norm_energy)
+                                             ! Treat indefinite finite-complex Schur curvature as a
+                                             ! trust signal, not as zero model cost.
                                              projector_physical_direct_spectral_metric_norm_rotation = &
-                                                MAX(0.0_dp, projector_physical_direct_spectral_dot)
+                                                ABS(projector_physical_direct_spectral_dot)
+                                             IF (projector_physical_direct_spectral_metric_norm_rotation <= &
+                                                 EPSILON(projector_physical_direct_spectral_metric_norm_rotation)) &
+                                                projector_physical_direct_spectral_metric_norm_rotation = &
+                                                   kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
+                                                                                projector_physical_direct_spectral_sol)
                                              projector_physical_direct_spectral_metric_normp = &
                                                 projector_physical_direct_spectral_metric_norm_energy + &
                                                 projector_physical_direct_spectral_metric_norm_rotation
