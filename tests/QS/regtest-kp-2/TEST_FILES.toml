@@ -114,13 +114,12 @@
 # Slow/manual residual-tail companion: run Al_kp_ot_restart_converge.inp after
 # the write/read/continue chain. It is intentionally not listed here, so the
 # default restart/smearing regtest stays cheap. Current local HIGH diagnostic:
-# restart I/O is stable and the tight tail is reached without first/last-band
-# smearing warnings or the previously reported "Unsupported content type"
-# signature, but the default continue job still exposes the known two-point
-# residual plateau and is not a committed 1E-6 physics reference.  Simple
-# collapsed-line-search recovery resets worsened this restart chain, so the
-# remaining fix belongs in the coupled finite-complex response/Hessian model
-# rather than in another scalar recovery heuristic.
+# after the late-tail offdiag Direct-quality guard, the companion converges the
+# 1E-6 metallic Mermin path in 491 SCF steps with
+# E_total = Mermin = -8.14585275553542 Ha, without first/last-band smearing
+# warnings or the previously reported "Unsupported content type" signature.
+# Keep it manual until the coupled finite-complex response/Hessian path reduces
+# the step count enough for a default physics regtest.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
