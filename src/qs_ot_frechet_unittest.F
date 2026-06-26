@@ -168,6 +168,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical-direct density shadow", 5.0E-12_dp, nfail)
    CALL check_projector_density_candidate_total_response( &
       "complex projector density candidate total response", 5.0E-12_dp, nfail)
+   CALL check_projector_density_direct_history_mismatch( &
+      "complex projector density direct history mismatch", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_selected_rotation( &
       "complex projector density-descent selected rotation", 5.0E-14_dp, nfail)
    CALL check_projector_metric_response_projection("complex projector metric response projection", &
@@ -6651,6 +6653,48 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_candidate_total_response
+
+! **************************************************************************************************
+!> \brief Check that Direct full-density history is calibrated against the accepted response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_history_mismatch(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: accepted_drop, corrected_drop, &
+                                                            corrected_quality, err, mismatch_drop, &
+                                                            naive_drop, naive_quality
+      REAL(KIND=dp), DIMENSION(4)                        :: accepted_response, curv, model_response
+
+      curv(:) = [0.45_dp, 0.31_dp, 0.18_dp, 0.07_dp]
+      accepted_response(:) = [0.22_dp, -0.14_dp, 0.07_dp, -0.03_dp]
+      model_response(:) = accepted_response(:) + [1.0E-3_dp, -2.0E-3_dp, 1.0E-3_dp, 0.0_dp]
+      accepted_drop = 1.0E-3_dp
+      naive_drop = 2.0E-3_dp
+
+      mismatch_drop = 0.5_dp*SUM(curv(:)*(model_response(:) - accepted_response(:))**2)
+      corrected_drop = MAX(0.0_dp, accepted_drop - mismatch_drop)
+      naive_quality = accepted_drop/naive_drop
+      corrected_quality = accepted_drop/corrected_drop
+      err = ABS(corrected_quality - 1.0_dp)
+
+      IF (err > 5.0E-3_dp .OR. naive_quality >= 0.6_dp .OR. &
+          corrected_drop <= 0.95_dp*accepted_drop) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/naive/corrected/drop", err, naive_quality, &
+            corrected_quality, corrected_drop
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/naive/corrected/drop", err, naive_quality, &
+            corrected_quality, corrected_drop
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_history_mismatch
 
 ! **************************************************************************************************
 !> \brief Check that density-descent selection keeps its modeled rotation step.

@@ -6181,8 +6181,15 @@ CONTAINS
             density_full_direct_gdot_energy, &
             density_full_direct_gdot_rotation, &
             density_full_direct_gdotp, &
+            density_full_direct_history_abs_step, &
+            density_full_direct_history_abs_trust_ratio, &
+            density_full_direct_history_drop, &
+            density_full_direct_history_gap_drop, &
             density_full_direct_history_quality, &
             density_full_direct_history_scale, &
+            density_full_direct_history_trust_quality, &
+            density_full_direct_history_weighted_step, &
+            density_full_direct_history_weighted_trust_ratio, &
             density_full_direct_model_calibrated_drop, &
             density_full_direct_model_drop, &
             density_full_direct_norm_energy, &
@@ -9126,8 +9133,15 @@ CONTAINS
                density_full_direct_gdot_energy = 0.0_dp
                density_full_direct_gdot_rotation = 0.0_dp
                density_full_direct_gdotp = 0.0_dp
+               density_full_direct_history_abs_step = 0.0_dp
+               density_full_direct_history_abs_trust_ratio = 0.0_dp
+               density_full_direct_history_drop = 0.0_dp
+               density_full_direct_history_gap_drop = 0.0_dp
                density_full_direct_history_quality = 1.0_dp
                density_full_direct_history_scale = 1.0_dp
+               density_full_direct_history_trust_quality = 1.0_dp
+               density_full_direct_history_weighted_step = 0.0_dp
+               density_full_direct_history_weighted_trust_ratio = 0.0_dp
                density_full_direct_model_calibrated_drop = 0.0_dp
                density_full_direct_model_drop = 0.0_dp
                density_full_direct_norm_energy = 0.0_dp
@@ -14045,10 +14059,48 @@ CONTAINS
                      MAX(local_ot_env(1)%schur_projector_density_full_global_abs_trust, &
                          density_full_global_history_abs_trust_ratio)
                END IF
-               IF (density_full_direct_model_calibrated_drop > &
+               IF (projector_density_full_history_enabled .AND. &
+                   exact_density_full_audit_ready .AND. &
+                   accepted_model_calibrated_drop > ot_kp_schur_projector_density_full_min_drop) THEN
+                  rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
+                  rx_model(:) = MATMUL(response_exact_physical, accepted_sol) + &
+                                MATMUL(response_density_full_audit_exact, accepted_sol)
+                  CALL project_kpoint_ot_schur_response(rx_e, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
+                  CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
+                  density_full_direct_history_gap_drop = &
+                     kpoint_ot_response_mismatch_drop(rx_e, rx_model, curv, 1.0_dp)
+                  density_full_direct_history_drop = &
+                     MAX(0.0_dp, accepted_model_calibrated_drop - &
+                         density_full_direct_history_gap_drop)
+                  density_full_direct_history_abs_step = MAXVAL(ABS(rx_model))
+                  CALL para_env_inter_kp%max(density_full_direct_history_abs_step)
+                  density_full_direct_history_weighted_step = &
+                     kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
+                  IF (response_trust > EPSILON(response_trust)) &
+                     density_full_direct_history_weighted_trust_ratio = &
+                        density_full_direct_history_weighted_step/response_trust
+                  IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                     density_full_direct_history_abs_trust_ratio = &
+                        density_full_direct_history_abs_step/response_abs_trust
+                  density_full_direct_history_trust_quality = &
+                     kpoint_ot_schur_trust_quality(density_full_direct_history_weighted_trust_ratio, &
+                                                   density_full_direct_history_abs_trust_ratio, 0.0_dp)
+               ELSE IF (density_full_direct_model_calibrated_drop > &
+                        ot_kp_schur_projector_density_full_min_drop .AND. &
+                        density_full_direct_response_weighted_trust_ratio <= 1.0_dp .AND. &
+                        density_full_direct_response_abs_trust_ratio <= 1.0_dp) THEN
+                  density_full_direct_history_drop = density_full_direct_model_calibrated_drop
+                  density_full_direct_history_trust_quality = density_full_direct_trust_quality
+                  density_full_direct_history_weighted_trust_ratio = &
+                     density_full_direct_response_weighted_trust_ratio
+                  density_full_direct_history_abs_trust_ratio = density_full_direct_response_abs_trust_ratio
+               END IF
+               IF (density_full_direct_history_drop > &
                    ot_kp_schur_projector_density_full_min_drop .AND. &
-                   density_full_direct_response_weighted_trust_ratio <= 1.0_dp .AND. &
-                   density_full_direct_response_abs_trust_ratio <= 1.0_dp) THEN
+                   density_full_direct_history_weighted_trust_ratio <= 1.0_dp .AND. &
+                   density_full_direct_history_abs_trust_ratio <= 1.0_dp) THEN
                   IF (.NOT. local_ot_env(1)%schur_projector_density_full_direct_pending) THEN
                      local_ot_env(1)%schur_projector_density_full_direct_drop = 0.0_dp
                      local_ot_env(1)%schur_projector_density_full_direct_trust = 1.0_dp
@@ -14058,16 +14110,16 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_direct_pending = .TRUE.
                   local_ot_env(1)%schur_projector_density_full_direct_drop = &
                      local_ot_env(1)%schur_projector_density_full_direct_drop + &
-                     density_full_direct_model_calibrated_drop
+                     density_full_direct_history_drop
                   local_ot_env(1)%schur_projector_density_full_direct_trust = &
                      MIN(local_ot_env(1)%schur_projector_density_full_direct_trust, &
-                         density_full_direct_trust_quality)
+                         density_full_direct_history_trust_quality)
                   local_ot_env(1)%schur_projector_density_full_direct_weighted_trust = &
                      MAX(local_ot_env(1)%schur_projector_density_full_direct_weighted_trust, &
-                         density_full_direct_response_weighted_trust_ratio)
+                         density_full_direct_history_weighted_trust_ratio)
                   local_ot_env(1)%schur_projector_density_full_direct_abs_trust = &
                      MAX(local_ot_env(1)%schur_projector_density_full_direct_abs_trust, &
-                         density_full_direct_response_abs_trust_ratio)
+                         density_full_direct_history_abs_trust_ratio)
                END IF
                IF (exact_density_response_ready) THEN
                   local_ot_env(1)%schur_projector_density_audit_pending = .TRUE.
