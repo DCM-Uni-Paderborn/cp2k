@@ -3339,53 +3339,56 @@ CONTAINS
       REAL(KIND=dp) :: projector_density_descent_selected_quality_ratio, &
          projector_density_descent_support, projector_density_full_direct_predicted_drop, &
          projector_density_full_direct_quality_ratio, &
+         projector_density_full_direct_selected_predicted_drop, &
+         projector_density_full_direct_selected_quality_ratio, &
          projector_density_full_global_predicted_drop, &
          projector_density_full_global_quality_ratio, projector_density_full_min_drop, &
          projector_density_full_predicted_drop, projector_density_full_quality_ratio, &
          projector_density_full_selected_predicted_drop, &
-         projector_density_full_selected_quality_ratio, projector_density_lowcurv_quality, &
-         projector_density_lowcurv_ratio, projector_density_predicted_drop
-      REAL(KIND=dp) :: projector_density_quality_ratio, projector_diagref_correction_ratio, &
-         projector_diagref_predicted_drop, projector_diagref_quality_ratio, &
-         projector_inactive_offdiag_abs_ratio, projector_inactive_offdiag_negative, &
-         projector_inactive_offdiag_predicted_drop, projector_inactive_offdiag_quality_ratio, &
+         projector_density_full_selected_quality_ratio
+      REAL(KIND=dp) :: projector_density_lowcurv_quality, projector_density_lowcurv_ratio, &
+         projector_density_predicted_drop, projector_density_quality_ratio, &
+         projector_diagref_correction_ratio, projector_diagref_predicted_drop, &
+         projector_diagref_quality_ratio, projector_inactive_offdiag_abs_ratio, &
+         projector_inactive_offdiag_negative, projector_inactive_offdiag_predicted_drop, &
+         projector_inactive_offdiag_quality_ratio, &
          projector_inactive_offdiag_selected_predicted_drop, &
-         projector_inactive_offdiag_selected_quality_ratio, &
-         projector_inactive_offdiag_signed_ratio, projector_inactive_offdiag_step_negative, &
-         projector_mixed_direct_predicted_drop, projector_mixed_direct_quality_ratio
-      REAL(KIND=dp) :: projector_mode_predicted_drop, projector_mode_quality_ratio, &
+         projector_inactive_offdiag_selected_quality_ratio, projector_inactive_offdiag_signed_ratio
+      REAL(KIND=dp) :: projector_inactive_offdiag_step_negative, &
+         projector_mixed_direct_predicted_drop, projector_mixed_direct_quality_ratio, &
+         projector_mode_predicted_drop, projector_mode_quality_ratio, &
          projector_mode_response_drop_ratio, projector_mode_response_negative, &
          projector_mode_step_negative, projector_mode_trust, projector_offdiag_abs_ratio, &
          projector_offdiag_negative, projector_offdiag_predicted_drop, &
          projector_offdiag_quality_ratio, projector_offdiag_signed_ratio, &
          projector_offdiag_step_negative, projector_physical_compensation_quality, &
-         projector_physical_compensation_ratio, projector_physical_correction_quality, &
-         projector_physical_correction_ratio
-      REAL(KIND=dp) :: projector_physical_direct_density_selected_predicted_drop, &
+         projector_physical_compensation_ratio
+      REAL(KIND=dp) :: projector_physical_correction_quality, projector_physical_correction_ratio, &
+         projector_physical_direct_density_selected_predicted_drop, &
          projector_physical_direct_density_selected_quality_ratio, &
          projector_physical_direct_predicted_drop, projector_physical_direct_quality, &
          projector_physical_direct_quality_ratio, projector_physical_direct_ratio, &
          projector_physical_direct_selected_predicted_drop, &
          projector_physical_direct_selected_quality_ratio, projector_physical_metric_quality, &
-         projector_physical_metric_ratio, projector_physical_negative_quality, &
-         projector_physical_predicted_drop, projector_physical_quality_ratio, &
-         projector_physical_selected_quality
-      REAL(KIND=dp) :: projector_physical_selected_ratio, projector_physical_shift_quality, &
-         projector_physical_shift_ratio, projector_physical_trace_active_avg, &
-         projector_physical_trace_active_diag_avg, projector_physical_trace_active_diag_quality, &
-         projector_physical_trace_active_free_avg, projector_physical_trace_active_free_quality, &
-         projector_physical_trace_active_quality, projector_physical_trace_actual_avg, &
-         projector_physical_trace_actual_diag_avg, projector_physical_trace_actual_diag_quality, &
-         projector_physical_trace_actual_free_avg, projector_physical_trace_actual_free_quality
-      REAL(KIND=dp) :: projector_physical_trace_actual_quality, projector_physical_trace_raw_avg, &
+         projector_physical_metric_ratio, projector_physical_negative_quality
+      REAL(KIND=dp) :: projector_physical_predicted_drop, projector_physical_quality_ratio, &
+         projector_physical_selected_quality, projector_physical_selected_ratio, &
+         projector_physical_shift_quality, projector_physical_shift_ratio, &
+         projector_physical_trace_active_avg, projector_physical_trace_active_diag_avg, &
+         projector_physical_trace_active_diag_quality, projector_physical_trace_active_free_avg, &
+         projector_physical_trace_active_free_quality, projector_physical_trace_active_quality, &
+         projector_physical_trace_actual_avg, projector_physical_trace_actual_diag_avg
+      REAL(KIND=dp) :: projector_physical_trace_actual_diag_quality, &
+         projector_physical_trace_actual_free_avg, projector_physical_trace_actual_free_quality, &
+         projector_physical_trace_actual_quality, projector_physical_trace_raw_avg, &
          projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality, &
          projector_physical_trace_raw_free_avg, projector_physical_trace_raw_free_quality, &
          projector_physical_trace_raw_quality, projector_physical_weight_quality, &
          projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
-         projector_response_predicted_drop, projector_response_quality_ratio, &
+         projector_response_predicted_drop
+      REAL(KIND=dp) :: projector_response_quality_ratio, &
          projector_response_selected_predicted_drop, projector_response_selected_quality_ratio, &
-         projector_spectral_predicted_drop
-      REAL(KIND=dp) :: projector_spectral_quality_ratio, &
+         projector_spectral_predicted_drop, projector_spectral_quality_ratio, &
          projector_spectral_selected_predicted_drop, projector_spectral_selected_quality_ratio, &
          quality_ratio, residual_current_delta, residual_drop, residual_quality_ratio, &
          split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio, &
@@ -4257,6 +4260,48 @@ CONTAINS
                projector_density_full_direct_predicted_drop
             local_ot_env(1)%schur_projector_density_full_direct_measured_sum = &
                local_ot_env(1)%schur_projector_density_full_direct_measured_sum + measured_drop
+         END IF
+         projector_density_full_direct_selected_predicted_drop = &
+            local_ot_env(1)%schur_projector_density_fdir_selected
+         projector_density_full_direct_selected_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. projector_density_full_direct_selected_predicted_drop > &
+             projector_density_full_min_drop .AND. measured_drop > 0.0_dp) THEN
+            projector_density_full_direct_selected_quality_ratio = &
+               measured_drop/projector_density_full_direct_selected_predicted_drop
+            local_ot_env(1)%schur_projector_density_fdir_sel_quality = &
+               projector_density_full_direct_selected_quality_ratio
+            samples = MIN( &
+                      local_ot_env(1)% &
+                      schur_projector_density_fdir_sel_quality_samples + 1, &
+                      HUGE(samples) - 1)
+            local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_projector_density_fdir_sel_quality_ema = &
+                  projector_density_full_direct_selected_quality_ratio
+               local_ot_env(1)% &
+                  schur_projector_density_fdir_sel_resid_quality_ema = &
+                  residual_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_projector_density_fdir_sel_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)% &
+                  schur_projector_density_fdir_sel_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha* &
+                  projector_density_full_direct_selected_quality_ratio
+               local_ot_env(1)% &
+                  schur_projector_density_fdir_sel_resid_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)% &
+                  schur_projector_density_fdir_sel_resid_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*residual_quality_ratio
+            END IF
+            local_ot_env(1)% &
+               schur_projector_density_fdir_sel_resid_quality = residual_quality_ratio
+            local_ot_env(1)%schur_projector_density_fdir_sel_drop_sum = &
+               local_ot_env(1)%schur_projector_density_fdir_sel_drop_sum + &
+               projector_density_full_direct_selected_predicted_drop
+            local_ot_env(1)%schur_projector_density_fdir_sel_measured_sum = &
+               local_ot_env(1)%schur_projector_density_fdir_sel_measured_sum + measured_drop
          END IF
          local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled = &
             local_ot_env(1)%schur_projector_density_full_direct_quality_samples >= &
@@ -5315,6 +5360,16 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_direct_weighted_trust, &
                local_ot_env(1)%schur_projector_density_full_direct_abs_trust, &
                local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+               " OT Schur LS projector full-density direct selected history n ratio ema resid rema pred meas latest:", &
+               local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
+               local_ot_env(1)%schur_projector_density_fdir_sel_quality, &
+               local_ot_env(1)%schur_projector_density_fdir_sel_quality_ema, &
+               local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality, &
+               local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
+               local_ot_env(1)%schur_projector_density_fdir_sel_drop_sum, &
+               local_ot_env(1)%schur_projector_density_fdir_sel_measured_sum, &
+               projector_density_full_direct_selected_predicted_drop
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
                " OT Schur LS projector full-density global shadow n ratio ema pred meas latest trust tema wtr atr:", &
                local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
@@ -5771,6 +5826,7 @@ CONTAINS
             local_ot_env(1)%schur_projector_density_full_weighted_trust = 0.0_dp
             local_ot_env(1)%schur_projector_density_full_abs_trust = 0.0_dp
             local_ot_env(1)%schur_projector_density_full_direct_drop = 0.0_dp
+            local_ot_env(1)%schur_projector_density_fdir_selected = 0.0_dp
             local_ot_env(1)%schur_projector_density_full_direct_trust = 1.0_dp
             local_ot_env(1)%schur_projector_density_full_direct_weighted_trust = 0.0_dp
             local_ot_env(1)%schur_projector_density_full_direct_abs_trust = 0.0_dp
@@ -11465,6 +11521,37 @@ CONTAINS
                                  local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
                                  ot_kp_schur_projector_response_min_samples)
                            END IF
+                           IF (local_ot_env(1)% &
+                               schur_projector_density_fdir_sel_quality_samples >= &
+                               ot_kp_schur_calibration_min_samples) THEN
+                              density_full_direct_quality_for_selection = &
+                                 kpoint_ot_direct_selected_history_quality( &
+                                 density_full_direct_quality_for_selection, &
+                                 local_ot_env(1)% &
+                                 schur_projector_density_fdir_sel_drop_sum, &
+                                 local_ot_env(1)% &
+                                 schur_projector_density_fdir_sel_measured_sum, &
+                                 local_ot_env(1)% &
+                                 schur_projector_density_fdir_sel_quality_ema, &
+                                 local_ot_env(1)% &
+                                 schur_projector_density_fdir_sel_quality_samples, &
+                                 ot_kp_schur_calibration_min_samples)
+                              IF (residual_delta <= &
+                                  ot_kp_schur_projector_coupled_tail_delta) THEN
+                                 density_full_direct_quality_for_selection = &
+                                    density_full_direct_quality_for_selection* &
+                                    MAX(0.0_dp, MIN(1.0_dp, &
+                                                    local_ot_env(1)% &
+                                                    schur_projector_density_fdir_sel_resid_quality_ema))
+                              END IF
+                              density_full_direct_history_scale = &
+                                 MIN(density_full_direct_history_scale, &
+                                     kpoint_ot_direct_history_step_scale( &
+                                     density_full_direct_quality_for_selection, &
+                                     local_ot_env(1)% &
+                                     schur_projector_density_fdir_sel_quality_samples, &
+                                     ot_kp_schur_calibration_min_samples))
+                           END IF
                            density_full_expected_drop = &
                               kpoint_ot_schur_expected_drop( &
                               density_full_model_calibrated_drop, &
@@ -12638,6 +12725,15 @@ CONTAINS
                   END IF
                END IF
             END IF
+
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),1(1X,L1),13(1X,ES16.8))') &
+               " OT Schur attempt decision group att failed code scale sq drop cdrop gapdrop floordrop "// &
+               "wtrust atrust mgap normratio gdotp normp:", &
+               target_group, schur_attempt, reject_reason, attempt_failed, direction_scale, scale_quality, &
+               model_drop, model_calibrated_drop, model_gap_drop, row_floor_shift_drop, &
+               response_weighted_trust_ratio, response_abs_trust_ratio, model_gap_ratio, norm_ratio, &
+               gdotp, normp
 
             IF (schur_attempt == 1 .AND. .NOT. attempt_failed) THEN
                constrained_candidate_ready = .TRUE.
@@ -14096,6 +14192,10 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_direct_abs_trust = &
                   MAX(local_ot_env(1)%schur_projector_density_full_direct_abs_trust, &
                       density_full_direct_history_abs_trust_ratio)
+               IF (density_full_direct_candidate_selected) &
+                  local_ot_env(1)%schur_projector_density_fdir_selected = &
+                  local_ot_env(1)%schur_projector_density_fdir_selected + &
+                  density_full_direct_history_drop
             END IF
             IF (exact_density_response_ready) THEN
                local_ot_env(1)%schur_projector_density_audit_pending = .TRUE.
