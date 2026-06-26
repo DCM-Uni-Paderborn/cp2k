@@ -18260,7 +18260,7 @@ CONTAINS
                END DO
                IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
                IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
-               modal_curv(a) = SQRT(modal_floor*modal_raw)
+               modal_curv(a) = MIN(modal_raw, SQRT(modal_floor*modal_raw))
             END IF
          END DO
 

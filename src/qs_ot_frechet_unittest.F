@@ -11268,7 +11268,7 @@ CONTAINS
       INTEGER, PARAMETER                                 :: n = 2
       REAL(KIND=dp), PARAMETER :: active_fraction = 0.99_dp, active_tol = 0.85_dp, &
          dominant_fraction = 0.75_dp, dominant_tol = 0.85_dp, moderate_fraction = 0.90_dp, &
-         moderate_tol = 0.80_dp
+         moderate_tol = 0.80_dp, raw_tol = 1.0E-12_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
       REAL(KIND=dp)                                      :: active_ratio, dominant_ratio, &
@@ -11293,7 +11293,8 @@ CONTAINS
       active_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
       inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
 
-      IF (active_ratio < active_tol .OR. inert_ratio > 0.25_dp .OR. &
+      IF (active_ratio < active_tol .OR. active_ratio > 1.0_dp + raw_tol .OR. &
+          inert_ratio > 0.25_dp .OR. &
           modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
           raw_inert <= 0.0_dp) THEN
          nfail = nfail + 1
@@ -11321,7 +11322,8 @@ CONTAINS
       moderate_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
       inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
 
-      IF (moderate_ratio < moderate_tol .OR. inert_ratio > 0.25_dp .OR. &
+      IF (moderate_ratio < moderate_tol .OR. moderate_ratio > 1.0_dp + raw_tol .OR. &
+          inert_ratio > 0.25_dp .OR. &
           modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
           raw_inert <= 0.0_dp) THEN
          nfail = nfail + 1
@@ -11349,7 +11351,8 @@ CONTAINS
       dominant_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
       inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
 
-      IF (dominant_ratio < dominant_tol .OR. inert_ratio > 0.25_dp .OR. &
+      IF (dominant_ratio < dominant_tol .OR. dominant_ratio > 1.0_dp + raw_tol .OR. &
+          inert_ratio > 0.25_dp .OR. &
           modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
           raw_inert <= 0.0_dp) THEN
          nfail = nfail + 1
@@ -12415,7 +12418,7 @@ CONTAINS
             END DO
             IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
             IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
-            modal_curv(a) = SQRT(modal_floor*modal_raw)
+            modal_curv(a) = MIN(modal_raw, SQRT(modal_floor*modal_raw))
          END IF
       END DO
 
