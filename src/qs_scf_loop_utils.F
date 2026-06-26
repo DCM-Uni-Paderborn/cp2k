@@ -11507,10 +11507,17 @@ CONTAINS
                                              END IF
                                              IF (DOT_PRODUCT(projector_physical_direct_sol, &
                                                             projector_physical_direct_sol) > EPSILON(1.0_dp)) THEN
-                                                rx_e(:) = MATMUL(response_exact_physical, &
-                                                                 projector_physical_direct_sol) + &
-                                                          MATMUL(response_density_full_exact, &
-                                                                 projector_physical_direct_sol)
+                                                IF (exact_density_full_audit_ready) THEN
+                                                   rx_e(:) = MATMUL(response_exact_physical, &
+                                                                    projector_physical_direct_sol) + &
+                                                             MATMUL(response_density_full_audit_exact, &
+                                                                    projector_physical_direct_sol)
+                                                ELSE
+                                                   rx_e(:) = MATMUL(response_exact_physical, &
+                                                                    projector_physical_direct_sol) + &
+                                                             MATMUL(response_density_full_exact, &
+                                                                    projector_physical_direct_sol)
+                                                END IF
                                                 CALL project_kpoint_ot_schur_response(rx_e, &
                                                    occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                                                 z_density_full_trial(:) = z_exact_physical_trial(:) + rx_e(:)

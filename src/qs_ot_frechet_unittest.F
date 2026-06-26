@@ -176,6 +176,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_floor_global_projection( &
       "complex projector density floor global projection", 5.0E-14_dp, nfail)
+   CALL check_projector_density_direct_floor_response( &
+      "complex projector density direct floor response", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_density_audit_trust_quality( &
@@ -6987,6 +6989,85 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_floor_global_projection
+
+! **************************************************************************************************
+!> \brief Check that Direct full-density calibration uses floor-limited density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_floor_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 4, nrot = 2
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      INTEGER                                            :: r
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: column_projected, floor_projected, &
+                                                            raw_projected
+      REAL(KIND=dp)                                      :: charge, floor_abs, raw_abs, response_gap
+      REAL(KIND=dp), DIMENSION(ne)                       :: floor_model, occ_curv, raw_model, &
+                                                            tether_curv
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: floor_density, phys_response, &
+                                                            projector_response, raw_density
+      REAL(KIND=dp), DIMENSION(nrot)                     :: direct_sol
+
+      channel_nmo(:) = [2, 2]
+      e_offset(:) = [1, 3]
+      occ_curv(:) = [3.0E-1_dp, 1.5E-1_dp, 5.0E-4_dp, 5.0E-8_dp]
+      tether_curv(:) = 0.0_dp
+      direct_sol(:) = [0.70_dp, -0.40_dp]
+      phys_response(:, 1) = [0.04_dp, -0.02_dp, 0.01_dp, -0.01_dp]
+      phys_response(:, 2) = [-0.03_dp, 0.01_dp, -0.02_dp, 0.02_dp]
+      projector_response(:, 1) = [0.015_dp, -0.012_dp, 0.006_dp, -0.005_dp]
+      projector_response(:, 2) = [-0.014_dp, 0.010_dp, -0.004_dp, 0.003_dp]
+      raw_density(:, 1) = [0.02_dp, -0.015_dp, 25.0_dp, -20.0_dp]
+      raw_density(:, 2) = [-0.03_dp, 0.010_dp, -18.0_dp, 15.0_dp]
+
+      floor_projected = .TRUE.
+      raw_projected = .TRUE.
+      DO r = 1, nrot
+         floor_density(1, r) = dense_physical_density_floor_audit_response( &
+                               projector_response(1, r), raw_density(1, r), &
+                               occ_curv(1), MAXVAL(occ_curv(:)), response_ratio_gate)
+         floor_density(2, r) = dense_physical_density_floor_audit_response( &
+                               projector_response(2, r), raw_density(2, r), &
+                               occ_curv(2), MAXVAL(occ_curv(:)), response_ratio_gate)
+         floor_density(3, r) = dense_physical_density_floor_audit_response( &
+                               projector_response(3, r), raw_density(3, r), &
+                               occ_curv(3), MAXVAL(occ_curv(:)), response_ratio_gate)
+         floor_density(4, r) = dense_physical_density_floor_audit_response( &
+                               projector_response(4, r), raw_density(4, r), &
+                               occ_curv(4), MAXVAL(occ_curv(:)), response_ratio_gate)
+         CALL dense_project_response_metric_distributed(floor_density(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, column_projected)
+         floor_projected = floor_projected .AND. column_projected
+         CALL dense_project_response_metric_distributed(raw_density(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, column_projected)
+         raw_projected = raw_projected .AND. column_projected
+      END DO
+
+      floor_model(:) = MATMUL(phys_response, direct_sol) + MATMUL(floor_density, direct_sol)
+      raw_model(:) = MATMUL(phys_response, direct_sol) + MATMUL(raw_density, direct_sol)
+      charge = ABS(DOT_PRODUCT(occ_curv(:), MATMUL(floor_density, direct_sol)))
+      floor_abs = MAXVAL(ABS(floor_model(:)))
+      raw_abs = MAXVAL(ABS(raw_model(:)))
+      response_gap = raw_abs/MAX(floor_abs, EPSILON(floor_abs))
+
+      IF (.NOT. floor_projected .OR. .NOT. raw_projected .OR. charge > tol .OR. &
+          floor_abs >= 0.1_dp*raw_abs .OR. response_gap < 20.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with charge/floor/raw/gap", charge, floor_abs, raw_abs, response_gap
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with charge/floor/raw/gap", charge, floor_abs, raw_abs, response_gap
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_floor_response
 
 ! **************************************************************************************************
 !> \brief Check that global fixed-N density-response trust follows the Mermin metric.
