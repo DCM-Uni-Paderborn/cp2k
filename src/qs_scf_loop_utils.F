@@ -6129,6 +6129,7 @@ CONTAINS
             projector_physical_direct_mixed_drop_ratio, projector_physical_direct_mixed_quality, &
             projector_physical_direct_mixed_consistency_scale, &
             projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight, &
+            projector_physical_direct_inactive_offdiag_balance, &
             projector_physical_direct_inactive_offdiag_weight, &
             projector_physical_direct_offdiag_mix_weight, &
             projector_physical_direct_shadow_weight, &
@@ -7280,6 +7281,7 @@ CONTAINS
             projector_physical_direct_mixed_consistency_scale = 0.0_dp
             projector_physical_direct_mixed_step_scale = 0.0_dp
             projector_physical_direct_mixed_weight = 0.0_dp
+            projector_physical_direct_inactive_offdiag_balance = 0.0_dp
             projector_physical_direct_inactive_offdiag_weight = 0.0_dp
             projector_physical_direct_offdiag_mix_weight = 0.0_dp
             projector_physical_direct_tail_probe_ready = .FALSE.
@@ -9803,19 +9805,25 @@ CONTAINS
                      IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                         IF (projector_inactive_offdiag_quality_for_selection > &
                             EPSILON(projector_inactive_offdiag_quality_for_selection)) THEN
+                           projector_physical_direct_inactive_offdiag_balance = &
+                              kpoint_ot_projector_negative_step_balance( &
+                                 projector_inactive_offdiag_history_quality, &
+                                 projector_inactive_offdiag_history_trust, &
+                                 projector_inactive_offdiag_history_response_ratio, &
+                                 local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema)
                            projector_physical_direct_inactive_offdiag_weight = &
-                              projector_coupled_weight*ot_kp_schur_projector_negative_balance_floor* &
-                              MIN(1.0_dp, MAX(0.0_dp, projector_inactive_offdiag_history_quality))* &
-                              MIN(1.0_dp, MAX(0.0_dp, projector_inactive_offdiag_history_trust))/ &
-                              SQRT(MAX(1.0_dp, projector_inactive_offdiag_history_response_ratio/ &
-                                            ot_kp_schur_projector_response_ratio_gate))
+                              projector_coupled_weight* &
+                              projector_physical_direct_inactive_offdiag_balance
                         ELSE
+                           projector_physical_direct_inactive_offdiag_balance = &
+                              kpoint_ot_projector_negative_step_balance( &
+                                 projector_mode_history_quality, &
+                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
+                                 projector_mode_history_response_ratio, &
+                                 local_ot_env(1)%schur_projector_mode_step_negative_ema)
                            projector_physical_direct_inactive_offdiag_weight = &
-                              projector_coupled_weight*ot_kp_schur_projector_negative_balance_floor* &
-                              MIN(1.0_dp, MAX(0.0_dp, projector_mode_history_quality))* &
-                              MIN(1.0_dp, MAX(0.0_dp, local_ot_env(1)%schur_projector_mode_trust_ema))/ &
-                              SQRT(MAX(1.0_dp, projector_mode_history_response_ratio/ &
-                                            ot_kp_schur_projector_response_ratio_gate))
+                              projector_coupled_weight* &
+                              projector_physical_direct_inactive_offdiag_balance
                         END IF
                      END IF
                      projector_physical_direct_delta(:, :) = &
@@ -16859,6 +16867,38 @@ CONTAINS
          balance = MIN(1.0_dp, MAX(0.0_dp, balance))
 
       END FUNCTION kpoint_ot_projector_negative_response_balance
+
+! **************************************************************************************************
+!> \brief sign-aware finite Projector balance for accepted negative-step history
+!> \param history_quality accepted finite-response Mermin-drop quality
+!> \param history_trust accepted finite-response trust quality
+!> \param history_response_ratio response-mismatch/predicted-drop history
+!> \param step_negative_fraction fraction of accepted rotation step in negative modes
+!> \return negative-history balance in [0,1]
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_negative_step_balance(history_quality, history_trust, &
+                                                         history_response_ratio, &
+                                                         step_negative_fraction) RESULT(balance)
+      REAL(KIND=dp), INTENT(IN)                         :: history_quality, history_response_ratio, &
+                                                           history_trust, step_negative_fraction
+      REAL(KIND=dp)                                     :: balance
+
+      REAL(KIND=dp)                                     :: coherent_negative, history_scale, modal_floor, &
+                                                           step_negative, scalar_floor
+
+         history_scale = MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
+                         SQRT(MAX(1.0_dp, history_response_ratio/ &
+                                       ot_kp_schur_projector_response_ratio_gate))
+         scalar_floor = ot_kp_schur_projector_negative_balance_floor* &
+                        MIN(1.0_dp, MAX(0.0_dp, history_quality))*history_scale
+         step_negative = MIN(1.0_dp, MAX(0.0_dp, step_negative_fraction))
+         coherent_negative = MAX(0.0_dp, 2.0_dp*step_negative - 1.0_dp)
+         modal_floor = SQRT(coherent_negative)* &
+                       SQRT(MIN(1.0_dp, MAX(0.0_dp, history_quality)))*history_scale
+         balance = MAX(scalar_floor, MIN(ot_kp_schur_projector_negative_balance_max, modal_floor))
+         balance = MIN(1.0_dp, MAX(0.0_dp, balance))
+
+      END FUNCTION kpoint_ot_projector_negative_step_balance
 
 !> \brief audit an accepted-history calibrated finite-response correction in Projector modes
 !> \param rot_hessian diagonal/canonical rotation Hessian

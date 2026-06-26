@@ -228,6 +228,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-12_dp, nfail)
    CALL check_projector_modal_response_negative_floor( &
       "complex projector modal response negative-only floor", 5.0E-12_dp, nfail)
+   CALL check_projector_negative_step_balance("complex projector negative-step balance", &
+                                              5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_history_safe_occ_projector_derivative("history-safe occupation-projector derivative", &
@@ -8746,6 +8748,59 @@ CONTAINS
    END SUBROUTINE check_projector_modal_response_negative_floor
 
 ! **************************************************************************************************
+!> \brief Negative-step history may lift the inactive Projector shadow only coherently.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_negative_step_balance(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp)                                      :: err, full_negative, high_ratio, &
+                                                            neutral_step, noisy_history, &
+                                                            partial_negative, positive_step
+
+      full_negative = dense_projector_negative_step_balance(1.0_dp, 1.0_dp, 0.0_dp, &
+                                                            1.0_dp, response_ratio_gate)
+      partial_negative = dense_projector_negative_step_balance(1.0_dp, 1.0_dp, 0.0_dp, &
+                                                               0.56_dp, response_ratio_gate)
+      neutral_step = dense_projector_negative_step_balance(1.0_dp, 1.0_dp, 0.0_dp, &
+                                                           0.50_dp, response_ratio_gate)
+      positive_step = dense_projector_negative_step_balance(1.0_dp, 1.0_dp, 0.0_dp, &
+                                                            0.25_dp, response_ratio_gate)
+      high_ratio = dense_projector_negative_step_balance(1.0_dp, 1.0_dp, &
+                                                         16.0_dp*response_ratio_gate, &
+                                                         1.0_dp, response_ratio_gate)
+      noisy_history = dense_projector_negative_step_balance(0.25_dp, 0.16_dp, &
+                                                            4.0_dp*response_ratio_gate, &
+                                                            1.0_dp, response_ratio_gate)
+
+      err = ABS(full_negative - projector_response_negative_balance_max)
+      err = MAX(err, ABS(partial_negative - SQRT(0.12_dp)))
+      err = MAX(err, ABS(neutral_step - projector_response_negative_balance_floor))
+      err = MAX(err, ABS(positive_step - projector_response_negative_balance_floor))
+      err = MAX(err, ABS(high_ratio - 0.25_dp))
+      err = MAX(err, ABS(noisy_history - 0.04_dp))
+
+      IF (err > tol .OR. full_negative <= neutral_step .OR. partial_negative <= neutral_step .OR. &
+          high_ratio >= full_negative .OR. noisy_history >= neutral_step) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/partial/neutral/highratio/noisy", &
+            err, full_negative, partial_negative, neutral_step, high_ratio, noisy_history
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/partial/neutral/highratio/noisy", &
+            err, full_negative, partial_negative, neutral_step, high_ratio, noisy_history
+      END IF
+
+   END SUBROUTINE check_projector_negative_step_balance
+
+! **************************************************************************************************
 !> \brief Dense copy of the sign-aware negative Projector-response mode balance.
 !> \param positive_sum ...
 !> \param raw_negative_sum ...
@@ -8775,6 +8830,40 @@ CONTAINS
       balance = MIN(1.0_dp, MAX(0.0_dp, balance))
 
    END FUNCTION dense_projector_negative_response_balance
+
+! **************************************************************************************************
+!> \brief Dense copy of the sign-aware negative Projector-step history balance.
+!> \param history_quality ...
+!> \param history_trust ...
+!> \param history_response_ratio ...
+!> \param step_negative_fraction ...
+!> \param response_ratio_gate ...
+!> \return negative-history balance in [0,1]
+! **************************************************************************************************
+   FUNCTION dense_projector_negative_step_balance(history_quality, history_trust, history_response_ratio, &
+                                                  step_negative_fraction, response_ratio_gate) RESULT(balance)
+      REAL(KIND=dp), INTENT(IN)                          :: history_quality, history_trust, &
+                                                            history_response_ratio, &
+                                                            step_negative_fraction, &
+                                                            response_ratio_gate
+      REAL(KIND=dp)                                      :: balance
+
+      REAL(KIND=dp)                                      :: coherent_negative, history_scale, &
+                                                            modal_floor, scalar_floor, &
+                                                            step_negative
+
+      history_scale = MIN(1.0_dp, MAX(0.0_dp, history_trust))/ &
+                      SQRT(MAX(1.0_dp, history_response_ratio/response_ratio_gate))
+      scalar_floor = projector_response_negative_balance_floor* &
+                     MIN(1.0_dp, MAX(0.0_dp, history_quality))*history_scale
+      step_negative = MIN(1.0_dp, MAX(0.0_dp, step_negative_fraction))
+      coherent_negative = MAX(0.0_dp, 2.0_dp*step_negative - 1.0_dp)
+      modal_floor = SQRT(coherent_negative)* &
+                    SQRT(MIN(1.0_dp, MAX(0.0_dp, history_quality)))*history_scale
+      balance = MAX(scalar_floor, MIN(projector_response_negative_balance_max, modal_floor))
+      balance = MIN(1.0_dp, MAX(0.0_dp, balance))
+
+   END FUNCTION dense_projector_negative_step_balance
 
 ! **************************************************************************************************
 !> \brief Dense copy of the finite Projector-Hessian modal response algebra.
