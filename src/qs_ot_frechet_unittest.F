@@ -194,6 +194,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_probe_bootstrap( &
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
+   CALL check_projector_density_full_direct_tail_probe( &
+      "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
    CALL check_projector_trace_diag_component_scale("complex projector trace-diag Direct scale", &
@@ -7590,6 +7592,58 @@ CONTAINS
    END SUBROUTINE check_projector_direct_tail_probe_bootstrap
 
 ! **************************************************************************************************
+!> \brief Check that full-density Direct candidates can collect close-call tail history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_full_direct_tail_probe(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: low_drop, low_quality, low_samples, &
+                                                            ready, selected_bad, selected_floor, &
+                                                            selected_ok, tail_veto, weak_drop
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                   0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+      tail_veto = dense_density_full_direct_tail_probe(2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                       0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+      low_samples = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                         0.20_dp, 7, 0.0_dp, 0, 0.40_dp)
+      low_quality = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                         0.09_dp, 8, 0.0_dp, 0, 0.40_dp)
+      low_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, &
+                                                      0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+      weak_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, &
+                                                       0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+      selected_ok = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                         0.20_dp, 8, 0.40_dp, 4, 0.40_dp)
+      selected_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                          0.20_dp, 8, 0.20_dp, 4, 0.40_dp)
+      selected_floor = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                            0.20_dp, 8, 0.21_dp, 4, 0.0_dp)
+
+      err = 0.0_dp
+      IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_drop .OR. &
+          weak_drop .OR. .NOT. selected_ok .OR. selected_bad .OR. .NOT. selected_floor) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/drop/weak/sel/bad/floor", ready, tail_veto, &
+            low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_floor
+      ELSE
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/drop/weak/sel/bad/floor", ready, tail_veto, &
+            low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_floor
+      END IF
+
+   END SUBROUTINE check_projector_density_full_direct_tail_probe
+
+! **************************************************************************************************
 !> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
 !> \param label ...
 !> \param tol ...
@@ -9339,6 +9393,46 @@ CONTAINS
       END IF
 
    END FUNCTION dense_direct_tail_probe_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of the full-density Direct residual-tail close-call gate.
+!> \param residual_delta ...
+!> \param candidate_expected_drop ...
+!> \param reference_expected_drop ...
+!> \param quality_ema ...
+!> \param samples ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \param dense_residual_quality ...
+!> \return true if the candidate is a calibrated residual-tail close call
+! **************************************************************************************************
+   FUNCTION dense_density_full_direct_tail_probe(residual_delta, candidate_expected_drop, &
+                                                 reference_expected_drop, quality_ema, samples, &
+                                                 selected_residual_quality_ema, selected_samples, &
+                                                 dense_residual_quality) RESULT(do_probe)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, quality_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+      do_probe = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (samples < 8) RETURN
+      IF (quality_ema < 1.0E-1_dp) RETURN
+      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
+      IF (candidate_expected_drop < 8.0E-1_dp*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+
+      IF (selected_samples >= 4) THEN
+         IF (selected_residual_quality_ema < 8.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
+            RETURN
+      END IF
+
+      do_probe = .TRUE.
+
+   END FUNCTION dense_density_full_direct_tail_probe
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.
