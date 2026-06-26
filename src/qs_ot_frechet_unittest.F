@@ -120,6 +120,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector bounded density-response helper", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_helper( &
       "complex projector physical density-response helper", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_density_response_convexity( &
+      "complex projector physical density-response convexity", 5.0E-14_dp, nfail)
    CALL check_projector_density_floor_audit_response_helper( &
       "complex projector density floor-audit response helper", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_safe_source( &
@@ -4608,8 +4610,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, response_ratio_gate = 2.0E-2_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp) :: active_fraction, active_gap, err, inert_suppression, mid_recovery, &
-         occ_curv_max, response_shape, safe_recovery, safe_shape
+      REAL(KIND=dp) :: active_fraction, active_gap, bounded_response, err, inert_suppression, &
+         mid_recovery, occ_curv_max, response_shape, safe_recovery, safe_shape
       REAL(KIND=dp), DIMENSION(n)                        :: expected, occ_curv, projector_response, &
                                                             response, safe_response
 
@@ -4625,9 +4627,9 @@ CONTAINS
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
          safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
-         expected(i) = dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
-                       response_shape*projector_response(i) + &
-                       safe_shape*(safe_response(i) - projector_response(i))
+         bounded_response = dense_active_density_response_weight(occ_curv(i), occ_curv_max)* &
+                            response_shape*projector_response(i)
+         expected(i) = bounded_response + safe_shape*(safe_response(i) - bounded_response)
       END DO
 
       err = MAXVAL(ABS(response(:) - expected(:)))
@@ -4656,6 +4658,54 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_helper
+
+! **************************************************************************************************
+!> \brief Check that conflicting density responses are blended, not extrapolated.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_density_response_convexity(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp) :: active_fraction, bounded_response, convex_gap, density_response, &
+         legacy_response, occ_curv, occ_curv_max, response_shape, safe_bound, safe_response, &
+         safe_shape
+
+      occ_curv_max = 4.0E-2_dp
+      occ_curv = 4.0E-4_dp
+      bounded_response = dense_bounded_density_response(1.0_dp, occ_curv, occ_curv_max, &
+                                                        response_ratio_gate)
+      safe_response = -1.0_dp
+      density_response = dense_physical_density_response(1.0_dp, safe_response, occ_curv, occ_curv_max, &
+                                                         response_ratio_gate)
+
+      active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
+      legacy_response = bounded_response + safe_shape*(safe_response - 1.0_dp)
+      safe_bound = MAX(ABS(safe_response), ABS(bounded_response))
+      convex_gap = ABS(density_response) - safe_bound
+
+      IF (ABS(bounded_response) < tol .OR. legacy_response >= -safe_bound .OR. &
+          convex_gap > tol .OR. density_response > bounded_response .OR. &
+          density_response < safe_response) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with bounded/response/legacy/gap/safe", bounded_response, density_response, &
+            legacy_response, convex_gap, safe_response
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with bounded/response/legacy/gap/safe", bounded_response, density_response, &
+            legacy_response, convex_gap, safe_response
+      END IF
+
+   END SUBROUTINE check_projector_physical_density_response_convexity
 
 ! **************************************************************************************************
 !> \brief Check the shadow-only finite-floor density-response helper algebra.
@@ -11308,8 +11358,8 @@ CONTAINS
                                                             occ_curv_max, response_ratio_gate
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp)                                      :: active_fraction, response_shape, &
-                                                            safe_shape
+      REAL(KIND=dp)                                      :: active_fraction, bounded_response, &
+                                                            response_shape, safe_shape
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -11319,9 +11369,9 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       safe_shape = SQRT(MAX(0.0_dp, active_fraction*response_shape))
-      density_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
-                         response_shape*density_projector_response + &
-                         safe_shape*(density_safe_response - density_projector_response)
+      bounded_response = dense_active_density_response_weight(occ_curv, occ_curv_max)* &
+                         response_shape*density_projector_response
+      density_response = bounded_response + safe_shape*(density_safe_response - bounded_response)
 
    END FUNCTION dense_physical_density_response
 
