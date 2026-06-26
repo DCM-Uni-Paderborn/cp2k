@@ -11275,13 +11275,17 @@ CONTAINS
                                              projector_physical_direct_density_norm_energy = &
                                                 MAX(0.0_dp, projector_physical_direct_density_norm_energy)
                                              projector_physical_direct_density_norm_rotation = &
-                                                MAX(0.0_dp, &
-                                                    kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
+                                                ABS(kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
                                                                              projector_physical_direct_sol))
                                              IF (projector_physical_direct_density_norm_rotation <= &
                                                  EPSILON(projector_physical_direct_density_norm_rotation)) &
                                                 projector_physical_direct_density_norm_rotation = &
-                                                   MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                                   ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                             IF (projector_physical_direct_density_norm_rotation <= &
+                                                 EPSILON(projector_physical_direct_density_norm_rotation)) &
+                                                projector_physical_direct_density_norm_rotation = &
+                                                   kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
+                                                                                projector_physical_direct_sol)
                                              projector_physical_direct_density_normp = &
                                                 projector_physical_direct_density_norm_energy + &
                                                 projector_physical_direct_density_norm_rotation
@@ -11602,13 +11606,17 @@ CONTAINS
                                                 density_full_direct_norm_energy = &
                                                    MAX(0.0_dp, density_full_direct_norm_energy)
                                                 density_full_direct_norm_rotation = &
-                                                   MAX(0.0_dp, &
-                                                       kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
+                                                   ABS(kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
                                                                                 projector_physical_direct_sol))
                                                 IF (density_full_direct_norm_rotation <= &
                                                     EPSILON(density_full_direct_norm_rotation)) &
                                                    density_full_direct_norm_rotation = &
-                                                      MAX(0.0_dp, DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                                      ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                                                IF (density_full_direct_norm_rotation <= &
+                                                    EPSILON(density_full_direct_norm_rotation)) &
+                                                   density_full_direct_norm_rotation = &
+                                                      kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
+                                                                                   projector_physical_direct_sol)
                                                 density_full_direct_normp = density_full_direct_norm_energy + &
                                                                             density_full_direct_norm_rotation
                                                 IF (density_full_direct_gdotp > 0.0_dp .AND. &

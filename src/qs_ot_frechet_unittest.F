@@ -6821,10 +6821,11 @@ CONTAINS
       INTEGER                                            :: info
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
       INTEGER, DIMENSION(nrot)                           :: ipiv
-      REAL(KIND=dp) :: curvature_scale, err, gdotp, legacy_drop, metric_drop, norm_energy, &
-         norm_rotation, normp, response_trust, soft_effective_norm, soft_euclid_norm, &
-         soft_metric_norm, solved_euclid_drop, solved_euclid_norm, solved_metric_drop, &
-         solved_metric_norm, solved_metric_normp, solved_scale, trust_scale, unit_weighted_step
+      REAL(KIND=dp) :: curvature_scale, err, gdotp, indef_abs_norm, indef_signed_norm, &
+         legacy_drop, metric_drop, norm_energy, norm_rotation, normp, response_trust, &
+         soft_effective_norm, soft_euclid_norm, soft_metric_norm, solved_euclid_drop, &
+         solved_euclid_norm, solved_metric_drop, solved_metric_norm, solved_metric_normp, &
+         solved_scale, trust_scale, unit_weighted_step
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e, occ_curv, tether_curv, z_e
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_rot, rhs_soft, rhs_solve, &
                                                             sol, sol_soft, sol_solve
@@ -6889,21 +6890,31 @@ CONTAINS
       soft_effective_norm = MAX(soft_metric_norm, soft_euclid_norm)
       err = MAX(err, ABS(soft_effective_norm - soft_euclid_norm))
 
+      schur_soft(:, :) = RESHAPE([-0.08_dp, 0.00_dp, &
+                                  0.00_dp, 0.04_dp], [nrot, nrot])
+      sol_soft(:) = [1.0_dp, 0.5_dp]
+      rhs_soft(:) = MATMUL(schur_soft, sol_soft)
+      indef_signed_norm = DOT_PRODUCT(rhs_soft, sol_soft)
+      indef_abs_norm = ABS(schur_soft(1, 1))*sol_soft(1)**2 + &
+                       ABS(schur_soft(2, 2))*sol_soft(2)**2
+      err = MAX(err, ABS(indef_abs_norm - 9.0E-2_dp))
+
       IF (err > tol .OR. trust_scale >= curvature_scale .OR. metric_drop <= legacy_drop .OR. &
           norm_rotation <= DOT_PRODUCT(sol, sol) .OR. &
           solved_metric_norm <= solved_euclid_norm .OR. &
           solved_euclid_drop <= solved_metric_drop .OR. &
-          soft_metric_norm >= soft_euclid_norm) THEN
+          soft_metric_norm >= soft_euclid_norm .OR. indef_signed_norm >= 0.0_dp .OR. &
+          indef_abs_norm <= ABS(indef_signed_norm)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "failed with err/scale/curv/drop/legacy/rnorm/snorm/sdrop", err, trust_scale, &
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed with err/scale/curv/drop/legacy/rnorm/snorm/sdrop/isgn/iabs", err, trust_scale, &
             curvature_scale, metric_drop, legacy_drop, norm_rotation, solved_metric_norm, &
-            solved_metric_drop
+            solved_metric_drop, indef_signed_norm, indef_abs_norm
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "OK with err/scale/curv/drop/legacy/rnorm/snorm/sdrop", err, trust_scale, &
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK with err/scale/curv/drop/legacy/rnorm/snorm/sdrop/isgn/iabs", err, trust_scale, &
             curvature_scale, metric_drop, legacy_drop, norm_rotation, solved_metric_norm, &
-            solved_metric_drop
+            solved_metric_drop, indef_signed_norm, indef_abs_norm
       END IF
 
    END SUBROUTINE check_projector_density_candidate_metric_model
