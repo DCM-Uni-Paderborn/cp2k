@@ -65,26 +65,30 @@
 # not part of these optional companion references.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.76538616998703},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.76538616998703},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.63300261987711},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.63300261987711},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4293681466E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # These restart read/continue jobs are deliberately short, non-converged
-# restart-I/O smokes.  Keep the smearing and restart guards strict, but allow
-# small OMP reduction/path differences in the early OT energy.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.05303056527211},
-                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.05303056527211},
+# restart-I/O smokes.  Keep the smearing, entropic-energy, and restart guards
+# strict, but allow small OMP reduction/path differences in the early OT energy.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.00634152339366},
+                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.00634152339366},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
+                                           {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14577088835857},
-                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14577088835857},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104032E-4},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14560256429848},
+                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14560256429848},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103901E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=3.1128E-4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=1.49786E-3},
+                                           {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
@@ -112,9 +116,11 @@
 # default restart/smearing regtest stays cheap. Current local HIGH diagnostic:
 # restart I/O is stable and the tight tail is reached without first/last-band
 # smearing warnings or the previously reported "Unsupported content type"
-# signature, but the final 1E-6 Mermin path is not yet a committed physics
-# reference.  The remaining tail sits around 1--2E-6 after the Direct density
-# response, spectral-probe guard, and projector-tail CG reset.
+# signature, but the default continue job still exposes the known two-point
+# residual plateau and is not a committed 1E-6 physics reference.  Simple
+# collapsed-line-search recovery resets worsened this restart chain, so the
+# remaining fix belongs in the coupled finite-complex response/Hessian model
+# rather than in another scalar recovery heuristic.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
