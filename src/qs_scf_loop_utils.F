@@ -11387,7 +11387,9 @@ CONTAINS
                                                    density_full_z_e, occ_curv, tether_curv, occ_curv_projection_sum, &
                                                    channel_nmo, e_offset, density_full_norm_energy)
                                                 density_full_norm_energy = MAX(0.0_dp, density_full_norm_energy)
-                                                density_full_norm_rotation = DOT_PRODUCT(density_full_sol, density_full_sol)
+                                                density_full_norm_rotation = &
+                                                   MAX(DOT_PRODUCT(density_full_sol, density_full_sol), &
+                                                       MAX(0.0_dp, DOT_PRODUCT(rtd, density_full_sol)))
                                                 density_full_normp = density_full_norm_energy + density_full_norm_rotation
                                              END IF
                                              IF (info == 0 .AND. density_full_gdotp > 0.0_dp .AND. &
@@ -11664,7 +11666,8 @@ CONTAINS
                                                 density_full_global_norm_energy = &
                                                    MAX(0.0_dp, density_full_global_norm_energy)
                                                 density_full_global_norm_rotation = &
-                                                   DOT_PRODUCT(density_full_global_sol, density_full_global_sol)
+                                                   MAX(DOT_PRODUCT(density_full_global_sol, density_full_global_sol), &
+                                                       MAX(0.0_dp, DOT_PRODUCT(rtd, density_full_global_sol)))
                                                 density_full_global_normp = density_full_global_norm_energy + &
                                                                             density_full_global_norm_rotation
                                              END IF
