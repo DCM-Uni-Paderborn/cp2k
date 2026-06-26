@@ -2306,7 +2306,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: ot_channel, nmo
 
       INTEGER                                            :: ihist, ndiis
-      LOGICAL                                            :: restored
+      LOGICAL                                            :: restore_schur_calibration, restored
 
       IF (.NOT. scf_env%qs_ot_restart%valid) RETURN
       IF (.NOT. ASSOCIATED(scf_env%qs_ot_restart%channel)) RETURN
@@ -2318,6 +2318,10 @@ CONTAINS
 
       ndiis = scf_env%qs_ot_restart%channel(ot_channel)%diis_m
       restored = .FALSE.
+      ! The adaptive Schur response calibration is tied to the Mermin
+      ! line-search path that produced it.  Preserve restart compatibility by
+      ! reading the payload, but relearn the scalar calibration after restart.
+      restore_schur_calibration = .FALSE.
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_x .AND. &
           ASSOCIATED(qs_ot_env%matrix_x)) THEN
          CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_x, &
@@ -2503,7 +2507,7 @@ CONTAINS
          qs_ot_env%ds_min = scf_env%qs_ot_restart%channel(ot_channel)%ds_min
          qs_ot_env%broyden_adaptive_sigma = &
             scf_env%qs_ot_restart%channel(ot_channel)%broyden_adaptive_sigma
-         IF (scf_env%qs_ot_restart%format_version >= 4) THEN
+         IF (restore_schur_calibration .AND. scf_env%qs_ot_restart%format_version >= 4) THEN
             qs_ot_env%schur_projector_density_pending = .FALSE.
             qs_ot_env%schur_projector_density_audit_pending = .FALSE.
             qs_ot_env%schur_projector_density_descent_pending = .FALSE.
