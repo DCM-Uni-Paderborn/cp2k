@@ -248,6 +248,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector modal curvature split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_gauge_bound( &
       "history-safe occupation-projector modal curvature gauge bound", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_modal_curvature_active_tail( &
+      "history-safe occupation-projector modal curvature active tail", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -10841,6 +10843,57 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_modal_curvature_gauge_bound
 
 ! **************************************************************************************************
+!> \brief Check that tiny inert admixtures do not collapse active modal curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_modal_curvature_active_tail(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 2
+      REAL(KIND=dp), PARAMETER                           :: active_fraction = 0.99_dp, &
+                                                            active_tol = 0.85_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
+      REAL(KIND=dp)                                      :: active_ratio, inert_ratio, raw_active, &
+                                                            raw_inert, unit_active, unit_inert
+      REAL(KIND=dp), DIMENSION(n)                        :: modal_curv, occ_curv
+
+      unit_active = SQRT(active_fraction)
+      unit_inert = SQRT(1.0_dp - active_fraction)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit_inert, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-unit_inert, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+
+      occ_curv(:) = [0.038_dp, 1.0E-5_dp]
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_curv)
+
+      raw_active = active_fraction*occ_curv(1) + (1.0_dp - active_fraction)*occ_curv(2)
+      raw_inert = (1.0_dp - active_fraction)*occ_curv(1) + active_fraction*occ_curv(2)
+      active_ratio = modal_curv(1)/MAX(raw_active, EPSILON(raw_active))
+      inert_ratio = modal_curv(2)/MAX(raw_inert, EPSILON(raw_inert))
+
+      IF (active_ratio < active_tol .OR. inert_ratio > 0.25_dp .OR. &
+          modal_curv(1) <= modal_curv(2) .OR. raw_active <= 0.0_dp .OR. &
+          raw_inert <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with active/inert/mactive/minert", active_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with active/inert/mactive/minert", active_ratio, inert_ratio, &
+            modal_curv(1), modal_curv(2)
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_modal_curvature_active_tail
+
+! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
 !> \param label ...
 !> \param tol ...
@@ -11827,26 +11880,44 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
       INTEGER                                            :: a, b, m
-      REAL(KIND=dp)                                      :: curv, curv_floor, modal_raw
+      REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, &
+                                                            curv_max, max_component_weight, &
+                                                            modal_floor, modal_raw
 
       m = SIZE(occ_curv)
       modal_curv(:) = 0.0_dp
       IF (m <= 0) RETURN
 
       curv_floor = HUGE(1.0_dp)
+      curv_max = 0.0_dp
       DO b = 1, m
          curv = MAX(0.0_dp, occ_curv(b))
          IF (curv > EPSILON(curv)) curv_floor = MIN(curv_floor, curv)
+         curv_max = MAX(curv_max, curv)
       END DO
       IF (curv_floor >= HUGE(1.0_dp)/2.0_dp) RETURN
 
       DO a = 1, m
          modal_raw = 0.0_dp
+         max_component_weight = 0.0_dp
          DO b = 1, m
-            modal_raw = modal_raw + ABS(cluster_evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+            component_weight = ABS(cluster_evec(b, a))**2
+            max_component_weight = MAX(max_component_weight, component_weight)
+            modal_raw = modal_raw + component_weight*MAX(0.0_dp, occ_curv(b))
          END DO
-         IF (modal_raw > EPSILON(modal_raw)) &
-            modal_curv(a) = SQRT(curv_floor*modal_raw)
+         IF (modal_raw > EPSILON(modal_raw)) THEN
+            modal_floor = HUGE(1.0_dp)
+            DO b = 1, m
+               component_weight = ABS(cluster_evec(b, a))**2
+               curv = MAX(0.0_dp, occ_curv(b))
+               IF (curv > EPSILON(curv) .AND. &
+                   component_weight >= 0.1_dp*max_component_weight) &
+                  modal_floor = MIN(modal_floor, curv)
+            END DO
+            IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
+            IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
+            modal_curv(a) = SQRT(modal_floor*modal_raw)
+         END IF
       END DO
 
    END SUBROUTINE dense_fixed_n_projector_modal_curvature

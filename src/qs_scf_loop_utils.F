@@ -18068,26 +18068,43 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
       INTEGER                                            :: a, b, m
-      REAL(KIND=dp)                                      :: curv, curv_floor, modal_raw
+      REAL(KIND=dp)                                      :: component_weight, curv, curv_floor, curv_max, &
+                                                            max_component_weight, modal_floor, modal_raw
 
          m = SIZE(occ_curv)
          modal_curv(:) = 0.0_dp
          IF (m <= 0) RETURN
 
          curv_floor = HUGE(1.0_dp)
+         curv_max = 0.0_dp
          DO b = 1, m
             curv = MAX(0.0_dp, occ_curv(b))
             IF (curv > EPSILON(curv)) curv_floor = MIN(curv_floor, curv)
+            curv_max = MAX(curv_max, curv)
          END DO
          IF (curv_floor >= HUGE(1.0_dp)/2.0_dp) RETURN
 
          DO a = 1, m
             modal_raw = 0.0_dp
+            max_component_weight = 0.0_dp
             DO b = 1, m
-               modal_raw = modal_raw + ABS(cluster_evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+               component_weight = ABS(cluster_evec(b, a))**2
+               max_component_weight = MAX(max_component_weight, component_weight)
+               modal_raw = modal_raw + component_weight*MAX(0.0_dp, occ_curv(b))
             END DO
-            IF (modal_raw > EPSILON(modal_raw)) &
-               modal_curv(a) = SQRT(curv_floor*modal_raw)
+            IF (modal_raw > EPSILON(modal_raw)) THEN
+               modal_floor = HUGE(1.0_dp)
+               DO b = 1, m
+                  component_weight = ABS(cluster_evec(b, a))**2
+                  curv = MAX(0.0_dp, occ_curv(b))
+                  IF (curv > EPSILON(curv) .AND. &
+                      component_weight >= 0.1_dp*max_component_weight) &
+                     modal_floor = MIN(modal_floor, curv)
+               END DO
+               IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
+               IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
+               modal_curv(a) = SQRT(modal_floor*modal_raw)
+            END IF
          END DO
 
       END SUBROUTINE dense_fixed_n_projector_modal_curvature
