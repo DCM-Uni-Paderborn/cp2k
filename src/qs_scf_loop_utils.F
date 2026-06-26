@@ -15336,7 +15336,7 @@ CONTAINS
                         diag_shift_sum, diag_shift_max, schur_diag_min, &
                         projector_physical_direct_active_diag_compensation, &
                         projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
-                     DO ivar = 1, 3
+                     DO ivar = 1, 4
                         z_weight = REAL(ivar, KIND=dp)/4.0_dp
                         projector_physical_direct_schur_vec(:, :) = &
                            (1.0_dp - z_weight)*projector_physical_direct_base_delta(:, :) + &
@@ -15522,7 +15522,7 @@ CONTAINS
                 (local_ot_env(1)%schur_projector_mode_quality_samples >= &
                  ot_kp_schur_calibration_min_samples .OR. &
                  projector_physical_direct_promoted)) THEN
-               DO ivar = 1, 3
+               DO ivar = 1, 4
                   z_weight = REAL(ivar, KIND=dp)/4.0_dp
                   projector_physical_direct_schur_vec(:, :) = &
                      (1.0_dp - z_weight)*projector_physical_direct_base_delta(:, :) + &
