@@ -13614,9 +13614,14 @@ CONTAINS
                                             dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_candidate_ready .AND. &
                    density_full_expected_drop > EPSILON(density_full_expected_drop) .AND. &
-                   dense_branch_expected_drop >= &
-                   ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
-                                                                      EPSILON(dense_expected_drop))) THEN
+                   (dense_branch_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                       EPSILON(dense_expected_drop)) .OR. &
+                    kpoint_ot_density_full_tail_selection_probe( &
+                    density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
+                    local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
+                    local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
+                    dense_residual_quality))) THEN
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
                   projector_physical_candidate_selected = .FALSE.
@@ -13656,9 +13661,12 @@ CONTAINS
                                             dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
-                   dense_branch_expected_drop >= &
-                   ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
-                                                                      EPSILON(dense_expected_drop))) THEN
+                   (dense_branch_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                       EPSILON(dense_expected_drop)) .OR. &
+                    kpoint_ot_density_full_tail_selection_probe( &
+                    density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
+                    1.0_dp, 0, dense_residual_quality))) THEN
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -14098,9 +14106,14 @@ CONTAINS
                                             dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_candidate_ready .AND. &
                    density_full_expected_drop > EPSILON(density_full_expected_drop) .AND. &
-                   dense_branch_expected_drop >= &
-                   ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
-                                                                      EPSILON(dense_expected_drop))) THEN
+                   (dense_branch_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                       EPSILON(dense_expected_drop)) .OR. &
+                    kpoint_ot_density_full_tail_selection_probe( &
+                    density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
+                    local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
+                    local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
+                    dense_residual_quality))) THEN
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
                   projector_physical_candidate_selected = .FALSE.
@@ -14139,9 +14152,12 @@ CONTAINS
                                             dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
-                   dense_branch_expected_drop >= &
-                   ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
-                                                                      EPSILON(dense_expected_drop))) THEN
+                   (dense_branch_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                       EPSILON(dense_expected_drop)) .OR. &
+                    kpoint_ot_density_full_tail_selection_probe( &
+                    density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
+                    1.0_dp, 0, dense_residual_quality))) THEN
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -17070,6 +17086,43 @@ CONTAINS
          probe_ready = .TRUE.
 
       END FUNCTION kpoint_ot_density_full_tail_probe_ready
+
+! **************************************************************************************************
+!> \brief whether a mature full-density response candidate may collect selected tail history
+!> \param probe_ready prechecked residual, trust, and shadow-history quality gate
+!> \param candidate_expected_drop calibrated candidate Mermin drop
+!> \param reference_expected_drop currently selected dense-coupled expected drop
+!> \param selected_residual_quality_ema residual quality of already selected probes
+!> \param selected_samples number of already selected full-density probes
+!> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \return true if this is a calibrated residual-tail close call
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_tail_selection_probe(probe_ready, candidate_expected_drop, &
+                                                           reference_expected_drop, &
+                                                           selected_residual_quality_ema, selected_samples, &
+                                                           dense_residual_quality) RESULT(do_probe)
+      LOGICAL, INTENT(IN)                                :: probe_ready
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
+                                                            reference_expected_drop, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+         do_probe = .FALSE.
+         IF (.NOT. probe_ready) RETURN
+         IF (candidate_expected_drop < ot_kp_schur_projector_density_fdir_probe_ratio* &
+             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
+            IF (selected_residual_quality_ema < &
+                ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+         END IF
+
+         do_probe = .TRUE.
+
+      END FUNCTION kpoint_ot_density_full_tail_selection_probe
 
 ! **************************************************************************************************
 !> \brief whether a full-density Direct candidate may collect tail line-search history
