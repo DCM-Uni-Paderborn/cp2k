@@ -18568,11 +18568,12 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_kernel, &
                                                             cluster_work, response_block
-      INTEGER                                            :: a, b, first, j, last, m, n
+      INTEGER                                            :: a, b, first, first_b, j, last, last_b, &
+                                                            m, m_b, n
       LOGICAL                                            :: outside_gauge_cluster
-      REAL(KIND=dp)                                      :: component_weight, curv, denom, gap_tol, &
-                                                            mu_den, mu_num, mu_shift, &
-                                                            offdiag_coeff, slope_cap
+      REAL(KIND=dp) :: cluster_curv, cluster_curv_b, cluster_energy, cluster_energy_b, &
+         cluster_occ, cluster_occ_b, component_weight, curv, denom, gap_tol, mu_den, mu_num, &
+         mu_shift, offdiag_coeff, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv, modal_energy, &
                                                             modal_occ
 
@@ -18693,6 +18694,60 @@ CONTAINS
                kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
                                             (REAL(work(first, first), KIND=dp) - mu_shift), &
                                             0.0_dp, KIND=dp)
+            END IF
+            first = last + 1
+         END DO
+
+         first = 1
+         DO WHILE (first <= n)
+            last = first
+            DO WHILE (last < n)
+               IF (ABS(evals(last + 1) - evals(last)) > gauge_gap) EXIT
+               last = last + 1
+            END DO
+            m = last - first + 1
+            IF (m > 1) THEN
+               cluster_energy = SUM(evals(first:last))/REAL(m, KIND=dp)
+               cluster_occ = SUM(occ_slope(first:last))/REAL(m, KIND=dp)
+               cluster_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
+               first_b = last + 1
+               DO WHILE (first_b <= n)
+                  last_b = first_b
+                  DO WHILE (last_b < n)
+                     IF (ABS(evals(last_b + 1) - evals(last_b)) > gauge_gap) EXIT
+                     last_b = last_b + 1
+                  END DO
+                  m_b = last_b - first_b + 1
+                  IF (m_b > 1) THEN
+                     cluster_energy_b = SUM(evals(first_b:last_b))/REAL(m_b, KIND=dp)
+                     cluster_occ_b = SUM(occ_slope(first_b:last_b))/REAL(m_b, KIND=dp)
+                     cluster_curv_b = SUM(MAX(0.0_dp, occ_curv_channel(first_b:last_b)))/ &
+                                      REAL(m_b, KIND=dp)
+                     denom = cluster_energy - cluster_energy_b
+                     IF (ABS(denom) > gap_tol) THEN
+                        offdiag_coeff = (cluster_occ - cluster_occ_b)/denom
+                     ELSE
+                        offdiag_coeff = 0.0_dp
+                     END IF
+                     offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
+                     slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv, cluster_curv_b))
+                     IF (slope_cap > EPSILON(slope_cap)) THEN
+                        offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
+                     ELSE
+                        offdiag_coeff = 0.0_dp
+                     END IF
+                     ALLOCATE (response_block(m, m_b))
+                     response_block(:, :) = projector_weight*offdiag_coeff*work(first:last, first_b:last_b)
+                     DO b = 1, m_b
+                        DO a = 1, m
+                           kernel(first + a - 1, first_b + b - 1) = response_block(a, b)
+                           kernel(first_b + b - 1, first + a - 1) = CONJG(response_block(a, b))
+                        END DO
+                     END DO
+                     DEALLOCATE (response_block)
+                  END IF
+                  first_b = last_b + 1
+               END DO
             END IF
             first = last + 1
          END DO

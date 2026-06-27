@@ -274,6 +274,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_pair_response( &
+      "history-safe occupation-projector cluster-pair response", 5.0E-12_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -12220,6 +12222,83 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_cluster_offblock_response
 
 ! **************************************************************************************************
+!> \brief Check that near-degenerate cluster-to-cluster blocks use a covariant divided difference.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_pair_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(2, 2)                  :: expected_block
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
+      INTEGER                                            :: i
+      REAL(KIND=dp) :: cluster_curv_a, cluster_curv_b, cluster_energy_a, cluster_energy_b, &
+         cluster_occ_a, cluster_occ_b, coeff, denom, err, herm_err, old_gap, slope_cap
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.210000_dp, 0.210018_dp]
+      occ_slope(:) = [0.82_dp, 0.78_dp, 0.17_dp, 0.14_dp]
+      occ_curv(:) = [0.038_dp, 0.034_dp, 0.011_dp, 0.009_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 1) = CMPLX(0.06_dp, 0.0_dp, KIND=dp)
+      work(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      work(1, 2) = CMPLX(0.22_dp, -0.15_dp, KIND=dp)
+      work(3, 3) = CMPLX(-0.03_dp, 0.0_dp, KIND=dp)
+      work(4, 4) = CMPLX(0.08_dp, 0.0_dp, KIND=dp)
+      work(3, 4) = CMPLX(-0.17_dp, 0.11_dp, KIND=dp)
+      work(1, 3) = CMPLX(-0.18_dp, 0.09_dp, KIND=dp)
+      work(1, 4) = CMPLX(0.05_dp, -0.13_dp, KIND=dp)
+      work(2, 3) = CMPLX(0.07_dp, -0.05_dp, KIND=dp)
+      work(2, 4) = CMPLX(-0.09_dp, 0.04_dp, KIND=dp)
+      DO i = 2, n
+         work(i, 1:i - 1) = CONJG(work(1:i - 1, i))
+      END DO
+
+      kernel(:, :) = CMPLX(9.0_dp, -3.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel)
+
+      cluster_energy_a = SUM(evals(1:2))/2.0_dp
+      cluster_energy_b = SUM(evals(3:4))/2.0_dp
+      cluster_occ_a = SUM(occ_slope(1:2))/2.0_dp
+      cluster_occ_b = SUM(occ_slope(3:4))/2.0_dp
+      cluster_curv_a = SUM(MAX(0.0_dp, occ_curv(1:2)))/2.0_dp
+      cluster_curv_b = SUM(MAX(0.0_dp, occ_curv(3:4)))/2.0_dp
+      denom = cluster_energy_a - cluster_energy_b
+      IF (ABS(denom) > SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))) THEN
+         coeff = (cluster_occ_a - cluster_occ_b)/denom
+      ELSE
+         coeff = 0.0_dp
+      END IF
+      coeff = MIN(0.0_dp, coeff)
+      slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv_a, cluster_curv_b))
+      coeff = MAX(coeff, -slope_cap)
+      expected_block(:, :) = projector_weight*coeff*work(1:2, 3:4)
+
+      err = MAXVAL(ABS(kernel(1:2, 3:4) - expected_block(:, :)))
+      herm_err = MAXVAL(ABS(kernel(3:4, 1:2) - CONJG(TRANSPOSE(kernel(1:2, 3:4)))))
+      old_gap = MAXVAL(ABS(kernel(1:2, 3:4) - CMPLX(9.0_dp, -3.0_dp, KIND=dp)))
+
+      IF (err > tol .OR. herm_err > tol .OR. old_gap < 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with error/hermitian/oldgap", err, herm_err, old_gap
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with error/hermitian/oldgap", err, herm_err, old_gap
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_pair_response
+
+! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
 !> \param occ_scale ...
 !> \param occ_tol ...
@@ -12782,11 +12861,12 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_kernel, &
                                                             cluster_work, response_block
-      INTEGER                                            :: a, b, first, j, last, m, n
+      INTEGER                                            :: a, b, first, first_b, j, last, last_b, &
+                                                            m, m_b, n
       LOGICAL                                            :: outside_gauge_cluster
-      REAL(KIND=dp)                                      :: component_weight, curv, denom, gap_tol, &
-                                                            mu_den, mu_num, mu_shift, &
-                                                            offdiag_coeff, slope_cap
+      REAL(KIND=dp) :: cluster_curv, cluster_curv_b, cluster_energy, cluster_energy_b, &
+         cluster_occ, cluster_occ_b, component_weight, curv, denom, gap_tol, mu_den, mu_num, &
+         mu_shift, offdiag_coeff, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv, modal_energy, &
                                                             modal_occ
 
@@ -12905,6 +12985,59 @@ CONTAINS
             kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
                                          (REAL(work(first, first), KIND=dp) - mu_shift), &
                                          0.0_dp, KIND=dp)
+         END IF
+         first = last + 1
+      END DO
+
+      first = 1
+      DO WHILE (first <= n)
+         last = first
+         DO WHILE (last < n)
+            IF (ABS(evals(last + 1) - evals(last)) > gauge_gap) EXIT
+            last = last + 1
+         END DO
+         m = last - first + 1
+         IF (m > 1) THEN
+            cluster_energy = SUM(evals(first:last))/REAL(m, KIND=dp)
+            cluster_occ = SUM(occ_slope(first:last))/REAL(m, KIND=dp)
+            cluster_curv = SUM(MAX(0.0_dp, occ_curv(first:last)))/REAL(m, KIND=dp)
+            first_b = last + 1
+            DO WHILE (first_b <= n)
+               last_b = first_b
+               DO WHILE (last_b < n)
+                  IF (ABS(evals(last_b + 1) - evals(last_b)) > gauge_gap) EXIT
+                  last_b = last_b + 1
+               END DO
+               m_b = last_b - first_b + 1
+               IF (m_b > 1) THEN
+                  cluster_energy_b = SUM(evals(first_b:last_b))/REAL(m_b, KIND=dp)
+                  cluster_occ_b = SUM(occ_slope(first_b:last_b))/REAL(m_b, KIND=dp)
+                  cluster_curv_b = SUM(MAX(0.0_dp, occ_curv(first_b:last_b)))/REAL(m_b, KIND=dp)
+                  denom = cluster_energy - cluster_energy_b
+                  IF (ABS(denom) > gap_tol) THEN
+                     offdiag_coeff = (cluster_occ - cluster_occ_b)/denom
+                  ELSE
+                     offdiag_coeff = 0.0_dp
+                  END IF
+                  offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
+                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv, cluster_curv_b))
+                  IF (slope_cap > EPSILON(slope_cap)) THEN
+                     offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
+                  ELSE
+                     offdiag_coeff = 0.0_dp
+                  END IF
+                  ALLOCATE (response_block(m, m_b))
+                  response_block(:, :) = projector_weight*offdiag_coeff*work(first:last, first_b:last_b)
+                  DO b = 1, m_b
+                     DO a = 1, m
+                        kernel(first + a - 1, first_b + b - 1) = response_block(a, b)
+                        kernel(first_b + b - 1, first + a - 1) = CONJG(response_block(a, b))
+                     END DO
+                  END DO
+                  DEALLOCATE (response_block)
+               END IF
+               first_b = last_b + 1
+            END DO
          END IF
          first = last + 1
       END DO
