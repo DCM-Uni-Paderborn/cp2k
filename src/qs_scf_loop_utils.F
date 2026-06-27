@@ -4937,13 +4937,21 @@ CONTAINS
             IF (samples == 1) THEN
                local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema = &
                   projector_physical_direct_density_selected_quality_ratio
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema = &
+                  residual_quality_ratio
             ELSE
                local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema = &
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema + &
                   ot_kp_schur_quality_ema_alpha* &
                   projector_physical_direct_density_selected_quality_ratio
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*residual_quality_ratio
             END IF
+            local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality = &
+               residual_quality_ratio
             local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum = &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum + &
                projector_physical_direct_density_selected_predicted_drop
@@ -5515,11 +5523,13 @@ CONTAINS
                local_ot_env(1)%schur_projector_physical_direct_selected_drop_sum, &
                local_ot_env(1)%schur_projector_physical_direct_selected_measured_sum, &
                projector_physical_direct_selected_predicted_drop
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
-               " OT Schur LS projector physical direct-density selected history n ratio ema pred meas latest:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
+               " OT Schur LS projector physical direct-density selected history n ratio ema resid rema pred meas latest:", &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_quality, &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
                projector_physical_direct_density_selected_predicted_drop
@@ -5897,6 +5907,8 @@ CONTAINS
             local_ot_env(1)%schur_projector_physical_direct = 0.0_dp
             local_ot_env(1)%schur_projector_physical_direct_selected = 0.0_dp
             local_ot_env(1)%schur_projector_phys_direct_density_sel = 0.0_dp
+            local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality = 0.0_dp
+            local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema = 1.0_dp
             local_ot_env(1)%schur_projector_physical_selected = 0.0_dp
             local_ot_env(1)%schur_projector_physical_shift = 0.0_dp
             local_ot_env(1)%schur_projector_physical_trace_actual = 0.0_dp
@@ -8895,7 +8907,7 @@ CONTAINS
                projector_physical_direct_density_selected_history_quality = &
                projector_physical_direct_density_selected_history_quality* &
                MAX(0.0_dp, MIN(1.0_dp, &
-                               local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema))
+                               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema))
             projector_physical_direct_density_quality_for_selection = &
                kpoint_ot_direct_selected_probe_quality( &
                projector_physical_direct_density_quality_for_selection, &

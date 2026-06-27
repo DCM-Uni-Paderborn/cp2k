@@ -199,6 +199,8 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: phys_direct_density_sel = 0.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_quality = 0.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_resid_quality = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_resid_quality_ema = 1.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_drop_sum = 0.0_dp
       REAL(KIND=dp) :: phys_direct_density_sel_measured_sum = 0.0_dp
       REAL(KIND=dp) :: mixed_direct_quality = 0.0_dp, mixed_direct_quality_ema = 0.0_dp
@@ -283,6 +285,8 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: physical_direct_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_direct_density_sel_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_density_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_resid_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_resid_quality_ema = 1.0_dp
       REAL(KIND=dp) :: physical_direct_density_sel_drop_sum = 0.0_dp
       REAL(KIND=dp) :: physical_direct_density_sel_measured_sum = 0.0_dp
       REAL(KIND=dp) :: mixed_direct_quality = 0.0_dp, mixed_direct_quality_ema = 0.0_dp

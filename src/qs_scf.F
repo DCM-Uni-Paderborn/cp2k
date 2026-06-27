@@ -1357,6 +1357,10 @@ CONTAINS
                ot_env%schur_projector_phys_direct_density_sel_quality
             cache%physical_direct_density_sel_quality_ema = &
                ot_env%schur_projector_phys_direct_density_sel_quality_ema
+            cache%physical_direct_density_sel_resid_quality = &
+               ot_env%schur_projector_phys_direct_density_sel_resid_quality
+            cache%physical_direct_density_sel_resid_quality_ema = &
+               ot_env%schur_projector_phys_direct_density_sel_resid_quality_ema
             cache%physical_direct_density_sel_drop_sum = &
                ot_env%schur_projector_phys_direct_density_sel_drop_sum
             cache%physical_direct_density_sel_measured_sum = &
@@ -1521,6 +1525,10 @@ CONTAINS
                cache%physical_direct_density_sel_quality
             qs_ot_env%schur_projector_phys_direct_density_sel_quality_ema = &
                cache%physical_direct_density_sel_quality_ema
+            qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality = &
+               cache%physical_direct_density_sel_resid_quality
+            qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality_ema = &
+               cache%physical_direct_density_sel_resid_quality_ema
             qs_ot_env%schur_projector_phys_direct_density_sel_drop_sum = &
                cache%physical_direct_density_sel_drop_sum
             qs_ot_env%schur_projector_phys_direct_density_sel_measured_sum = &
@@ -2702,6 +2710,10 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality
             qs_ot_env%schur_projector_phys_direct_density_sel_quality_ema = &
                scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality_ema
+            qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_resid_quality
+            qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_resid_quality_ema
             qs_ot_env%schur_projector_phys_direct_density_sel_drop_sum = &
                scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_drop_sum
             qs_ot_env%schur_projector_phys_direct_density_sel_measured_sum = &

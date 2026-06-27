@@ -64,7 +64,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 7
+   INTEGER, PARAMETER                   :: ot_restart_version = 8
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -531,7 +531,7 @@ CONTAINS
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
       LOGICAL, DIMENSION(27)                             :: log_payload
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
-      REAL(KIND=dp), DIMENSION(87)                       :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(89)                       :: schur_real_payload
 
       nchannel = SIZE(qs_ot_env)
       IF (ires > 0) THEN
@@ -719,7 +719,9 @@ CONTAINS
                                qs_ot_env(ichannel)%schur_projector_physical_trace_raw_diag_quality_ema, &
                                qs_ot_env(ichannel)%schur_projector_physical_trace_raw_free_quality_ema, &
                                qs_ot_env(ichannel)%schur_projector_physical_trace_active_diag_quality_ema, &
-                               qs_ot_env(ichannel)%schur_projector_physical_trace_active_free_quality_ema]
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_active_free_quality_ema, &
+                               qs_ot_env(ichannel)%schur_projector_phys_direct_density_sel_resid_quality, &
+                               qs_ot_env(ichannel)%schur_projector_phys_direct_density_sel_resid_quality_ema]
 
          IF (ires > 0) THEN
             WRITE (ires) int_payload
@@ -861,7 +863,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
-      REAL(KIND=dp), DIMENSION(87)                       :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(87)                       :: schur_real_payload_v7
+      REAL(KIND=dp), DIMENSION(89)                       :: schur_real_payload
 
       payload_found = .FALSE.
       marker = ""
@@ -895,9 +898,15 @@ CONTAINS
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_pos
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_energy
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_grad
-            IF (version_read >= 7) THEN
+            IF (version_read >= 8) THEN
                READ (rst_unit) schur_int_payload
                READ (rst_unit) schur_real_payload
+            ELSE IF (version_read == 7) THEN
+               READ (rst_unit) schur_int_payload
+               READ (rst_unit) schur_real_payload_v7
+               schur_real_payload(:) = 0.0_dp
+               schur_real_payload(1:87) = schur_real_payload_v7
+               schur_real_payload(89) = 1.0_dp
             ELSE IF (version_read == 6) THEN
                READ (rst_unit) schur_int_payload_v6
                READ (rst_unit) schur_real_payload_v6
@@ -926,6 +935,7 @@ CONTAINS
             schur_int_payload(:) = 0
             schur_real_payload(:) = 0.0_dp
          END IF
+         IF (version_read < 8) schur_real_payload(89) = 1.0_dp
          CALL para_env%bcast(int_payload)
          CALL para_env%bcast(log_payload)
          CALL para_env%bcast(real_payload)
@@ -1058,6 +1068,10 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_quality = schur_real_payload(38)
          scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_quality_ema = &
             schur_real_payload(39)
+         scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_resid_quality = &
+            schur_real_payload(88)
+         scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_resid_quality_ema = &
+            schur_real_payload(89)
          scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_drop_sum = &
             schur_real_payload(40)
          scf_env%qs_ot_restart%channel(ichannel)%phys_direct_density_sel_measured_sum = &
