@@ -13624,11 +13624,12 @@ CONTAINS
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    kpoint_ot_density_full_tail_selection_probe( &
-                    density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
-                    local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
-                    local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
-                    dense_residual_quality))) THEN
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     kpoint_ot_density_full_tail_selection_probe( &
+                     density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
+                     local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
+                     local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
+                     dense_residual_quality)))) THEN
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
                   projector_physical_candidate_selected = .FALSE.
@@ -13671,9 +13672,12 @@ CONTAINS
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    kpoint_ot_density_full_tail_selection_probe( &
-                    density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
-                    1.0_dp, 0, dense_residual_quality))) THEN
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     .NOT. density_full_candidate_selected .AND. &
+                     .NOT. density_descent_candidate_selected .AND. &
+                     kpoint_ot_density_full_tail_selection_probe( &
+                     density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
+                     1.0_dp, 0, dense_residual_quality)))) THEN
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -13717,13 +13721,16 @@ CONTAINS
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
-                                                             dense_expected_drop, &
-                                                             local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
-                                                             local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
-                                                             local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
-                                                             local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
-                                                             dense_residual_quality))) THEN
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     .NOT. density_full_candidate_selected .AND. &
+                     .NOT. density_full_global_candidate_selected .AND. &
+                     kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
+                                                              dense_expected_drop, &
+                                                              local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                                              local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                              local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
+                                                              local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
+                                                              dense_residual_quality)))) THEN
                   density_full_direct_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -14123,11 +14130,12 @@ CONTAINS
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    kpoint_ot_density_full_tail_selection_probe( &
-                    density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
-                    local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
-                    local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
-                    dense_residual_quality))) THEN
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     kpoint_ot_density_full_tail_selection_probe( &
+                     density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
+                     local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
+                     local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
+                     dense_residual_quality)))) THEN
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
                   projector_physical_candidate_selected = .FALSE.
@@ -14169,9 +14177,12 @@ CONTAINS
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    kpoint_ot_density_full_tail_selection_probe( &
-                    density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
-                    1.0_dp, 0, dense_residual_quality))) THEN
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     .NOT. density_full_candidate_selected .AND. &
+                     .NOT. density_descent_candidate_selected .AND. &
+                     kpoint_ot_density_full_tail_selection_probe( &
+                     density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
+                     1.0_dp, 0, dense_residual_quality)))) THEN
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -14215,13 +14226,16 @@ CONTAINS
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
-                                                             dense_expected_drop, &
-                                                             local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
-                                                             local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
-                                                             local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
-                                                             local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
-                                                             dense_residual_quality))) THEN
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     .NOT. density_full_candidate_selected .AND. &
+                     .NOT. density_full_global_candidate_selected .AND. &
+                     kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
+                                                              dense_expected_drop, &
+                                                              local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                                              local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                                              local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
+                                                              local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
+                                                              dense_residual_quality)))) THEN
                   density_full_direct_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -19314,7 +19328,7 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
          active_component_transition_min = 0.50_dp, active_curvature_fraction = 0.25_dp, &
-         inactive_component_fraction_min = 5.0E-2_dp, significant_component_fraction = 0.5_dp
+         significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
       REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
@@ -19357,8 +19371,7 @@ CONTAINS
                IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
                IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
                modal_damped = MIN(modal_raw, SQRT(modal_floor*modal_raw))
-               IF (active_component_fraction >= active_component_fraction_min .AND. &
-                   active_component_fraction <= 1.0_dp - inactive_component_fraction_min) THEN
+               IF (active_component_fraction >= active_component_fraction_min) THEN
                   modal_curv(a) = modal_raw
                ELSE IF (active_component_fraction > active_component_transition_min .AND. &
                         active_component_fraction < active_component_fraction_min) THEN

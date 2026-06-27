@@ -11279,7 +11279,7 @@ CONTAINS
 
       evals(:) = [-0.010000_dp, -0.009982_dp, 0.23_dp, 0.47_dp]
       occ_scale(:) = [1.18_dp, 0.39_dp, 0.20_dp, 0.07_dp]
-      occ_curv(:) = [0.038_dp, 0.034_dp, 0.018_dp, 0.006_dp]
+      occ_curv(:) = [0.038_dp, 0.018_dp, 0.018_dp, 0.006_dp]
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -11597,16 +11597,21 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: n = 2
-      REAL(KIND=dp), PARAMETER :: active_fraction = 0.99_dp, active_tol = 0.85_dp, &
-         dominant_fraction = 0.75_dp, dominant_tol = 0.85_dp, edge_fraction = 0.55_dp, &
-         edge_tol = 0.45_dp, mixed_fraction = 0.65_dp, mixed_tol = 0.80_dp, &
-         moderate_fraction = 0.90_dp, moderate_tol = 0.80_dp, raw_tol = 1.0E-12_dp
+      INTEGER, PARAMETER                                 :: n = 2, n3 = 3
+      REAL(KIND=dp), PARAMETER :: active_fraction = 0.99_dp, active_pair_high_fraction = 0.50_dp, &
+         active_pair_inert_fraction = 0.01_dp, active_pair_mid_fraction = 0.49_dp, &
+         active_pair_tol = 0.98_dp, active_tol = 0.98_dp, dominant_fraction = 0.75_dp, &
+         dominant_tol = 0.85_dp, edge_fraction = 0.55_dp, edge_tol = 0.45_dp, &
+         mixed_fraction = 0.65_dp, mixed_tol = 0.80_dp, moderate_fraction = 0.90_dp, &
+         moderate_tol = 0.80_dp, raw_tol = 1.0E-12_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
-      REAL(KIND=dp) :: active_ratio, dominant_ratio, edge_ratio, inert_ratio, mixed_ratio, &
-         moderate_ratio, raw_active, raw_inert, unit_active, unit_inert
+      COMPLEX(KIND=dp), DIMENSION(n3, n3)                :: evec3
+      REAL(KIND=dp) :: active_pair_ratio, active_pair_raw, active_ratio, dominant_ratio, &
+         edge_ratio, inert_ratio, mixed_ratio, moderate_ratio, norm_active_pair, raw_active, &
+         raw_inert, unit_active, unit_inert, v_high, v_inert, v_mid
       REAL(KIND=dp), DIMENSION(n)                        :: modal_curv, occ_curv
+      REAL(KIND=dp), DIMENSION(n3)                       :: modal_curv3, occ_curv3
 
       unit_active = SQRT(active_fraction)
       unit_inert = SQRT(1.0_dp - active_fraction)
@@ -11636,6 +11641,42 @@ CONTAINS
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
             "OK with active/inert/mactive/minert", active_ratio, inert_ratio, &
             modal_curv(1), modal_curv(2)
+      END IF
+
+      v_high = SQRT(active_pair_high_fraction)
+      v_mid = SQRT(active_pair_mid_fraction)
+      v_inert = SQRT(active_pair_inert_fraction)
+      norm_active_pair = SQRT(active_pair_high_fraction + active_pair_mid_fraction)
+      evec3(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec3(1, 1) = CMPLX(v_high, 0.0_dp, KIND=dp)
+      evec3(2, 1) = CMPLX(v_mid, 0.0_dp, KIND=dp)
+      evec3(3, 1) = CMPLX(v_inert, 0.0_dp, KIND=dp)
+      evec3(1, 2) = CMPLX(v_mid/norm_active_pair, 0.0_dp, KIND=dp)
+      evec3(2, 2) = CMPLX(-v_high/norm_active_pair, 0.0_dp, KIND=dp)
+      evec3(1, 3) = CMPLX(v_inert*v_high/norm_active_pair, 0.0_dp, KIND=dp)
+      evec3(2, 3) = CMPLX(v_inert*v_mid/norm_active_pair, 0.0_dp, KIND=dp)
+      evec3(3, 3) = CMPLX(-norm_active_pair, 0.0_dp, KIND=dp)
+
+      occ_curv3(:) = [0.038_dp, 0.012_dp, 1.0E-5_dp]
+      CALL dense_fixed_n_projector_modal_curvature(evec3, occ_curv3, modal_curv3)
+
+      active_pair_raw = active_pair_high_fraction*occ_curv3(1) + &
+                        active_pair_mid_fraction*occ_curv3(2) + &
+                        active_pair_inert_fraction*occ_curv3(3)
+      active_pair_ratio = modal_curv3(1)/MAX(active_pair_raw, EPSILON(active_pair_raw))
+
+      IF (active_pair_ratio < active_pair_tol .OR. active_pair_ratio > 1.0_dp + raw_tol .OR. &
+          modal_curv3(3) > 0.25_dp*modal_curv3(1) .OR. active_pair_raw <= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with active-pair/inert/mactive/minert", active_pair_ratio, &
+            modal_curv3(3)/MAX(modal_curv3(1), EPSILON(modal_curv3(1))), modal_curv3(1), &
+            modal_curv3(3)
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with active-pair/inert/mactive/minert", active_pair_ratio, &
+            modal_curv3(3)/MAX(modal_curv3(1), EPSILON(modal_curv3(1))), modal_curv3(1), &
+            modal_curv3(3)
       END IF
 
       unit_active = SQRT(moderate_fraction)
@@ -13057,7 +13098,7 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
          active_component_transition_min = 0.50_dp, active_curvature_fraction = 0.25_dp, &
-         inactive_component_fraction_min = 5.0E-2_dp, significant_component_fraction = 0.5_dp
+         significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
       REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
@@ -13100,8 +13141,7 @@ CONTAINS
             IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
             IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
             modal_damped = MIN(modal_raw, SQRT(modal_floor*modal_raw))
-            IF (active_component_fraction >= active_component_fraction_min .AND. &
-                active_component_fraction <= 1.0_dp - inactive_component_fraction_min) THEN
+            IF (active_component_fraction >= active_component_fraction_min) THEN
                modal_curv(a) = modal_raw
             ELSE IF (active_component_fraction > active_component_transition_min .AND. &
                      active_component_fraction < active_component_fraction_min) THEN
