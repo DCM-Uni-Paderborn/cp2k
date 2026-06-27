@@ -8253,13 +8253,12 @@ CONTAINS
          ! line-search probes can miss the local Direct response and should
          ! not switch this correction on/off between probes in the same tail.
          IF (exact_density_full_audit_ready .AND. &
-             local_ot_env(1)%schur_projector_density_full_global_quality_samples >= &
-             ot_kp_schur_projector_response_min_samples .AND. &
+             local_ot_env(1)%schur_projector_density_full_global_quality_samples > 0 .AND. &
              local_ot_env(1)%schur_projector_density_full_global_drop_sum > &
              ot_kp_schur_projector_density_full_min_drop .AND. &
              local_ot_env(1)%schur_projector_density_full_global_measured_sum > 0.0_dp .AND. &
              local_ot_env(1)%schur_projector_density_full_global_quality_ema >= &
-             ot_kp_schur_projector_response_quality_min_ratio) THEN
+             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
             density_full_global_history_trust_quality = &
                kpoint_ot_schur_metric_trust_quality( &
                local_ot_env(1)%schur_projector_density_full_global_weighted_trust_ema, 0.0_dp)
@@ -8269,7 +8268,8 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_global_measured_sum, &
                local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
                local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
-               ot_kp_schur_projector_response_min_samples, 0.0_dp, &
+               ot_kp_schur_projector_response_min_samples, &
+               local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
                ot_kp_schur_projector_response_quality_min_ratio, &
                ot_kp_schur_projector_response_quality_max_ratio)
             density_full_global_quality_for_selection = &
@@ -8283,10 +8283,18 @@ CONTAINS
                density_full_global_quality_for_selection
             projector_physical_direct_floor_density_trust_quality = &
                density_full_global_history_trust_quality
-            projector_physical_direct_floor_density_maturity = &
-               REAL(local_ot_env(1)%schur_projector_density_full_global_quality_samples - &
-                    ot_kp_schur_projector_response_min_samples + 1, KIND=dp)/ &
-               REAL(MAX(1, ot_kp_schur_projector_response_min_samples), KIND=dp)
+            IF (local_ot_env(1)%schur_projector_density_full_global_quality_samples >= &
+                ot_kp_schur_projector_response_min_samples) THEN
+               projector_physical_direct_floor_density_maturity = &
+                  REAL(local_ot_env(1)%schur_projector_density_full_global_quality_samples - &
+                       ot_kp_schur_projector_response_min_samples + 1, KIND=dp)/ &
+                  REAL(MAX(1, ot_kp_schur_projector_response_min_samples), KIND=dp)
+            ELSE
+               projector_physical_direct_floor_density_maturity = &
+                  0.25_dp*REAL(local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                               KIND=dp)/ &
+                  REAL(MAX(1, ot_kp_schur_projector_response_min_samples), KIND=dp)
+            END IF
             projector_physical_direct_floor_density_maturity = &
                MIN(1.0_dp, MAX(0.0_dp, projector_physical_direct_floor_density_maturity))
             projector_physical_direct_floor_density_weight = &
