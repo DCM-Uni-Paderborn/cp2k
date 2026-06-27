@@ -12061,8 +12061,14 @@ CONTAINS
                                                             channel_nmo, e_offset, density_descent_norm_energy)
                         density_descent_norm_energy = MAX(0.0_dp, density_descent_norm_energy)
                         density_descent_norm_rotation = &
-                           DOT_PRODUCT(projector_physical_direct_sol, &
-                                       projector_physical_direct_sol)
+                           ABS(kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
+                                                        projector_physical_direct_sol))
+                        IF (density_descent_norm_rotation <= EPSILON(density_descent_norm_rotation)) &
+                           density_descent_norm_rotation = ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                        IF (density_descent_norm_rotation <= EPSILON(density_descent_norm_rotation)) &
+                           density_descent_norm_rotation = &
+                           kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
+                                                        projector_physical_direct_sol)
                         density_descent_normp = density_descent_norm_energy + &
                                                 density_descent_norm_rotation
                         IF (density_descent_gdotp > 0.0_dp .AND. &
