@@ -6043,26 +6043,27 @@ CONTAINS
          density_descent_bootstrap_ready, density_descent_candidate_ready, &
          density_descent_candidate_selected, density_full_candidate_ready, &
          density_full_candidate_selected, density_full_direct_candidate_ready, &
-         density_full_direct_candidate_selected, density_full_global_bootstrap_ready, &
-         density_full_global_candidate_ready, density_full_global_candidate_selected, &
-         exact_attempt_response, exact_density_direct_response_ready
-      LOGICAL :: exact_density_floor_audit_ready, exact_density_full_audit_ready, &
-         exact_density_full_response_ready, exact_density_plateau_response_ready, &
-         exact_density_response_ready, exact_energy_model_ready, exact_physical_response_ready, &
-         failed, metric_attempt_response, metric_attempt_selectable, new_search_point, &
-         physical_delta_group_ready, projector_density_full_audit_enabled, &
-         projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready, &
-         projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
-         projector_offdiag_candidate_selected
-      LOGICAL :: projector_physical_candidate_ready, projector_physical_candidate_selected, &
+         density_full_direct_candidate_selected, density_full_direct_tail_probe_ready, &
+         density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
+         density_full_global_candidate_selected, density_full_global_tail_probe_ready
+      LOGICAL :: density_full_tail_probe_ready, exact_attempt_response, &
+         exact_density_direct_response_ready, exact_density_floor_audit_ready, &
+         exact_density_full_audit_ready, exact_density_full_response_ready, &
+         exact_density_plateau_response_ready, exact_density_response_ready, &
+         exact_energy_model_ready, exact_physical_response_ready, failed, metric_attempt_response, &
+         metric_attempt_selectable, new_search_point, physical_delta_group_ready, &
+         projector_density_full_audit_enabled, projector_density_full_history_enabled, &
+         projector_inactive_offdiag_candidate_ready, projector_offdiag_candidate_inactive
+      LOGICAL :: projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
+         projector_physical_candidate_ready, projector_physical_candidate_selected, &
          projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
          projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_diagref_candidate_ready, &
-         projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
-         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted
-      LOGICAL :: projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted
+      LOGICAL :: projector_physical_direct_normcap_shadow_ready, &
+         projector_physical_direct_promoted, projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
@@ -6070,11 +6071,11 @@ CONTAINS
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
-         projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
-         projector_response_candidate_selected
-      LOGICAL :: response_model_available, schur_active_subspace, solved, &
-         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected
+         projector_plateau_gap_model_enabled
+      LOGICAL :: projector_response_candidate_ready, projector_response_candidate_selected, &
+         response_model_available, schur_active_subspace, solved, split_candidate_diagnostic, &
+         split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
+         split_residual_competitive, trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, &
          accepted_model_gap_ratio, accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          accepted_projector_coupled_weight, accepted_projector_inactive_offdiag_abs_ratio, &
@@ -7630,9 +7631,12 @@ CONTAINS
          density_full_candidate_selected = .FALSE.
          density_full_direct_candidate_ready = .FALSE.
          density_full_direct_candidate_selected = .FALSE.
+         density_full_direct_tail_probe_ready = .FALSE.
          density_full_global_bootstrap_ready = .FALSE.
          density_full_global_candidate_ready = .FALSE.
          density_full_global_candidate_selected = .FALSE.
+         density_full_global_tail_probe_ready = .FALSE.
+         density_full_tail_probe_ready = .FALSE.
          density_descent_candidate_ready = .FALSE.
          density_descent_candidate_selected = .FALSE.
          exact_physical_response_ready = .FALSE.
@@ -11928,8 +11932,17 @@ CONTAINS
                               density_full_quality_for_selection, &
                               density_full_trust_quality* &
                               projector_physical_direct_density_audit_quality)
+                           density_full_tail_probe_ready = &
+                              kpoint_ot_density_full_tail_probe_ready( &
+                              residual_delta, density_full_expected_drop, &
+                              local_ot_env(1)%schur_projector_density_full_quality, &
+                              local_ot_env(1)%schur_projector_density_full_quality_ema, &
+                              local_ot_env(1)%schur_projector_density_full_quality_samples, &
+                              density_full_response_weighted_trust_ratio, &
+                              density_full_response_abs_trust_ratio)
                            density_full_candidate_ready = &
-                              local_ot_env(1)%schur_projector_density_full_candidate_enabled .AND. &
+                              (local_ot_env(1)%schur_projector_density_full_candidate_enabled .OR. &
+                               density_full_tail_probe_ready) .AND. &
                               density_full_model_calibrated_drop > &
                               ot_kp_schur_projector_density_full_min_drop .AND. &
                               density_full_expected_drop > &
@@ -12045,8 +12058,17 @@ CONTAINS
                                  density_full_direct_quality_for_selection, &
                                  density_full_direct_trust_quality* &
                                  projector_physical_direct_density_audit_quality)
+                              density_full_direct_tail_probe_ready = &
+                                 kpoint_ot_density_full_tail_probe_ready( &
+                                 residual_delta, density_full_direct_expected_drop, &
+                                 local_ot_env(1)%schur_projector_density_full_direct_quality, &
+                                 local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
+                                 local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
+                                 density_full_direct_response_weighted_trust_ratio, &
+                                 density_full_direct_response_abs_trust_ratio)
                               density_full_direct_candidate_ready = &
-                                 local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled .AND. &
+                                 (local_ot_env(1)%schur_projector_density_full_direct_candidate_enabled .OR. &
+                                  density_full_direct_tail_probe_ready) .AND. &
                                  density_full_direct_expected_drop > &
                                  ot_kp_schur_projector_density_full_min_drop .AND. &
                                  density_full_direct_model_calibrated_drop > &
@@ -12241,6 +12263,14 @@ CONTAINS
                               density_full_global_quality_for_selection, &
                               density_full_global_trust_quality* &
                               projector_physical_direct_density_audit_quality)
+                           density_full_global_tail_probe_ready = &
+                              kpoint_ot_density_full_tail_probe_ready( &
+                              residual_delta, density_full_global_expected_drop, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                              density_full_global_response_weighted_trust_ratio, &
+                              density_full_global_response_abs_trust_ratio)
                            density_full_global_candidate_ready = &
                               projector_density_full_history_enabled .AND. &
                               (density_full_global_bootstrap_ready .OR. &
@@ -12249,7 +12279,8 @@ CONTAINS
                                 local_ot_env(1)%schur_projector_density_full_global_quality_ema >= &
                                 ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                 local_ot_env(1)%schur_projector_density_full_global_quality >= &
-                                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio)) .AND. &
+                                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .OR. &
+                               density_full_global_tail_probe_ready) .AND. &
                               density_full_global_model_calibrated_drop > &
                               ot_kp_schur_projector_density_full_min_drop .AND. &
                               density_full_global_expected_drop > &
@@ -17005,6 +17036,40 @@ CONTAINS
          quality = kpoint_ot_direct_selected_probe_quality(quality, selected_quality, samples, min_samples)
 
       END FUNCTION kpoint_ot_direct_floor_selected_quality
+
+! **************************************************************************************************
+!> \brief trust-safe tail probe for calibrated full-density response candidates
+!> \param residual_delta current OT residual
+!> \param candidate_expected_drop calibrated candidate Mermin drop
+!> \param recent_quality most recent accepted shadow-history Mermin quality
+!> \param ema_quality accepted shadow-history Mermin quality EMA
+!> \param samples number of accepted shadow-history samples
+!> \param weighted_trust_ratio curvature-weighted response trust ratio
+!> \param abs_trust_ratio absolute response trust ratio
+!> \return true if a mature, low-residual full-density response may collect selected history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_tail_probe_ready(residual_delta, candidate_expected_drop, &
+                                                       recent_quality, ema_quality, samples, &
+                                                       weighted_trust_ratio, abs_trust_ratio) &
+         RESULT(probe_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            recent_quality, ema_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: weighted_trust_ratio, abs_trust_ratio
+      LOGICAL                                            :: probe_ready
+
+         probe_ready = .FALSE.
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (ema_quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (recent_quality < 0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (weighted_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+         IF (abs_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+
+         probe_ready = .TRUE.
+
+      END FUNCTION kpoint_ot_density_full_tail_probe_ready
 
 ! **************************************************************************************************
 !> \brief whether a full-density Direct candidate may collect tail line-search history
