@@ -6159,95 +6159,95 @@ CONTAINS
          density_full_global_gdot_energy, density_full_global_gdot_rotation, &
          density_full_global_gdotp, density_full_global_history_abs_step, &
          density_full_global_history_abs_trust_ratio, density_full_global_history_drop, &
-         density_full_global_history_gap_drop, density_full_global_history_trust_quality, &
-         density_full_global_history_weighted_step, &
+         density_full_global_history_gap_drop, density_full_global_history_scale, &
+         density_full_global_history_trust_quality, density_full_global_history_weighted_step, &
          density_full_global_history_weighted_trust_ratio, &
-         density_full_global_model_calibrated_drop, density_full_global_model_drop, &
-         density_full_global_norm_energy
-      REAL(KIND=dp) :: density_full_global_norm_rotation, density_full_global_normp, &
-         density_full_global_quality_for_selection, density_full_global_response_abs_step, &
-         density_full_global_response_abs_trust_ratio, density_full_global_response_weighted_step, &
+         density_full_global_model_calibrated_drop, density_full_global_model_drop
+      REAL(KIND=dp) :: density_full_global_norm_energy, density_full_global_norm_rotation, &
+         density_full_global_normp, density_full_global_quality_for_selection, &
+         density_full_global_response_abs_step, density_full_global_response_abs_trust_ratio, &
+         density_full_global_response_weighted_step, &
          density_full_global_response_weighted_trust_ratio, density_full_global_scale_quality, &
          density_full_global_trust_quality, density_full_history_abs_step, &
          density_full_history_abs_trust_ratio, density_full_history_drop, &
-         density_full_history_gap_drop, density_full_history_trust_quality, &
-         density_full_history_weighted_step
-      REAL(KIND=dp) :: density_full_history_weighted_trust_ratio, &
-         density_full_model_calibrated_drop, density_full_model_drop, density_full_norm_energy, &
-         density_full_norm_rotation, density_full_normp, density_full_quality_for_selection, &
-         density_full_response_abs_step, density_full_response_abs_trust_ratio, &
-         density_full_response_weighted_step, density_full_response_weighted_trust_ratio, &
-         density_full_scale_quality, density_full_trust_quality, density_gap_direction_scale, &
-         density_gap_expected_drop, density_gap_gdot, density_gap_model_calibrated_drop, &
-         density_gap_model_drop, density_gap_norm
-      REAL(KIND=dp) :: density_gap_raw_abs, density_gap_raw_weighted, &
-         density_gap_response_abs_step, density_gap_response_abs_trust_ratio, &
-         density_gap_response_weighted_step, density_gap_response_weighted_trust_ratio, &
-         density_gap_scale_quality, density_gap_trust_quality, density_plateau_direction_scale, &
+         density_full_history_gap_drop, density_full_history_scale, &
+         density_full_history_trust_quality
+      REAL(KIND=dp) :: density_full_history_weighted_step, &
+         density_full_history_weighted_trust_ratio, density_full_model_calibrated_drop, &
+         density_full_model_drop, density_full_norm_energy, density_full_norm_rotation, &
+         density_full_normp, density_full_quality_for_selection, density_full_response_abs_step, &
+         density_full_response_abs_trust_ratio, density_full_response_weighted_step, &
+         density_full_response_weighted_trust_ratio, density_full_scale_quality, &
+         density_full_trust_quality, density_gap_direction_scale, density_gap_expected_drop, &
+         density_gap_gdot, density_gap_model_calibrated_drop
+      REAL(KIND=dp) :: density_gap_model_drop, density_gap_norm, density_gap_raw_abs, &
+         density_gap_raw_weighted, density_gap_response_abs_step, &
+         density_gap_response_abs_trust_ratio, density_gap_response_weighted_step, &
+         density_gap_response_weighted_trust_ratio, density_gap_scale_quality, &
+         density_gap_trust_quality, density_plateau_direction_scale, &
          density_plateau_exact_gap_avg, density_plateau_exact_gap_max, &
          density_plateau_expected_drop, density_plateau_gdot_energy, &
          density_plateau_gdot_rotation, density_plateau_gdotp, &
-         density_plateau_model_calibrated_drop, density_plateau_model_drop, &
-         density_plateau_model_gap_drop
-      REAL(KIND=dp) :: density_plateau_norm_energy, density_plateau_norm_rotation, &
-         density_plateau_normp, density_plateau_raw_gap_avg, density_plateau_raw_gap_max, &
-         density_plateau_response_abs_step, density_plateau_response_abs_trust_ratio, &
-         density_plateau_response_weighted_step, density_plateau_response_weighted_trust_ratio, &
-         density_plateau_scale_quality, density_plateau_trust_quality, &
-         density_projector_control_delta, density_projector_fraction, &
-         density_projector_trust_scale, diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, &
-         diag_shift, diag_shift_avg, diag_shift_fraction, diag_shift_max
-      REAL(KIND=dp) :: diag_shift_sum, direct_pg_correction_drop, direct_pg_correction_negative, &
-         direct_pg_cross_drop, direct_pg_metric_drop, direct_pg_metric_ratio, &
-         direct_pg_metric_step, direct_pg_negative_coeff, direct_pg_negative_drop, &
-         direct_pg_positive_coeff, direct_pg_positive_drop, direct_pg_raw_negative_fraction, &
-         direct_pg_response_weight, direction_scale, energy_floor_count, energy_floor_curv_sum, &
-         energy_gauge_weight, exact_response_diag_avg, gdot_energy, gdot_rotation, gdotp, gnorm, &
-         gvalue, inactive_offdiag_mode_abs_quad, inactive_offdiag_mode_eval_max, &
-         inactive_offdiag_mode_eval_min
-      REAL(KIND=dp) :: inactive_offdiag_mode_negative_fraction, &
-         inactive_offdiag_mode_negative_quad, inactive_offdiag_mode_positive_quad, &
-         inactive_offdiag_mode_quad, inactive_offdiag_mode_quad_abs_ratio, &
-         inactive_offdiag_mode_quad_signed_ratio, inactive_offdiag_mode_step_negative_fraction, &
-         maxocc, mermin_branch_loss_gain, mermin_branch_loss_weight, model_calibrated_drop, &
-         model_drop, model_gap, model_gap_drop, model_gap_ratio, model_gap_trust, mu, norm_energy, &
-         norm_ratio, norm_rotation, normp, occ_curv_diag_max, occ_curv_diag_sum, &
-         occ_curv_projection_sum, occ_projected_term, occ_response_diag_sum
-      REAL(KIND=dp) :: occ_tail_i, occ_tail_j, occgap_shadow_abs_step, occgap_shadow_drop, &
+         density_plateau_model_calibrated_drop, density_plateau_model_drop
+      REAL(KIND=dp) :: density_plateau_model_gap_drop, density_plateau_norm_energy, &
+         density_plateau_norm_rotation, density_plateau_normp, density_plateau_raw_gap_avg, &
+         density_plateau_raw_gap_max, density_plateau_response_abs_step, &
+         density_plateau_response_abs_trust_ratio, density_plateau_response_weighted_step, &
+         density_plateau_response_weighted_trust_ratio, density_plateau_scale_quality, &
+         density_plateau_trust_quality, density_projector_control_delta, &
+         density_projector_fraction, density_projector_trust_scale, diag_prefloor_avg, &
+         diag_prefloor_max, diag_prefloor_min, diag_shift, diag_shift_avg
+      REAL(KIND=dp) :: diag_shift_fraction, diag_shift_max, diag_shift_sum, &
+         direct_pg_correction_drop, direct_pg_correction_negative, direct_pg_cross_drop, &
+         direct_pg_metric_drop, direct_pg_metric_ratio, direct_pg_metric_step, &
+         direct_pg_negative_coeff, direct_pg_negative_drop, direct_pg_positive_coeff, &
+         direct_pg_positive_drop, direct_pg_raw_negative_fraction, direct_pg_response_weight, &
+         direction_scale, energy_floor_count, energy_floor_curv_sum, energy_gauge_weight, &
+         exact_response_diag_avg, gdot_energy, gdot_rotation, gdotp, gnorm, gvalue, &
+         inactive_offdiag_mode_abs_quad
+      REAL(KIND=dp) :: inactive_offdiag_mode_eval_max, inactive_offdiag_mode_eval_min, &
+         inactive_offdiag_mode_negative_fraction, inactive_offdiag_mode_negative_quad, &
+         inactive_offdiag_mode_positive_quad, inactive_offdiag_mode_quad, &
+         inactive_offdiag_mode_quad_abs_ratio, inactive_offdiag_mode_quad_signed_ratio, &
+         inactive_offdiag_mode_step_negative_fraction, maxocc, mermin_branch_loss_gain, &
+         mermin_branch_loss_weight, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
+         model_gap_ratio, model_gap_trust, mu, norm_energy, norm_ratio, norm_rotation, normp, &
+         occ_curv_diag_max, occ_curv_diag_sum
+      REAL(KIND=dp) :: occ_curv_projection_sum, occ_projected_term, occ_response_diag_sum, &
+         occ_tail_i, occ_tail_j, occgap_shadow_abs_step, occgap_shadow_drop, &
          occgap_shadow_gap_ratio, occgap_shadow_quality, occgap_shadow_step, pair_occ_gap, &
          pair_projector_weight, physical_response_gap_avg, physical_response_gap_max, &
          physical_response_gap_norm, plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, &
          plateau_gap_mode_eval_min, plateau_gap_mode_negative_fraction, &
          plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, plateau_gap_mode_quad, &
-         plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
-         plateau_gap_mode_step_negative_fraction
-      REAL(KIND=dp) :: projected_term, projector_coupled_weight, &
+         plateau_gap_mode_quad_abs_ratio
+      REAL(KIND=dp) :: plateau_gap_mode_quad_signed_ratio, &
+         plateau_gap_mode_step_negative_fraction, projected_term, projector_coupled_weight, &
          projector_density_floor_audit_abs_avg, projector_density_floor_audit_diag_abs_sum, &
          projector_density_floor_audit_exact_abs_avg, projector_density_floor_audit_gap_abs_avg, &
          projector_density_floor_audit_low_curv_fraction, &
          projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg, &
          projector_density_full_global_abs_avg, projector_diag_compensation, &
-         projector_diagref_quality_for_selection, projector_diagref_weight, &
-         projector_gauge_abs_avg, projector_gauge_delta_max, projector_hessian_abs_avg
-      REAL(KIND=dp) :: projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
+         projector_diagref_quality_for_selection, projector_diagref_weight, projector_gauge_abs_avg
+      REAL(KIND=dp) :: projector_gauge_delta_max, projector_hessian_abs_avg, &
+         projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_inactive_offdiag_direction_scale, &
          projector_inactive_offdiag_expected_drop, projector_inactive_offdiag_gdot_energy, &
          projector_inactive_offdiag_gdot_rotation, projector_inactive_offdiag_gdotp, &
          projector_inactive_offdiag_history_quality, &
          projector_inactive_offdiag_history_response_ratio, &
          projector_inactive_offdiag_history_trust, &
-         projector_inactive_offdiag_model_calibrated_drop, projector_inactive_offdiag_model_drop, &
-         projector_inactive_offdiag_model_gap
-      REAL(KIND=dp) :: projector_inactive_offdiag_model_gap_drop, &
-         projector_inactive_offdiag_model_gap_ratio, projector_inactive_offdiag_model_gap_trust, &
-         projector_inactive_offdiag_norm_energy, projector_inactive_offdiag_norm_ratio, &
-         projector_inactive_offdiag_norm_rotation, projector_inactive_offdiag_normp, &
-         projector_inactive_offdiag_quality_for_selection, &
+         projector_inactive_offdiag_model_calibrated_drop, projector_inactive_offdiag_model_drop
+      REAL(KIND=dp) :: projector_inactive_offdiag_model_gap, &
+         projector_inactive_offdiag_model_gap_drop, projector_inactive_offdiag_model_gap_ratio, &
+         projector_inactive_offdiag_model_gap_trust, projector_inactive_offdiag_norm_energy, &
+         projector_inactive_offdiag_norm_ratio, projector_inactive_offdiag_norm_rotation, &
+         projector_inactive_offdiag_normp, projector_inactive_offdiag_quality_for_selection, &
          projector_inactive_offdiag_response_abs_step, &
          projector_inactive_offdiag_response_abs_trust_ratio, &
-         projector_inactive_offdiag_response_correction_drop, &
-         projector_inactive_offdiag_response_correction_negative
-      REAL(KIND=dp) :: projector_inactive_offdiag_response_cross_drop, &
+         projector_inactive_offdiag_response_correction_drop
+      REAL(KIND=dp) :: projector_inactive_offdiag_response_correction_negative, &
+         projector_inactive_offdiag_response_cross_drop, &
          projector_inactive_offdiag_response_negative_coeff, &
          projector_inactive_offdiag_response_negative_drop, &
          projector_inactive_offdiag_response_positive_coeff, &
@@ -6256,37 +6256,35 @@ CONTAINS
          projector_inactive_offdiag_response_weight, &
          projector_inactive_offdiag_response_weighted_step, &
          projector_inactive_offdiag_response_weighted_trust_ratio, &
-         projector_inactive_offdiag_scale_quality, &
-         projector_inactive_offdiag_selected_quality_for_selection
-      REAL(KIND=dp) :: projector_inactive_offdiag_trust_quality, &
-         projector_inactive_offdiag_trust_scale, projector_inactive_offdiag_unit_abs_step, &
-         projector_inactive_offdiag_unit_weighted_step, projector_mode_damped_abs_avg, &
-         projector_mode_eval_max, projector_mode_eval_min, projector_mode_history_quality, &
-         projector_mode_history_response_negative, projector_mode_history_response_ratio, &
-         projector_mode_negative_fraction, projector_mode_quality, &
-         projector_mode_response_audit_base_weight, projector_mode_response_audit_eval_abs_avg, &
-         projector_mode_response_audit_negative_weight_sum
-      REAL(KIND=dp) :: projector_mode_response_audit_positive_weight_sum, &
+         projector_inactive_offdiag_scale_quality
+      REAL(KIND=dp) :: projector_inactive_offdiag_selected_quality_for_selection, &
+         projector_inactive_offdiag_trust_quality, projector_inactive_offdiag_trust_scale, &
+         projector_inactive_offdiag_unit_abs_step, projector_inactive_offdiag_unit_weighted_step, &
+         projector_mode_damped_abs_avg, projector_mode_eval_max, projector_mode_eval_min, &
+         projector_mode_history_quality, projector_mode_history_response_negative, &
+         projector_mode_history_response_ratio, projector_mode_negative_fraction, &
+         projector_mode_quality, projector_mode_response_audit_base_weight, &
+         projector_mode_response_audit_eval_abs_avg
+      REAL(KIND=dp) :: projector_mode_response_audit_negative_weight_sum, &
+         projector_mode_response_audit_positive_weight_sum, &
          projector_mode_response_audit_response_total_sum, &
          projector_mode_response_audit_step_weight_sum, projector_mode_response_correction_drop, &
          projector_mode_response_correction_negative, projector_mode_response_cross_drop, &
          projector_mode_response_drop, projector_mode_response_drop_ratio, &
          projector_mode_response_negative_coeff, projector_mode_response_negative_drop, &
-         projector_mode_response_negative_fraction, projector_mode_response_positive_coeff, &
-         projector_mode_response_positive_drop
-      REAL(KIND=dp) :: projector_mode_response_raw_negative_fraction, &
-         projector_mode_response_weight, projector_mode_step_negative_fraction, &
-         projector_mode_trust_quality, projector_offdiag_active_weight, &
-         projector_offdiag_direction_scale, projector_offdiag_expected_drop, &
-         projector_offdiag_expected_drop_ratio, projector_offdiag_gdot_energy, &
-         projector_offdiag_gdot_rotation, projector_offdiag_gdotp, &
+         projector_mode_response_negative_fraction, projector_mode_response_positive_coeff
+      REAL(KIND=dp) :: projector_mode_response_positive_drop, &
+         projector_mode_response_raw_negative_fraction, projector_mode_response_weight, &
+         projector_mode_step_negative_fraction, projector_mode_trust_quality, &
+         projector_offdiag_active_weight, projector_offdiag_direction_scale, &
+         projector_offdiag_expected_drop, projector_offdiag_expected_drop_ratio, &
+         projector_offdiag_gdot_energy, projector_offdiag_gdot_rotation, projector_offdiag_gdotp, &
          projector_offdiag_history_quality, projector_offdiag_history_response_ratio, &
-         projector_offdiag_history_trust, projector_offdiag_model_calibrated_drop, &
-         projector_offdiag_model_drop
-      REAL(KIND=dp) :: projector_offdiag_model_gap, projector_offdiag_model_gap_drop, &
-         projector_offdiag_model_gap_ratio, projector_offdiag_model_gap_trust, &
-         projector_offdiag_norm_energy, projector_offdiag_norm_ratio, &
-         projector_offdiag_norm_rotation, projector_offdiag_normp, &
+         projector_offdiag_history_trust, projector_offdiag_model_calibrated_drop
+      REAL(KIND=dp) :: projector_offdiag_model_drop, projector_offdiag_model_gap, &
+         projector_offdiag_model_gap_drop, projector_offdiag_model_gap_ratio, &
+         projector_offdiag_model_gap_trust, projector_offdiag_norm_energy, &
+         projector_offdiag_norm_ratio, projector_offdiag_norm_rotation, projector_offdiag_normp, &
          projector_offdiag_quality_for_selection, projector_offdiag_reference_drop, &
          projector_offdiag_response_abs_step, projector_offdiag_response_abs_trust_ratio, &
          projector_offdiag_response_correction_drop, &
@@ -9404,6 +9402,7 @@ CONTAINS
                density_full_global_history_abs_trust_ratio = 0.0_dp
                density_full_global_history_drop = 0.0_dp
                density_full_global_history_gap_drop = 0.0_dp
+               density_full_global_history_scale = 1.0_dp
                density_full_global_history_trust_quality = 1.0_dp
                density_full_global_history_weighted_step = 0.0_dp
                density_full_global_history_weighted_trust_ratio = 0.0_dp
@@ -9423,6 +9422,7 @@ CONTAINS
                density_full_history_abs_trust_ratio = 0.0_dp
                density_full_history_drop = 0.0_dp
                density_full_history_gap_drop = 0.0_dp
+               density_full_history_scale = 1.0_dp
                density_full_history_trust_quality = 1.0_dp
                density_full_history_weighted_step = 0.0_dp
                density_full_history_weighted_trust_ratio = 0.0_dp
@@ -11883,6 +11883,45 @@ CONTAINS
                                      schur_projector_density_fdir_sel_quality_samples, &
                                      ot_kp_schur_calibration_min_samples))
                            END IF
+                           density_full_history_scale = &
+                              kpoint_ot_direct_history_step_scale( &
+                              density_full_quality_for_selection, &
+                              local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples)
+                           IF (density_full_history_scale < 1.0_dp) THEN
+                              density_full_direction_scale = &
+                                 density_full_direction_scale*density_full_history_scale
+                              density_full_response_abs_step = &
+                                 density_full_response_abs_step*density_full_history_scale
+                              density_full_response_weighted_step = &
+                                 density_full_response_weighted_step*density_full_history_scale
+                              density_full_scale_quality = &
+                                 kpoint_ot_schur_scale_quality( &
+                                 density_full_direction_scale, &
+                                 schur_min_coupled_scale)
+                              density_full_model_drop = &
+                                 density_full_direction_scale*density_full_gdotp - &
+                                 0.5_dp*density_full_direction_scale* &
+                                 density_full_direction_scale*density_full_normp
+                              density_full_model_drop = MAX(0.0_dp, density_full_model_drop)
+                              density_full_model_calibrated_drop = &
+                                 density_full_model_drop
+                              IF (density_full_direction_scale < schur_min_coupled_scale) &
+                                 density_full_model_calibrated_drop = &
+                                 density_full_scale_quality*density_full_model_calibrated_drop
+                              IF (response_trust > EPSILON(response_trust)) &
+                                 density_full_response_weighted_trust_ratio = &
+                                 density_full_response_weighted_step/ &
+                                 response_trust
+                              IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                 density_full_response_abs_trust_ratio = &
+                                 density_full_response_abs_step/ &
+                                 response_abs_trust
+                              density_full_trust_quality = &
+                                 kpoint_ot_schur_trust_quality( &
+                                 density_full_response_weighted_trust_ratio, &
+                                 density_full_response_abs_trust_ratio, 0.0_dp)
+                           END IF
                            density_full_expected_drop = &
                               kpoint_ot_schur_expected_drop( &
                               density_full_model_calibrated_drop, &
@@ -12156,6 +12195,45 @@ CONTAINS
                                  MIN(1.0_dp, MAX( &
                                      ot_kp_schur_projector_response_quality_min_ratio, &
                                      0.5_dp*dense_quality_for_selection))
+                           END IF
+                           density_full_global_history_scale = &
+                              kpoint_ot_direct_history_step_scale( &
+                              density_full_global_quality_for_selection, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                              ot_kp_schur_projector_response_min_samples)
+                           IF (density_full_global_history_scale < 1.0_dp) THEN
+                              density_full_global_direction_scale = &
+                                 density_full_global_direction_scale*density_full_global_history_scale
+                              density_full_global_response_abs_step = &
+                                 density_full_global_response_abs_step*density_full_global_history_scale
+                              density_full_global_response_weighted_step = &
+                                 density_full_global_response_weighted_step*density_full_global_history_scale
+                              density_full_global_scale_quality = &
+                                 kpoint_ot_schur_scale_quality( &
+                                 density_full_global_direction_scale, &
+                                 schur_min_coupled_scale)
+                              density_full_global_model_drop = &
+                                 density_full_global_direction_scale*density_full_global_gdotp - &
+                                 0.5_dp*density_full_global_direction_scale* &
+                                 density_full_global_direction_scale*density_full_global_normp
+                              density_full_global_model_drop = &
+                                 MAX(0.0_dp, density_full_global_model_drop)
+                              density_full_global_model_calibrated_drop = &
+                                 density_full_global_model_drop
+                              IF (density_full_global_direction_scale < &
+                                  schur_min_coupled_scale) &
+                                 density_full_global_model_calibrated_drop = &
+                                 density_full_global_scale_quality* &
+                                 density_full_global_model_calibrated_drop
+                              IF (response_trust > EPSILON(response_trust)) &
+                                 density_full_global_response_weighted_trust_ratio = &
+                                 density_full_global_response_weighted_step/response_trust
+                              IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                 density_full_global_response_abs_trust_ratio = &
+                                 density_full_global_response_abs_step/response_abs_trust
+                              density_full_global_trust_quality = &
+                                 kpoint_ot_schur_metric_trust_quality( &
+                                 density_full_global_response_weighted_trust_ratio, 0.0_dp)
                            END IF
                            density_full_global_expected_drop = &
                               kpoint_ot_schur_expected_drop( &
@@ -15285,14 +15363,14 @@ CONTAINS
                      exact_density_full_response_ready, projector_physical_shadow_enabled, exact_density_response_ready, &
                      projector_density_full_audit_abs_avg, projector_physical_density_active_fraction, &
                      density_full_model_calibrated_drop
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),7(1X,ES16.8))') &
-                     " OT Schur projector full-density candidate ready selected exp qsel cdrop rratio aratio tq scale:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
+                     " OT Schur projector full-density candidate ready selected exp qsel cdrop rratio aratio tq scale hscale:", &
                      density_full_candidate_ready, density_full_candidate_selected, &
                      density_full_expected_drop, density_full_quality_for_selection, &
                      density_full_model_calibrated_drop, &
                      density_full_response_weighted_trust_ratio, &
                      density_full_response_abs_trust_ratio, density_full_trust_quality, &
-                     density_full_direction_scale
+                     density_full_direction_scale, density_full_history_scale
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
                      " OT Schur projector full-density direct candidate ready selected "// &
                      "exp qsel cdrop rratio aratio tq scale hscale:", &
@@ -15303,16 +15381,17 @@ CONTAINS
                      density_full_direct_response_abs_trust_ratio, &
                      density_full_direct_trust_quality, density_full_direct_direction_scale, &
                      density_full_direct_history_scale
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),7(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),8(1X,ES16.8))') &
                      " OT Schur projector full-density global candidate ready selected boot "// &
-                     "exp qsel cdrop rratio aratio tq scale:", &
+                     "exp qsel cdrop rratio aratio tq scale hscale:", &
                      density_full_global_candidate_ready, density_full_global_candidate_selected, &
                      density_full_global_bootstrap_ready, &
                      density_full_global_expected_drop, density_full_global_quality_for_selection, &
                      density_full_global_model_calibrated_drop, &
                      density_full_global_response_weighted_trust_ratio, &
                      density_full_global_response_abs_trust_ratio, &
-                     density_full_global_trust_quality, density_full_global_direction_scale
+                     density_full_global_trust_quality, density_full_global_direction_scale, &
+                     density_full_global_history_scale
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                      " OT Schur projector phys direct density-gap shadow exp cdrop rratio aratio tq scale:", &
                      density_gap_expected_drop, &
