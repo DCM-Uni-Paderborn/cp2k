@@ -6031,7 +6031,8 @@ CONTAINS
 
       INTEGER :: channel_var_start, constrained_reject_reason, coupled_reject_reason, &
          dense_reject_reason, group, ie, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
-         local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, r, reject_reason, s, &
+         local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, &
+         projector_fd_cluster_derivatives, projector_fd_cluster_replacements, r, reject_reason, s, &
          schur_attempt, schur_used_attempt, selected_attempt, selected_flavor, &
          split_selected_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
@@ -7659,6 +7660,8 @@ CONTAINS
          projector_response_candidate_selected = .FALSE.
          split_candidate_ready = .FALSE.
          split_candidate_selected = .FALSE.
+         projector_fd_cluster_derivatives = 0
+         projector_fd_cluster_replacements = 0
          split_selected_attempt = 0
          ivar = 0
          constrained_sol(:) = 0.0_dp
@@ -7797,7 +7800,9 @@ CONTAINS
                                                     response_occ, response_occ_physical, response_density_physical, &
                                                     response_density_floor_audit, response_density_full, &
                                                     response_density_full_audit, &
-                                                    response_density_plateau, failed)
+                                                    response_density_plateau, &
+                                                    projector_fd_cluster_derivatives, &
+                                                    projector_fd_cluster_replacements, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -15120,6 +15125,11 @@ CONTAINS
                      exact_density_floor_audit_ready, projector_density_floor_audit_abs_avg, &
                      projector_density_floor_audit_exact_abs_avg, projector_density_floor_audit_gap_abs_avg, &
                      projector_density_floor_audit_low_curv_fraction
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,2(1X,I8),1X,ES16.8)') &
+                     " OT Schur projector occupation fd-cluster group replacements calls ratio:", &
+                     target_group, projector_fd_cluster_replacements, projector_fd_cluster_derivatives, &
+                     REAL(projector_fd_cluster_replacements, KIND=dp)/ &
+                     REAL(MAX(1, projector_fd_cluster_derivatives), KIND=dp)
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,14(1X,ES16.8))') &
                      " OT Schur projector phys direct diag parts pdelta ddelta active_ddelta hdelta cov acov "// &
                      "residual density diagref_gap offdiag_gap balance comp active_comp applied:", &
@@ -18253,6 +18263,8 @@ CONTAINS
 !> \param response_density_full ...
 !> \param response_density_full_audit ...
 !> \param response_density_plateau ...
+!> \param projector_fd_cluster_derivatives ...
+!> \param projector_fd_cluster_replacements ...
 !> \param failed ...
 ! **************************************************************************************************
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
@@ -18266,7 +18278,8 @@ CONTAINS
                                                  response_occ, response_occ_physical, response_density_physical, &
                                                  response_density_floor_audit, response_density_full, &
                                                  response_density_full_audit, &
-                                                 response_density_plateau, failed)
+                                                 response_density_plateau, projector_fd_cluster_derivatives, &
+                                                 projector_fd_cluster_replacements, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
@@ -18282,6 +18295,7 @@ CONTAINS
          response, response_occ, response_occ_physical, response_density_physical, &
          response_density_floor_audit, response_density_full, response_density_full_audit, &
          response_density_plateau
+      INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, projector_fd_cluster_replacements
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
@@ -18289,6 +18303,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: base, chc, chc_m, chc_p, dchc, docc_mat, &
          docc_plateau, occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, projector_evec, u
       INTEGER                                            :: ie, imo, jmo, r, s
+      LOGICAL                                            :: fd_cluster_used
       REAL(KIND=dp) :: channel_occ_curv_max, density_plateau_full_response, &
          density_plateau_response, density_response, projector_response, projector_weight, &
          raw_response
@@ -18430,10 +18445,15 @@ CONTAINS
                dchc(:, :) = (chc_p(:, :) - chc_m(:, :))/(2.0_dp*fd_step)
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_mat)
+               fd_cluster_used = .FALSE.
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_plateau, &
                                                                 occ_curv_channel, &
-                                                                ot_kp_projector_occupation_gauge_gap)
+                                                                ot_kp_projector_occupation_gauge_gap, &
+                                                                fd_cluster_used)
+               projector_fd_cluster_derivatives = projector_fd_cluster_derivatives + 1
+               IF (fd_cluster_used) &
+                  projector_fd_cluster_replacements = projector_fd_cluster_replacements + 1
                ! The diagonal density response is consumed by the auxiliary-energy
                ! channel below.  The remaining spectral Projector motion is the
                ! history-safe off-diagonal occupation response.  Use the
@@ -18707,15 +18727,18 @@ CONTAINS
 !> \param docc_mat ...
 !> \param occ_curv_channel ...
 !> \param gauge_gap ...
+!> \param fd_cluster_used ...
 ! **************************************************************************************************
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
-                                                             delta, docc_mat, occ_curv_channel, gauge_gap)
+                                                             delta, docc_mat, occ_curv_channel, gauge_gap, &
+                                                             fd_cluster_used)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: fd_cluster_used
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
@@ -18727,6 +18750,7 @@ CONTAINS
 
          n = SIZE(chc, 1)
          docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         IF (PRESENT(fd_cluster_used)) fd_cluster_used = .FALSE.
 
          projector_weight = kpoint_ot_canonical_projector_weight(delta, ot_kp_canonical_projector_max_weight)
          IF (projector_weight <= 0.0_dp) RETURN
@@ -18761,6 +18785,7 @@ CONTAINS
                END DO
             END DO
             IF (use_projector_fd) THEN
+               IF (PRESENT(fd_cluster_used)) fd_cluster_used = .TRUE.
                projector_fd_step = 1.0E-7_dp
                IF (work_norm > EPSILON(work_norm)) THEN
                   projector_fd_step = MIN(projector_fd_step, 1.0E-2_dp*gauge_gap/work_norm)
