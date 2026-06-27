@@ -189,6 +189,11 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: mermin_ls_best_sample_drop = 0.0_dp, mermin_ls_model_drop = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_model_quality = 0.0_dp, mermin_ls_best_sample_pos = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_next_pos = 0.0_dp
+      INTEGER          :: mermin_ls_accepted_quality_samples = 0
+      REAL(KIND=dp)    :: mermin_ls_accepted_quality = 1.0_dp
+      REAL(KIND=dp)    :: mermin_ls_accepted_quality_ema = 1.0_dp
+      REAL(KIND=dp)    :: mermin_ls_accepted_gap = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_accepted_gap_ema = 0.0_dp
       REAL(KIND=dp)    :: delta = -1.0_dp, gnorm = -1.0_dp, gnorm_old = -1.0_dp, etotal = -1.0_dp, gradient = -1.0_dp
       LOGICAL          :: energy_only = .FALSE.
       INTEGER          :: diis_iter = -1
@@ -841,6 +846,11 @@ CONTAINS
       qs_ot_env%mermin_ls_model_quality = 0.0_dp
       qs_ot_env%mermin_ls_best_sample_pos = 0.0_dp
       qs_ot_env%mermin_ls_next_pos = 0.0_dp
+      qs_ot_env%mermin_ls_accepted_quality_samples = 0
+      qs_ot_env%mermin_ls_accepted_quality = 1.0_dp
+      qs_ot_env%mermin_ls_accepted_quality_ema = 1.0_dp
+      qs_ot_env%mermin_ls_accepted_gap = 0.0_dp
+      qs_ot_env%mermin_ls_accepted_gap_ema = 0.0_dp
 
       qs_ot_env%energy_only = .FALSE.
       qs_ot_env%gnorm_old = 1.0_dp

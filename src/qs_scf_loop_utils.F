@@ -119,6 +119,7 @@ MODULE qs_scf_loop_utils
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_scf_loop_utils'
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_canonical_density_max_weight = 2.0E-2_dp, &
+                                        ot_kp_canonical_density_branch_max_weight = 1.0E-1_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
                                         ot_kp_canonical_projector_max_weight = 0.10_dp, &
                                         ot_kp_projector_occupation_gauge_gap = 3.0E-5_dp, &
@@ -1736,16 +1737,19 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief fixed-point consistent canonical density blend weight for k-point OT
 !> \param delta ...
+!> \param max_weight ...
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION kpoint_ot_canonical_density_projector_weight(delta) RESULT(projector_weight)
+   FUNCTION kpoint_ot_canonical_density_projector_weight(delta, max_weight) RESULT(projector_weight)
       REAL(KIND=dp), INTENT(IN)                          :: delta
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: max_weight
       REAL(KIND=dp)                                      :: projector_weight
 
-      REAL(KIND=dp)                                      :: tail_scale
+      REAL(KIND=dp)                                      :: density_max_weight, tail_scale
 
-      projector_weight = kpoint_ot_canonical_projector_weight(delta, &
-                                                              ot_kp_canonical_density_max_weight)
+      density_max_weight = ot_kp_canonical_density_max_weight
+      IF (PRESENT(max_weight)) density_max_weight = MAX(0.0_dp, max_weight)
+      projector_weight = kpoint_ot_canonical_projector_weight(delta, density_max_weight)
       IF (projector_weight <= 0.0_dp) RETURN
 
       IF (delta < ot_kp_schur_projector_response_full_delta) THEN
@@ -2289,8 +2293,8 @@ CONTAINS
 
       INTEGER                                            :: ikpoint, ispin, local_channel, &
                                                             local_kpoint, nao, nblend, nmo
-      REAL(KIND=dp)                                      :: density_model_delta, density_weight, &
-                                                            max_weight, sum_weight
+      REAL(KIND=dp) :: branch_gap, branch_quality, branch_weight, density_max_weight, &
+         density_model_delta, density_weight, max_allowed_weight, max_weight, sum_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
       TYPE(cp_fm_type)                                   :: can_im, can_re, evec_fm_im, evec_fm_re, &
@@ -2303,6 +2307,7 @@ CONTAINS
       logger => cp_get_default_logger()
       NULLIFY (cpmat, mo_coeff, mo_coeff_im, occupation_numbers, rpmat)
       max_weight = 0.0_dp
+      max_allowed_weight = 0.0_dp
       sum_weight = 0.0_dp
       nblend = 0
 
@@ -2314,7 +2319,17 @@ CONTAINS
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
             density_model_delta = kpoint_ot_canonical_density_projector_control_delta( &
                                   local_ot_env(1), local_ot_env(local_channel)%delta)
-            density_weight = kpoint_ot_canonical_density_projector_weight(density_model_delta)
+            density_max_weight = ot_kp_canonical_density_max_weight
+            IF (local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                ot_kp_schur_quality_min_samples) THEN
+               branch_quality = MAX(0.0_dp, MIN(1.0_dp, local_ot_env(1)%mermin_ls_accepted_quality_ema))
+               branch_gap = MAX(0.0_dp, MIN(1.0_dp, local_ot_env(1)%mermin_ls_accepted_gap_ema))
+               branch_weight = branch_gap*(1.0_dp - branch_quality)
+               density_max_weight = density_max_weight + branch_weight* &
+                                    (ot_kp_canonical_density_branch_max_weight - density_max_weight)
+            END IF
+            density_weight = kpoint_ot_canonical_density_projector_weight(density_model_delta, &
+                                                                          density_max_weight)
             IF (density_weight <= 0.0_dp) CYCLE
             IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), smear)) THEN
                CALL cp_abort(__LOCATION__, &
@@ -2370,6 +2385,7 @@ CONTAINS
             CALL parallel_gemm("N", "T", nao, nao, nmo, density_weight, can_im, work, 1.0_dp, rpmat)
 
             max_weight = MAX(max_weight, density_weight)
+            max_allowed_weight = MAX(max_allowed_weight, density_max_weight)
             sum_weight = sum_weight + density_weight
             nblend = nblend + 1
 
@@ -2387,14 +2403,15 @@ CONTAINS
       END DO
 
       CALL para_env_inter_kp%max(max_weight)
+      CALL para_env_inter_kp%max(max_allowed_weight)
       CALL para_env_inter_kp%sum(sum_weight)
       CALL para_env_inter_kp%sum(nblend)
 
       IF (nblend > 0 .AND. logger%iter_info%print_level >= high_print_level .AND. &
           logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8),1X,I5,1X,I5)') &
-            " OT canonical density projector max avg channels ls:", &
-            max_weight, sum_weight/REAL(nblend, KIND=dp), nblend, &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8),1X,I5,1X,I5)') &
+            " OT canonical density projector max avg allowed channels ls:", &
+            max_weight, sum_weight/REAL(nblend, KIND=dp), max_allowed_weight, nblend, &
             local_ot_env(1)%line_search_count
       END IF
 
@@ -3443,9 +3460,11 @@ CONTAINS
          projector_response_selected_predicted_drop, projector_response_selected_quality_ratio, &
          projector_spectral_predicted_drop, projector_spectral_quality_ratio, &
          projector_spectral_selected_predicted_drop, projector_spectral_selected_quality_ratio, &
-         quality_ratio, residual_current_delta, residual_drop, residual_quality_ratio, &
-         split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio, &
-         split_shadow_predicted_drop, split_shadow_quality_ratio
+         quality_ratio, raw_residual_quality_ratio, residual_current_delta, residual_drop, &
+         residual_quality_ratio, sample_accepted_drop, sample_gap, sample_gap_ratio, &
+         sample_quality, sample_reference_drop, split_shadow_calibrated_predicted_drop, &
+         split_shadow_calibrated_quality_ratio
+      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -3476,6 +3495,51 @@ CONTAINS
          residual_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_model_delta > EPSILON(residual_current_delta)) &
             residual_quality_ratio = residual_drop/local_ot_env(1)%schur_model_delta
+         raw_residual_quality_ratio = residual_quality_ratio
+         sample_gap = 0.0_dp
+         sample_quality = 1.0_dp
+         sample_reference_drop = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%mermin_ls_sample_pending) THEN
+            sample_reference_drop = local_ot_env(1)%mermin_ls_best_sample_drop
+            IF (sample_reference_drop > EPSILON(sample_reference_drop)) THEN
+               sample_accepted_drop = local_ot_env(1)%mermin_ls_reference_energy - local_ot_env(1)%etotal
+               sample_gap = local_ot_env(1)%etotal - local_ot_env(1)%mermin_ls_best_sample_energy
+               sample_quality = sample_accepted_drop/sample_reference_drop
+               sample_quality = MAX(0.0_dp, MIN(1.0_dp, sample_quality))
+               sample_gap_ratio = MAX(0.0_dp, sample_gap/sample_reference_drop)
+               sample_gap_ratio = MIN(1.0_dp, sample_gap_ratio)
+
+               local_ot_env(1)%mermin_ls_accepted_quality = sample_quality
+               local_ot_env(1)%mermin_ls_accepted_gap = sample_gap_ratio
+               samples = MIN(local_ot_env(1)%mermin_ls_accepted_quality_samples + 1, HUGE(samples) - 1)
+               local_ot_env(1)%mermin_ls_accepted_quality_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%mermin_ls_accepted_quality_ema = sample_quality
+                  local_ot_env(1)%mermin_ls_accepted_gap_ema = sample_gap_ratio
+               ELSE
+                  local_ot_env(1)%mermin_ls_accepted_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%mermin_ls_accepted_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*sample_quality
+                  local_ot_env(1)%mermin_ls_accepted_gap_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%mermin_ls_accepted_gap_ema + &
+                     ot_kp_schur_quality_ema_alpha*sample_gap_ratio
+               END IF
+
+               IF (sample_gap > 0.0_dp) residual_quality_ratio = MIN(residual_quality_ratio, sample_quality)
+               logger => cp_get_default_logger()
+               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES16.8))') &
+                     " OT Schur Mermin LS accepted-state calibration n q qema gap gema raw_res resid adrop bdrop:", &
+                     local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+                     sample_quality, local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                     sample_gap_ratio, local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+                     raw_residual_quality_ratio, residual_quality_ratio, &
+                     sample_accepted_drop, sample_reference_drop
+               END IF
+            END IF
+         END IF
          IF (local_ot_env(1)%schur_history_mixed) THEN
             logger => cp_get_default_logger()
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -3513,6 +3577,11 @@ CONTAINS
             quality_ratio = measured_drop/predicted_drop
          IF (mermin_search .AND. calibrated_predicted_drop > EPSILON(calibrated_predicted_drop)) &
             calibrated_quality_ratio = measured_drop/calibrated_predicted_drop
+         IF (mermin_search .AND. sample_gap > 0.0_dp .AND. &
+             sample_reference_drop > EPSILON(sample_reference_drop)) THEN
+            quality_ratio = MIN(quality_ratio, sample_quality)
+            calibrated_quality_ratio = MIN(calibrated_quality_ratio, sample_quality)
+         END IF
 
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop) .AND. measured_drop > 0.0_dp) THEN
             local_ot_env(1)%schur_model_quality = quality_ratio
