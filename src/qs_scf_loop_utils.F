@@ -163,6 +163,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
                                         ot_kp_schur_split_tail_residual_min_ratio = 9.0E-1_dp, &
                                         ot_kp_schur_projector_response_advantage_ratio = 1.10_dp, &
+                                        ot_kp_schur_branch_loss_density_recovery = 3.5E-1_dp, &
                                         ot_kp_schur_projector_spectral_probe_quality_min = 1.0E-1_dp, &
                                         ot_kp_schur_projector_spectral_probe_trust_fraction = 7.5E-1_dp, &
                                         ot_kp_schur_projector_response_floor_delta = 3.0E-6_dp, &
@@ -6114,27 +6115,27 @@ CONTAINS
          coupled_response_abs_trust_ratio, coupled_response_step
       REAL(KIND=dp) :: coupled_response_trust_ratio, coupled_response_weighted_step, &
          coupled_response_weighted_trust_ratio, coupled_rot_diag_avg, coupled_scale_quality, &
-         coupled_tether_response_diag_avg, curv_projection_sum, dense_direction_scale, &
-         dense_expected_drop, dense_gdot_energy, dense_gdot_rotation, dense_metric_norm_energy, &
-         dense_metric_norm_rotation, dense_metric_normp, dense_metric_trust_scale, &
-         dense_metric_unit_abs_step, dense_metric_unit_weighted_step, dense_model_gap, &
-         dense_model_gap_drop, dense_model_gap_ratio, dense_model_gap_trust, dense_norm_energy, &
-         dense_norm_rotation
-      REAL(KIND=dp) :: dense_print_model_gap, dense_print_model_gap_drop, &
+         coupled_tether_response_diag_avg, curv_projection_sum, dense_branch_expected_drop, &
+         dense_direction_scale, dense_expected_drop, dense_gdot_energy, dense_gdot_rotation, &
+         dense_metric_norm_energy, dense_metric_norm_rotation, dense_metric_normp, &
+         dense_metric_trust_scale, dense_metric_unit_abs_step, dense_metric_unit_weighted_step, &
+         dense_model_gap, dense_model_gap_drop, dense_model_gap_ratio, dense_model_gap_trust, &
+         dense_norm_energy
+      REAL(KIND=dp) :: dense_norm_rotation, dense_print_model_gap, dense_print_model_gap_drop, &
          dense_print_model_gap_ratio, dense_print_model_gap_trust, dense_projector_coupled_weight, &
          dense_quality_for_selection, dense_residual_quality, dense_scale_quality, dense_term, &
          dense_trust_quality, density_descent_direction_scale, density_descent_expected_drop, &
          density_descent_gap_coeff, density_descent_gap_denom, density_descent_gap_projected_abs, &
          density_descent_gap_projected_weighted, density_descent_gap_recoverable_fraction, &
-         density_descent_gdot_energy, density_descent_gdot_rotation, density_descent_gdotp
-      REAL(KIND=dp) :: density_descent_history_scale, density_descent_model_calibrated_drop, &
-         density_descent_model_drop, density_descent_norm_energy, density_descent_norm_rotation, &
-         density_descent_normp, density_descent_quality_for_selection, &
-         density_descent_response_abs_step, density_descent_response_abs_trust_ratio, &
-         density_descent_response_weighted_step, density_descent_response_weighted_trust_ratio, &
-         density_descent_scale_quality, density_descent_trust_quality, &
-         density_full_direct_direction_scale, density_full_direct_expected_drop, &
-         density_full_direct_gdot_energy
+         density_descent_gdot_energy, density_descent_gdot_rotation
+      REAL(KIND=dp) :: density_descent_gdotp, density_descent_history_scale, &
+         density_descent_model_calibrated_drop, density_descent_model_drop, &
+         density_descent_norm_energy, density_descent_norm_rotation, density_descent_normp, &
+         density_descent_quality_for_selection, density_descent_response_abs_step, &
+         density_descent_response_abs_trust_ratio, density_descent_response_weighted_step, &
+         density_descent_response_weighted_trust_ratio, density_descent_scale_quality, &
+         density_descent_trust_quality, density_full_direct_direction_scale, &
+         density_full_direct_expected_drop, density_full_direct_gdot_energy
       REAL(KIND=dp) :: density_full_direct_gdot_rotation, density_full_direct_gdotp, &
          density_full_direct_history_abs_step, density_full_direct_history_abs_trust_ratio, &
          density_full_direct_history_drop, density_full_direct_history_gap_drop, &
@@ -6202,47 +6203,48 @@ CONTAINS
          inactive_offdiag_mode_negative_quad
       REAL(KIND=dp) :: inactive_offdiag_mode_positive_quad, inactive_offdiag_mode_quad, &
          inactive_offdiag_mode_quad_abs_ratio, inactive_offdiag_mode_quad_signed_ratio, &
-         inactive_offdiag_mode_step_negative_fraction, maxocc, model_calibrated_drop, model_drop, &
-         model_gap, model_gap_drop, model_gap_ratio, model_gap_trust, mu, norm_energy, norm_ratio, &
-         norm_rotation, normp, occ_curv_diag_max, occ_curv_diag_sum, occ_curv_projection_sum, &
-         occ_projected_term, occ_response_diag_sum, occ_tail_i, occ_tail_j, &
-         occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, occgap_shadow_quality
-      REAL(KIND=dp) :: occgap_shadow_step, pair_occ_gap, pair_projector_weight, &
-         physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
-         plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, plateau_gap_mode_eval_min, &
-         plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, &
-         plateau_gap_mode_positive_quad, plateau_gap_mode_quad, plateau_gap_mode_quad_abs_ratio, &
-         plateau_gap_mode_quad_signed_ratio, plateau_gap_mode_step_negative_fraction, &
-         projected_term, projector_coupled_weight, projector_density_floor_audit_abs_avg, &
-         projector_density_floor_audit_diag_abs_sum
-      REAL(KIND=dp) :: projector_density_floor_audit_exact_abs_avg, &
+         inactive_offdiag_mode_step_negative_fraction, maxocc, mermin_branch_loss_gain, &
+         mermin_branch_loss_weight, model_calibrated_drop, model_drop, model_gap, model_gap_drop, &
+         model_gap_ratio, model_gap_trust, mu, norm_energy, norm_ratio, norm_rotation, normp, &
+         occ_curv_diag_max, occ_curv_diag_sum, occ_curv_projection_sum, occ_projected_term, &
+         occ_response_diag_sum, occ_tail_i, occ_tail_j, occgap_shadow_abs_step, occgap_shadow_drop
+      REAL(KIND=dp) :: occgap_shadow_gap_ratio, occgap_shadow_quality, occgap_shadow_step, &
+         pair_occ_gap, pair_projector_weight, physical_response_gap_avg, &
+         physical_response_gap_max, physical_response_gap_norm, plateau_gap_mode_abs_quad, &
+         plateau_gap_mode_eval_max, plateau_gap_mode_eval_min, plateau_gap_mode_negative_fraction, &
+         plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, plateau_gap_mode_quad, &
+         plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
+         plateau_gap_mode_step_negative_fraction, projected_term, projector_coupled_weight
+      REAL(KIND=dp) :: projector_density_floor_audit_abs_avg, &
+         projector_density_floor_audit_diag_abs_sum, projector_density_floor_audit_exact_abs_avg, &
          projector_density_floor_audit_gap_abs_avg, &
          projector_density_floor_audit_low_curv_fraction, &
          projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg, &
          projector_density_full_global_abs_avg, projector_diag_compensation, &
          projector_diagref_quality_for_selection, projector_diagref_weight, &
          projector_gauge_abs_avg, projector_gauge_delta_max, projector_hessian_abs_avg, &
-         projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
-         projector_hessian_diag_avg, projector_inactive_offdiag_direction_scale
-      REAL(KIND=dp) :: projector_inactive_offdiag_expected_drop, &
-         projector_inactive_offdiag_gdot_energy, projector_inactive_offdiag_gdot_rotation, &
-         projector_inactive_offdiag_gdotp, projector_inactive_offdiag_history_quality, &
+         projector_hessian_delta_diag_avg, projector_hessian_delta_max
+      REAL(KIND=dp) :: projector_hessian_diag_avg, projector_inactive_offdiag_direction_scale, &
+         projector_inactive_offdiag_expected_drop, projector_inactive_offdiag_gdot_energy, &
+         projector_inactive_offdiag_gdot_rotation, projector_inactive_offdiag_gdotp, &
+         projector_inactive_offdiag_history_quality, &
          projector_inactive_offdiag_history_response_ratio, &
          projector_inactive_offdiag_history_trust, &
          projector_inactive_offdiag_model_calibrated_drop, projector_inactive_offdiag_model_drop, &
          projector_inactive_offdiag_model_gap, projector_inactive_offdiag_model_gap_drop, &
-         projector_inactive_offdiag_model_gap_ratio, projector_inactive_offdiag_model_gap_trust
-      REAL(KIND=dp) :: projector_inactive_offdiag_norm_energy, &
-         projector_inactive_offdiag_norm_ratio, projector_inactive_offdiag_norm_rotation, &
-         projector_inactive_offdiag_normp, projector_inactive_offdiag_quality_for_selection, &
+         projector_inactive_offdiag_model_gap_ratio
+      REAL(KIND=dp) :: projector_inactive_offdiag_model_gap_trust, &
+         projector_inactive_offdiag_norm_energy, projector_inactive_offdiag_norm_ratio, &
+         projector_inactive_offdiag_norm_rotation, projector_inactive_offdiag_normp, &
+         projector_inactive_offdiag_quality_for_selection, &
          projector_inactive_offdiag_response_abs_step, &
          projector_inactive_offdiag_response_abs_trust_ratio, &
          projector_inactive_offdiag_response_correction_drop, &
          projector_inactive_offdiag_response_correction_negative, &
          projector_inactive_offdiag_response_cross_drop, &
-         projector_inactive_offdiag_response_negative_coeff, &
-         projector_inactive_offdiag_response_negative_drop
-      REAL(KIND=dp) :: projector_inactive_offdiag_response_positive_coeff, &
+         projector_inactive_offdiag_response_negative_coeff
+      REAL(KIND=dp) :: projector_inactive_offdiag_response_negative_drop, &
+         projector_inactive_offdiag_response_positive_coeff, &
          projector_inactive_offdiag_response_positive_drop, &
          projector_inactive_offdiag_response_raw_negative_fraction, &
          projector_inactive_offdiag_response_weight, &
@@ -6250,14 +6252,13 @@ CONTAINS
          projector_inactive_offdiag_response_weighted_trust_ratio, &
          projector_inactive_offdiag_scale_quality, &
          projector_inactive_offdiag_selected_quality_for_selection, &
-         projector_inactive_offdiag_trust_quality, projector_inactive_offdiag_trust_scale, &
-         projector_inactive_offdiag_unit_abs_step
-      REAL(KIND=dp) :: projector_inactive_offdiag_unit_weighted_step, &
-         projector_mode_damped_abs_avg, projector_mode_eval_max, projector_mode_eval_min, &
-         projector_mode_history_quality, projector_mode_history_response_negative, &
-         projector_mode_history_response_ratio, projector_mode_negative_fraction, &
-         projector_mode_quality, projector_mode_response_audit_base_weight, &
-         projector_mode_response_audit_eval_abs_avg, &
+         projector_inactive_offdiag_trust_quality, projector_inactive_offdiag_trust_scale
+      REAL(KIND=dp) :: projector_inactive_offdiag_unit_abs_step, &
+         projector_inactive_offdiag_unit_weighted_step, projector_mode_damped_abs_avg, &
+         projector_mode_eval_max, projector_mode_eval_min, projector_mode_history_quality, &
+         projector_mode_history_response_negative, projector_mode_history_response_ratio, &
+         projector_mode_negative_fraction, projector_mode_quality, &
+         projector_mode_response_audit_base_weight, projector_mode_response_audit_eval_abs_avg, &
          projector_mode_response_audit_negative_weight_sum, &
          projector_mode_response_audit_positive_weight_sum, &
          projector_mode_response_audit_response_total_sum
@@ -7255,6 +7256,7 @@ CONTAINS
          coupled_response_weighted_step = 0.0_dp
          coupled_response_weighted_trust_ratio = 0.0_dp
          dense_direction_scale = 0.0_dp
+         dense_branch_expected_drop = 0.0_dp
          dense_expected_drop = 0.0_dp
          dense_gdot_energy = 0.0_dp
          dense_gdot_rotation = 0.0_dp
@@ -7560,6 +7562,11 @@ CONTAINS
          projector_mode_step_negative_fraction = 0.0_dp
          projector_mode_trust_quality = 1.0_dp
          projector_mode_response_weight = 0.0_dp
+         mermin_branch_loss_gain = 0.0_dp
+         mermin_branch_loss_weight = kpoint_ot_mermin_branch_loss_weight( &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                                     local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_samples)
          model_gap = 0.0_dp
          model_gap_drop = 0.0_dp
          model_gap_ratio = 0.0_dp
@@ -11666,21 +11673,42 @@ CONTAINS
                                                                channel_nmo, e_offset, density_full_norm_energy)
                            density_full_norm_energy = MAX(0.0_dp, density_full_norm_energy)
                            density_full_norm_rotation = &
-                              MAX(DOT_PRODUCT(density_full_sol, density_full_sol), &
-                                  MAX(0.0_dp, DOT_PRODUCT(rtd, density_full_sol)))
+                              ABS(DOT_PRODUCT(rtd, density_full_sol))
+                           IF (density_full_norm_rotation <= EPSILON(density_full_norm_rotation)) &
+                              density_full_norm_rotation = DOT_PRODUCT(density_full_sol, density_full_sol)
                            density_full_normp = density_full_norm_energy + density_full_norm_rotation
                         END IF
                         IF (info == 0 .AND. density_full_gdotp > 0.0_dp .AND. &
                             density_full_normp > EPSILON(density_full_normp)) THEN
                            density_full_direction_scale = density_full_gdotp/ &
                                                           MAX(density_full_normp, EPSILON(density_full_normp))
+                           density_full_response_abs_step = MAXVAL(ABS(density_full_rx_e))
+                           CALL para_env_inter_kp%max(density_full_response_abs_step)
+                           density_full_response_weighted_step = &
+                              kpoint_ot_weighted_response_step( &
+                              density_full_rx_e, curv, &
+                              curv_projection_sum)
+                           IF (response_trust > EPSILON(response_trust) .AND. &
+                               density_full_response_weighted_step > &
+                               EPSILON(density_full_response_weighted_step)) &
+                              density_full_direction_scale = &
+                              MIN(density_full_direction_scale, &
+                                  0.8_dp*response_trust/density_full_response_weighted_step)
+                           IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                               density_full_response_abs_step > &
+                               EPSILON(density_full_response_abs_step)) &
+                              density_full_direction_scale = &
+                              MIN(density_full_direction_scale, &
+                                  0.8_dp*response_abs_trust/density_full_response_abs_step)
                            density_full_scale_quality = &
                               kpoint_ot_schur_scale_quality( &
                               density_full_direction_scale, &
                               schur_min_coupled_scale)
-                           density_full_model_drop = 0.5_dp* &
-                                                     density_full_direction_scale* &
-                                                     density_full_gdotp
+                           density_full_model_drop = &
+                              density_full_direction_scale*density_full_gdotp - &
+                              0.5_dp*density_full_direction_scale* &
+                              density_full_direction_scale*density_full_normp
+                           density_full_model_drop = MAX(0.0_dp, density_full_model_drop)
                            density_full_model_calibrated_drop = &
                               density_full_model_drop
                            IF (density_full_direction_scale < &
@@ -11689,15 +11717,9 @@ CONTAINS
                               density_full_scale_quality* &
                               density_full_model_calibrated_drop
                            density_full_response_abs_step = &
-                              density_full_direction_scale* &
-                              MAXVAL(ABS(density_full_rx_e))
-                           CALL para_env_inter_kp%max( &
-                              density_full_response_abs_step)
+                              density_full_direction_scale*density_full_response_abs_step
                            density_full_response_weighted_step = &
-                              density_full_direction_scale* &
-                              kpoint_ot_weighted_response_step( &
-                              density_full_rx_e, curv, &
-                              curv_projection_sum)
+                              density_full_direction_scale*density_full_response_weighted_step
                            IF (response_trust > EPSILON(response_trust)) &
                               density_full_response_weighted_trust_ratio = &
                               density_full_response_weighted_step/ &
@@ -12006,8 +12028,11 @@ CONTAINS
                            density_full_global_norm_energy = &
                               MAX(0.0_dp, density_full_global_norm_energy)
                            density_full_global_norm_rotation = &
-                              MAX(DOT_PRODUCT(density_full_global_sol, density_full_global_sol), &
-                                  MAX(0.0_dp, DOT_PRODUCT(rtd, density_full_global_sol)))
+                              ABS(DOT_PRODUCT(rtd, density_full_global_sol))
+                           IF (density_full_global_norm_rotation <= &
+                               EPSILON(density_full_global_norm_rotation)) &
+                              density_full_global_norm_rotation = &
+                              DOT_PRODUCT(density_full_global_sol, density_full_global_sol)
                            density_full_global_normp = density_full_global_norm_energy + &
                                                        density_full_global_norm_rotation
                         END IF
@@ -12015,13 +12040,34 @@ CONTAINS
                             density_full_global_normp > EPSILON(density_full_global_normp)) THEN
                            density_full_global_direction_scale = density_full_global_gdotp/ &
                                                                  MAX(density_full_global_normp, EPSILON(density_full_global_normp))
+                           density_full_global_response_abs_step = &
+                              MAXVAL(ABS(density_full_global_rx_e))
+                           CALL para_env_inter_kp%max(density_full_global_response_abs_step)
+                           density_full_global_response_weighted_step = &
+                              kpoint_ot_weighted_response_step( &
+                              density_full_global_rx_e, curv, curv_projection_sum)
+                           IF (response_trust > EPSILON(response_trust) .AND. &
+                               density_full_global_response_weighted_step > &
+                               EPSILON(density_full_global_response_weighted_step)) &
+                              density_full_global_direction_scale = &
+                              MIN(density_full_global_direction_scale, &
+                                  ot_kp_schur_projector_spectral_probe_trust_fraction* &
+                                  response_trust/density_full_global_response_weighted_step)
+                           IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                               density_full_global_response_abs_step > &
+                               EPSILON(density_full_global_response_abs_step)) &
+                              density_full_global_direction_scale = &
+                              MIN(density_full_global_direction_scale, &
+                                  0.8_dp*response_abs_trust/density_full_global_response_abs_step)
                            density_full_global_scale_quality = &
                               kpoint_ot_schur_scale_quality( &
                               density_full_global_direction_scale, &
                               schur_min_coupled_scale)
-                           density_full_global_model_drop = 0.5_dp* &
-                                                            density_full_global_direction_scale* &
-                                                            density_full_global_gdotp
+                           density_full_global_model_drop = &
+                              density_full_global_direction_scale*density_full_global_gdotp - &
+                              0.5_dp*density_full_global_direction_scale* &
+                              density_full_global_direction_scale*density_full_global_normp
+                           density_full_global_model_drop = MAX(0.0_dp, density_full_global_model_drop)
                            density_full_global_model_calibrated_drop = &
                               density_full_global_model_drop
                            IF (density_full_global_direction_scale < &
@@ -12031,12 +12077,10 @@ CONTAINS
                               density_full_global_model_calibrated_drop
                            density_full_global_response_abs_step = &
                               density_full_global_direction_scale* &
-                              MAXVAL(ABS(density_full_global_rx_e))
-                           CALL para_env_inter_kp%max(density_full_global_response_abs_step)
+                              density_full_global_response_abs_step
                            density_full_global_response_weighted_step = &
                               density_full_global_direction_scale* &
-                              kpoint_ot_weighted_response_step( &
-                              density_full_global_rx_e, curv, curv_projection_sum)
+                              density_full_global_response_weighted_step
                            IF (response_trust > EPSILON(response_trust)) &
                               density_full_global_response_weighted_trust_ratio = &
                               density_full_global_response_weighted_step/response_trust
@@ -13309,10 +13353,13 @@ CONTAINS
                   response_weighted_trust_ratio = projector_response_response_weighted_trust_ratio
                   dense_expected_drop = projector_response_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            projector_physical_direct_density_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. projector_physical_direct_density_candidate_ready .AND. &
                    projector_physical_direct_density_expected_drop > &
                    EPSILON(projector_physical_direct_density_expected_drop) .AND. &
-                   projector_physical_direct_density_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   projector_physical_direct_density_candidate_selected = .TRUE.
@@ -13346,11 +13393,17 @@ CONTAINS
                   response_weighted_step = projector_physical_direct_density_response_weighted_step
                   response_weighted_trust_ratio = &
                      projector_physical_direct_density_response_weighted_trust_ratio
-                  dense_expected_drop = projector_physical_direct_density_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_physical_direct_density_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_descent_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_descent_candidate_ready .AND. &
                    density_descent_expected_drop > EPSILON(density_descent_expected_drop) .AND. &
-                   density_descent_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   density_descent_candidate_selected = .TRUE.
@@ -13383,11 +13436,16 @@ CONTAINS
                   response_abs_trust_ratio = density_descent_response_abs_trust_ratio
                   response_weighted_step = density_descent_response_weighted_step
                   response_weighted_trust_ratio = density_descent_response_weighted_trust_ratio
-                  dense_expected_drop = density_descent_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - density_descent_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_full_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_candidate_ready .AND. &
                    density_full_expected_drop > EPSILON(density_full_expected_drop) .AND. &
-                   density_full_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   density_full_candidate_selected = .TRUE.
@@ -13420,11 +13478,16 @@ CONTAINS
                   response_abs_trust_ratio = density_full_response_abs_trust_ratio
                   response_weighted_step = density_full_response_weighted_step
                   response_weighted_trust_ratio = density_full_response_weighted_trust_ratio
-                  dense_expected_drop = density_full_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - density_full_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_full_global_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
-                   density_full_global_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   density_full_global_candidate_selected = .TRUE.
@@ -13457,11 +13520,17 @@ CONTAINS
                   response_abs_trust_ratio = density_full_global_response_abs_trust_ratio
                   response_weighted_step = density_full_global_response_weighted_step
                   response_weighted_trust_ratio = density_full_global_response_weighted_trust_ratio
-                  dense_expected_drop = density_full_global_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                density_full_global_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_full_direct_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_direct_candidate_ready .AND. &
                    density_full_direct_expected_drop > EPSILON(density_full_direct_expected_drop) .AND. &
-                   (density_full_direct_expected_drop >= &
+                   (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
                     kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
@@ -13501,7 +13570,10 @@ CONTAINS
                   response_abs_trust_ratio = density_full_direct_response_abs_trust_ratio
                   response_weighted_step = density_full_direct_response_weighted_step
                   response_weighted_trust_ratio = density_full_direct_response_weighted_trust_ratio
-                  dense_expected_drop = density_full_direct_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                density_full_direct_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
                IF (.NOT. attempt_failed .AND. &
                    (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
@@ -13767,10 +13839,13 @@ CONTAINS
                   response_weighted_trust_ratio = projector_response_response_weighted_trust_ratio
                   dense_expected_drop = projector_response_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            projector_physical_direct_density_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. projector_physical_direct_density_candidate_ready .AND. &
                    projector_physical_direct_density_expected_drop > &
                    EPSILON(projector_physical_direct_density_expected_drop) .AND. &
-                   projector_physical_direct_density_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   projector_physical_direct_density_candidate_selected = .TRUE.
@@ -13804,11 +13879,17 @@ CONTAINS
                   response_weighted_step = projector_physical_direct_density_response_weighted_step
                   response_weighted_trust_ratio = &
                      projector_physical_direct_density_response_weighted_trust_ratio
-                  dense_expected_drop = projector_physical_direct_density_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_physical_direct_density_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_descent_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_descent_candidate_ready .AND. &
                    density_descent_expected_drop > EPSILON(density_descent_expected_drop) .AND. &
-                   density_descent_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   density_descent_candidate_selected = .TRUE.
@@ -13839,11 +13920,16 @@ CONTAINS
                   response_abs_trust_ratio = density_descent_response_abs_trust_ratio
                   response_weighted_step = density_descent_response_weighted_step
                   response_weighted_trust_ratio = density_descent_response_weighted_trust_ratio
-                  dense_expected_drop = density_descent_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - density_descent_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_full_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_candidate_ready .AND. &
                    density_full_expected_drop > EPSILON(density_full_expected_drop) .AND. &
-                   density_full_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   density_full_candidate_selected = .TRUE.
@@ -13875,11 +13961,16 @@ CONTAINS
                   response_abs_trust_ratio = density_full_response_abs_trust_ratio
                   response_weighted_step = density_full_response_weighted_step
                   response_weighted_trust_ratio = density_full_response_weighted_trust_ratio
-                  dense_expected_drop = density_full_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - density_full_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_full_global_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
-                   density_full_global_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
                   density_full_global_candidate_selected = .TRUE.
@@ -13912,11 +14003,17 @@ CONTAINS
                   response_abs_trust_ratio = density_full_global_response_abs_trust_ratio
                   response_weighted_step = density_full_global_response_weighted_step
                   response_weighted_trust_ratio = density_full_global_response_weighted_trust_ratio
-                  dense_expected_drop = density_full_global_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                density_full_global_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
+                                            density_full_direct_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. density_full_direct_candidate_ready .AND. &
                    density_full_direct_expected_drop > EPSILON(density_full_direct_expected_drop) .AND. &
-                   (density_full_direct_expected_drop >= &
+                   (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
                     kpoint_ot_density_full_direct_tail_probe(residual_delta, density_full_direct_expected_drop, &
@@ -13956,7 +14053,10 @@ CONTAINS
                   response_abs_trust_ratio = density_full_direct_response_abs_trust_ratio
                   response_weighted_step = density_full_direct_response_weighted_step
                   response_weighted_trust_ratio = density_full_direct_response_weighted_trust_ratio
-                  dense_expected_drop = density_full_direct_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                density_full_direct_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
                IF (.NOT. attempt_failed .AND. &
                    (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
@@ -15387,6 +15487,12 @@ CONTAINS
                      constrained_direction_scale, constrained_scale_quality, constrained_gdot_energy, &
                      constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
                      dense_direction_scale, dense_scale_quality, dense_quality_for_selection
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
+                     " OT Schur Mermin branch-loss density model samples weight gain qema gema dense_exp:", &
+                     local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+                     mermin_branch_loss_weight, mermin_branch_loss_gain, &
+                     local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                     local_ot_env(1)%mermin_ls_accepted_gap_ema, dense_expected_drop
                   projector_physical_direct_shadow_weight = &
                      MAX(projector_coupled_weight, &
                          MAX(projector_physical_response_weight, projector_physical_direct_response_weight))
@@ -16956,6 +17062,53 @@ CONTAINS
          quality = 1.0_dp/trust_ratio
 
       END FUNCTION kpoint_ot_schur_trust_quality
+
+! **************************************************************************************************
+!> \brief accepted-state Mermin branch-loss severity for density-response candidate selection
+!> \param accepted_quality accepted/free-energy branch quality EMA
+!> \param accepted_gap accepted/free-energy branch gap EMA
+!> \param samples number of accepted-state line-search samples
+!> \return smooth severity in [0,1]
+! **************************************************************************************************
+      FUNCTION kpoint_ot_mermin_branch_loss_weight(accepted_quality, accepted_gap, samples) &
+         RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: accepted_quality, accepted_gap
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: weight
+
+      REAL(KIND=dp)                                      :: gap, quality
+
+         weight = 0.0_dp
+         IF (samples < ot_kp_schur_quality_min_samples) RETURN
+
+         quality = MAX(0.0_dp, MIN(1.0_dp, accepted_quality))
+         gap = MAX(0.0_dp, MIN(1.0_dp, accepted_gap))
+         weight = SQRT(MAX(0.0_dp, gap*(1.0_dp - quality)))
+
+      END FUNCTION kpoint_ot_mermin_branch_loss_weight
+
+! **************************************************************************************************
+!> \brief candidate competition drop including recoverable accepted-state density branch loss
+!> \param candidate_drop expected drop of the density-response candidate
+!> \param reference_drop current best non-density competition drop
+!> \param branch_loss_weight accepted-state Mermin branch-loss severity
+!> \return expected competition drop used only for candidate selection
+! **************************************************************************************************
+      FUNCTION kpoint_ot_branch_loss_density_drop(candidate_drop, reference_drop, branch_loss_weight) &
+         RESULT(expected_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop, reference_drop, &
+                                                            branch_loss_weight
+      REAL(KIND=dp)                                      :: expected_drop
+
+         expected_drop = MAX(0.0_dp, candidate_drop)
+         IF (expected_drop <= EPSILON(expected_drop)) RETURN
+
+         expected_drop = expected_drop + &
+                         ot_kp_schur_branch_loss_density_recovery* &
+                         MAX(0.0_dp, MIN(1.0_dp, branch_loss_weight))* &
+                         MAX(expected_drop, MAX(0.0_dp, reference_drop))
+
+      END FUNCTION kpoint_ot_branch_loss_density_drop
 
 ! **************************************************************************************************
 !> \brief ...
