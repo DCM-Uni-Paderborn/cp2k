@@ -1,14 +1,14 @@
 ! Slow/manual companion to the default k-point OT restart smoke test.
 ! Run after Al_kp_ot_restart_write/read/continue.inp; this input is not listed
 ! in TEST_FILES.toml so the default regtest stays cheap.
-! Current 2026-06 HIGH diagnostic after the late-tail Direct-history
-! calibration: restart write/read/continue followed by this companion reaches
-! the residual tail but still does not converge the 1E-6 metallic Mermin path
-! within 950 SCF steps.  The fresh tail run ended at
-! E_total = Mermin = -8.14584806605192 Ha without first/last-band smearing
-! warnings or the previously reported "Unsupported content type" signature.
-! Keep this as a manual physics companion until the coupled finite-complex
-! response/Hessian path converges reliably enough for a default regtest.
+! Current 2026-06 HIGH diagnostic after the physical Direct-density history
+! calibration: restart write/read/continue followed by this companion converges
+! the metallic Mermin path to EPS_SCF=1E-6 in about 250 tail SCF steps with
+! E_total = Mermin = -8.1458526678 Ha, no first/last-band smearing warnings,
+! and no "Unsupported content type" signature.  A cold/fresh run is still much
+! too expensive for the default regtest, so keep this as a manual physics
+! companion until the finite-complex response/Hessian tail is faster and more
+! broadly validated.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_restart
