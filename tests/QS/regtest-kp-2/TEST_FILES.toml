@@ -65,9 +65,9 @@
 # not part of these optional companion references.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.63300261987711},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.63300261987711},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4293681466E-4},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.63297708872309},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.63297708872309},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4293340734E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
@@ -75,19 +75,19 @@
 # These restart read/continue jobs are deliberately short, non-converged
 # restart-I/O smokes.  Keep the smearing, entropic-energy, and restart guards
 # strict, but allow small OMP reduction/path differences in the early OT energy.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.00634152339366},
-                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.00634152339366},
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.00633672178512},
+                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.00633672178512},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14560256429848},
-                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14560256429848},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103901E-4},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14566414648344},
+                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14566414648344},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104008E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=1.49786E-3},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=5.6830E-4},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
@@ -113,13 +113,15 @@
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Slow/manual residual-tail companion: run Al_kp_ot_restart_converge.inp after
 # the write/read/continue chain. It is intentionally not listed here, so the
-# default restart/smearing regtest stays cheap. Current local HIGH diagnostic
-# after the late-tail Direct-history calibration still reaches MAX_SCF=950
-# without converging the 1E-6 metallic Mermin path:
-# E_total = Mermin = -8.14584806605192 Ha, without first/last-band smearing
-# warnings or the previously reported "Unsupported content type" signature.
-# Keep it manual until the coupled finite-complex response/Hessian path
-# converges reliably enough for a default physics regtest.
+# default restart/smearing regtest stays cheap. Current fresh-chain HIGH
+# diagnostic with the Direct-density tail-response path still reaches
+# MAX_SCF=950 without converging the 1E-6 metallic Mermin path:
+# E_total = Mermin = -8.14585187037879 Ha, OT_SCF_convergence = 5.01E-6,
+# without first/last-band smearing warnings or the previously reported
+# "Unsupported content type" signature.  A further continuation from an already
+# advanced Direct-density restart does cross 1E-6, so keep this manual until the
+# finite-complex response/Hessian path is fast enough for a non-default physics
+# companion.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
