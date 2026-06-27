@@ -16158,12 +16158,13 @@ CONTAINS
             END IF
          END IF
          ! Learn the mixed active/physical Direct curvature from any accepted
-         ! exact-response dense step. Waiting for an already selected Direct
-         ! candidate makes promotion circular in the metallic residual tail.
+         ! exact-response dense step, including the row-floor fallback that
+         ! dominates the metallic residual tail. Waiting for an already selected
+         ! Direct candidate makes promotion circular.
          ! Keep this outside the HIGH print block so PRINT_LEVEL cannot change
          ! the k-point OT minimizer path.
          IF (new_search_point .AND. accepted_model_drop > EPSILON(accepted_model_drop) .AND. &
-             (selected_attempt == 3 .OR. &
+             (selected_attempt == 3 .OR. selected_attempt == 4 .OR. &
               projector_physical_direct_candidate_selected .OR. &
               projector_physical_direct_density_candidate_selected .OR. &
               projector_physical_direct_spectral_candidate_selected)) THEN
