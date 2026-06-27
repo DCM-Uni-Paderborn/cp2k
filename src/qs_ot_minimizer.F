@@ -755,6 +755,19 @@ CONTAINS
          ELSE ! just take an extended step
             qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*2.0_dp
          END IF
+         IF (mermin_search .AND. best_index /= 1) THEN
+            qs_ot_env(1)%mermin_ls_sample_pending = .TRUE.
+            qs_ot_env(1)%mermin_ls_best_sample_index = best_index
+            qs_ot_env(1)%mermin_ls_reference_energy = fa
+            qs_ot_env(1)%mermin_ls_best_sample_energy = best_energy
+            qs_ot_env(1)%mermin_ls_best_sample_drop = best_drop
+            qs_ot_env(1)%mermin_ls_model_drop = model_drop
+            qs_ot_env(1)%mermin_ls_model_quality = model_quality
+            qs_ot_env(1)%mermin_ls_best_sample_pos = qs_ot_env(1)%OT_pos(best_index)
+            qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
+         ELSE IF (mermin_search) THEN
+            qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
+         END IF
          IF (mermin_search) THEN
             logger => cp_get_default_logger()
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
@@ -1144,7 +1157,7 @@ CONTAINS
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
-         test_down, tmp
+         sample_accepted_drop, sample_gap, sample_quality, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1370,6 +1383,23 @@ CONTAINS
          qs_ot_env(1)%kpoint_raw_delta = 0.0_dp
          qs_ot_env(1)%kpoint_physical_delta = 0.0_dp
          beta_pr = 0.0_dp
+      END IF
+      IF (complex_kpoint_history .AND. qs_ot_env(1)%mermin_ls_sample_pending) THEN
+         sample_accepted_drop = qs_ot_env(1)%mermin_ls_reference_energy - qs_ot_env(1)%etotal
+         sample_gap = qs_ot_env(1)%etotal - qs_ot_env(1)%mermin_ls_best_sample_energy
+         sample_quality = 0.0_dp
+         IF (qs_ot_env(1)%mermin_ls_best_sample_drop > EPSILON(1.0_dp)) &
+            sample_quality = sample_accepted_drop/qs_ot_env(1)%mermin_ls_best_sample_drop
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,12(1X,ES16.8))') &
+               " OT Mermin LS accepted-state audit idx ref best accepted bdrop adrop gap q mdrop mq bpos next delta:", &
+               qs_ot_env(1)%mermin_ls_best_sample_index, qs_ot_env(1)%mermin_ls_reference_energy, &
+               qs_ot_env(1)%mermin_ls_best_sample_energy, qs_ot_env(1)%etotal, &
+               qs_ot_env(1)%mermin_ls_best_sample_drop, sample_accepted_drop, sample_gap, &
+               sample_quality, qs_ot_env(1)%mermin_ls_model_drop, qs_ot_env(1)%mermin_ls_model_quality, &
+               qs_ot_env(1)%mermin_ls_best_sample_pos, qs_ot_env(1)%mermin_ls_next_pos, qs_ot_env(1)%delta
+         END IF
+         qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
       END IF
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &

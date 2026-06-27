@@ -183,6 +183,12 @@ MODULE qs_ot_types
       INTEGER          :: line_search_left = -1, line_search_right = -1, line_search_mid = -1
       INTEGER          :: line_search_count = -1
       LOGICAL          :: line_search_might_be_done = .FALSE.
+      LOGICAL          :: mermin_ls_sample_pending = .FALSE.
+      INTEGER          :: mermin_ls_best_sample_index = 0
+      REAL(KIND=dp)    :: mermin_ls_reference_energy = 0.0_dp, mermin_ls_best_sample_energy = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_best_sample_drop = 0.0_dp, mermin_ls_model_drop = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_model_quality = 0.0_dp, mermin_ls_best_sample_pos = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_next_pos = 0.0_dp
       REAL(KIND=dp)    :: delta = -1.0_dp, gnorm = -1.0_dp, gnorm_old = -1.0_dp, etotal = -1.0_dp, gradient = -1.0_dp
       LOGICAL          :: energy_only = .FALSE.
       INTEGER          :: diis_iter = -1
@@ -826,6 +832,15 @@ CONTAINS
       qs_ot_env%OT_pos(:) = 0.0_dp
       qs_ot_env%OT_grad(:) = 0.0_dp
       qs_ot_env%line_search_count = 0
+      qs_ot_env%mermin_ls_sample_pending = .FALSE.
+      qs_ot_env%mermin_ls_best_sample_index = 0
+      qs_ot_env%mermin_ls_reference_energy = 0.0_dp
+      qs_ot_env%mermin_ls_best_sample_energy = 0.0_dp
+      qs_ot_env%mermin_ls_best_sample_drop = 0.0_dp
+      qs_ot_env%mermin_ls_model_drop = 0.0_dp
+      qs_ot_env%mermin_ls_model_quality = 0.0_dp
+      qs_ot_env%mermin_ls_best_sample_pos = 0.0_dp
+      qs_ot_env%mermin_ls_next_pos = 0.0_dp
 
       qs_ot_env%energy_only = .FALSE.
       qs_ot_env%gnorm_old = 1.0_dp
