@@ -7821,13 +7821,16 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER                           :: base_diag = -0.20_dp, &
-                                                            local_comp = 0.08_dp, &
-                                                            quality_floor = 0.25_dp
+      INTEGER, PARAMETER                                 :: ntrace = 4
+      REAL(KIND=dp), PARAMETER :: base_diag = -0.20_dp, coupled_weight = 0.50_dp, &
+         local_comp = 0.08_dp, mixed_weight = 0.75_dp, quality_floor = 0.25_dp
 
-      REAL(KIND=dp)                                      :: err, high_old, high_scale, high_sep, &
-                                                            high_with_comp, low_scale, &
-                                                            low_with_comp, no_comp
+      INTEGER                                            :: itrace
+      REAL(KIND=dp) :: err, expected_active_shift, global_active_comp, global_inactive_shift, &
+         high_old, high_scale, high_sep, high_with_comp, local_active_shift, local_inactive_shift, &
+         low_scale, low_with_comp, no_comp, trace_scale
+      REAL(KIND=dp), DIMENSION(ntrace)                   :: active_delta, local_active_comp, &
+                                                            reference_delta
 
       low_scale = SQRT(quality_floor)
       high_scale = 0.90_dp
@@ -7845,15 +7848,41 @@ CONTAINS
                           (high_scale - 1.0_dp)*(base_diag + (1.0_dp - high_sep)*local_comp))))
       err = MAX(err, ABS(no_comp - high_scale*base_diag))
 
-      IF (err > tol .OR. high_with_comp <= high_old) THEN
+      trace_scale = 0.80_dp
+      active_delta(:) = [-0.20_dp, -0.01_dp, 0.01_dp, 0.02_dp]
+      reference_delta(:) = [0.10_dp, 0.03_dp, 0.01_dp, 0.03_dp]
+      DO itrace = 1, ntrace
+         local_active_comp(itrace) = trace_scale* &
+                                     dense_direct_trace_compensation(coupled_weight, &
+                                                                     active_delta(itrace), &
+                                                                     reference_delta(itrace))
+      END DO
+      global_active_comp = trace_scale* &
+                           dense_direct_trace_compensation(coupled_weight, &
+                                                           SUM(active_delta(:))/REAL(ntrace, KIND=dp), &
+                                                           SUM(reference_delta(:))/REAL(ntrace, KIND=dp))
+      local_active_shift = mixed_weight*local_active_comp(1)
+      local_inactive_shift = mixed_weight*local_active_comp(ntrace)
+      global_inactive_shift = mixed_weight*global_active_comp
+      expected_active_shift = mixed_weight*trace_scale* &
+                              dense_direct_trace_compensation(coupled_weight, active_delta(1), &
+                                                              reference_delta(1))
+      err = MAX(err, ABS(local_active_shift - expected_active_shift))
+      err = MAX(err, ABS(local_inactive_shift))
+
+      IF (err > tol .OR. high_with_comp <= high_old .OR. &
+          local_active_shift <= global_inactive_shift .OR. &
+          global_inactive_shift <= tol .OR. local_inactive_shift > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with error/no/low/high/old/sep", err, no_comp, low_with_comp, &
-            high_with_comp, high_old, high_sep
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/low/high/old/sep/lact/linact/ginact", err, no_comp, &
+            low_with_comp, high_with_comp, high_old, high_sep, local_active_shift, &
+            local_inactive_shift, global_inactive_shift
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with error/no/low/high/old/sep", err, no_comp, low_with_comp, &
-            high_with_comp, high_old, high_sep
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/low/high/old/sep/lact/linact/ginact", err, no_comp, &
+            low_with_comp, high_with_comp, high_old, high_sep, local_active_shift, &
+            local_inactive_shift, global_inactive_shift
       END IF
 
    END SUBROUTINE check_projector_trace_local_compensation

@@ -6526,23 +6526,24 @@ CONTAINS
          projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
          projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
          projector_offdiag_z_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_curv_eval, &
-         projector_physical_direct_density_rx_e, projector_physical_direct_density_sol, &
-         projector_physical_direct_density_z_e, projector_physical_direct_diagref_rx_e, &
-         projector_physical_direct_model_e, projector_physical_direct_response_rx_e, &
-         projector_physical_direct_rx_e, projector_physical_direct_schur_eval, &
-         projector_physical_direct_sol, projector_physical_direct_spectral_model_e, &
-         projector_physical_direct_spectral_rx_e, projector_physical_direct_spectral_sol, &
-         projector_physical_direct_spectral_z_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_z_e, &
-         projector_physical_model_e, projector_physical_rx_e, projector_physical_sol, &
-         projector_physical_z_e, projector_response_rx_e, projector_response_sol, &
-         projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, &
-         split_sol, split_z_e, tether_curv, var_occ_gap_weight, var_projector_active_weight, &
-         var_projector_weight, z_density_floor_audit_trial, z_density_full_audit_trial, &
-         z_density_full_global_trial, z_density_full_trial, z_density_plateau_trial, &
-         z_density_trial, z_e, z_exact_physical_trial
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_exact_raw_trial, z_exact_trial, z_trial
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_active_lcomp, &
+         projector_physical_direct_curv_eval, projector_physical_direct_density_rx_e, &
+         projector_physical_direct_density_sol, projector_physical_direct_density_z_e, &
+         projector_physical_direct_diagref_rx_e, projector_physical_direct_model_e, &
+         projector_physical_direct_response_rx_e, projector_physical_direct_rx_e, &
+         projector_physical_direct_schur_eval, projector_physical_direct_sol, &
+         projector_physical_direct_spectral_model_e, projector_physical_direct_spectral_rx_e, &
+         projector_physical_direct_spectral_sol
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_spectral_z_e, &
+         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
+         projector_physical_sol, projector_physical_z_e, projector_response_rx_e, &
+         projector_response_sol, projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, &
+         rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, var_occ_gap_weight, &
+         var_projector_active_weight, var_projector_weight, z_density_floor_audit_trial, &
+         z_density_full_audit_trial, z_density_full_global_trial, z_density_full_trial, &
+         z_density_plateau_trial
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_density_trial, z_e, z_exact_physical_trial, &
+         z_exact_raw_trial, z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross, energy_cross_density, &
          energy_cross_density_direct, energy_cross_density_floor_audit, energy_cross_density_full, &
          energy_cross_density_full_audit, energy_cross_density_full_global, &
@@ -6738,7 +6739,7 @@ CONTAINS
                    var_occ_gap_weight(nrot), var_projector_active_weight(nrot), &
                    var_projector_weight(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
-         ALLOCATE (rot_floor(nrot), row_floor_shift(nrot))
+         ALLOCATE (rot_floor(nrot), row_floor_shift(nrot), projector_physical_direct_active_lcomp(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
                    energy_cross_density_direct(ne, nrot), &
                    energy_cross_density_floor_audit(ne, nrot), &
@@ -6890,6 +6891,7 @@ CONTAINS
          projector_physical_direct_curv_evec(:, :) = 0.0_dp
          projector_physical_direct_curv_vec(:, :) = 0.0_dp
          projector_physical_direct_delta(:, :) = 0.0_dp
+         projector_physical_direct_active_lcomp(:) = 0.0_dp
          projector_physical_direct_schur_mat(:, :) = 0.0_dp
          projector_physical_direct_schur_evec(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
@@ -7855,7 +7857,8 @@ CONTAINS
                         projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                         var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-            DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, &
+            DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
+                        energy_cross, energy_cross_density, &
                         energy_cross_density_floor_audit, energy_cross_density_full, &
                         energy_cross_density_full_audit, energy_cross_density_full_global, &
                         energy_cross_density_plateau, &
@@ -10437,6 +10440,7 @@ CONTAINS
                      projector_physical_direct_delta_diag_avg
                   projector_physical_direct_diag_compensation = 0.0_dp
                   projector_physical_direct_active_diag_compensation = 0.0_dp
+                  projector_physical_direct_active_lcomp(:) = 0.0_dp
                   projector_physical_direct_diag_compensation_local_avg = 0.0_dp
                   projector_physical_direct_diag_compensation_local_fraction = 0.0_dp
                   projector_physical_direct_diag_compensation_local_max = 0.0_dp
@@ -10515,18 +10519,28 @@ CONTAINS
                      projector_physical_direct_diag_compensation_local_max = &
                         projector_physical_direct_trace_diag_scale* &
                         projector_phys_direct_lcomp_trial_max
-                     IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                         projector_phys_direct_lcomp_trial_max > 0.0_dp) THEN
+                     IF (projector_coupled_weight > EPSILON(projector_coupled_weight)) THEN
+                        IF (projector_phys_direct_lcomp_trial_max > 0.0_dp) THEN
+                           DO r = 1, nrot
+                              projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
+                              diag_shift = kpoint_ot_direct_trace_compensation( &
+                                           projector_coupled_weight, &
+                                           projector_physical_direct_delta(r, r), projected_term)
+                              diag_shift = projector_physical_direct_trace_diag_scale*diag_shift
+                              IF (diag_shift <= 0.0_dp) CYCLE
+                              projector_physical_direct_delta(r, r) = &
+                                 projector_physical_direct_delta(r, r) + &
+                                 diag_shift/projector_coupled_weight
+                           END DO
+                        END IF
                         DO r = 1, nrot
                            projected_term = rot_hessian_projector(r, r) - rot_hessian(r, r)
                            diag_shift = kpoint_ot_direct_trace_compensation( &
                                         projector_coupled_weight, &
-                                        projector_physical_direct_delta(r, r), projected_term)
-                           diag_shift = projector_physical_direct_trace_diag_scale*diag_shift
-                           IF (diag_shift <= 0.0_dp) CYCLE
-                           projector_physical_direct_delta(r, r) = &
-                              projector_physical_direct_delta(r, r) + &
-                              diag_shift/projector_coupled_weight
+                                        rot_hessian_projector_physical_active(r, r) - rot_hessian(r, r), &
+                                        projected_term)
+                           projector_physical_direct_active_lcomp(r) = &
+                              projector_physical_direct_trace_diag_scale*diag_shift
                         END DO
                      END IF
                   END IF
@@ -10657,12 +10671,12 @@ CONTAINS
                            ((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
                             TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
                                       rot_hessian(:, :)))
-                        IF (projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                            projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
-                           diag_shift = projector_physical_direct_mixed_weight* &
-                                        projector_physical_direct_active_diag_compensation/ &
-                                        projector_coupled_weight
+                        IF (projector_coupled_weight > EPSILON(projector_coupled_weight)) THEN
                            DO r = 1, nrot
+                              diag_shift = projector_physical_direct_mixed_weight* &
+                                           projector_physical_direct_active_lcomp(r)/ &
+                                           projector_coupled_weight
+                              IF (diag_shift <= 0.0_dp) CYCLE
                               projector_physical_direct_delta(r, r) = &
                                  projector_physical_direct_delta(r, r) + diag_shift
                            END DO
@@ -15458,11 +15472,11 @@ CONTAINS
                         0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
                                 TRANSPOSE(rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)))
                      IF (projector_physical_direct_shadow_weight > &
-                         EPSILON(projector_physical_direct_shadow_weight) .AND. &
-                         projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
-                        diag_shift = projector_physical_direct_active_diag_compensation/ &
-                                     projector_physical_direct_shadow_weight
+                         EPSILON(projector_physical_direct_shadow_weight)) THEN
                         DO r = 1, nrot
+                           diag_shift = projector_physical_direct_active_lcomp(r)/ &
+                                        projector_physical_direct_shadow_weight
+                           IF (diag_shift <= 0.0_dp) CYCLE
                            projector_physical_direct_schur_vec(r, r) = projector_physical_direct_schur_vec(r, r) + diag_shift
                         END DO
                      END IF
@@ -15614,11 +15628,11 @@ CONTAINS
                                             TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
                                                       rot_hessian(:, :)))
                         IF (projector_physical_direct_shadow_weight > &
-                            EPSILON(projector_physical_direct_shadow_weight) .AND. &
-                            projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
-                           diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
-                                        projector_physical_direct_shadow_weight
+                            EPSILON(projector_physical_direct_shadow_weight)) THEN
                            DO r = 1, nrot
+                              diag_shift = z_weight*projector_physical_direct_active_lcomp(r)/ &
+                                           projector_physical_direct_shadow_weight
+                              IF (diag_shift <= 0.0_dp) CYCLE
                               projector_physical_direct_schur_vec(r, r) = &
                                  projector_physical_direct_schur_vec(r, r) + diag_shift
                            END DO
@@ -15799,10 +15813,12 @@ CONTAINS
                      z_weight*0.5_dp*((rot_hessian_projector_physical_active(:, :) - rot_hessian(:, :)) + &
                                       TRANSPOSE(rot_hessian_projector_physical_active(:, :) - &
                                                 rot_hessian(:, :)))
-                  IF (projector_physical_direct_active_diag_compensation > 0.0_dp) THEN
-                     diag_shift = z_weight*projector_physical_direct_active_diag_compensation/ &
-                                  projector_physical_direct_shadow_weight
+                  IF (projector_physical_direct_shadow_weight > &
+                      EPSILON(projector_physical_direct_shadow_weight)) THEN
                      DO r = 1, nrot
+                        diag_shift = z_weight*projector_physical_direct_active_lcomp(r)/ &
+                                     projector_physical_direct_shadow_weight
+                        IF (diag_shift <= 0.0_dp) CYCLE
                         projector_physical_direct_schur_vec(r, r) = &
                            projector_physical_direct_schur_vec(r, r) + diag_shift
                      END DO
@@ -15915,7 +15931,8 @@ CONTAINS
                      projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                      var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
-         DEALLOCATE (rot_floor, row_floor_shift, energy_cross, energy_cross_density, &
+         DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
+                     energy_cross, energy_cross_density, &
                      energy_cross_density_direct, energy_cross_physical, &
                      energy_cross_raw, &
                      energy_cross_density_floor_audit, &
