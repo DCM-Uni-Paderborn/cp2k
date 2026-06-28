@@ -7624,43 +7624,47 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: low_drop, low_quality, low_samples, &
-                                                            ready, selected_bad, selected_floor, &
-                                                            selected_ok, tail_veto, weak_drop
+      LOGICAL :: low_drop, low_quality, low_samples, ready, selected_bad, selected_floor, &
+         selected_ok, selected_recent_bad, tail_veto, weak_drop
       REAL(KIND=dp)                                      :: err
 
       ready = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                   0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+                                                   0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
       tail_veto = dense_density_full_direct_tail_probe(2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                       0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
       low_samples = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.20_dp, 7, 0.0_dp, 0, 0.40_dp)
+                                                         0.20_dp, 7, 0.0_dp, 0.0_dp, 0, 0.40_dp)
       low_quality = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.09_dp, 8, 0.0_dp, 0, 0.40_dp)
+                                                         0.09_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
       low_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, &
-                                                      0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+                                                      0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
       weak_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, &
-                                                       0.20_dp, 8, 0.0_dp, 0, 0.40_dp)
+                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
       selected_ok = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.20_dp, 8, 0.40_dp, 4, 0.40_dp)
+                                                         0.20_dp, 8, 0.40_dp, 0.40_dp, 4, 0.40_dp)
       selected_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                          0.20_dp, 8, 0.20_dp, 4, 0.40_dp)
+                                                          0.20_dp, 8, 0.40_dp, 0.20_dp, 4, 0.40_dp)
+      selected_recent_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                                 0.20_dp, 8, 0.05_dp, 0.40_dp, 4, 0.40_dp)
       selected_floor = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                            0.20_dp, 8, 0.21_dp, 4, 0.0_dp)
+                                                            0.20_dp, 8, 0.21_dp, 0.21_dp, 4, 0.0_dp)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_drop .OR. &
-          weak_drop .OR. .NOT. selected_ok .OR. selected_bad .OR. .NOT. selected_floor) err = 1.0_dp
+          weak_drop .OR. .NOT. selected_ok .OR. selected_bad .OR. selected_recent_bad .OR. &
+          .NOT. selected_floor) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "failed with ready/tail/samples/quality/drop/weak/sel/bad/floor", ready, tail_veto, &
-            low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_floor
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor", ready, tail_veto, &
+            low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
+            selected_floor
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "OK with ready/tail/samples/quality/drop/weak/sel/bad/floor", ready, tail_veto, &
-            low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_floor
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor", ready, tail_veto, &
+            low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
+            selected_floor
       END IF
 
    END SUBROUTINE check_projector_density_full_direct_tail_probe
@@ -9498,6 +9502,7 @@ CONTAINS
 !> \param reference_expected_drop ...
 !> \param quality_ema ...
 !> \param samples ...
+!> \param selected_residual_quality ...
 !> \param selected_residual_quality_ema ...
 !> \param selected_samples ...
 !> \param dense_residual_quality ...
@@ -9505,12 +9510,14 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION dense_density_full_direct_tail_probe(residual_delta, candidate_expected_drop, &
                                                  reference_expected_drop, quality_ema, samples, &
-                                                 selected_residual_quality_ema, selected_samples, &
+                                                 selected_residual_quality, selected_residual_quality_ema, &
+                                                 selected_samples, &
                                                  dense_residual_quality) RESULT(do_probe)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
                                                             reference_expected_drop, quality_ema
       INTEGER, INTENT(IN)                                :: samples
-      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality_ema
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
       INTEGER, INTENT(IN)                                :: selected_samples
       REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
       LOGICAL                                            :: do_probe
@@ -9524,6 +9531,8 @@ CONTAINS
 
       IF (selected_samples >= 4) THEN
          IF (selected_residual_quality_ema < 8.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
+            RETURN
+         IF (selected_residual_quality < 4.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
             RETURN
       END IF
 
