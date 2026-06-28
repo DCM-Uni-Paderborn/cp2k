@@ -17629,19 +17629,21 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: samples
       REAL(KIND=dp)                                      :: quality
 
-      REAL(KIND=dp)                                      :: gauge_weight, residual_weight
+      REAL(KIND=dp)                                      :: gauge_signal, gauge_weight, &
+                                                            residual_signal, residual_weight
 
          quality = 1.0_dp
          IF (samples < ot_kp_schur_calibration_min_samples) RETURN
-         IF (MIN(gauge_ratio, gauge_ratio_ema) <= 1.5_dp .OR. &
-             MAX(residual_quality, residual_quality_ema) >= 0.25_dp) RETURN
+         gauge_signal = MAX(0.0_dp, gauge_ratio, gauge_ratio_ema)
+         residual_signal = MIN(MAX(0.0_dp, residual_quality), MAX(0.0_dp, residual_quality_ema))
+         IF (gauge_signal <= 1.5_dp .OR. residual_signal >= 0.25_dp) RETURN
 
          gauge_weight = MIN(1.0_dp, &
-                            MAX(0.0_dp, (MIN(gauge_ratio, gauge_ratio_ema) - 1.5_dp)/6.5_dp))
+                            MAX(0.0_dp, (gauge_signal - 1.5_dp)/6.5_dp))
          residual_weight = MIN(1.0_dp, &
-                               MAX(0.0_dp, (0.25_dp - MAX(residual_quality, residual_quality_ema))/0.25_dp))
-         quality = 1.0_dp - 0.20_dp*gauge_weight*residual_weight
-         quality = MIN(1.0_dp, MAX(ot_kp_schur_calibrated_quality_min_ratio, quality))
+                               MAX(0.0_dp, (0.25_dp - residual_signal)/0.25_dp))
+         quality = 1.0_dp - 0.65_dp*gauge_weight*residual_weight
+         quality = MIN(1.0_dp, MAX(MAX(0.25_dp, ot_kp_schur_calibrated_quality_min_ratio), quality))
 
       END FUNCTION kpoint_ot_schur_step_gauge_quality
 
@@ -19288,16 +19290,20 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: kernel
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_kernel, &
-                                                            cluster_work, response_block
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_evec_b, &
+                                                            cluster_kernel, cluster_work, &
+                                                            cluster_work_b, modal_block, &
+                                                            response_block
       INTEGER                                            :: a, b, first, first_b, j, last, last_b, &
                                                             m, m_b, n
       LOGICAL                                            :: outside_gauge_cluster
-      REAL(KIND=dp) :: cluster_curv, cluster_curv_b, cluster_energy, cluster_energy_b, &
-         cluster_occ, cluster_occ_b, component_weight, curv, denom, gap_tol, mu_den, mu_num, &
-         mu_shift, offdiag_coeff, slope_cap
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, modal_curv, modal_energy, &
-                                                            modal_occ
+      REAL(KIND=dp)                                      :: component_weight, curv, denom, gap_tol, &
+                                                            mu_den, mu_num, mu_shift, &
+                                                            offdiag_coeff, slope_cap
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, cluster_eval_b, &
+                                                            modal_curv, modal_curv_b, &
+                                                            modal_energy, modal_energy_b, &
+                                                            modal_occ, modal_occ_b
 
          n = SIZE(evals)
          IF (n <= 0) RETURN
@@ -19429,9 +19435,22 @@ CONTAINS
             END DO
             m = last - first + 1
             IF (m > 1) THEN
-               cluster_energy = SUM(evals(first:last))/REAL(m, KIND=dp)
-               cluster_occ = SUM(occ_slope(first:last))/REAL(m, KIND=dp)
-               cluster_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
+               ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m), &
+                         modal_energy(m), modal_occ(m))
+               cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
+                                            CONJG(TRANSPOSE(work(first:last, first:last))))
+               CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                            modal_curv)
+               modal_energy(:) = 0.0_dp
+               modal_occ(:) = 0.0_dp
+               DO a = 1, m
+                  DO b = 1, m
+                     component_weight = ABS(cluster_evec(b, a))**2
+                     modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
+                     modal_occ(a) = modal_occ(a) + component_weight*occ_slope(first + b - 1)
+                  END DO
+               END DO
                first_b = last + 1
                DO WHILE (first_b <= n)
                   last_b = first_b
@@ -19441,35 +19460,59 @@ CONTAINS
                   END DO
                   m_b = last_b - first_b + 1
                   IF (m_b > 1) THEN
-                     cluster_energy_b = SUM(evals(first_b:last_b))/REAL(m_b, KIND=dp)
-                     cluster_occ_b = SUM(occ_slope(first_b:last_b))/REAL(m_b, KIND=dp)
-                     cluster_curv_b = SUM(MAX(0.0_dp, occ_curv_channel(first_b:last_b)))/ &
-                                      REAL(m_b, KIND=dp)
-                     denom = cluster_energy - cluster_energy_b
-                     IF (ABS(denom) > gap_tol) THEN
-                        offdiag_coeff = (cluster_occ - cluster_occ_b)/denom
-                     ELSE
-                        offdiag_coeff = 0.0_dp
-                     END IF
-                     offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
-                     slope_cap = 2.0_dp*MAX(0.0_dp, MAX(cluster_curv, cluster_curv_b))
-                     IF (slope_cap > EPSILON(slope_cap)) THEN
-                        offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
-                     ELSE
-                        offdiag_coeff = 0.0_dp
-                     END IF
-                     ALLOCATE (response_block(m, m_b))
-                     response_block(:, :) = projector_weight*offdiag_coeff*work(first:last, first_b:last_b)
+                     ALLOCATE (cluster_work_b(m_b, m_b), cluster_evec_b(m_b, m_b), &
+                               cluster_eval_b(m_b), modal_curv_b(m_b), modal_energy_b(m_b), &
+                               modal_occ_b(m_b), modal_block(m, m_b), response_block(m, m_b))
+                     cluster_work_b(:, :) = 0.5_dp*(work(first_b:last_b, first_b:last_b) + &
+                                                    CONJG(TRANSPOSE(work(first_b:last_b, first_b:last_b))))
+                     CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
+                     CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, &
+                                                                  occ_curv_channel(first_b:last_b), &
+                                                                  modal_curv_b)
+                     modal_energy_b(:) = 0.0_dp
+                     modal_occ_b(:) = 0.0_dp
+                     DO a = 1, m_b
+                        DO b = 1, m_b
+                           component_weight = ABS(cluster_evec_b(b, a))**2
+                           modal_energy_b(a) = modal_energy_b(a) + &
+                                               component_weight*evals(first_b + b - 1)
+                           modal_occ_b(a) = modal_occ_b(a) + component_weight*occ_slope(first_b + b - 1)
+                        END DO
+                     END DO
+                     modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), &
+                                                MATMUL(work(first:last, first_b:last_b), cluster_evec_b))
+                     DO b = 1, m_b
+                        DO a = 1, m
+                           denom = modal_energy(a) - modal_energy_b(b)
+                           IF (ABS(denom) > gap_tol) THEN
+                              offdiag_coeff = (modal_occ(a) - modal_occ_b(b))/denom
+                           ELSE
+                              offdiag_coeff = 0.0_dp
+                           END IF
+                           offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
+                           slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), modal_curv_b(b)))
+                           IF (slope_cap > EPSILON(slope_cap)) THEN
+                              offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
+                           ELSE
+                              offdiag_coeff = 0.0_dp
+                           END IF
+                           modal_block(a, b) = offdiag_coeff*modal_block(a, b)
+                        END DO
+                     END DO
+                     response_block(:, :) = projector_weight*MATMUL(cluster_evec, &
+                                                                    MATMUL(modal_block, CONJG(TRANSPOSE(cluster_evec_b))))
                      DO b = 1, m_b
                         DO a = 1, m
                            kernel(first + a - 1, first_b + b - 1) = response_block(a, b)
                            kernel(first_b + b - 1, first + a - 1) = CONJG(response_block(a, b))
                         END DO
                      END DO
-                     DEALLOCATE (response_block)
+                     DEALLOCATE (cluster_work_b, cluster_evec_b, cluster_eval_b, modal_curv_b, &
+                                 modal_energy_b, modal_occ_b, modal_block, response_block)
                   END IF
                   first_b = last_b + 1
                END DO
+               DEALLOCATE (cluster_work, cluster_evec, cluster_eval, modal_curv, modal_energy, modal_occ)
             END IF
             first = last + 1
          END DO
