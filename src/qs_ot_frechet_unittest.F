@@ -192,6 +192,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-14_dp, nfail)
    CALL check_projector_direct_selected_history_quality( &
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_tail_selection_quality( &
+      "complex projector Direct tail selection quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_probe_bootstrap( &
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
@@ -7597,7 +7599,6 @@ CONTAINS
       selected_good = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                     2.0E-5_dp, 16, 5, 0.14_dp, 0.08_dp, &
                                                     0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
-
       err = 0.0_dp
       IF (.NOT. bootstrap_ready .OR. promoted_veto .OR. enabled_veto .OR. trust_veto .OR. &
           selected_bad .OR. selected_low_wait .OR. .NOT. selected_low_positive .OR. &
@@ -8030,6 +8031,47 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief Check that residual-tail Direct selection does not double-count correlated histories.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_tail_selection_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, no_history, product_collapse, &
+                                                            shadow_floor, shadow_quality, &
+                                                            stale_selected_quality, trace_quality
+
+      trace_quality = 7.55E-2_dp
+      shadow_quality = 7.53E-2_dp
+      stale_selected_quality = 3.6E-4_dp
+
+      shadow_floor = dense_direct_tail_selection_quality(trace_quality, &
+                                                         MAX(shadow_quality, stale_selected_quality))
+      product_collapse = trace_quality*stale_selected_quality
+      no_history = dense_direct_tail_selection_quality(trace_quality, 1.0_dp)
+
+      err = ABS(shadow_floor - shadow_quality)
+      err = MAX(err, ABS(no_history - trace_quality))
+
+      IF (err > tol .OR. shadow_floor <= 100.0_dp*product_collapse .OR. &
+          shadow_floor > trace_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/trace/shadow/stale/product", err, trace_quality, shadow_floor, &
+            stale_selected_quality, product_collapse
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/trace/shadow/stale/product", err, trace_quality, shadow_floor, &
+            stale_selected_quality, product_collapse
+      END IF
+
+   END SUBROUTINE check_projector_direct_tail_selection_quality
 
 ! **************************************************************************************************
 !> \brief Check that scaled Direct steps use the Schur quadratic, not the unscaled RHS product.
@@ -9822,6 +9864,26 @@ CONTAINS
       step_scale = 1.0_dp - maturity*(1.0_dp - target_scale)
 
    END FUNCTION dense_direct_history_step_scale
+
+! **************************************************************************************************
+!> \brief Dense mirror of correlated Direct tail selection quality.
+!> \param base_quality ...
+!> \param history_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_tail_selection_quality(base_quality, history_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, history_quality
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: clipped_history
+
+      quality = MAX(0.0_dp, MIN(1.0_dp, base_quality))
+      IF (history_quality <= 0.0_dp) RETURN
+
+      clipped_history = MAX(0.0_dp, MIN(1.0_dp, history_quality))
+      quality = MIN(quality, clipped_history)
+
+   END FUNCTION dense_direct_tail_selection_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of accepted-drop Direct history growth.

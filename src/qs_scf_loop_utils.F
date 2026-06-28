@@ -8996,6 +8996,15 @@ CONTAINS
                projector_physical_direct_history_scale* &
                projector_physical_direct_history_growth_scale
          END IF
+         IF (projector_physical_direct_shadow_quality_for_promotion > &
+             EPSILON(projector_physical_direct_shadow_quality_for_promotion)) THEN
+            projector_physical_direct_quality_for_selection = &
+               MAX(projector_physical_direct_quality_for_selection, &
+                   MIN(1.0_dp, MAX(0.0_dp, projector_physical_direct_shadow_quality_for_promotion)))
+            projector_physical_direct_history_quality = &
+               MAX(projector_physical_direct_history_quality, &
+                   projector_physical_direct_shadow_quality_for_promotion)
+         END IF
          projector_physical_direct_density_audit_quality = &
             kpoint_ot_density_audit_trust_quality( &
             local_ot_env(1)%schur_projector_density_audit_lowcurv_ema, &
@@ -12981,9 +12990,9 @@ CONTAINS
                               direction_scale
                            IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                               projector_physical_direct_quality_for_selection = &
-                              projector_physical_direct_quality_for_selection* &
-                              MAX(0.0_dp, MIN(1.0_dp, &
-                                              projector_physical_direct_history_quality))
+                              kpoint_ot_direct_tail_selection_quality( &
+                              projector_physical_direct_quality_for_selection, &
+                              projector_physical_direct_history_quality)
                            ! The physical-direct candidate is selected only after
                            ! accepted-drop history proves it conservative.  Keep the
                            ! Euclidean z.z=g.z scale diagnostic separate from the
@@ -17059,6 +17068,26 @@ CONTAINS
                        MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
 
       END FUNCTION kpoint_ot_direct_history_quality
+
+! **************************************************************************************************
+!> \brief combine correlated Direct quality histories for residual-tail candidate selection
+!> \param base_quality physical/trace-split quality already calibrated by accepted Mermin drops
+!> \param history_quality selected or shadow Direct history from the same accepted-drop stream
+!> \return conservative non-product quality without double-counting correlated evidence
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_tail_selection_quality(base_quality, history_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, history_quality
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: clipped_history
+
+         quality = MAX(0.0_dp, MIN(1.0_dp, base_quality))
+         IF (history_quality <= 0.0_dp) RETURN
+
+         clipped_history = MAX(0.0_dp, MIN(1.0_dp, history_quality))
+         quality = MIN(quality, clipped_history)
+
+      END FUNCTION kpoint_ot_direct_tail_selection_quality
 
 ! **************************************************************************************************
 !> \brief maturity-weighted selected-history calibration for physical Direct selection
