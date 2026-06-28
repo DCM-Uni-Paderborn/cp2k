@@ -8116,11 +8116,11 @@ CONTAINS
             SUM(ABS(response_density_floor_audit(:, :) - response_density_physical(:, :)))
          projector_physical_density_full_abs_avg = SUM(ABS(response_density_full(:, :)))
          projector_density_full_audit_abs_avg = SUM(ABS(response_density_full_audit(:, :)))
-         ! Use the floor-limited physical density response for the global
-         ! fixed-N candidate.  The raw full-density audit remains printed
-         ! separately, but it is too gauge/noise sensitive to drive the
-         ! accepted-step model directly in the metallic tail.
-         response_density_full_global(:, :) = response_density_floor_audit(:, :)
+         ! Use the active-window, gauge-safe physical density response for
+         ! the global fixed-N candidate.  The floor-limited eigenvalue
+         ! response remains an audit channel, but by itself it misses the
+         ! finite occupation response that dominates the metallic tail.
+         response_density_full_global(:, :) = response_density_physical(:, :)
          DO s = 1, nrot
             CALL project_kpoint_ot_schur_response(response_density_full_global(:, s), occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
