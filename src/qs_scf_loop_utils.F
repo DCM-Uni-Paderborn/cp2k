@@ -1925,18 +1925,23 @@ CONTAINS
 !> \param density_safe_response gauge-safe dP/occupation-curvature response
 !> \param occ_curv ...
 !> \param occ_curv_max ...
+!> \param density_projector_centered_response ...
+!> \param density_safe_centered_response ...
 !> \return floor-limited eigenvalue response without projector-basis dP gauge amplification
 ! **************************************************************************************************
    FUNCTION kpoint_ot_physical_density_response(density_projector_response, density_safe_response, &
-                                                occ_curv, occ_curv_max) RESULT(density_response)
+                                                occ_curv, occ_curv_max, &
+                                                density_projector_centered_response, &
+                                                density_safe_centered_response) RESULT(density_response)
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, &
                                                             density_safe_response, occ_curv, &
                                                             occ_curv_max
+      REAL(KIND=dp), INTENT(IN), OPTIONAL :: density_projector_centered_response, &
+         density_safe_centered_response
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp)                                      :: active_fraction, projector_abs, &
-                                                            response_shape, safe_abs, safe_blend, &
-                                                            safe_cap, safe_component
+      REAL(KIND=dp) :: active_fraction, projector_abs, response_shape, safe_abs, safe_blend, &
+         safe_cap, safe_component, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -1947,9 +1952,15 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       safe_component = density_projector_response
-      IF (density_projector_response*density_safe_response > 0.0_dp .OR. &
-          (ABS(density_projector_response) <= EPSILON(density_projector_response) .AND. &
-           ABS(density_safe_response) > EPSILON(density_safe_response))) THEN
+      sign_projector_response = density_projector_response
+      sign_safe_response = density_safe_response
+      IF (PRESENT(density_projector_centered_response)) &
+         sign_projector_response = density_projector_centered_response
+      IF (PRESENT(density_safe_centered_response)) &
+         sign_safe_response = density_safe_centered_response
+      IF (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+          (ABS(sign_projector_response) <= EPSILON(sign_projector_response) .AND. &
+           ABS(sign_safe_response) > EPSILON(sign_safe_response))) THEN
          projector_abs = ABS(density_projector_response)
          safe_abs = ABS(density_safe_response)
          safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
@@ -18739,11 +18750,12 @@ CONTAINS
       INTEGER                                            :: ie, imo, jmo, r, s
       LOGICAL                                            :: fd_cluster_used
       REAL(KIND=dp) :: channel_occ_curv_max, density_plateau_full_response, &
-         density_plateau_response, density_response, projector_response, projector_weight, &
-         raw_response
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_floor_audit_column, density_full_column, &
-         density_mixed_column, density_plateau_column, density_projector_column, eps_m, eps_p, &
-         projector_evals, projector_evals_m, projector_evals_p
+         density_plateau_response, density_response, projector_centered_shift, projector_response, &
+         projector_weight, raw_response, safe_centered_shift, weighted_curv_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_floor_audit_column, &
+         density_full_centered_column, density_full_column, density_mixed_column, &
+         density_plateau_centered_column, density_plateau_column, density_projector_column, eps_m, &
+         eps_p, projector_evals, projector_evals_m, projector_evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, u_im, u_re, x_im, x_m_im, &
                                                             x_m_re, x_p_im, x_p_re, x_re
@@ -18766,8 +18778,10 @@ CONTAINS
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
-         ALLOCATE (density_floor_audit_column(nmo), density_full_column(nmo), density_mixed_column(nmo), &
-                   density_plateau_column(nmo), density_projector_column(nmo))
+         ALLOCATE (density_floor_audit_column(nmo), density_full_centered_column(nmo), &
+                   density_full_column(nmo), density_mixed_column(nmo), &
+                   density_plateau_centered_column(nmo), density_plateau_column(nmo), &
+                   density_projector_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
          u = CMPLX(u_re, u_im, KIND=dp)
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
@@ -18898,6 +18912,8 @@ CONTAINS
                density_floor_audit_column(:) = 0.0_dp
                density_mixed_column(:) = 0.0_dp
                density_plateau_column(:) = 0.0_dp
+               density_plateau_centered_column(:) = 0.0_dp
+               density_full_centered_column(:) = 0.0_dp
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! The physical density-response channel follows the finite
@@ -18908,10 +18924,31 @@ CONTAINS
                      density_plateau_column(ie) = density_projector_column(ie)
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
+                  END IF
+               END DO
+               density_plateau_centered_column(:) = density_plateau_column(:)
+               density_full_centered_column(:) = density_full_column(:)
+               weighted_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
+               IF (weighted_curv_sum > EPSILON(weighted_curv_sum)) THEN
+                  projector_centered_shift = DOT_PRODUCT(MAX(0.0_dp, occ_curv_channel(:)), &
+                                                         density_plateau_centered_column(:))/ &
+                                             weighted_curv_sum
+                  safe_centered_shift = DOT_PRODUCT(MAX(0.0_dp, occ_curv_channel(:)), &
+                                                    density_full_centered_column(:))/ &
+                                        weighted_curv_sum
+                  density_plateau_centered_column(:) = density_plateau_centered_column(:) - &
+                                                       projector_centered_shift
+                  density_full_centered_column(:) = density_full_centered_column(:) - &
+                                                    safe_centered_shift
+               END IF
+               DO ie = 1, nmo
+                  IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      density_mixed_column(ie) = &
                         kpoint_ot_physical_density_response(density_plateau_column(ie), &
                                                             density_full_column(ie), &
-                                                            occ_curv_channel(ie), channel_occ_curv_max)
+                                                            occ_curv_channel(ie), channel_occ_curv_max, &
+                                                            density_plateau_centered_column(ie), &
+                                                            density_full_centered_column(ie))
                      density_floor_audit_column(ie) = &
                         kpoint_ot_physical_density_floor_audit_response(density_plateau_column(ie), &
                                                                         density_full_column(ie), &
@@ -19030,8 +19067,9 @@ CONTAINS
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
-         DEALLOCATE (density_floor_audit_column, density_full_column, density_mixed_column, &
-                     density_plateau_column, density_projector_column)
+         DEALLOCATE (density_floor_audit_column, density_full_centered_column, density_full_column, &
+                     density_mixed_column, density_plateau_centered_column, density_plateau_column, &
+                     density_projector_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
