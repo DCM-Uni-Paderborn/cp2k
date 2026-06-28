@@ -182,7 +182,6 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
                                         ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
                                         ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
-
    PUBLIC :: qs_scf_set_loop_flags, &
              qs_scf_new_mos, qs_scf_new_mos_kp, &
              qs_scf_density_mixing, qs_scf_check_inner_exit, &
@@ -1274,6 +1273,8 @@ CONTAINS
       local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
       local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
       local_ot_env(1)%schur_model_control_delta = 0.0_dp
+      local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
+      local_ot_env(1)%schur_residual_history_quality = 1.0_dp
       DO local_channel = 1, SIZE(local_ot_env)
          local_ot_env(local_channel)%use_dx = .FALSE.
          local_ot_env(local_channel)%use_gx_old = .FALSE.
@@ -3489,6 +3490,8 @@ CONTAINS
          calibrated_predicted_drop = local_ot_env(1)%schur_model_calibrated_drop
          IF (calibrated_predicted_drop <= EPSILON(calibrated_predicted_drop)) &
             calibrated_predicted_drop = predicted_drop
+         local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
+         local_ot_env(1)%schur_residual_history_quality = 1.0_dp
          measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
          local_ot_env(1)%schur_model_measured_drop = measured_drop
          CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_current_delta)
@@ -3541,6 +3544,20 @@ CONTAINS
                      raw_residual_quality_ratio, residual_quality_ratio, &
                      sample_accepted_drop, sample_reference_drop
                END IF
+            END IF
+         END IF
+         IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
+             local_ot_env(1)%schur_model_delta > EPSILON(local_ot_env(1)%schur_model_delta) .AND. &
+             local_ot_env(1)%schur_model_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+             residual_current_delta >= local_ot_env(1)%schur_model_delta) THEN
+            local_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
+            local_ot_env(1)%schur_residual_history_quality = residual_quality_ratio
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                  " OT Schur residual-aware CG reset marked q raw_q delta current:", &
+                  residual_quality_ratio, raw_residual_quality_ratio, &
+                  local_ot_env(1)%schur_model_delta, residual_current_delta
             END IF
          END IF
          IF (local_ot_env(1)%schur_history_mixed) THEN

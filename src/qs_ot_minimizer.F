@@ -1152,8 +1152,8 @@ CONTAINS
                                                             schur_attempt, schur_flavor, &
                                                             schur_last_attempt, schur_last_flavor
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
-         reset_to_sd, schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
-         schur_projector_tail_reset
+         reset_to_sd, residual_history_reset, schur_history_change, schur_history_mixed, &
+         schur_projector_jump_reset, schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
@@ -1173,6 +1173,7 @@ CONTAINS
       END DO
       history_spike_reset = .FALSE.
       negative_beta = .FALSE.
+      residual_history_reset = .FALSE.
       reset_to_sd = .FALSE.
       schur_attempt = qs_ot_env(1)%schur_model_attempt
       schur_flavor = qs_ot_env(1)%schur_model_flavor
@@ -1456,6 +1457,16 @@ CONTAINS
          beta_pr = 0.0_dp
          reset_to_sd = .TRUE.
       END IF
+      residual_history_reset = complex_kpoint_history .AND. &
+                               qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+                               qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+                               qs_ot_env(1)%schur_residual_history_reset_pending .AND. &
+                               beta_pr > 0.0_dp
+      IF (residual_history_reset) THEN
+         beta_pr = 0.0_dp
+         reset_to_sd = .TRUE.
+      END IF
+      qs_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
 
       test_down = 0.0_dp
       IF (do_ks) THEN
@@ -1521,11 +1532,12 @@ CONTAINS
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),4(1X,I6),5(1X,L1))') &
-            " OT CG beta raw used gnorm old cross down ratio schur_att last flavor last neg hist_change mixed reset spike:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),4(1X,I6),6(1X,L1))') &
+            " OT CG beta raw used gnorm old cross down ratio schur_att last flavor last neg "// &
+            "hist_change mixed reset spike resid_reset:", &
             beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, gnorm_ratio, &
             schur_attempt, schur_last_attempt, schur_flavor, schur_last_flavor, negative_beta, &
-            schur_history_change, schur_history_mixed, reset_to_sd, history_spike_reset
+            schur_history_change, schur_history_mixed, reset_to_sd, history_spike_reset, residual_history_reset
       END IF
       ! since we change the direction we have to adjust the gradient
       qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm
