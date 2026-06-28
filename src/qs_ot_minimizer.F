@@ -54,6 +54,11 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_history_jump_new_norm = 1.0E-3_dp, &
                                         ot_cg_kp_projector_jump_ratio = 8.0E1_dp, &
                                         ot_cg_kp_projector_jump_new_norm = 1.0E-4_dp, &
+                                        ot_cg_kp_residual_tail_jump_ratio = 5.0E1_dp, &
+                                        ot_cg_kp_residual_tail_jump_beta = 1.0E1_dp, &
+                                        ot_cg_kp_residual_tail_jump_norm = 1.0E-10_dp, &
+                                        ot_cg_kp_residual_tail_min_delta = 3.0E-6_dp, &
+                                        ot_cg_kp_residual_tail_max_delta = 5.0E-6_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp
 
@@ -1154,8 +1159,8 @@ CONTAINS
                                                             schur_attempt, schur_flavor, &
                                                             schur_last_attempt, schur_last_flavor
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
-         reset_to_sd, residual_history_reset, schur_history_change, schur_history_mixed, &
-         schur_projector_jump_reset, schur_projector_tail_reset
+         reset_to_sd, residual_history_reset, residual_tail_spike_reset, schur_history_change, &
+         schur_history_mixed, schur_projector_jump_reset, schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
@@ -1177,6 +1182,7 @@ CONTAINS
       history_spike_reset = .FALSE.
       negative_beta = .FALSE.
       residual_history_reset = .FALSE.
+      residual_tail_spike_reset = .FALSE.
       reset_to_sd = .FALSE.
       schur_attempt = qs_ot_env(1)%schur_model_attempt
       schur_flavor = qs_ot_env(1)%schur_model_flavor
@@ -1445,11 +1451,21 @@ CONTAINS
                                    beta_pr > ot_cg_kp_projector_tail_beta .AND. &
                                    qs_ot_env(1)%gnorm > ot_cg_kp_projector_tail_norm .AND. &
                                    gnorm_ratio > ot_cg_kp_projector_tail_ratio
+      residual_tail_spike_reset = complex_kpoint_history .AND. &
+                                  qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+                                  qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta > ot_cg_kp_residual_tail_min_delta .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta < ot_cg_kp_residual_tail_max_delta .AND. &
+                                  beta_pr > ot_cg_kp_residual_tail_jump_beta .AND. &
+                                  qs_ot_env(1)%gnorm > ot_cg_kp_residual_tail_jump_norm .AND. &
+                                  gnorm_ratio > ot_cg_kp_residual_tail_jump_ratio
       history_spike_reset = complex_kpoint_history .AND. &
                             qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                             qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
                             beta_pr > 0.0_dp .AND. &
                             (schur_projector_jump_reset .OR. schur_projector_tail_reset .OR. &
+                             residual_tail_spike_reset .OR. &
                              (qs_ot_env(1)%gnorm > ot_cg_kp_history_spike_new_norm .AND. &
                               ((qs_ot_env(1)%gnorm_old < ot_cg_kp_history_spike_old_norm .AND. &
                                 gnorm_ratio > ot_cg_kp_history_spike_ratio) .OR. &
