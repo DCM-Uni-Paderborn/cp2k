@@ -14835,7 +14835,8 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_selected + &
                   density_full_history_drop
             END IF
-            IF (projector_density_full_history_enabled .AND. &
+            IF (density_full_global_candidate_selected .AND. &
+                projector_density_full_history_enabled .AND. &
                 exact_density_full_audit_ready .AND. &
                 accepted_model_calibrated_drop > ot_kp_schur_projector_density_full_min_drop) THEN
                rx_e(:) = accepted_z_e(:) - z_exact_physical_trial(:)
