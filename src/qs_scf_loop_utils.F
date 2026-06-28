@@ -13585,11 +13585,14 @@ CONTAINS
                   dense_expected_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
                                                                       dense_quality_for_selection, &
                                                                       dense_trust_quality)
-               IF (.NOT. attempt_failed .AND. local_ot_env(1)%schur_projector_response_candidate_enabled .AND. &
+               ! Candidate-specific response trust may rescue a dense base step
+               ! rejected by the generic attempt gate.
+               IF (local_ot_env(1)%schur_projector_response_candidate_enabled .AND. &
                    projector_response_candidate_ready .AND. &
                    projector_response_expected_drop > EPSILON(projector_response_expected_drop) .AND. &
                    projector_response_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   projector_response_candidate_selected = .TRUE.
                   projector_physical_direct_density_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -13622,7 +13625,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             projector_physical_direct_density_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. projector_physical_direct_density_candidate_ready .AND. &
+               IF (projector_physical_direct_density_candidate_ready .AND. &
                    projector_physical_direct_density_expected_drop > &
                    EPSILON(projector_physical_direct_density_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
@@ -13636,6 +13639,7 @@ CONTAINS
                     local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
                     local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
                     dense_residual_quality))) THEN
+                  attempt_failed = .FALSE.
                   projector_physical_direct_density_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
                   projector_physical_direct_candidate_selected = .FALSE.
@@ -13675,11 +13679,12 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_descent_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_descent_candidate_ready .AND. &
+               IF (density_descent_candidate_ready .AND. &
                    density_descent_expected_drop > EPSILON(density_descent_expected_drop) .AND. &
                    dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   density_descent_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
                   projector_physical_direct_candidate_selected = .FALSE.
@@ -13717,7 +13722,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_full_candidate_ready .AND. &
+               IF (density_full_candidate_ready .AND. &
                    density_full_expected_drop > EPSILON(density_full_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -13730,6 +13735,7 @@ CONTAINS
                      local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
                      local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
                      dense_residual_quality)))) THEN
+                  attempt_failed = .FALSE.
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
                   projector_physical_candidate_selected = .FALSE.
@@ -13767,7 +13773,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_global_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_full_global_candidate_ready .AND. &
+               IF (density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -13779,6 +13785,7 @@ CONTAINS
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
                      1.0_dp, 1.0_dp, 0, dense_residual_quality)))) THEN
+                  attempt_failed = .FALSE.
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -13817,7 +13824,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_direct_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_full_direct_candidate_ready .AND. &
+               IF (density_full_direct_candidate_ready .AND. &
                    density_full_direct_expected_drop > EPSILON(density_full_direct_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -13834,6 +13841,7 @@ CONTAINS
                                                               local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
                                                               local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
                                                               dense_residual_quality)))) THEN
+                  attempt_failed = .FALSE.
                   density_full_direct_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -13869,8 +13877,7 @@ CONTAINS
                                                 density_full_direct_expected_drop)
                   dense_expected_drop = dense_branch_expected_drop
                END IF
-               IF (.NOT. attempt_failed .AND. &
-                   (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
+               IF ((local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                     (projector_physical_direct_candidate_used .AND. &
                      (projector_physical_direct_promoted .OR. &
                       projector_physical_direct_mixed_enabled .OR. &
@@ -13879,6 +13886,7 @@ CONTAINS
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                    projector_physical_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   projector_physical_candidate_selected = .TRUE.
                   projector_physical_direct_candidate_selected = projector_physical_direct_candidate_used
                   projector_physical_direct_density_candidate_selected = .FALSE.
@@ -13916,8 +13924,7 @@ CONTAINS
                   END IF
                   dense_expected_drop = projector_physical_expected_drop
                END IF
-               IF (.NOT. attempt_failed .AND. &
-                   projector_physical_direct_spectral_candidate_ready .AND. &
+               IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
                    ((local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
@@ -13925,6 +13932,7 @@ CONTAINS
                      ot_kp_schur_projector_response_advantage_ratio* &
                      MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .OR. &
                     projector_physical_direct_spectral_probe_ready)) THEN
+                  attempt_failed = .FALSE.
                   projector_physical_direct_spectral_candidate_selected = .TRUE.
                   projector_physical_direct_spectral_probe_selected = &
                      projector_physical_direct_spectral_probe_ready .AND. &
@@ -13970,12 +13978,13 @@ CONTAINS
                   projector_offdiag_expected_drop_ratio = &
                      projector_offdiag_expected_drop/projector_offdiag_reference_drop
                END IF
-               IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+               IF (.NOT. projector_physical_direct_candidate_selected .AND. &
                    .NOT. projector_physical_direct_spectral_candidate_selected .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
                    projector_offdiag_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   projector_offdiag_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
                   projector_physical_direct_candidate_selected = .FALSE.
@@ -14099,11 +14108,14 @@ CONTAINS
                   dense_expected_drop = kpoint_ot_schur_expected_drop(model_calibrated_drop, &
                                                                       dense_quality_for_selection, &
                                                                       dense_trust_quality)
-               IF (.NOT. attempt_failed .AND. local_ot_env(1)%schur_projector_response_candidate_enabled .AND. &
+               ! Candidate-specific response trust may rescue a dense base step
+               ! rejected by the generic attempt gate.
+               IF (local_ot_env(1)%schur_projector_response_candidate_enabled .AND. &
                    projector_response_candidate_ready .AND. &
                    projector_response_expected_drop > EPSILON(projector_response_expected_drop) .AND. &
                    projector_response_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   projector_response_candidate_selected = .TRUE.
                   projector_physical_direct_density_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -14136,7 +14148,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             projector_physical_direct_density_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. projector_physical_direct_density_candidate_ready .AND. &
+               IF (projector_physical_direct_density_candidate_ready .AND. &
                    projector_physical_direct_density_expected_drop > &
                    EPSILON(projector_physical_direct_density_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
@@ -14150,6 +14162,7 @@ CONTAINS
                     local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
                     local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
                     dense_residual_quality))) THEN
+                  attempt_failed = .FALSE.
                   projector_physical_direct_density_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
                   projector_physical_direct_candidate_selected = .FALSE.
@@ -14189,11 +14202,12 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_descent_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_descent_candidate_ready .AND. &
+               IF (density_descent_candidate_ready .AND. &
                    density_descent_expected_drop > EPSILON(density_descent_expected_drop) .AND. &
                    dense_branch_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                       EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   density_descent_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
                   projector_physical_direct_candidate_selected = .FALSE.
@@ -14229,7 +14243,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_full_candidate_ready .AND. &
+               IF (density_full_candidate_ready .AND. &
                    density_full_expected_drop > EPSILON(density_full_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -14242,6 +14256,7 @@ CONTAINS
                      local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
                      local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
                      dense_residual_quality)))) THEN
+                  attempt_failed = .FALSE.
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
                   projector_physical_candidate_selected = .FALSE.
@@ -14278,7 +14293,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_global_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_full_global_candidate_ready .AND. &
+               IF (density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -14290,6 +14305,7 @@ CONTAINS
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
                      1.0_dp, 1.0_dp, 0, dense_residual_quality)))) THEN
+                  attempt_failed = .FALSE.
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -14328,7 +14344,7 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_direct_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
-               IF (.NOT. attempt_failed .AND. density_full_direct_candidate_ready .AND. &
+               IF (density_full_direct_candidate_ready .AND. &
                    density_full_direct_expected_drop > EPSILON(density_full_direct_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -14345,6 +14361,7 @@ CONTAINS
                                                               local_ot_env(1)%schur_projector_density_fdir_sel_resid_quality_ema, &
                                                               local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples, &
                                                               dense_residual_quality)))) THEN
+                  attempt_failed = .FALSE.
                   density_full_direct_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
                   density_descent_candidate_selected = .FALSE.
@@ -14380,8 +14397,7 @@ CONTAINS
                                                 density_full_direct_expected_drop)
                   dense_expected_drop = dense_branch_expected_drop
                END IF
-               IF (.NOT. attempt_failed .AND. &
-                   (local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
+               IF ((local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                     (projector_physical_direct_candidate_used .AND. &
                      (projector_physical_direct_promoted .OR. &
                       projector_physical_direct_mixed_enabled .OR. &
@@ -14390,6 +14406,7 @@ CONTAINS
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                    projector_physical_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   projector_physical_candidate_selected = .TRUE.
                   projector_physical_direct_candidate_selected = projector_physical_direct_candidate_used
                   projector_physical_direct_density_candidate_selected = .FALSE.
@@ -14427,8 +14444,7 @@ CONTAINS
                   END IF
                   dense_expected_drop = projector_physical_expected_drop
                END IF
-               IF (.NOT. attempt_failed .AND. &
-                   projector_physical_direct_spectral_candidate_ready .AND. &
+               IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
                    ((local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
@@ -14436,6 +14452,7 @@ CONTAINS
                      ot_kp_schur_projector_response_advantage_ratio* &
                      MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .OR. &
                     projector_physical_direct_spectral_probe_ready)) THEN
+                  attempt_failed = .FALSE.
                   projector_physical_direct_spectral_candidate_selected = .TRUE.
                   projector_physical_direct_spectral_probe_selected = &
                      projector_physical_direct_spectral_probe_ready .AND. &
@@ -14481,12 +14498,13 @@ CONTAINS
                   projector_offdiag_expected_drop_ratio = &
                      projector_offdiag_expected_drop/projector_offdiag_reference_drop
                END IF
-               IF (.NOT. attempt_failed .AND. .NOT. projector_physical_direct_candidate_selected .AND. &
+               IF (.NOT. projector_physical_direct_candidate_selected .AND. &
                    .NOT. projector_physical_direct_spectral_candidate_selected .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
                    projector_offdiag_expected_drop >= &
                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                  attempt_failed = .FALSE.
                   projector_offdiag_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
                   projector_physical_direct_candidate_selected = .FALSE.
