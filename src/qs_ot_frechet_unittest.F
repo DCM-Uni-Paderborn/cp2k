@@ -196,6 +196,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
+   CALL check_projector_dense_metric_tail_bridge( &
+      "complex projector dense metric tail bridge", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_basis_weight("complex projector trace-active Direct basis", &
@@ -7670,6 +7672,54 @@ CONTAINS
    END SUBROUTINE check_projector_density_full_direct_tail_probe
 
 ! **************************************************************************************************
+!> \brief Check the residual-tail dense metric-response bridge gate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_dense_metric_tail_bridge(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: low_ema, low_mermin, low_quality, &
+                                                            low_residual, low_samples, ready, &
+                                                            tail_veto
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                             2.5E-1_dp, 9.9E-1_dp, 40)
+      tail_veto = dense_metric_tail_bridge_ready(2.0E-4_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                 2.5E-1_dp, 9.9E-1_dp, 40)
+      low_samples = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 3, &
+                                                   2.5E-1_dp, 9.9E-1_dp, 40)
+      low_quality = dense_metric_tail_bridge_ready(5.0E-5_dp, 4.9E-2_dp, 9.7E-2_dp, 22, &
+                                                   2.5E-1_dp, 9.9E-1_dp, 40)
+      low_ema = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 7.4E-2_dp, 22, &
+                                               2.5E-1_dp, 9.9E-1_dp, 40)
+      low_residual = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                    2.4E-1_dp, 9.9E-1_dp, 40)
+      low_mermin = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                  2.5E-1_dp, 7.9E-1_dp, 40)
+
+      err = 0.0_dp
+      IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_ema .OR. &
+          low_residual .OR. low_mermin) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/ema/residual/mermin", ready, tail_veto, &
+            low_samples, low_quality, low_ema, low_residual, low_mermin
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/ema/residual/mermin", ready, tail_veto, &
+            low_samples, low_quality, low_ema, low_residual, low_mermin
+      END IF
+
+   END SUBROUTINE check_projector_dense_metric_tail_bridge
+
+! **************************************************************************************************
 !> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
 !> \param label ...
 !> \param tol ...
@@ -9539,6 +9589,41 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of the residual-tail dense metric-response bridge gate.
+!> \param residual_delta ...
+!> \param coupled_quality ...
+!> \param coupled_quality_ema ...
+!> \param coupled_samples ...
+!> \param dense_residual_quality ...
+!> \param mermin_quality_ema ...
+!> \param mermin_samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_metric_tail_bridge_ready(residual_delta, coupled_quality, coupled_quality_ema, &
+                                           coupled_samples, dense_residual_quality, &
+                                           mermin_quality_ema, mermin_samples) RESULT(bridge_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, coupled_quality, &
+                                                            coupled_quality_ema
+      INTEGER, INTENT(IN)                                :: coupled_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, &
+                                                            mermin_quality_ema
+      INTEGER, INTENT(IN)                                :: mermin_samples
+      LOGICAL                                            :: bridge_ready
+
+      bridge_ready = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (coupled_samples < 4) RETURN
+      IF (mermin_samples < 4) RETURN
+      IF (coupled_quality < 5.0E-2_dp) RETURN
+      IF (coupled_quality_ema < 7.5E-2_dp) RETURN
+      IF (dense_residual_quality < 2.5E-1_dp) RETURN
+      IF (mermin_quality_ema < 8.0E-1_dp) RETURN
+
+      bridge_ready = .TRUE.
+
+   END FUNCTION dense_metric_tail_bridge_ready
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.

@@ -6051,28 +6051,29 @@ CONTAINS
          exact_density_full_audit_ready, exact_density_full_response_ready, &
          exact_density_plateau_response_ready, exact_density_response_ready, &
          exact_energy_model_ready, exact_physical_response_ready, failed, metric_attempt_response, &
-         metric_attempt_selectable, new_search_point, physical_delta_group_ready, &
-         projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, projector_offdiag_candidate_inactive
-      LOGICAL :: projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
-         projector_physical_candidate_ready, projector_physical_candidate_selected, &
-         projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
+         metric_attempt_selectable, metric_attempt_tail_bridge, new_search_point, &
+         physical_delta_group_ready, projector_density_full_audit_enabled, &
+         projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready
+      LOGICAL :: projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
+         projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
+         projector_physical_candidate_selected, projector_physical_direct_basis_tail_limited, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+         projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_density_residual_bad, &
-         projector_physical_direct_diagref_candidate_ready, projector_physical_direct_mixed_enabled
-      LOGICAL :: projector_physical_direct_mixed_promoted, &
-         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
-         projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_diagref_candidate_ready
+      LOGICAL :: projector_physical_direct_mixed_enabled, &
+         projector_physical_direct_mixed_promoted, projector_physical_direct_normcap_shadow_ready, &
+         projector_physical_direct_promoted, projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
-         projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
-         projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled
-      LOGICAL :: projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
+         projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready
+      LOGICAL :: projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
+         projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, response_model_available, schur_active_subspace, &
          solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
          split_candidate_selected, split_residual_competitive, trust_rejected
@@ -13092,6 +13093,7 @@ CONTAINS
                metric_attempt_response = schur_attempt == 3 .AND. exact_attempt_response .AND. &
                                          projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                                          response_model_available
+               metric_attempt_tail_bridge = .FALSE.
                metric_attempt_selectable = metric_attempt_response .AND. dense_exact_scale_ready .AND. &
                                            local_ot_env(1)%schur_coupled_quality_samples >= &
                                            ot_kp_schur_calibration_min_samples .AND. &
@@ -13104,6 +13106,16 @@ CONTAINS
                   ot_kp_schur_calibration_min_samples .AND. &
                   local_ot_env(1)%schur_step_gauge_residual_quality_ema >= &
                   ot_kp_schur_calibrated_quality_min_ratio
+               IF (metric_attempt_response .AND. .NOT. metric_attempt_selectable) THEN
+                  metric_attempt_tail_bridge = &
+                     kpoint_ot_dense_metric_tail_bridge_ready( &
+                     residual_delta, local_ot_env(1)%schur_coupled_quality, &
+                     local_ot_env(1)%schur_coupled_quality_ema, &
+                     local_ot_env(1)%schur_coupled_quality_samples, dense_residual_quality, &
+                     local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                     local_ot_env(1)%mermin_ls_accepted_quality_samples)
+                  IF (metric_attempt_tail_bridge) metric_attempt_selectable = .TRUE.
+               END IF
                IF (gdotp <= 0.0_dp .OR. gdotp /= gdotp .OR. normp /= normp) THEN
                   attempt_failed = .TRUE.
                   reject_reason = reject_nondescent
@@ -13296,6 +13308,13 @@ CONTAINS
                         target_group, schur_attempt, metric_attempt_selectable, direction_scale, dense_metric_trust_scale, &
                         dense_metric_norm_energy, dense_metric_norm_rotation, dense_metric_normp, &
                         norm_ratio, model_calibrated_drop
+                     IF (metric_attempt_tail_bridge) &
+                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),6(1X,ES16.8))') &
+                        " OT Schur dense metric tail bridge group att q qema rq mqema scale cdrop:", &
+                        target_group, schur_attempt, local_ot_env(1)%schur_coupled_quality, &
+                        local_ot_env(1)%schur_coupled_quality_ema, dense_residual_quality, &
+                        local_ot_env(1)%mermin_ls_accepted_quality_ema, direction_scale, &
+                        model_calibrated_drop
                   END IF
                END IF
             END IF
@@ -17163,6 +17182,42 @@ CONTAINS
                                             EPSILON(1.0_dp)))))
 
       END FUNCTION kpoint_ot_selected_tail_residual_quality
+
+! **************************************************************************************************
+!> \brief whether the dense metric-response scale may bridge a residual-tail fallback
+!> \param residual_delta current OT residual
+!> \param coupled_quality latest coupled Mermin-drop quality
+!> \param coupled_quality_ema EMA of coupled Mermin-drop quality
+!> \param coupled_samples number of coupled calibration samples
+!> \param dense_residual_quality coupled residual quality relative to the active reference
+!> \param mermin_quality_ema accepted-state Mermin line-search quality EMA
+!> \param mermin_samples number of accepted-state Mermin line-search samples
+!> \return true if the metric-response scale is mature enough for fallback handoff
+! **************************************************************************************************
+      FUNCTION kpoint_ot_dense_metric_tail_bridge_ready(residual_delta, coupled_quality, &
+                                                        coupled_quality_ema, coupled_samples, &
+                                                        dense_residual_quality, mermin_quality_ema, &
+                                                        mermin_samples) RESULT(bridge_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, coupled_quality, &
+                                                            coupled_quality_ema
+      INTEGER, INTENT(IN)                                :: coupled_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, &
+                                                            mermin_quality_ema
+      INTEGER, INTENT(IN)                                :: mermin_samples
+      LOGICAL                                            :: bridge_ready
+
+         bridge_ready = .FALSE.
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (coupled_samples < ot_kp_schur_calibration_min_samples) RETURN
+         IF (mermin_samples < ot_kp_schur_calibration_min_samples) RETURN
+         IF (coupled_quality < 0.5_dp*ot_kp_schur_quality_min_ratio) RETURN
+         IF (coupled_quality_ema < 0.75_dp*ot_kp_schur_quality_min_ratio) RETURN
+         IF (dense_residual_quality < ot_kp_schur_calibrated_quality_min_ratio) RETURN
+         IF (mermin_quality_ema < 0.8_dp) RETURN
+
+         bridge_ready = .TRUE.
+
+      END FUNCTION kpoint_ot_dense_metric_tail_bridge_ready
 
 ! **************************************************************************************************
 !> \brief whether a mature full-density response candidate may collect selected tail history
