@@ -53,7 +53,9 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_history_spike_new_norm = 1.0E-6_dp, &
                                         ot_cg_kp_history_jump_new_norm = 1.0E-3_dp, &
                                         ot_cg_kp_projector_jump_ratio = 8.0E1_dp, &
-                                        ot_cg_kp_projector_jump_new_norm = 1.0E-4_dp
+                                        ot_cg_kp_projector_jump_new_norm = 1.0E-4_dp, &
+                                        ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
+                                        ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp
 
 CONTAINS
 !
@@ -1157,7 +1159,8 @@ CONTAINS
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
-         sample_accepted_drop, sample_gap, sample_quality, test_down, tmp
+         residual_trust_quality, residual_trust_scale, sample_accepted_drop, sample_gap, &
+         sample_quality, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1460,9 +1463,16 @@ CONTAINS
       residual_history_reset = complex_kpoint_history .AND. &
                                qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                                qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
-                               qs_ot_env(1)%schur_residual_history_reset_pending .AND. &
-                               beta_pr > 0.0_dp
+                               qs_ot_env(1)%schur_residual_history_reset_pending
+      residual_trust_scale = 1.0_dp
       IF (residual_history_reset) THEN
+         residual_trust_quality = MAX(0.0_dp, MIN(1.0_dp, qs_ot_env(1)%schur_residual_history_quality))
+         residual_trust_scale = SQRT(MAX(residual_trust_quality, &
+                                         ot_cg_kp_residual_trust_quality_floor))
+         residual_trust_scale = MAX(ot_cg_kp_residual_trust_min_scale, MIN(1.0_dp, residual_trust_scale))
+         IF (qs_ot_env(1)%ds_min > 0.0_dp) qs_ot_env(1)%ds_min = qs_ot_env(1)%ds_min*residual_trust_scale
+      END IF
+      IF (residual_history_reset .AND. beta_pr > 0.0_dp) THEN
          beta_pr = 0.0_dp
          reset_to_sd = .TRUE.
       END IF
@@ -1532,10 +1542,11 @@ CONTAINS
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),4(1X,I6),6(1X,L1))') &
-            " OT CG beta raw used gnorm old cross down ratio schur_att last flavor last neg "// &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8),4(1X,I6),6(1X,L1))') &
+            " OT CG beta raw used gnorm old cross down ratio rscale schur_att last flavor last neg "// &
             "hist_change mixed reset spike resid_reset:", &
             beta_raw, beta_pr, qs_ot_env(1)%gnorm, qs_ot_env(1)%gnorm_old, gnorm_cross, test_down, gnorm_ratio, &
+            residual_trust_scale, &
             schur_attempt, schur_last_attempt, schur_flavor, schur_last_flavor, negative_beta, &
             schur_history_change, schur_history_mixed, reset_to_sd, history_spike_reset, residual_history_reset
       END IF
