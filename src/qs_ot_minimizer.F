@@ -1441,12 +1441,12 @@ CONTAINS
                                    beta_pr > ot_cg_kp_history_jump_beta .AND. &
                                    qs_ot_env(1)%gnorm > ot_cg_kp_projector_jump_new_norm .AND. &
                                    gnorm_ratio > ot_cg_kp_projector_jump_ratio .AND. &
-                                   schur_attempt == 3 .AND. schur_last_attempt == 3 .AND. &
+                                   schur_attempt >= 3 .AND. schur_last_attempt >= 3 .AND. &
                                    schur_flavor >= 35 .AND. schur_last_flavor >= 35
       schur_projector_tail_reset = complex_kpoint_history .AND. &
                                    qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                                    qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
-                                   schur_attempt == 3 .AND. schur_last_attempt == 3 .AND. &
+                                   schur_attempt >= 3 .AND. schur_last_attempt >= 3 .AND. &
                                    schur_flavor >= 30 .AND. schur_last_flavor >= 30 .AND. &
                                    beta_pr > ot_cg_kp_projector_tail_beta .AND. &
                                    qs_ot_env(1)%gnorm > ot_cg_kp_projector_tail_norm .AND. &

@@ -14497,8 +14497,12 @@ CONTAINS
                IF (split_candidate_selected) selected_attempt = split_selected_attempt
                schur_used_attempt = selected_attempt
                selected_flavor = selected_attempt
-               IF (selected_attempt == 3) THEN
-                  selected_flavor = 30
+               IF (.NOT. split_candidate_selected) THEN
+                  IF (selected_attempt == 3) selected_flavor = 30
+                  ! Projector/density candidates are built by the exact-response
+                  ! dense attempt and may be selected later while comparing
+                  ! against the raw fallback.  Preserve their sub-flavor so the
+                  ! accepted-step history and CG reset logic see the actual model.
                   IF (projector_response_candidate_selected) selected_flavor = 31
                   IF (projector_physical_direct_density_candidate_selected) selected_flavor = 32
                   IF (density_descent_candidate_selected) selected_flavor = 33
