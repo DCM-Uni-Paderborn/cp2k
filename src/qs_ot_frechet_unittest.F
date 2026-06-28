@@ -240,6 +240,8 @@ PROGRAM qs_ot_frechet_unittest
                                               5.0E-14_dp, nfail)
    CALL check_projector_tail_gauge_quality("complex projector tail gauge quality", &
                                            5.0E-14_dp, nfail)
+   CALL check_projector_raw_tail_rotation_floor( &
+      "complex projector raw-tail rotation floor", 5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
                                                    5.0E-15_dp, nfail)
    CALL check_history_safe_occ_projector_derivative("history-safe occupation-projector derivative", &
@@ -9139,6 +9141,43 @@ CONTAINS
    END SUBROUTINE check_projector_tail_gauge_quality
 
 ! **************************************************************************************************
+!> \brief Raw Schur fallback must keep gauge pair floors in the metallic residual tail.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_raw_tail_rotation_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: above_tail, base_tail, err, &
+                                                            frontier_tail, gauge_tail
+
+      above_tail = dense_raw_tail_rotation_floor(1.0_dp, 1.5_dp, 2.0E-4_dp, 1.0E-4_dp)
+      base_tail = dense_raw_tail_rotation_floor(1.0_dp, 1.0_dp, 1.0E-6_dp, 1.0E-4_dp)
+      frontier_tail = dense_raw_tail_rotation_floor(1.0_dp, 0.5_dp, 1.0E-6_dp, 1.0E-4_dp)
+      gauge_tail = dense_raw_tail_rotation_floor(1.0_dp, 1.5_dp, 1.0E-6_dp, 1.0E-4_dp)
+
+      err = ABS(above_tail - 1.0_dp)
+      err = MAX(err, ABS(base_tail - 1.0_dp))
+      err = MAX(err, ABS(frontier_tail - 1.0_dp))
+      err = MAX(err, ABS(gauge_tail - 1.5_dp))
+
+      IF (err > tol .OR. gauge_tail <= base_tail .OR. frontier_tail /= base_tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with above/base/frontier/gauge", above_tail, base_tail, &
+            frontier_tail, gauge_tail
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with above/base/frontier/gauge", above_tail, base_tail, &
+            frontier_tail, gauge_tail
+      END IF
+
+   END SUBROUTINE check_projector_raw_tail_rotation_floor
+
+! **************************************************************************************************
 !> \brief Dense copy of the residual-tail gauge-step quality.
 !> \param gauge_ratio ...
 !> \param gauge_ratio_ema ...
@@ -9169,6 +9208,25 @@ CONTAINS
       quality = MIN(1.0_dp, MAX(0.25_dp, quality))
 
    END FUNCTION dense_schur_step_gauge_quality
+
+! **************************************************************************************************
+!> \brief Dense copy of the raw-fallback residual-tail rotation floor.
+!> \param base_floor ...
+!> \param pair_floor ...
+!> \param residual_delta ...
+!> \param tail_delta ...
+!> \return raw-fallback row floor
+! **************************************************************************************************
+   FUNCTION dense_raw_tail_rotation_floor(base_floor, pair_floor, residual_delta, tail_delta) &
+      RESULT(row_floor)
+      REAL(KIND=dp), INTENT(IN)                          :: base_floor, pair_floor, residual_delta, &
+                                                            tail_delta
+      REAL(KIND=dp)                                      :: row_floor
+
+      row_floor = base_floor
+      IF (residual_delta <= tail_delta) row_floor = MAX(row_floor, pair_floor)
+
+   END FUNCTION dense_raw_tail_rotation_floor
 
 ! **************************************************************************************************
 !> \brief Dense copy of the sign-aware negative Projector-response mode balance.

@@ -9819,6 +9819,8 @@ CONTAINS
                      row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
                                                                    rot_hessian_projector_physical(r, r), &
                                                                    rot_floor(r))
+               ELSE
+                  row_floor = kpoint_ot_raw_tail_rotation_floor(row_floor, rot_floor(r), residual_delta)
                END IF
                rot_floor_min = MIN(rot_floor_min, row_floor)
                diag_prefloor_avg = diag_prefloor_avg + schur(r, r)
@@ -16989,6 +16991,23 @@ CONTAINS
          row_floor = MIN(frontier_floor, row_floor)
 
       END FUNCTION kpoint_ot_physical_rotation_floor
+
+! **************************************************************************************************
+!> \brief pair-aware row floor for the raw Schur fallback in the metallic residual tail
+!> \param base_floor generic raw-fallback curvature floor
+!> \param pair_floor Fermi-frontier or occupation-gauge pair floor
+!> \param residual_delta current OT residual
+!> \return raw-fallback row floor
+! **************************************************************************************************
+      FUNCTION kpoint_ot_raw_tail_rotation_floor(base_floor, pair_floor, residual_delta) RESULT(row_floor)
+      REAL(KIND=dp), INTENT(IN)                          :: base_floor, pair_floor, residual_delta
+      REAL(KIND=dp)                                      :: row_floor
+
+         row_floor = base_floor
+         IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+            row_floor = MAX(row_floor, pair_floor)
+
+      END FUNCTION kpoint_ot_raw_tail_rotation_floor
 
 ! **************************************************************************************************
 !> \brief ...
