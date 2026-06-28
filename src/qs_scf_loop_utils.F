@@ -6080,22 +6080,25 @@ CONTAINS
          projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
-         projector_physical_direct_density_residual_bad, &
-         projector_physical_direct_diagref_candidate_ready
-      LOGICAL :: projector_physical_direct_mixed_enabled, &
-         projector_physical_direct_mixed_promoted, projector_physical_direct_normcap_shadow_ready, &
-         projector_physical_direct_promoted, projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_density_quality_ready, &
+         projector_physical_direct_density_residual_bad
+      LOGICAL :: projector_physical_direct_density_selected_probe_ready, &
+         projector_physical_direct_diagref_candidate_ready, &
+         projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
+         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
+         projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_ready, &
-         projector_physical_direct_spectral_probe_selected, &
-         projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready
-      LOGICAL :: projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
-         projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
-         projector_response_candidate_selected, response_model_available, schur_active_subspace, &
-         solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected
+         projector_physical_direct_spectral_probe_selected
+      LOGICAL :: projector_physical_direct_spectral_ready, &
+         projector_physical_direct_tail_probe_ready, projector_physical_direct_trace_tail_limited, &
+         projector_physical_shadow_enabled, projector_plateau_gap_model_enabled, &
+         projector_response_candidate_ready, projector_response_candidate_selected, &
+         response_model_available, schur_active_subspace, solved, split_candidate_diagnostic, &
+         split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
+         split_residual_competitive, trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, &
          accepted_model_gap_ratio, accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          accepted_projector_coupled_weight, accepted_projector_inactive_offdiag_abs_ratio, &
@@ -7672,7 +7675,9 @@ CONTAINS
          projector_physical_direct_candidate_used = .FALSE.
          projector_physical_direct_density_candidate_ready = .FALSE.
          projector_physical_direct_density_candidate_selected = .FALSE.
+         projector_physical_direct_density_quality_ready = .FALSE.
          projector_physical_direct_density_residual_bad = .FALSE.
+         projector_physical_direct_density_selected_probe_ready = .FALSE.
          projector_physical_direct_spectral_candidate_ready = .FALSE.
          projector_physical_direct_spectral_candidate_selected = .FALSE.
          projector_physical_direct_spectral_probe_ready = .FALSE.
@@ -9024,6 +9029,7 @@ CONTAINS
             ot_kp_schur_projector_response_quality_max_ratio)
          projector_physical_direct_density_selected_history_quality = 0.0_dp
          projector_physical_direct_density_recent_residual_quality = 1.0_dp
+         projector_physical_direct_density_selected_probe_ready = .FALSE.
          IF (local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples >= &
              ot_kp_schur_calibration_min_samples) THEN
             projector_physical_direct_density_selected_history_quality = &
@@ -9050,6 +9056,11 @@ CONTAINS
                projector_physical_direct_density_selected_history_quality, &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
                ot_kp_schur_calibration_min_samples)
+            projector_physical_direct_density_selected_probe_ready = &
+               projector_physical_direct_density_selected_history_quality >= &
+               ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               projector_physical_direct_density_recent_residual_quality >= &
+               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
          END IF
          projector_physical_direct_density_shadow_quality_for_selection = &
             projector_physical_direct_density_quality_for_selection
@@ -11683,6 +11694,14 @@ CONTAINS
                               projector_physical_direct_density_quality_for_selection, &
                               projector_physical_direct_density_trust_quality* &
                               projector_physical_direct_density_audit_quality)
+                           projector_physical_direct_density_quality_ready = &
+                              residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                              local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples < &
+                              ot_kp_schur_calibration_min_samples .AND. &
+                              projector_physical_direct_density_quality_for_selection >= &
+                              ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                              projector_physical_direct_density_trust_quality >= &
+                              ot_kp_schur_projector_response_quality_min_ratio
                            projector_physical_direct_density_candidate_ready = &
                               ((local_ot_env(1)%schur_projector_density_quality_samples >= &
                                 ot_kp_schur_projector_response_min_samples .AND. &
@@ -11695,7 +11714,9 @@ CONTAINS
                                 projector_physical_direct_floor_density_quality >= &
                                 ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                 projector_physical_direct_floor_density_trust_quality >= &
-                                ot_kp_schur_projector_response_quality_min_ratio)) .AND. &
+                                ot_kp_schur_projector_response_quality_min_ratio) .OR. &
+                               projector_physical_direct_density_quality_ready .OR. &
+                               projector_physical_direct_density_selected_probe_ready) .AND. &
                               projector_physical_direct_density_expected_drop > &
                               EPSILON(projector_physical_direct_density_expected_drop) .AND. &
                               projector_physical_direct_density_response_weighted_step <= &
