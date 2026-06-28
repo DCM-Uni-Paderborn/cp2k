@@ -11698,7 +11698,7 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: active_fraction = 0.99_dp, active_pair_high_fraction = 0.50_dp, &
          active_pair_inert_fraction = 0.01_dp, active_pair_mid_fraction = 0.49_dp, &
          active_pair_tol = 0.98_dp, active_tol = 0.98_dp, dominant_fraction = 0.75_dp, &
-         dominant_tol = 0.85_dp, edge_fraction = 0.55_dp, edge_tol = 0.45_dp, &
+         dominant_tol = 0.85_dp, edge_fraction = 0.55_dp, edge_tol = 0.70_dp, &
          mixed_fraction = 0.65_dp, mixed_tol = 0.80_dp, moderate_fraction = 0.90_dp, &
          moderate_tol = 0.80_dp, raw_tol = 1.0E-12_dp
 
@@ -13196,8 +13196,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
-         active_component_transition_min = 0.50_dp, active_curvature_fraction = 0.25_dp, &
-         significant_component_fraction = 0.5_dp
+         active_component_majority_min = 0.50_dp, active_component_transition_min = 0.50_dp, &
+         active_curvature_fraction = 0.25_dp, significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
       REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
@@ -13240,6 +13240,8 @@ CONTAINS
             IF (modal_floor >= HUGE(1.0_dp)/2.0_dp) modal_floor = curv_floor
             IF (modal_raw < 0.25_dp*curv_max) modal_floor = MIN(modal_floor, curv_floor)
             modal_damped = MIN(modal_raw, SQRT(modal_floor*modal_raw))
+            IF (active_component_fraction > active_component_majority_min) &
+               modal_damped = MAX(modal_damped, active_component_fraction*modal_raw)
             IF (active_component_fraction >= active_component_fraction_min) THEN
                modal_curv(a) = modal_raw
             ELSE IF (active_component_fraction > active_component_transition_min .AND. &
