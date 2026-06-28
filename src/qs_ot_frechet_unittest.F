@@ -5434,8 +5434,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: projector_weight = 0.60_dp
 
       REAL(KIND=dp)                                      :: err, fermi_weight, full_gap, gauge_pair, &
-                                                            half_gap, no_history, over_history, &
-                                                            trusted_gap
+                                                            half_gap, low_history_gap, no_history, &
+                                                            over_history, trusted_gap
 
       fermi_weight = 0.02_dp*projector_weight
       trusted_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
@@ -5444,6 +5444,8 @@ CONTAINS
                                                       0.50_dp, 0.50_dp)
       full_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
                                                       1.00_dp, 0.50_dp)
+      low_history_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
+                                                             1.00_dp, 0.10_dp)
       gauge_pair = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
                                                         0.00_dp, 0.50_dp)
       no_history = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
@@ -5451,23 +5453,24 @@ CONTAINS
       over_history = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
                                                           1.00_dp, 2.00_dp)
 
-      err = ABS(trusted_gap - 0.40_dp*projector_weight)
-      err = MAX(err, ABS(half_gap - 0.25_dp*projector_weight))
-      err = MAX(err, ABS(full_gap - 0.50_dp*projector_weight))
+      err = ABS(trusted_gap - 0.80_dp*SQRT(SQRT(0.50_dp))*projector_weight)
+      err = MAX(err, ABS(half_gap - 0.50_dp*SQRT(SQRT(0.50_dp))*projector_weight))
+      err = MAX(err, ABS(full_gap - SQRT(SQRT(0.50_dp))*projector_weight))
+      err = MAX(err, ABS(low_history_gap - SQRT(SQRT(0.10_dp))*projector_weight))
       err = MAX(err, ABS(gauge_pair - fermi_weight))
       err = MAX(err, ABS(no_history - fermi_weight))
       err = MAX(err, ABS(over_history - projector_weight))
 
       IF (err > tol .OR. trusted_gap <= fermi_weight .OR. gauge_pair > trusted_gap .OR. &
-          no_history > trusted_gap) THEN
+          no_history > trusted_gap .OR. low_history_gap <= 0.10_dp*projector_weight) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with error/trusted/half/full/gauge/nohist", err, trusted_gap, half_gap, &
-            full_gap, gauge_pair, no_history
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/trusted/half/full/lowhist/gauge/nohist", err, trusted_gap, &
+            half_gap, full_gap, low_history_gap, gauge_pair, no_history
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with error/trusted/half/full/gauge/nohist", err, trusted_gap, half_gap, &
-            full_gap, gauge_pair, no_history
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/trusted/half/full/lowhist/gauge/nohist", err, trusted_gap, half_gap, &
+            full_gap, low_history_gap, gauge_pair, no_history
       END IF
 
    END SUBROUTINE check_projector_physical_pair_projector_weight
@@ -12661,14 +12664,16 @@ CONTAINS
                                                             occ_gap_weight, density_weight
       REAL(KIND=dp)                                      :: pair_weight
 
-      REAL(KIND=dp)                                      :: gap_fraction, response_weight
+      REAL(KIND=dp)                                      :: gap_fraction, qualified_response_weight, &
+                                                            response_weight
 
       pair_weight = MAX(0.0_dp, active_weight)
       IF (projector_weight <= 0.0_dp) RETURN
 
       gap_fraction = MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
       response_weight = MIN(1.0_dp, MAX(0.0_dp, density_weight))
-      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*response_weight)
+      qualified_response_weight = SQRT(SQRT(response_weight))
+      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*qualified_response_weight)
       pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
 
    END FUNCTION dense_physical_pair_projector_weight

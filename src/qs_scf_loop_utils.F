@@ -1858,14 +1858,16 @@ CONTAINS
                                                             occ_gap_weight, density_weight
       REAL(KIND=dp)                                      :: pair_weight
 
-      REAL(KIND=dp)                                      :: gap_fraction, response_weight
+      REAL(KIND=dp)                                      :: gap_fraction, qualified_response_weight, &
+                                                            response_weight
 
       pair_weight = MAX(0.0_dp, active_weight)
       IF (projector_weight <= 0.0_dp) RETURN
 
       gap_fraction = MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
       response_weight = MIN(1.0_dp, MAX(0.0_dp, density_weight))
-      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*response_weight)
+      qualified_response_weight = SQRT(SQRT(response_weight))
+      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*qualified_response_weight)
       pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
 
    END FUNCTION kpoint_ot_physical_pair_projector_weight
