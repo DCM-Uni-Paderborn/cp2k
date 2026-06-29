@@ -170,6 +170,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_full_delta = 1.2E-5_dp, &
                                         ot_kp_schur_density_descent_history_max_scale = 2.50_dp, &
                                         ot_kp_schur_projector_response_quality_max_ratio = 1.25_dp, &
+                                        ot_kp_schur_projector_response_underpredict_max_ratio = 2.0E1_dp, &
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
                                         ot_kp_schur_projector_negative_balance_floor = 1.5E-1_dp, &
@@ -4160,16 +4161,13 @@ CONTAINS
                local_ot_env(1)%schur_projector_response_selected_measured_sum + measured_drop
          END IF
          local_ot_env(1)%schur_projector_response_candidate_enabled = &
-            local_ot_env(1)%schur_projector_response_quality_samples >= &
-            ot_kp_schur_projector_response_min_samples .AND. &
-            local_ot_env(1)%schur_projector_response_quality_ema >= &
-            ot_kp_schur_projector_response_quality_min_ratio .AND. &
-            local_ot_env(1)%schur_projector_response_quality_ema <= &
-            ot_kp_schur_projector_response_quality_max_ratio .AND. &
-            local_ot_env(1)%schur_projector_response_quality >= &
-            0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
-            local_ot_env(1)%schur_projector_response_quality <= &
-            2.0_dp*ot_kp_schur_projector_response_quality_max_ratio
+            kpoint_ot_projector_response_candidate_enabled( &
+            local_ot_env(1)%schur_projector_response_quality_samples, &
+            local_ot_env(1)%schur_projector_response_quality, &
+            local_ot_env(1)%schur_projector_response_quality_ema, &
+            local_ot_env(1)%schur_projector_response_drop_sum, &
+            local_ot_env(1)%schur_projector_response_measured_sum, &
+            local_ot_env(1)%schur_projector_response_negative_ema)
 
          projector_plateau_gap_predicted_drop = local_ot_env(1)%schur_projector_plateau_gap_drop
          projector_plateau_gap_quality_ratio = 0.0_dp
@@ -8974,7 +8972,7 @@ CONTAINS
                                             ot_kp_schur_projector_response_min_samples, &
                                             0.0_dp, &
                                             ot_kp_schur_projector_response_quality_min_ratio, &
-                                            ot_kp_schur_projector_response_quality_max_ratio)
+                                            ot_kp_schur_projector_response_underpredict_max_ratio)
          IF (local_ot_env(1)%schur_projector_response_selected_quality_samples >= &
              ot_kp_schur_calibration_min_samples) THEN
             projector_response_quality_for_selection = &
@@ -8986,7 +8984,7 @@ CONTAINS
                ot_kp_schur_calibration_min_samples, &
                projector_response_quality_for_selection, &
                ot_kp_schur_projector_response_quality_min_ratio, &
-               ot_kp_schur_projector_response_quality_max_ratio)
+               ot_kp_schur_projector_response_underpredict_max_ratio)
             IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                projector_response_quality_for_selection = projector_response_quality_for_selection* &
                                                           MAX(0.0_dp, MIN(1.0_dp, &
@@ -17357,6 +17355,44 @@ CONTAINS
          quality = MAX(min_quality, MIN(max_quality, quality))
 
       END FUNCTION kpoint_ot_schur_history_quality
+
+! **************************************************************************************************
+!> \brief accepted-history gate for conservative projector-response underprediction
+!> \param samples number of accepted shadow response samples
+!> \param quality most recent measured/predicted Mermin-drop ratio
+!> \param quality_ema measured/predicted Mermin-drop EMA
+!> \param predicted_sum accumulated predicted Mermin drop
+!> \param measured_sum accumulated accepted Mermin drop
+!> \param negative_ema accepted negative response fraction
+!> \return whether the projector-response candidate can enter selection
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_response_candidate_enabled(samples, quality, quality_ema, predicted_sum, &
+                                                              measured_sum, negative_ema) RESULT(enabled)
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: quality, quality_ema, predicted_sum, &
+                                                            measured_sum, negative_ema
+      LOGICAL                                            :: enabled
+
+      LOGICAL                                            :: normal_quality, underpredicted_quality
+
+         enabled = .FALSE.
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         normal_quality = quality_ema <= ot_kp_schur_projector_response_quality_max_ratio .AND. &
+                          quality <= 2.0_dp*ot_kp_schur_projector_response_quality_max_ratio .AND. &
+                          negative_ema <= ot_kp_schur_projector_negative_balance_max
+         underpredicted_quality = quality_ema > ot_kp_schur_projector_response_quality_max_ratio .AND. &
+                                  quality_ema <= ot_kp_schur_projector_response_underpredict_max_ratio .AND. &
+                                  quality <= ot_kp_schur_projector_response_underpredict_max_ratio .AND. &
+                                  predicted_sum > EPSILON(predicted_sum) .AND. &
+                                  measured_sum > predicted_sum .AND. &
+                                  negative_ema <= ot_kp_schur_projector_negative_balance_floor
+
+         enabled = normal_quality .OR. underpredicted_quality
+
+      END FUNCTION kpoint_ot_projector_response_candidate_enabled
 
 ! **************************************************************************************************
 !> \brief ...

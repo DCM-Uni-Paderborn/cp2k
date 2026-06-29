@@ -196,6 +196,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-14_dp, nfail)
    CALL check_projector_direct_selected_history_quality( &
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
+   CALL check_projector_response_underprediction_quality( &
+      "complex projector response underprediction quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_selection_quality( &
       "complex projector Direct tail selection quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_probe_bootstrap( &
@@ -7651,6 +7653,74 @@ CONTAINS
    END SUBROUTINE check_projector_direct_selected_history_quality
 
 ! **************************************************************************************************
+!> \brief Check that accepted Mermin history treats large response ratios as underprediction.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_response_underprediction_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: max_quality = 1.25_dp, min_quality = 0.10_dp, &
+         underpredict_max_quality = 20.0_dp
+
+      LOGICAL :: negative_normal_disabled, normal_enabled, overcap_disabled, underpredict_enabled, &
+         unstable_disabled, weak_disabled
+      REAL(KIND=dp)                                      :: err, legacy_quality, underpredict_quality
+
+      normal_enabled = dense_projector_response_candidate_enabled(8, 1.0_dp, 1.0_dp, &
+                                                                  10.0_dp, 10.0_dp, 0.02_dp, &
+                                                                  min_quality, max_quality, &
+                                                                  underpredict_max_quality)
+      negative_normal_disabled = dense_projector_response_candidate_enabled(8, 1.0_dp, 1.0_dp, &
+                                                                            10.0_dp, 10.0_dp, 0.95_dp, &
+                                                                            min_quality, max_quality, &
+                                                                            underpredict_max_quality)
+      underpredict_enabled = dense_projector_response_candidate_enabled(12, 14.0_dp, 16.0_dp, &
+                                                                        1.0_dp, 18.0_dp, 0.02_dp, &
+                                                                        min_quality, max_quality, &
+                                                                        underpredict_max_quality)
+      unstable_disabled = dense_projector_response_candidate_enabled(12, 14.0_dp, 16.0_dp, &
+                                                                     1.0_dp, 18.0_dp, 0.30_dp, &
+                                                                     min_quality, max_quality, &
+                                                                     underpredict_max_quality)
+      overcap_disabled = dense_projector_response_candidate_enabled(12, 24.0_dp, 16.0_dp, &
+                                                                    1.0_dp, 25.0_dp, 0.02_dp, &
+                                                                    min_quality, max_quality, &
+                                                                    underpredict_max_quality)
+      weak_disabled = dense_projector_response_candidate_enabled(12, 0.03_dp, 0.16_dp, &
+                                                                 1.0_dp, 18.0_dp, 0.02_dp, &
+                                                                 min_quality, max_quality, &
+                                                                 underpredict_max_quality)
+
+      legacy_quality = dense_schur_history_quality(1.0_dp, 18.0_dp, 16.0_dp, 12, 8, 0.0_dp, &
+                                                   min_quality, max_quality)
+      underpredict_quality = dense_schur_history_quality(1.0_dp, 18.0_dp, 16.0_dp, 12, 8, 0.0_dp, &
+                                                         min_quality, underpredict_max_quality)
+
+      err = ABS(legacy_quality - max_quality)
+      err = MAX(err, ABS(underpredict_quality - 18.0_dp))
+
+      IF (err > tol .OR. .NOT. normal_enabled .OR. negative_normal_disabled .OR. &
+          .NOT. underpredict_enabled .OR. unstable_disabled .OR. overcap_disabled .OR. weak_disabled .OR. &
+          underpredict_quality <= legacy_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5),6(1X,L1))') TRIM(label), &
+            "failed err/legacy/under/norm/nneg/under/eneg/over/weak", err, legacy_quality, &
+            underpredict_quality, normal_enabled, negative_normal_disabled, underpredict_enabled, &
+            unstable_disabled, overcap_disabled, weak_disabled
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5),6(1X,L1))') TRIM(label), &
+            "OK err/legacy/under/norm/nneg/under/eneg/over/weak", err, legacy_quality, &
+            underpredict_quality, normal_enabled, negative_normal_disabled, underpredict_enabled, &
+            unstable_disabled, overcap_disabled, weak_disabled
+      END IF
+
+   END SUBROUTINE check_projector_response_underprediction_quality
+
+! **************************************************************************************************
 !> \brief Check that a trust-safe Direct tail candidate can collect selected history.
 !> \param label ...
 !> \param tol ...
@@ -9672,6 +9742,78 @@ CONTAINS
       history_quality = MIN(2.5_dp, MAX(0.10_dp, history_quality))
 
    END FUNCTION dense_trace_split_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of Schur accepted-history quality clipping.
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param ema_quality ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param default_quality ...
+!> \param min_quality ...
+!> \param max_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_schur_history_quality(predicted_sum, measured_sum, ema_quality, samples, min_samples, &
+                                        default_quality, min_quality, max_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, ema_quality
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: default_quality, min_quality, max_quality
+      REAL(KIND=dp)                                      :: quality
+
+      quality = default_quality
+      IF (samples >= min_samples) THEN
+         IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) THEN
+            quality = measured_sum/predicted_sum
+         ELSE IF (ema_quality > 0.0_dp) THEN
+            quality = ema_quality
+         END IF
+      END IF
+      quality = MAX(min_quality, MIN(max_quality, quality))
+
+   END FUNCTION dense_schur_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of projector-response candidate gate.
+!> \param samples ...
+!> \param quality ...
+!> \param quality_ema ...
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param negative_ema ...
+!> \param min_quality ...
+!> \param max_quality ...
+!> \param underpredict_max_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_response_candidate_enabled(samples, quality, quality_ema, predicted_sum, &
+                                                       measured_sum, negative_ema, min_quality, max_quality, &
+                                                       underpredict_max_quality) RESULT(enabled)
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN) :: quality, quality_ema, predicted_sum, measured_sum, &
+         negative_ema, min_quality, max_quality, underpredict_max_quality
+      LOGICAL                                            :: enabled
+
+      LOGICAL                                            :: normal_quality, underpredicted_quality
+
+      enabled = .FALSE.
+      IF (samples < 8) RETURN
+      IF (quality_ema < min_quality) RETURN
+      IF (quality < 0.5_dp*min_quality) RETURN
+
+      normal_quality = quality_ema <= max_quality .AND. quality <= 2.0_dp*max_quality .AND. &
+                       negative_ema <= projector_response_negative_balance_max
+      underpredicted_quality = quality_ema > max_quality .AND. &
+                               quality_ema <= underpredict_max_quality .AND. &
+                               quality <= underpredict_max_quality .AND. &
+                               predicted_sum > EPSILON(predicted_sum) .AND. &
+                               measured_sum > predicted_sum .AND. &
+                               negative_ema <= projector_response_negative_balance_floor
+
+      enabled = normal_quality .OR. underpredicted_quality
+
+   END FUNCTION dense_projector_response_candidate_enabled
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected-history Direct quality maturity.
