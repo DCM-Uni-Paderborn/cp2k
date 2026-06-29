@@ -196,6 +196,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_trace_split_history_quality("complex projector trace-split Direct quality", &
                                                     5.0E-14_dp, nfail)
+   CALL check_projector_trace_invariant_history_quality( &
+      "complex projector invariant-trace Direct trust", 5.0E-14_dp, nfail)
    CALL check_projector_direct_selected_history_quality( &
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_underprediction_quality( &
@@ -7688,6 +7690,60 @@ CONTAINS
    END SUBROUTINE check_projector_trace_split_history_quality
 
 ! **************************************************************************************************
+!> \brief Check invariant-trace quality caps and mismatch trust for Direct candidates.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_trace_invariant_history_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: capped_quality, err, expected_trust, fallback_quality, good_quality, &
+         immature_quality, immature_trust, mature_trust, neutral_trust
+
+      fallback_quality = 0.40_dp
+      immature_quality = dense_trace_invariant_history_quality( &
+                         -0.40_dp, -0.02_dp, -0.55_dp, 0.15_dp, &
+                         -0.03_dp, 0.01_dp, 3, fallback_quality)
+      capped_quality = dense_trace_invariant_history_quality( &
+                       -0.40_dp, -0.02_dp, -0.55_dp, 0.15_dp, &
+                       -0.03_dp, 0.01_dp, 16, fallback_quality)
+      good_quality = dense_trace_invariant_history_quality( &
+                     -0.50_dp, -0.45_dp, -0.80_dp, 0.30_dp, &
+                     -0.72_dp, 0.27_dp, 16, fallback_quality)
+      immature_trust = dense_direct_trace_mismatch_trust(1.0E-4_dp, 2.0E-3_dp, &
+                                                         capped_quality, 3)
+      neutral_trust = dense_direct_trace_mismatch_trust(1.0E-4_dp, 2.0E-3_dp, &
+                                                        1.0_dp, 16)
+      mature_trust = dense_direct_trace_mismatch_trust(1.0E-4_dp, 2.0E-3_dp, &
+                                                       capped_quality, 16)
+      expected_trust = 1.0E-4_dp/(1.0E-4_dp + (1.0_dp - capped_quality)*2.0E-3_dp)
+
+      err = ABS(immature_quality - fallback_quality)
+      err = MAX(err, ABS(capped_quality - 0.10_dp))
+      err = MAX(err, ABS(good_quality - fallback_quality))
+      err = MAX(err, ABS(immature_trust - 1.0_dp))
+      err = MAX(err, ABS(neutral_trust - 1.0_dp))
+      err = MAX(err, ABS(mature_trust - expected_trust))
+
+      IF (err > tol .OR. mature_trust >= 0.10_dp .OR. capped_quality >= fallback_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/imm/cap/good/itrust/ntrust/mtrust/expected", &
+            err, immature_quality, capped_quality, good_quality, immature_trust, neutral_trust, &
+            mature_trust, expected_trust
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/imm/cap/good/itrust/ntrust/mtrust/expected", &
+            err, immature_quality, capped_quality, good_quality, immature_trust, neutral_trust, &
+            mature_trust, expected_trust
+      END IF
+
+   END SUBROUTINE check_projector_trace_invariant_history_quality
+
+! **************************************************************************************************
 !> \brief Check that sparse selected Direct samples do not erase non-circular trace history.
 !> \param label ...
 !> \param tol ...
@@ -9929,6 +9985,48 @@ CONTAINS
    END FUNCTION dense_trace_split_history_quality
 
 ! **************************************************************************************************
+!> \brief Dense mirror of invariant-trace Direct history quality.
+!> \param trace_ema ...
+!> \param trace_quality_ema ...
+!> \param trace_diag_ema ...
+!> \param trace_free_ema ...
+!> \param trace_diag_quality_ema ...
+!> \param trace_free_quality_ema ...
+!> \param samples ...
+!> \param fallback_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_trace_invariant_history_quality(trace_ema, trace_quality_ema, trace_diag_ema, &
+                                                  trace_free_ema, trace_diag_quality_ema, &
+                                                  trace_free_quality_ema, samples, fallback_quality) &
+      RESULT(history_quality)
+      REAL(KIND=dp), INTENT(IN) :: trace_ema, trace_quality_ema, trace_diag_ema, trace_free_ema, &
+         trace_diag_quality_ema, trace_free_quality_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: fallback_quality
+      REAL(KIND=dp)                                      :: history_quality
+
+      REAL(KIND=dp)                                      :: split_quality, trace_abs, trace_quality
+
+      history_quality = fallback_quality
+      IF (samples < 8) RETURN
+
+      trace_abs = ABS(trace_ema)
+      trace_quality = 0.0_dp
+      IF (trace_abs > EPSILON(trace_abs)) trace_quality = ABS(trace_quality_ema)/trace_abs
+      split_quality = dense_trace_split_history_quality(trace_diag_ema, trace_free_ema, &
+                                                        trace_diag_quality_ema, trace_free_quality_ema, &
+                                                        samples, fallback_quality)
+      IF (trace_quality > EPSILON(trace_quality)) THEN
+         trace_quality = MIN(1.0_dp, MAX(0.10_dp, trace_quality))
+         history_quality = MIN(history_quality, trace_quality)
+      END IF
+      history_quality = MIN(history_quality, split_quality)
+      history_quality = MIN(1.0_dp, MAX(0.10_dp, history_quality))
+
+   END FUNCTION dense_trace_invariant_history_quality
+
+! **************************************************************************************************
 !> \brief Dense mirror of Schur accepted-history quality clipping.
 !> \param predicted_sum ...
 !> \param measured_sum ...
@@ -10777,6 +10875,35 @@ CONTAINS
       drop = 0.5_dp*scale*scale*ABS(trace_actual_quad - trace_model_quad)
 
    END FUNCTION dense_direct_trace_model_gap_drop
+
+! **************************************************************************************************
+!> \brief Dense mirror of Direct trace-mismatch trust.
+!> \param model_drop ...
+!> \param trace_gap_drop ...
+!> \param history_quality ...
+!> \param samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_trace_mismatch_trust(model_drop, trace_gap_drop, history_quality, samples) &
+      RESULT(trust_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: model_drop, trace_gap_drop, &
+                                                            history_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: trust_quality
+
+      REAL(KIND=dp)                                      :: history_weight
+
+      trust_quality = 1.0_dp
+      IF (samples < 8) RETURN
+      IF (model_drop <= EPSILON(model_drop)) RETURN
+      IF (trace_gap_drop <= EPSILON(trace_gap_drop)) RETURN
+
+      history_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, history_quality))
+      IF (history_weight <= EPSILON(history_weight)) RETURN
+      trust_quality = model_drop/(model_drop + history_weight*trace_gap_drop)
+      trust_quality = MIN(1.0_dp, MAX(0.0_dp, trust_quality))
+
+   END FUNCTION dense_direct_trace_mismatch_trust
 
 ! **************************************************************************************************
 !> \brief Project a density response onto the fixed-N Mermin descent direction.
