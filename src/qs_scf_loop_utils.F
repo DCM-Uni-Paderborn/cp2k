@@ -17606,16 +17606,27 @@ CONTAINS
                                                             measured_sum, negative_ema
       LOGICAL                                            :: enabled
 
-      LOGICAL                                            :: normal_quality, underpredicted_quality
+      LOGICAL                                            :: aggregate_recovered_quality, &
+                                                            normal_quality, underpredicted_quality
+      REAL(KIND=dp)                                      :: aggregate_quality
 
          enabled = .FALSE.
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
          IF (quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
          IF (quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
 
+         aggregate_quality = 0.0_dp
+         IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) &
+            aggregate_quality = measured_sum/predicted_sum
+
          normal_quality = quality_ema <= ot_kp_schur_projector_response_quality_max_ratio .AND. &
                           quality <= 2.0_dp*ot_kp_schur_projector_response_quality_max_ratio .AND. &
                           negative_ema <= ot_kp_schur_projector_negative_balance_max
+         aggregate_recovered_quality = aggregate_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                       aggregate_quality <= ot_kp_schur_projector_response_quality_max_ratio .AND. &
+                                       quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                       quality <= 2.0_dp*ot_kp_schur_projector_response_quality_max_ratio .AND. &
+                                       negative_ema <= ot_kp_schur_projector_negative_balance_floor
          underpredicted_quality = quality_ema > ot_kp_schur_projector_response_quality_max_ratio .AND. &
                                   quality_ema <= ot_kp_schur_projector_response_underpredict_max_ratio .AND. &
                                   quality <= ot_kp_schur_projector_response_underpredict_max_ratio .AND. &
@@ -17623,7 +17634,7 @@ CONTAINS
                                   measured_sum > predicted_sum .AND. &
                                   negative_ema <= ot_kp_schur_projector_negative_balance_floor
 
-         enabled = normal_quality .OR. underpredicted_quality
+         enabled = normal_quality .OR. aggregate_recovered_quality .OR. underpredicted_quality
 
       END FUNCTION kpoint_ot_projector_response_candidate_enabled
 

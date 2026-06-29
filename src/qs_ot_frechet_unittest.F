@@ -7864,8 +7864,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: max_quality = 1.25_dp, min_quality = 0.10_dp, &
          underpredict_max_quality = 20.0_dp
 
-      LOGICAL :: negative_normal_disabled, normal_enabled, overcap_disabled, underpredict_enabled, &
-         unstable_disabled, weak_disabled
+      LOGICAL :: negative_normal_disabled, normal_enabled, overcap_disabled, recovered_enabled, &
+         recovered_negative_disabled, underpredict_enabled, unstable_disabled, weak_disabled
       REAL(KIND=dp)                                      :: err, legacy_quality, underpredict_quality
 
       normal_enabled = dense_projector_response_candidate_enabled(8, 1.0_dp, 1.0_dp, &
@@ -7880,6 +7880,14 @@ CONTAINS
                                                                         1.0_dp, 18.0_dp, 0.02_dp, &
                                                                         min_quality, max_quality, &
                                                                         underpredict_max_quality)
+      recovered_enabled = dense_projector_response_candidate_enabled(10, 0.16_dp, 1.30_dp, &
+                                                                     30.0_dp, 6.0_dp, 0.02_dp, &
+                                                                     min_quality, max_quality, &
+                                                                     underpredict_max_quality)
+      recovered_negative_disabled = dense_projector_response_candidate_enabled(10, 0.16_dp, 1.30_dp, &
+                                                                               30.0_dp, 6.0_dp, 0.30_dp, &
+                                                                               min_quality, max_quality, &
+                                                                               underpredict_max_quality)
       unstable_disabled = dense_projector_response_candidate_enabled(12, 14.0_dp, 16.0_dp, &
                                                                      1.0_dp, 18.0_dp, 0.30_dp, &
                                                                      min_quality, max_quality, &
@@ -7902,18 +7910,19 @@ CONTAINS
       err = MAX(err, ABS(underpredict_quality - 18.0_dp))
 
       IF (err > tol .OR. .NOT. normal_enabled .OR. negative_normal_disabled .OR. &
-          .NOT. underpredict_enabled .OR. unstable_disabled .OR. overcap_disabled .OR. weak_disabled .OR. &
+          .NOT. underpredict_enabled .OR. .NOT. recovered_enabled .OR. recovered_negative_disabled .OR. &
+          unstable_disabled .OR. overcap_disabled .OR. weak_disabled .OR. &
           underpredict_quality <= legacy_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5),6(1X,L1))') TRIM(label), &
-            "failed err/legacy/under/norm/nneg/under/eneg/over/weak", err, legacy_quality, &
+         WRITE (*, '(A,1X,A,3(1X,ES12.5),8(1X,L1))') TRIM(label), &
+            "failed err/legacy/under/norm/nneg/under/rec/rneg/eneg/over/weak", err, legacy_quality, &
             underpredict_quality, normal_enabled, negative_normal_disabled, underpredict_enabled, &
-            unstable_disabled, overcap_disabled, weak_disabled
+            recovered_enabled, recovered_negative_disabled, unstable_disabled, overcap_disabled, weak_disabled
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5),6(1X,L1))') TRIM(label), &
-            "OK err/legacy/under/norm/nneg/under/eneg/over/weak", err, legacy_quality, &
+         WRITE (*, '(A,1X,A,3(1X,ES12.5),8(1X,L1))') TRIM(label), &
+            "OK err/legacy/under/norm/nneg/under/rec/rneg/eneg/over/weak", err, legacy_quality, &
             underpredict_quality, normal_enabled, negative_normal_disabled, underpredict_enabled, &
-            unstable_disabled, overcap_disabled, weak_disabled
+            recovered_enabled, recovered_negative_disabled, unstable_disabled, overcap_disabled, weak_disabled
       END IF
 
    END SUBROUTINE check_projector_response_underprediction_quality
@@ -10080,15 +10089,24 @@ CONTAINS
          negative_ema, min_quality, max_quality, underpredict_max_quality
       LOGICAL                                            :: enabled
 
-      LOGICAL                                            :: normal_quality, underpredicted_quality
+      LOGICAL                                            :: aggregate_recovered_quality, &
+                                                            normal_quality, underpredicted_quality
+      REAL(KIND=dp)                                      :: aggregate_quality
 
       enabled = .FALSE.
       IF (samples < 8) RETURN
       IF (quality_ema < min_quality) RETURN
       IF (quality < 0.5_dp*min_quality) RETURN
 
+      aggregate_quality = 0.0_dp
+      IF (predicted_sum > EPSILON(predicted_sum) .AND. measured_sum > 0.0_dp) &
+         aggregate_quality = measured_sum/predicted_sum
+
       normal_quality = quality_ema <= max_quality .AND. quality <= 2.0_dp*max_quality .AND. &
                        negative_ema <= projector_response_negative_balance_max
+      aggregate_recovered_quality = aggregate_quality >= min_quality .AND. aggregate_quality <= max_quality .AND. &
+                                    quality >= min_quality .AND. quality <= 2.0_dp*max_quality .AND. &
+                                    negative_ema <= projector_response_negative_balance_floor
       underpredicted_quality = quality_ema > max_quality .AND. &
                                quality_ema <= underpredict_max_quality .AND. &
                                quality <= underpredict_max_quality .AND. &
@@ -10096,7 +10114,7 @@ CONTAINS
                                measured_sum > predicted_sum .AND. &
                                negative_ema <= projector_response_negative_balance_floor
 
-      enabled = normal_quality .OR. underpredicted_quality
+      enabled = normal_quality .OR. aggregate_recovered_quality .OR. underpredicted_quality
 
    END FUNCTION dense_projector_response_candidate_enabled
 
