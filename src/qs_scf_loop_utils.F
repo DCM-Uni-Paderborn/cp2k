@@ -20036,6 +20036,57 @@ CONTAINS
       END SUBROUTINE dense_history_safe_occ_projector_derivative
 
 ! **************************************************************************************************
+!> \brief fixed-N physical occupations for finite Projector cluster modes
+!> \param evals near-degenerate eigenvalue cluster
+!> \param occ_curv_channel fixed-N occupation curvatures in the cluster
+!> \param occ_slope gauge-filtered occupation values in the cluster
+!> \param modal_energy expectation values of the unperturbed energies in split modes
+!> \param modal_occ physical modal occupations with preserved cluster charge
+! **************************************************************************************************
+      SUBROUTINE kpoint_ot_projector_cluster_modal_occupation(evals, occ_curv_channel, occ_slope, &
+                                                              modal_energy, modal_occ)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_curv_channel, occ_slope, &
+                                                            modal_energy
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_occ
+
+      INTEGER                                            :: i, m
+      REAL(KIND=dp)                                      :: delta_e, eval_center, fit_den, fit_num, &
+                                                            occ_mean, physical_slope, slope_cap
+
+         m = SIZE(evals)
+         modal_occ(:) = 0.0_dp
+         IF (m <= 0) RETURN
+
+         occ_mean = SUM(occ_slope(1:m))/REAL(m, KIND=dp)
+         eval_center = SUM(evals(1:m))/REAL(m, KIND=dp)
+         fit_den = 0.0_dp
+         fit_num = 0.0_dp
+         DO i = 1, m
+            delta_e = evals(i) - eval_center
+            fit_den = fit_den + delta_e*delta_e
+            fit_num = fit_num + delta_e*(occ_slope(i) - occ_mean)
+         END DO
+         physical_slope = 0.0_dp
+         IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
+         physical_slope = MIN(0.0_dp, physical_slope)
+
+         slope_cap = HUGE(1.0_dp)
+         DO i = 1, m - 1
+            slope_cap = MIN(slope_cap, kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(i + 1)))
+         END DO
+         IF (slope_cap < HUGE(1.0_dp)/2.0_dp) THEN
+            physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
+         ELSE
+            physical_slope = 0.0_dp
+         END IF
+
+         DO i = 1, SIZE(modal_occ)
+            modal_occ(i) = occ_mean + physical_slope*(modal_energy(i) - eval_center)
+         END DO
+
+      END SUBROUTINE kpoint_ot_projector_cluster_modal_occupation
+
+! **************************************************************************************************
 !> \brief Replace near-degenerate projector-gauge blocks by a fixed-N physical response.
 !> \param evals ...
 !> \param work ...
@@ -20127,14 +20178,14 @@ CONTAINS
                CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
                                                             modal_curv)
                modal_energy(:) = 0.0_dp
-               modal_occ(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
                      component_weight = ABS(cluster_evec(b, a))**2
                      modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
-                     modal_occ(a) = modal_occ(a) + component_weight*occ_slope(first + b - 1)
                   END DO
                END DO
+               CALL kpoint_ot_projector_cluster_modal_occupation(evals(first:last), occ_curv_channel(first:last), &
+                                                                 occ_slope(first:last), modal_energy, modal_occ)
                cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                DO a = 1, m
                   cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
@@ -20207,14 +20258,14 @@ CONTAINS
                CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
                                                             modal_curv)
                modal_energy(:) = 0.0_dp
-               modal_occ(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
                      component_weight = ABS(cluster_evec(b, a))**2
                      modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
-                     modal_occ(a) = modal_occ(a) + component_weight*occ_slope(first + b - 1)
                   END DO
                END DO
+               CALL kpoint_ot_projector_cluster_modal_occupation(evals(first:last), occ_curv_channel(first:last), &
+                                                                 occ_slope(first:last), modal_energy, modal_occ)
                first_b = last + 1
                DO WHILE (first_b <= n)
                   last_b = first_b
@@ -20234,15 +20285,17 @@ CONTAINS
                                                                   occ_curv_channel(first_b:last_b), &
                                                                   modal_curv_b)
                      modal_energy_b(:) = 0.0_dp
-                     modal_occ_b(:) = 0.0_dp
                      DO a = 1, m_b
                         DO b = 1, m_b
                            component_weight = ABS(cluster_evec_b(b, a))**2
                            modal_energy_b(a) = modal_energy_b(a) + &
                                                component_weight*evals(first_b + b - 1)
-                           modal_occ_b(a) = modal_occ_b(a) + component_weight*occ_slope(first_b + b - 1)
                         END DO
                      END DO
+                     CALL kpoint_ot_projector_cluster_modal_occupation(evals(first_b:last_b), &
+                                                                       occ_curv_channel(first_b:last_b), &
+                                                                       occ_slope(first_b:last_b), &
+                                                                       modal_energy_b, modal_occ_b)
                      modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), &
                                                 MATMUL(work(first:last, first_b:last_b), cluster_evec_b))
                      DO b = 1, m_b

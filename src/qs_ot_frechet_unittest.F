@@ -300,6 +300,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_pair_response( &
       "history-safe occupation-projector cluster-pair response", 5.0E-12_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_modal_occ_shape( &
+      "history-safe occupation-projector cluster modal occupation", 5.0E-12_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -13250,14 +13252,14 @@ CONTAINS
       CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
       CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv)
       modal_energy(:) = 0.0_dp
-      modal_occ(:) = 0.0_dp
       DO a = 1, 2
          DO b = 1, 2
             component_weight = ABS(cluster_evec(b, a))**2
             modal_energy(a) = modal_energy(a) + component_weight*evals(b)
-            modal_occ(a) = modal_occ(a) + component_weight*occ_slope(b)
          END DO
       END DO
+      CALL dense_projector_cluster_modal_occupation(evals(1:2), occ_curv(1:2), occ_slope(1:2), &
+                                                    modal_energy, modal_occ)
       cluster_col(:) = work(1:2, 3)
       modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), cluster_col)
       DO a = 1, 2
@@ -13358,18 +13360,18 @@ CONTAINS
       CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, occ_curv(3:4), modal_curv_b)
       modal_energy_a(:) = 0.0_dp
       modal_energy_b(:) = 0.0_dp
-      modal_occ_a(:) = 0.0_dp
-      modal_occ_b(:) = 0.0_dp
       DO a = 1, 2
          DO b = 1, 2
             component_weight = ABS(cluster_evec_a(b, a))**2
             modal_energy_a(a) = modal_energy_a(a) + component_weight*evals(b)
-            modal_occ_a(a) = modal_occ_a(a) + component_weight*occ_slope(b)
             component_weight = ABS(cluster_evec_b(b, a))**2
             modal_energy_b(a) = modal_energy_b(a) + component_weight*evals(2 + b)
-            modal_occ_b(a) = modal_occ_b(a) + component_weight*occ_slope(2 + b)
          END DO
       END DO
+      CALL dense_projector_cluster_modal_occupation(evals(1:2), occ_curv(1:2), occ_slope(1:2), &
+                                                    modal_energy_a, modal_occ_a)
+      CALL dense_projector_cluster_modal_occupation(evals(3:4), occ_curv(3:4), occ_slope(3:4), &
+                                                    modal_energy_b, modal_occ_b)
       modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec_a)), MATMUL(work(1:2, 3:4), cluster_evec_b))
       DO b = 1, 2
          DO a = 1, 2
@@ -13420,6 +13422,109 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_cluster_pair_response
+
+! **************************************************************************************************
+!> \brief Check that cluster modal occupations are physical fixed-N shapes, not basis projections.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_modal_occ_shape(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(3)                     :: expected_new, expected_old, modal_col, &
+                                                            response_col_new, response_col_old
+      COMPLEX(KIND=dp), DIMENSION(3, 3)                  :: cluster_evec, cluster_work
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
+      INTEGER                                            :: a, b, i
+      REAL(KIND=dp)                                      :: charge_err, coeff_new, coeff_old, &
+                                                            component_weight, denom, err, &
+                                                            herm_err, raw_gap, slope_cap
+      REAL(KIND=dp), DIMENSION(3)                        :: cluster_eval, modal_curv, modal_energy, &
+                                                            modal_occ_new, modal_occ_old
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
+
+      evals(:) = [-0.010000_dp, -0.009990_dp, -0.009980_dp, 1.23_dp]
+      occ_slope(:) = [1.18_dp, 0.43_dp, 0.92_dp, 0.08_dp]
+      occ_curv(:) = [0.42_dp, 0.36_dp, 0.31_dp, 0.06_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 1) = CMPLX(0.06_dp, 0.0_dp, KIND=dp)
+      work(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      work(3, 3) = CMPLX(0.025_dp, 0.0_dp, KIND=dp)
+      work(1, 2) = CMPLX(0.22_dp, -0.15_dp, KIND=dp)
+      work(1, 3) = CMPLX(-0.13_dp, 0.11_dp, KIND=dp)
+      work(2, 3) = CMPLX(0.16_dp, 0.07_dp, KIND=dp)
+      work(1, 4) = CMPLX(-0.18_dp, 0.09_dp, KIND=dp)
+      work(2, 4) = CMPLX(0.07_dp, -0.05_dp, KIND=dp)
+      work(3, 4) = CMPLX(0.11_dp, 0.04_dp, KIND=dp)
+      DO i = 2, n
+         work(i, 1:i - 1) = CONJG(work(1:i - 1, i))
+      END DO
+
+      kernel(:, :) = CMPLX(9.0_dp, -3.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel)
+
+      cluster_work(:, :) = 0.5_dp*(work(1:3, 1:3) + CONJG(TRANSPOSE(work(1:3, 1:3))))
+      CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:3), modal_curv)
+      modal_energy(:) = 0.0_dp
+      modal_occ_old(:) = 0.0_dp
+      DO a = 1, 3
+         DO b = 1, 3
+            component_weight = ABS(cluster_evec(b, a))**2
+            modal_energy(a) = modal_energy(a) + component_weight*evals(b)
+            modal_occ_old(a) = modal_occ_old(a) + component_weight*occ_slope(b)
+         END DO
+      END DO
+      CALL dense_projector_cluster_modal_occupation(evals(1:3), occ_curv(1:3), occ_slope(1:3), &
+                                                    modal_energy, modal_occ_new)
+
+      modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), work(1:3, 4))
+      response_col_new(:) = modal_col(:)
+      response_col_old(:) = modal_col(:)
+      DO a = 1, 3
+         denom = modal_energy(a) - evals(4)
+         coeff_new = 0.0_dp
+         coeff_old = 0.0_dp
+         IF (ABS(denom) > SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))) THEN
+            coeff_new = (modal_occ_new(a) - occ_slope(4))/denom
+            coeff_old = (modal_occ_old(a) - occ_slope(4))/denom
+         END IF
+         coeff_new = MIN(0.0_dp, coeff_new)
+         coeff_old = MIN(0.0_dp, coeff_old)
+         slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(4)))
+         coeff_new = MAX(coeff_new, -slope_cap)
+         coeff_old = MAX(coeff_old, -slope_cap)
+         response_col_new(a) = coeff_new*response_col_new(a)
+         response_col_old(a) = coeff_old*response_col_old(a)
+      END DO
+      expected_new(:) = projector_weight*MATMUL(cluster_evec, response_col_new)
+      expected_old(:) = projector_weight*MATMUL(cluster_evec, response_col_old)
+
+      err = MAXVAL(ABS(kernel(1:3, 4) - expected_new(:)))
+      herm_err = MAXVAL(ABS(kernel(4, 1:3) - CONJG(kernel(1:3, 4))))
+      raw_gap = MAXVAL(ABS(expected_new(:) - expected_old(:)))
+      charge_err = ABS(SUM(modal_occ_new(:)) - SUM(occ_slope(1:3)))
+
+      IF (err > tol .OR. herm_err > tol .OR. charge_err > tol .OR. raw_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with err/herm/charge/rawgap", err, herm_err, charge_err, raw_gap
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with err/herm/charge/rawgap", err, herm_err, charge_err, raw_gap
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_modal_occ_shape
 
 ! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
@@ -13994,6 +14099,55 @@ CONTAINS
    END SUBROUTINE dense_history_safe_occ_projector_derivative_chc
 
 ! **************************************************************************************************
+!> \brief fixed-N physical occupations for dense finite Projector cluster modes.
+!> \param evals ...
+!> \param occ_curv ...
+!> \param occ_slope ...
+!> \param modal_energy ...
+!> \param modal_occ ...
+! **************************************************************************************************
+   SUBROUTINE dense_projector_cluster_modal_occupation(evals, occ_curv, occ_slope, modal_energy, modal_occ)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_curv, occ_slope, modal_energy
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_occ
+
+      INTEGER                                            :: i, m
+      REAL(KIND=dp)                                      :: delta_e, eval_center, fit_den, fit_num, &
+                                                            occ_mean, physical_slope, slope_cap
+
+      m = SIZE(evals)
+      modal_occ(:) = 0.0_dp
+      IF (m <= 0) RETURN
+
+      occ_mean = SUM(occ_slope(1:m))/REAL(m, KIND=dp)
+      eval_center = SUM(evals(1:m))/REAL(m, KIND=dp)
+      fit_den = 0.0_dp
+      fit_num = 0.0_dp
+      DO i = 1, m
+         delta_e = evals(i) - eval_center
+         fit_den = fit_den + delta_e*delta_e
+         fit_num = fit_num + delta_e*(occ_slope(i) - occ_mean)
+      END DO
+      physical_slope = 0.0_dp
+      IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
+      physical_slope = MIN(0.0_dp, physical_slope)
+
+      slope_cap = HUGE(1.0_dp)
+      DO i = 1, m - 1
+         slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv(i), occ_curv(i + 1)))
+      END DO
+      IF (slope_cap < HUGE(1.0_dp)/2.0_dp) THEN
+         physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
+      ELSE
+         physical_slope = 0.0_dp
+      END IF
+
+      DO i = 1, SIZE(modal_occ)
+         modal_occ(i) = occ_mean + physical_slope*(modal_energy(i) - eval_center)
+      END DO
+
+   END SUBROUTINE dense_projector_cluster_modal_occupation
+
+! **************************************************************************************************
 !> \brief Replace near-degenerate projector-gauge blocks by a fixed-N physical response.
 !> \param evals ...
 !> \param work ...
@@ -14083,14 +14237,14 @@ CONTAINS
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
             CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
             modal_energy(:) = 0.0_dp
-            modal_occ(:) = 0.0_dp
             DO a = 1, m
                DO b = 1, m
                   component_weight = ABS(cluster_evec(b, a))**2
                   modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
-                  modal_occ(a) = modal_occ(a) + component_weight*occ_slope(first + b - 1)
                END DO
             END DO
+            CALL dense_projector_cluster_modal_occupation(evals(first:last), occ_curv(first:last), &
+                                                          occ_slope(first:last), modal_energy, modal_occ)
             cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
             DO a = 1, m
                cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
@@ -14162,14 +14316,14 @@ CONTAINS
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
             CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
             modal_energy(:) = 0.0_dp
-            modal_occ(:) = 0.0_dp
             DO a = 1, m
                DO b = 1, m
                   component_weight = ABS(cluster_evec(b, a))**2
                   modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
-                  modal_occ(a) = modal_occ(a) + component_weight*occ_slope(first + b - 1)
                END DO
             END DO
+            CALL dense_projector_cluster_modal_occupation(evals(first:last), occ_curv(first:last), &
+                                                          occ_slope(first:last), modal_energy, modal_occ)
             first_b = last + 1
             DO WHILE (first_b <= n)
                last_b = first_b
@@ -14188,14 +14342,15 @@ CONTAINS
                   CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, occ_curv(first_b:last_b), &
                                                                modal_curv_b)
                   modal_energy_b(:) = 0.0_dp
-                  modal_occ_b(:) = 0.0_dp
                   DO a = 1, m_b
                      DO b = 1, m_b
                         component_weight = ABS(cluster_evec_b(b, a))**2
                         modal_energy_b(a) = modal_energy_b(a) + component_weight*evals(first_b + b - 1)
-                        modal_occ_b(a) = modal_occ_b(a) + component_weight*occ_slope(first_b + b - 1)
                      END DO
                   END DO
+                  CALL dense_projector_cluster_modal_occupation(evals(first_b:last_b), &
+                                                                occ_curv(first_b:last_b), &
+                                                                occ_slope(first_b:last_b), modal_energy_b, modal_occ_b)
                   modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), &
                                              MATMUL(work(first:last, first_b:last_b), cluster_evec_b))
                   DO b = 1, m_b
