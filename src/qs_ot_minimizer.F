@@ -63,7 +63,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_recovery_tail_max_delta = 5.0E-6_dp, &
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
-                                        ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp
+                                        ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
+                                        ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp
 
 CONTAINS
 !
@@ -1192,6 +1193,7 @@ CONTAINS
       negative_beta = .FALSE.
       residual_history_reset = .FALSE.
       residual_tail_spike_reset = .FALSE.
+      residual_trust_quality = 1.0_dp
       reset_to_sd = .FALSE.
       schur_attempt = qs_ot_env(1)%schur_model_attempt
       schur_flavor = qs_ot_env(1)%schur_model_flavor
@@ -1498,8 +1500,12 @@ CONTAINS
          IF (qs_ot_env(1)%ds_min > 0.0_dp) qs_ot_env(1)%ds_min = qs_ot_env(1)%ds_min*residual_trust_scale
       END IF
       IF (residual_history_reset .AND. beta_pr > 0.0_dp) THEN
-         beta_pr = 0.0_dp
-         reset_to_sd = .TRUE.
+         IF (residual_trust_quality >= ot_cg_kp_residual_history_damp_quality) THEN
+            beta_pr = beta_pr*residual_trust_scale
+         ELSE
+            beta_pr = 0.0_dp
+            reset_to_sd = .TRUE.
+         END IF
       END IF
       qs_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
 
