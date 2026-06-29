@@ -162,6 +162,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density mixed-metric coupled Schur", 5.0E-13_dp, nfail)
    CALL check_projector_response_mixed_metric_scale( &
       "complex projector response mixed-metric scale", 5.0E-13_dp, nfail)
+   CALL check_projector_response_projected_linear_term( &
+      "complex projector response projected linear term", 5.0E-13_dp, nfail)
    CALL check_projector_density_candidate_metric_model( &
       "complex projector density candidate metric model", 5.0E-13_dp, nfail)
    CALL check_projector_density_metric_coupled_schur( &
@@ -6238,6 +6240,103 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_response_mixed_metric_scale
+
+! **************************************************************************************************
+!> \brief Projector-response modal coefficients must use the projected Mermin linear term.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_response_projected_linear_term(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannel = 2, ne = 6
+
+      INTEGER                                            :: first_energy, i, j, local_channel, nmo
+      INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
+      REAL(KIND=dp) :: base_neg, base_pos, coeff_det, coeff_neg, coeff_pos, err, g_neg, g_pos, &
+         h_neg_neg, h_pos_neg, h_pos_pos, occ_sum, raw_coeff_neg, raw_coeff_pos, raw_g_neg, &
+         raw_g_pos, raw_gap, target_neg, target_pos, weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                       :: corr, curv, energy_base, grad_e, &
+                                                            occ_curv, response_neg, response_pos, &
+                                                            tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: hproj
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.045_dp, 0.026_dp, 0.018_dp, 0.010_dp, 0.004_dp, 0.003_dp]
+      tether_curv(:) = [0.008_dp, 0.012_dp, 0.010_dp, 0.006_dp, 0.009_dp, 0.005_dp]
+      curv(:) = occ_curv(:) + tether_curv(:)
+      response_pos(:) = [0.12_dp, -0.07_dp, -0.05_dp, 0.04_dp, -0.015_dp, -0.025_dp]
+      response_neg(:) = [-0.06_dp, 0.03_dp, 0.02_dp, 0.08_dp, -0.04_dp, -0.03_dp]
+      energy_base(:) = [0.78_dp, 0.67_dp, 0.65_dp, -0.43_dp, -0.46_dp, -0.46_dp]
+      target_pos = 0.65_dp
+      target_neg = 0.25_dp
+      corr(:) = target_pos*response_pos(:) + target_neg*response_neg(:)
+
+      hproj(:, :) = 0.0_dp
+      DO i = 1, ne
+         hproj(i, i) = curv(i)
+      END DO
+      occ_sum = SUM(occ_curv(:))
+      DO j = 1, ne
+         DO i = 1, ne
+            hproj(i, j) = hproj(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+         END DO
+      END DO
+      DO local_channel = 1, nchannel
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               hproj(i, j) = hproj(i, j) - tether_curv(i)*tether_curv(j)/weight_sum
+            END DO
+         END DO
+      END DO
+      grad_e(:) = MATMUL(hproj, energy_base(:) + corr(:))
+
+      CALL dense_projected_mixed_metric(response_pos, response_pos, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, h_pos_pos)
+      CALL dense_projected_mixed_metric(response_pos, response_neg, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, h_pos_neg)
+      CALL dense_projected_mixed_metric(response_neg, response_neg, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, h_neg_neg)
+      CALL dense_projected_mixed_metric(energy_base, response_pos, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, base_pos)
+      CALL dense_projected_mixed_metric(energy_base, response_neg, occ_curv, tether_curv, channel_nmo, &
+                                        e_offset, base_neg)
+
+      g_pos = DOT_PRODUCT(grad_e(:), response_pos(:)) - base_pos
+      g_neg = DOT_PRODUCT(grad_e(:), response_neg(:)) - base_neg
+      coeff_det = h_pos_pos*h_neg_neg - h_pos_neg*h_pos_neg
+      coeff_pos = (g_pos*h_neg_neg - g_neg*h_pos_neg)/coeff_det
+      coeff_neg = (h_pos_pos*g_neg - h_pos_neg*g_pos)/coeff_det
+
+      raw_g_pos = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
+      raw_g_neg = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
+      raw_coeff_pos = (raw_g_pos*h_neg_neg - raw_g_neg*h_pos_neg)/coeff_det
+      raw_coeff_neg = (h_pos_pos*raw_g_neg - h_pos_neg*raw_g_pos)/coeff_det
+
+      err = MAX(ABS(coeff_pos - target_pos), ABS(coeff_neg - target_neg))
+      err = MAX(err, ABS(g_pos - (target_pos*h_pos_pos + target_neg*h_pos_neg)))
+      err = MAX(err, ABS(g_neg - (target_pos*h_pos_neg + target_neg*h_neg_neg)))
+      raw_gap = MAX(ABS(raw_coeff_pos - target_pos), ABS(raw_coeff_neg - target_neg))
+
+      IF (err > tol .OR. raw_gap < 0.1_dp .OR. coeff_det <= EPSILON(coeff_det)) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/rawgap/cpos/cneg/rpos/rneg/det", err, raw_gap, coeff_pos, coeff_neg, &
+            raw_coeff_pos, raw_coeff_neg, coeff_det
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/rawgap/cpos/cneg/rpos/rneg/det", err, raw_gap, coeff_pos, coeff_neg, &
+            raw_coeff_pos, raw_coeff_neg, coeff_det
+      END IF
+
+   END SUBROUTINE check_projector_response_projected_linear_term
 
 ! **************************************************************************************************
 !> \brief Hidden density-gap response must enter the coupled fixed-N Schur curvature.

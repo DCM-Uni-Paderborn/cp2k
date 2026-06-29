@@ -18857,9 +18857,10 @@ CONTAINS
          diag_negative_weight_sum
 
       INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp) :: base_weight, coeff_det, coeff_negative, coeff_positive, eval_abs_avg, g1, &
-         g2, h11, h12, h22, mode_norm, mode_sign, mode_weight, negative_balance, negative_gdot, &
-         negative_norm, negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
+      REAL(KIND=dp) :: base_projected_neg, base_projected_pos, base_weight, coeff_det, &
+         coeff_negative, coeff_positive, eval_abs_avg, g1, g2, h11, h12, h22, mode_norm, &
+         mode_sign, mode_weight, negative_balance, negative_gdot, negative_norm, &
+         negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
          residual_weight, response_total_sum, spectral_weight, step_weight, step_weight_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, &
                                                             mode_rx, response_corr, response_neg, &
@@ -18991,10 +18992,25 @@ CONTAINS
          END IF
          h11 = MAX(0.0_dp, h11)
          h22 = MAX(0.0_dp, h22)
-         g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
-         g2 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
-         CALL para_env_inter_kp%sum(g1)
-         CALL para_env_inter_kp%sum(g2)
+         IF (use_projected_metric) THEN
+            CALL kpoint_ot_mixed_projected_term(energy_base, response_pos, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                base_projected_pos)
+            CALL kpoint_ot_mixed_projected_term(energy_base, response_neg, occ_curv, tether_curv, &
+                                                occ_curv_projection_sum, channel_nmo, e_offset, &
+                                                base_projected_neg)
+            g1 = DOT_PRODUCT(grad_e(:), response_pos(:))
+            g2 = DOT_PRODUCT(grad_e(:), response_neg(:))
+            CALL para_env_inter_kp%sum(g1)
+            CALL para_env_inter_kp%sum(g2)
+            g1 = g1 - base_projected_pos
+            g2 = g2 - base_projected_neg
+         ELSE
+            g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
+            g2 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
+            CALL para_env_inter_kp%sum(g1)
+            CALL para_env_inter_kp%sum(g2)
+         END IF
          coeff_positive = 1.0_dp
          coeff_negative = 1.0_dp
          coeff_det = h11*h22 - h12*h12
