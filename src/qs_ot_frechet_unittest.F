@@ -200,6 +200,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
+   CALL check_projector_density_full_direct_probe_drop( &
+      "complex projector density full-Direct probe drop", 5.0E-14_dp, nfail)
    CALL check_projector_dense_metric_tail_bridge( &
       "complex projector dense metric tail bridge", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
@@ -7725,6 +7727,51 @@ CONTAINS
    END SUBROUTINE check_projector_density_full_direct_tail_probe
 
 ! **************************************************************************************************
+!> \brief Check that residual-tail Direct shadow drops are visible only to trust-safe probes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_full_direct_probe_drop(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: abs_trust_keep, capped_keep, err, &
+                                                            low_shadow, outside_tail, probe_drop, &
+                                                            weighted_trust_keep
+
+      probe_drop = dense_density_full_direct_probe_drop(5.0E-5_dp, 0.0_dp, 8.0E-8_dp, &
+                                                        1.0E-2_dp, 1.0E-2_dp)
+      outside_tail = dense_density_full_direct_probe_drop(2.0E-4_dp, 0.0_dp, 8.0E-8_dp, &
+                                                          1.0E-2_dp, 1.0E-2_dp)
+      capped_keep = dense_density_full_direct_probe_drop(5.0E-5_dp, 3.0E-8_dp, 2.0E-8_dp, &
+                                                         1.0E-2_dp, 1.0E-2_dp)
+      low_shadow = dense_density_full_direct_probe_drop(5.0E-5_dp, 0.0_dp, 1.0E-13_dp, &
+                                                        1.0E-2_dp, 1.0E-2_dp)
+      weighted_trust_keep = dense_density_full_direct_probe_drop(5.0E-5_dp, 2.0E-8_dp, &
+                                                                 8.0E-8_dp, 8.0E-1_dp, 1.0E-2_dp)
+      abs_trust_keep = dense_density_full_direct_probe_drop(5.0E-5_dp, 2.0E-8_dp, 8.0E-8_dp, &
+                                                            1.0E-2_dp, 8.0E-1_dp)
+
+      err = MAX(ABS(probe_drop - 8.0E-8_dp), ABS(outside_tail), ABS(capped_keep - 3.0E-8_dp), &
+                ABS(low_shadow), ABS(weighted_trust_keep - 2.0E-8_dp), &
+                ABS(abs_trust_keep - 2.0E-8_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with probe/out/cap/low/wtrust/atrust", probe_drop, outside_tail, capped_keep, &
+            low_shadow, weighted_trust_keep, abs_trust_keep
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with probe/out/cap/low/wtrust/atrust", probe_drop, outside_tail, capped_keep, &
+            low_shadow, weighted_trust_keep, abs_trust_keep
+      END IF
+
+   END SUBROUTINE check_projector_density_full_direct_probe_drop
+
+! **************************************************************************************************
 !> \brief Check the residual-tail dense metric-response bridge gate.
 !> \param label ...
 !> \param tol ...
@@ -9811,6 +9858,34 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of the residual-tail Direct-density shadow probe drop.
+!> \param residual_delta ...
+!> \param capped_expected_drop ...
+!> \param shadow_expected_drop ...
+!> \param weighted_trust_ratio ...
+!> \param abs_trust_ratio ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_full_direct_probe_drop(residual_delta, capped_expected_drop, &
+                                                 shadow_expected_drop, weighted_trust_ratio, &
+                                                 abs_trust_ratio) RESULT(probe_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, capped_expected_drop, &
+                                                            shadow_expected_drop, &
+                                                            weighted_trust_ratio, abs_trust_ratio
+      REAL(KIND=dp)                                      :: probe_drop
+
+      probe_drop = MAX(0.0_dp, capped_expected_drop)
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (shadow_expected_drop <= probe_drop) RETURN
+      IF (shadow_expected_drop <= 1.0E-12_dp) RETURN
+      IF (weighted_trust_ratio > 7.5E-1_dp) RETURN
+      IF (abs_trust_ratio > 7.5E-1_dp) RETURN
+
+      probe_drop = shadow_expected_drop
+
+   END FUNCTION dense_density_full_direct_probe_drop
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the residual-tail dense metric-response bridge gate.
