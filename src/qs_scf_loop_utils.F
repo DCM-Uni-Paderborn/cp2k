@@ -18466,6 +18466,29 @@ CONTAINS
 
       END FUNCTION kpoint_ot_projector_negative_step_balance
 
+! **************************************************************************************************
+!> \brief adverse fraction of finite Projector response in negative Schur modes
+!> \param negative_norm metric norm of the selected negative-mode response
+!> \param correction_norm metric norm of the full selected response correction
+!> \param negative_gdot Mermin residual-gradient contraction of the negative response
+!> \return fraction of the correction that is both negative-mode and anti-descent
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_response_adverse_fraction(negative_norm, correction_norm, &
+                                                             negative_gdot) RESULT(fraction)
+      REAL(KIND=dp), INTENT(IN)                          :: negative_norm, correction_norm, &
+                                                            negative_gdot
+      REAL(KIND=dp)                                      :: fraction
+
+         fraction = 0.0_dp
+         IF (negative_norm <= EPSILON(negative_norm)) RETURN
+         IF (correction_norm <= EPSILON(correction_norm)) RETURN
+         IF (negative_gdot >= 0.0_dp) RETURN
+
+         fraction = negative_norm/correction_norm
+         fraction = MAX(0.0_dp, MIN(1.0_dp, fraction))
+
+      END FUNCTION kpoint_ot_projector_response_adverse_fraction
+
 !> \brief audit an accepted-history calibrated finite-response correction in Projector modes
 !> \param rot_hessian diagonal/canonical rotation Hessian
 !> \param rot_hessian_projector finite complex Projector-Hessian
@@ -18541,8 +18564,8 @@ CONTAINS
 
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp) :: base_weight, coeff_det, coeff_negative, coeff_positive, eval_abs_avg, g1, &
-         g2, h11, h12, h22, mode_norm, mode_sign, mode_weight, negative_balance, negative_norm, &
-         negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
+         g2, h11, h12, h22, mode_norm, mode_sign, mode_weight, negative_balance, negative_gdot, &
+         negative_norm, negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
          residual_weight, response_total_sum, spectral_weight, step_weight, step_weight_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, &
                                                             mode_rx, response_corr, response_neg, &
@@ -18714,8 +18737,10 @@ CONTAINS
          correction_drop = 0.5_dp*MAX(0.0_dp, correction_drop)
          IF (step_weight_sum > EPSILON(step_weight_sum)) &
             applied_weight = (coeff_positive*positive_weight_sum + coeff_negative*negative_weight_sum)/step_weight_sum
+         negative_gdot = coeff_negative*g2
          IF (correction_drop > EPSILON(correction_drop)) &
-            correction_negative_fraction = negative_norm/(2.0_dp*correction_drop)
+            correction_negative_fraction = kpoint_ot_projector_response_adverse_fraction( &
+                                           negative_norm, 2.0_dp*correction_drop, negative_gdot)
          DEALLOCATE (mode_coeff, mode_eval, mode_norms, mode_rx, response_corr, response_neg, response_pos, mode_vec)
 
       END SUBROUTINE audit_kpoint_ot_projector_response_modes

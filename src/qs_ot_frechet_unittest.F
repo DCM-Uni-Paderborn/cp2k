@@ -198,6 +198,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_underprediction_quality( &
       "complex projector response underprediction quality", 5.0E-14_dp, nfail)
+   CALL check_projector_response_adverse_fraction( &
+      "complex projector response adverse negative fraction", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_selection_quality( &
       "complex projector Direct tail selection quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_probe_bootstrap( &
@@ -7721,6 +7723,45 @@ CONTAINS
    END SUBROUTINE check_projector_response_underprediction_quality
 
 ! **************************************************************************************************
+!> \brief Check that negative Projector-response modes are only adverse when anti-descent.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_response_adverse_fraction(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: aligned_fraction, anti_descent_fraction, clipped_fraction, err, &
+         zero_correction_fraction, zero_negative_fraction
+
+      aligned_fraction = dense_projector_response_adverse_fraction(4.0_dp, 5.0_dp, 1.0_dp)
+      anti_descent_fraction = dense_projector_response_adverse_fraction(4.0_dp, 5.0_dp, -1.0_dp)
+      clipped_fraction = dense_projector_response_adverse_fraction(7.0_dp, 5.0_dp, -1.0_dp)
+      zero_correction_fraction = dense_projector_response_adverse_fraction(4.0_dp, 0.0_dp, -1.0_dp)
+      zero_negative_fraction = dense_projector_response_adverse_fraction(0.0_dp, 5.0_dp, -1.0_dp)
+
+      err = ABS(aligned_fraction)
+      err = MAX(err, ABS(anti_descent_fraction - 0.8_dp))
+      err = MAX(err, ABS(clipped_fraction - 1.0_dp))
+      err = MAX(err, ABS(zero_correction_fraction))
+      err = MAX(err, ABS(zero_negative_fraction))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed err/aligned/anti/clipped/zcorr/zneg", err, aligned_fraction, &
+            anti_descent_fraction, clipped_fraction, zero_correction_fraction, zero_negative_fraction
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK err/aligned/anti/clipped/zcorr/zneg", err, aligned_fraction, &
+            anti_descent_fraction, clipped_fraction, zero_correction_fraction, zero_negative_fraction
+      END IF
+
+   END SUBROUTINE check_projector_response_adverse_fraction
+
+! **************************************************************************************************
 !> \brief Check that a trust-safe Direct tail candidate can collect selected history.
 !> \param label ...
 !> \param tol ...
@@ -9814,6 +9855,28 @@ CONTAINS
       enabled = normal_quality .OR. underpredicted_quality
 
    END FUNCTION dense_projector_response_candidate_enabled
+
+! **************************************************************************************************
+!> \brief Dense mirror of adverse negative-mode Projector-response history.
+!> \param negative_norm ...
+!> \param correction_norm ...
+!> \param negative_gdot ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_response_adverse_fraction(negative_norm, correction_norm, &
+                                                      negative_gdot) RESULT(fraction)
+      REAL(KIND=dp), INTENT(IN)                          :: negative_norm, correction_norm, &
+                                                            negative_gdot
+      REAL(KIND=dp)                                      :: fraction
+
+      fraction = 0.0_dp
+      IF (negative_norm <= EPSILON(negative_norm)) RETURN
+      IF (correction_norm <= EPSILON(correction_norm)) RETURN
+      IF (negative_gdot >= 0.0_dp) RETURN
+
+      fraction = MAX(0.0_dp, MIN(1.0_dp, negative_norm/correction_norm))
+
+   END FUNCTION dense_projector_response_adverse_fraction
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected-history Direct quality maturity.
