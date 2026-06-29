@@ -19656,7 +19656,9 @@ CONTAINS
                            same_gauge_cluster = .FALSE.
                      END DO
                   END IF
-                  IF (same_gauge_cluster .AND. ABS(work(i, j)) > work_tol) &
+                  IF (same_gauge_cluster .AND. &
+                      (ABS(work(i, j)) > work_tol .OR. &
+                       ABS(REAL(work(i, i), KIND=dp) - REAL(work(j, j), KIND=dp)) > work_tol)) &
                      use_projector_fd = .TRUE.
                END DO
             END DO

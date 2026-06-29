@@ -272,6 +272,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector fd mixed response", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_fd_fixed_n_trace( &
       "history-safe occupation-projector fd fixed-N trace", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_diagonal_cluster_fd( &
+      "history-safe occupation-projector diagonal cluster finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_degenerate_physical_split( &
       "history-safe occupation-projector degenerate physical split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_split( &
@@ -11949,6 +11951,83 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_fd_fixed_n_trace
 
 ! **************************************************************************************************
+!> \brief Check that diagonal splitting inside a near-degenerate cluster uses the cluster path.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_diagonal_cluster_fd(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_expected, docc_safe
+      INTEGER                                            :: i, j
+      LOGICAL                                            :: fd_used
+      REAL(KIND=dp)                                      :: charge_leak, expected_err, offdiag_norm, &
+                                                            split_gap
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_scale, occ_slope
+
+      evals(:) = [-0.010000_dp, -0.009982_dp, 0.23_dp, 0.47_dp]
+      occ_scale(:) = [1.18_dp, 0.39_dp, 0.20_dp, 0.07_dp]
+      occ_curv(:) = [0.038_dp, 0.018_dp, 0.018_dp, 0.006_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 1) = CMPLX(0.11_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.05_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.02_dp, 0.0_dp, KIND=dp)
+      dchc(4, 4) = CMPLX(-0.01_dp, 0.0_dp, KIND=dp)
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap, fd_used)
+
+      occ_slope(:) = occ_scale(:)
+      CALL dense_monotone_occupation_slopes(occ_scale, &
+                                            SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:)))), &
+                                            occ_slope)
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, &
+                                                    SQRT(EPSILON(1.0_dp))* &
+                                                    MAX(1.0_dp, MAXVAL(ABS(occ_scale(:)))), occ_slope)
+      docc_expected(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, dchc, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, docc_expected)
+
+      expected_err = MAXVAL(ABS(docc_safe(:, :) - docc_expected(:, :)))
+      charge_leak = 0.0_dp
+      offdiag_norm = 0.0_dp
+      DO i = 1, n
+         charge_leak = charge_leak + REAL(docc_safe(i, i), KIND=dp)
+         DO j = 1, n
+            IF (i /= j) offdiag_norm = MAX(offdiag_norm, ABS(dchc(i, j)))
+         END DO
+      END DO
+      charge_leak = ABS(charge_leak)
+      split_gap = ABS(REAL(dchc(1, 1), KIND=dp) - REAL(dchc(2, 2), KIND=dp))
+
+      IF (.NOT. fd_used .OR. expected_err > tol .OR. charge_leak > tol .OR. &
+          offdiag_norm > tol .OR. split_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5),1(1X,L1))') TRIM(label), &
+            "failed with err/charge/offdiag/split/tol/fd", expected_err, charge_leak, &
+            offdiag_norm, split_gap, tol, fd_used
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5),1(1X,L1))') TRIM(label), &
+            "OK with err/charge/offdiag/split/tol/fd", expected_err, charge_leak, &
+            offdiag_norm, split_gap, tol, fd_used
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_diagonal_cluster_fd
+
+! **************************************************************************************************
 !> \brief Check that a near-degenerate physical cluster uses degenerate perturbation theory.
 !> \param label ...
 !> \param tol ...
@@ -13565,15 +13644,17 @@ CONTAINS
 !> \param docc_mat ...
 !> \param occ_curv ...
 !> \param gauge_gap ...
+!> \param fd_cluster_used ...
 ! **************************************************************************************************
    SUBROUTINE dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
-                                                              docc_mat, occ_curv, gauge_gap)
+                                                              docc_mat, occ_curv, gauge_gap, fd_cluster_used)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: fd_cluster_used
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
       INTEGER                                            :: i, idx, j, n
@@ -13583,6 +13664,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      IF (PRESENT(fd_cluster_used)) fd_cluster_used = .FALSE.
       IF (projector_weight <= 0.0_dp) RETURN
 
       ALLOCATE (occ_work(SIZE(occ_scale)))
@@ -13606,12 +13688,15 @@ CONTAINS
                      IF (ABS(evals(idx + 1) - evals(idx)) > gauge_gap) same_gauge_cluster = .FALSE.
                   END DO
                END IF
-               IF (same_gauge_cluster .AND. ABS(work(i, j)) > work_tol) &
+               IF (same_gauge_cluster .AND. &
+                   (ABS(work(i, j)) > work_tol .OR. &
+                    ABS(REAL(work(i, i), KIND=dp) - REAL(work(j, j), KIND=dp)) > work_tol)) &
                   use_projector_fd = .TRUE.
             END DO
          END DO
          CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
          IF (use_projector_fd) THEN
+            IF (PRESENT(fd_cluster_used)) fd_cluster_used = .TRUE.
             projector_fd_step = 1.0E-7_dp
             IF (work_norm > EPSILON(work_norm)) THEN
                projector_fd_step = MIN(projector_fd_step, 1.0E-2_dp*gauge_gap/work_norm)
