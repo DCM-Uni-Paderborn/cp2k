@@ -59,6 +59,9 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_tail_jump_norm = 1.0E-10_dp, &
                                         ot_cg_kp_residual_tail_min_delta = 3.0E-6_dp, &
                                         ot_cg_kp_residual_tail_max_delta = 5.0E-6_dp, &
+                                        ot_cg_kp_mermin_recovery_tail_min_delta = 1.5E-6_dp, &
+                                        ot_cg_kp_mermin_recovery_tail_max_delta = 5.0E-6_dp, &
+                                        ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp
 
@@ -344,6 +347,12 @@ CONTAINS
       step_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
                        qs_ot_env(1)%settings%eps_taylor)* &
                    MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+      IF (qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
+          qs_ot_env(1)%kpoint_physical_delta > ot_cg_kp_mermin_recovery_tail_min_delta .AND. &
+          qs_ot_env(1)%kpoint_physical_delta < ot_cg_kp_mermin_recovery_tail_max_delta) THEN
+         step_floor = MAX(step_floor, ot_cg_kp_mermin_recovery_step_floor* &
+                          MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min)))
+      END IF
       IF (ABS(qs_ot_env(1)%ds_min) > step_floor) RETURN
 
       logger => cp_get_default_logger()

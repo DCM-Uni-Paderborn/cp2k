@@ -122,6 +122,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical density-response helper", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_centered_sign( &
       "complex projector physical density centered-sign blend", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_density_global_alignment( &
+      "complex projector physical density global alignment", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_convexity( &
       "complex projector physical density-response convexity", 5.0E-14_dp, nfail)
    CALL check_projector_density_floor_audit_response_helper( &
@@ -4762,6 +4764,50 @@ CONTAINS
    END SUBROUTINE check_projector_physical_density_centered_sign
 
 ! **************************************************************************************************
+!> \brief Check that a globally coherent fixed-N density response can recover local safe components.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_density_global_alignment(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp)                                      :: aligned_response, blocked_response, &
+                                                            expected_response, occ_curv, &
+                                                            occ_curv_max, raw_response, &
+                                                            safe_response
+
+      occ_curv_max = 4.0E-2_dp
+      occ_curv = 2.0E-2_dp
+      raw_response = 0.004_dp
+      safe_response = -0.040_dp
+
+      blocked_response = dense_physical_density_response(raw_response, safe_response, &
+                                                         occ_curv, occ_curv_max, response_ratio_gate, &
+                                                         0.002_dp, -0.020_dp, 0.0_dp)
+      aligned_response = dense_physical_density_response(raw_response, safe_response, &
+                                                         occ_curv, occ_curv_max, response_ratio_gate, &
+                                                         0.002_dp, -0.020_dp, 0.80_dp)
+      expected_response = safe_response
+
+      IF (ABS(blocked_response - raw_response) > tol .OR. &
+          ABS(aligned_response - expected_response) > tol .OR. &
+          ABS(aligned_response) <= ABS(blocked_response)) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with blocked/aligned/expected", blocked_response, aligned_response, expected_response
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with blocked/aligned/expected", blocked_response, aligned_response, expected_response
+      END IF
+
+   END SUBROUTINE check_projector_physical_density_global_alignment
+
+! **************************************************************************************************
 !> \brief Check that conflicting density responses are blended, not extrapolated.
 !> \param label ...
 !> \param tol ...
@@ -8806,12 +8852,14 @@ CONTAINS
       INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
 
       INTEGER                                            :: r, s
-      REAL(KIND=dp)                                      :: err, rhs_err, w
+      REAL(KIND=dp)                                      :: base_self, direct_self, err, legacy_gap, &
+                                                            rhs_err, w
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_density, b_direct, b_floor, b_phys, &
                                                             r_density, r_direct, r_floor, r_phys
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_rot, rhs_direct, rhs_expected
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_metric, schur_direct, schur_expected
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: rot_metric, schur_direct, &
+                                                            schur_expected, schur_legacy
 
       w = 0.35_dp
       grad_e(:) = [0.11_dp, -0.07_dp, 0.05_dp, -0.03_dp]
@@ -8854,16 +8902,30 @@ CONTAINS
          rhs_expected(r) = grad_rot(r) + DOT_PRODUCT(r_phys(:, r) + r_direct(:, r), grad_e)
       END DO
       schur_direct(:, :) = rot_metric(:, :)
+      schur_legacy(:, :) = rot_metric(:, :)
       schur_expected(:, :) = rot_metric(:, :)
       DO s = 1, nrot
          DO r = 1, nrot
+            base_self = 0.5_dp* &
+                        (DOT_PRODUCT(b_density(:, r), r_density(:, s)) + &
+                         DOT_PRODUCT(b_density(:, s), r_density(:, r)))
+            direct_self = 0.5_dp* &
+                          (DOT_PRODUCT(b_direct(:, r), r_direct(:, s)) + &
+                           DOT_PRODUCT(b_direct(:, s), r_direct(:, r)))
+            schur_direct(r, s) = schur_direct(r, s) + direct_self - base_self
             schur_direct(r, s) = schur_direct(r, s) - 0.5_dp* &
                                  (DOT_PRODUCT(b_phys(:, r), r_phys(:, s)) + DOT_PRODUCT(b_phys(:, s), r_phys(:, r)))
             schur_direct(r, s) = schur_direct(r, s) - 0.5_dp* &
                                  (DOT_PRODUCT(b_phys(:, r), r_direct(:, s)) + DOT_PRODUCT(b_direct(:, r), r_phys(:, s)) + &
                                   DOT_PRODUCT(b_direct(:, r), r_direct(:, s)) + DOT_PRODUCT(b_phys(:, s), r_direct(:, r)) + &
                                   DOT_PRODUCT(b_direct(:, s), r_phys(:, r)) + DOT_PRODUCT(b_direct(:, s), r_direct(:, r)))
-            schur_expected(r, s) = schur_expected(r, s) - 0.5_dp* &
+            schur_legacy(r, s) = schur_legacy(r, s) - 0.5_dp* &
+                                 (DOT_PRODUCT(b_phys(:, r), r_phys(:, s)) + DOT_PRODUCT(b_phys(:, s), r_phys(:, r)))
+            schur_legacy(r, s) = schur_legacy(r, s) - 0.5_dp* &
+                                 (DOT_PRODUCT(b_phys(:, r), r_direct(:, s)) + DOT_PRODUCT(b_direct(:, r), r_phys(:, s)) + &
+                                  DOT_PRODUCT(b_direct(:, r), r_direct(:, s)) + DOT_PRODUCT(b_phys(:, s), r_direct(:, r)) + &
+                                  DOT_PRODUCT(b_direct(:, s), r_phys(:, r)) + DOT_PRODUCT(b_direct(:, s), r_direct(:, r)))
+            schur_expected(r, s) = schur_expected(r, s) + direct_self - base_self - 0.5_dp* &
                                    (DOT_PRODUCT(b_phys(:, r) + b_direct(:, r), r_phys(:, s) + r_direct(:, s)) + &
                                     DOT_PRODUCT(b_phys(:, s) + b_direct(:, s), r_phys(:, r) + r_direct(:, r)))
          END DO
@@ -8871,11 +8933,14 @@ CONTAINS
 
       err = MAXVAL(ABS(schur_direct(:, :) - schur_expected(:, :)))
       rhs_err = MAXVAL(ABS(rhs_direct(:) - rhs_expected(:)))
-      IF (err > tol .OR. rhs_err > tol) THEN
+      legacy_gap = MAXVAL(ABS(schur_legacy(:, :) - schur_expected(:, :)))
+      IF (err > tol .OR. rhs_err > tol .OR. legacy_gap <= 1.0E-6_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with schur/rhs error", err, rhs_err
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with schur/rhs/legacy", err, rhs_err, legacy_gap
       ELSE
-         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with schur/rhs error", err, rhs_err
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with schur/rhs/legacy", err, rhs_err, legacy_gap
       END IF
 
    END SUBROUTINE check_projector_direct_floor_density_schur
@@ -13092,21 +13157,25 @@ CONTAINS
 !> \param response_ratio_gate ...
 !> \param density_projector_centered_response ...
 !> \param density_safe_centered_response ...
+!> \param density_response_alignment ...
 !> \return ...
 ! **************************************************************************************************
    FUNCTION dense_physical_density_response(density_projector_response, density_safe_response, occ_curv, &
                                             occ_curv_max, response_ratio_gate, &
                                             density_projector_centered_response, &
-                                            density_safe_centered_response) RESULT(density_response)
+                                            density_safe_centered_response, &
+                                            density_response_alignment) RESULT(density_response)
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, &
                                                             density_safe_response, occ_curv, &
                                                             occ_curv_max, response_ratio_gate
       REAL(KIND=dp), INTENT(IN), OPTIONAL :: density_projector_centered_response, &
-         density_safe_centered_response
+         density_safe_centered_response, density_response_alignment
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp) :: active_fraction, projector_abs, response_shape, safe_abs, safe_blend, &
-         safe_cap, safe_component, sign_projector_response, sign_safe_response
+      LOGICAL                                            :: globally_aligned_safe_response, &
+                                                            locally_aligned_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, response_shape, safe_abs, &
+         safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -13122,11 +13191,18 @@ CONTAINS
          sign_projector_response = density_projector_centered_response
       IF (PRESENT(density_safe_centered_response)) &
          sign_safe_response = density_safe_centered_response
-      IF (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
-          (ABS(sign_projector_response) <= EPSILON(sign_projector_response) .AND. &
-           ABS(sign_safe_response) > EPSILON(sign_safe_response))) THEN
-         projector_abs = ABS(density_projector_response)
-         safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(density_projector_response)
+      safe_abs = ABS(density_safe_response)
+      alignment = 0.0_dp
+      IF (PRESENT(density_response_alignment)) &
+         alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
+      locally_aligned_safe_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                      (ABS(sign_projector_response) <= EPSILON(sign_projector_response) .AND. &
+                                       ABS(sign_safe_response) > EPSILON(sign_safe_response))
+      globally_aligned_safe_response = alignment > 0.25_dp .AND. &
+                                       safe_abs > EPSILON(safe_abs) .AND. &
+                                       projector_abs <= alignment*safe_abs
+      IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
          safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction

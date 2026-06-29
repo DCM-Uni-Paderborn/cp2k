@@ -178,7 +178,10 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_trace_active_max_weight = 9.5E-1_dp, &
                                         ot_kp_schur_projector_density_full_min_drop = 1.0E-12_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_ratio = 8.0E-1_dp, &
+                                        ot_kp_schur_projector_density_fdir_refresh_ratio = 2.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_residual_ratio = 8.0E-1_dp, &
+                                        ot_kp_schur_residual_tail_plateau_quality = 2.5E-1_dp, &
+                                        ot_kp_schur_residual_tail_plateau_slack = 5.0E-2_dp, &
                                         ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
                                         ot_kp_schur_projector_coupled_tail_max_weight = 0.10_dp, &
                                         ot_kp_schur_projector_coupled_tail_delta = 1.0E-4_dp
@@ -1810,6 +1813,9 @@ CONTAINS
          IF (model_delta > 0.0_dp) &
             raw_control_delta = MIN(raw_control_delta, &
                                     ot_kp_canonical_density_control_raw_max_ratio*model_delta)
+         IF (model_delta <= ot_kp_schur_projector_response_full_delta .AND. &
+             qs_ot_env%ener_x_trusted_step_max <= EPSILON(qs_ot_env%ener_x_trusted_step_max)) &
+            raw_control_delta = MIN(raw_control_delta, model_delta)
          model_delta = MAX(model_delta, raw_control_delta)
       END IF
       IF (qs_ot_env%line_search_count > 1 .AND. qs_ot_env%schur_model_pending .AND. &
@@ -1927,21 +1933,25 @@ CONTAINS
 !> \param occ_curv_max ...
 !> \param density_projector_centered_response ...
 !> \param density_safe_centered_response ...
+!> \param density_response_alignment ...
 !> \return floor-limited eigenvalue response without projector-basis dP gauge amplification
 ! **************************************************************************************************
    FUNCTION kpoint_ot_physical_density_response(density_projector_response, density_safe_response, &
                                                 occ_curv, occ_curv_max, &
                                                 density_projector_centered_response, &
-                                                density_safe_centered_response) RESULT(density_response)
+                                                density_safe_centered_response, &
+                                                density_response_alignment) RESULT(density_response)
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, &
                                                             density_safe_response, occ_curv, &
                                                             occ_curv_max
       REAL(KIND=dp), INTENT(IN), OPTIONAL :: density_projector_centered_response, &
-         density_safe_centered_response
+         density_safe_centered_response, density_response_alignment
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp) :: active_fraction, projector_abs, response_shape, safe_abs, safe_blend, &
-         safe_cap, safe_component, sign_projector_response, sign_safe_response
+      LOGICAL                                            :: globally_aligned_safe_response, &
+                                                            locally_aligned_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, response_shape, safe_abs, &
+         safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -1958,11 +1968,18 @@ CONTAINS
          sign_projector_response = density_projector_centered_response
       IF (PRESENT(density_safe_centered_response)) &
          sign_safe_response = density_safe_centered_response
-      IF (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
-          (ABS(sign_projector_response) <= EPSILON(sign_projector_response) .AND. &
-           ABS(sign_safe_response) > EPSILON(sign_safe_response))) THEN
-         projector_abs = ABS(density_projector_response)
-         safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(density_projector_response)
+      safe_abs = ABS(density_safe_response)
+      alignment = 0.0_dp
+      IF (PRESENT(density_response_alignment)) &
+         alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
+      locally_aligned_safe_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                      (ABS(sign_projector_response) <= EPSILON(sign_projector_response) .AND. &
+                                       ABS(sign_safe_response) > EPSILON(sign_safe_response))
+      globally_aligned_safe_response = alignment > 0.25_dp .AND. &
+                                       safe_abs > EPSILON(safe_abs) .AND. &
+                                       projector_abs <= alignment*safe_abs
+      IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
          safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
@@ -3555,6 +3572,26 @@ CONTAINS
                      raw_residual_quality_ratio, residual_quality_ratio, &
                      sample_accepted_drop, sample_reference_drop
                END IF
+            END IF
+         END IF
+         IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
+             residual_quality_ratio <= EPSILON(1.0_dp) .AND. &
+             local_ot_env(1)%schur_model_delta > EPSILON(local_ot_env(1)%schur_model_delta) .AND. &
+             local_ot_env(1)%schur_model_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+             residual_current_delta <= (1.0_dp + ot_kp_schur_residual_tail_plateau_slack)* &
+             local_ot_env(1)%schur_model_delta .AND. &
+             local_ot_env(1)%mermin_ls_accepted_quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
+             local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp .AND. &
+             sample_quality >= 0.8_dp) THEN
+            residual_quality_ratio = ot_kp_schur_residual_tail_plateau_quality* &
+                                     MIN(sample_quality, local_ot_env(1)%mermin_ls_accepted_quality_ema)
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                  " OT Schur residual-tail plateau quality q raw_q delta current mermin_q:", &
+                  residual_quality_ratio, raw_residual_quality_ratio, &
+                  local_ot_env(1)%schur_model_delta, residual_current_delta, &
+                  local_ot_env(1)%mermin_ls_accepted_quality_ema
             END IF
          END IF
          IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
@@ -8403,6 +8440,25 @@ CONTAINS
             projector_physical_direct_floor_density_trust_quality, &
             projector_density_full_global_abs_avg, &
             local_ot_env(1)%schur_projector_density_full_global_quality_samples
+         IF (exact_density_direct_response_ready) THEN
+            DO s = 1, nrot
+               DO r = 1, nrot
+                  projected_term = 0.5_dp* &
+                                   (DOT_PRODUCT(energy_cross_density_direct(:, r), &
+                                                response_density_direct_exact(:, s)) + &
+                                    DOT_PRODUCT(energy_cross_density_direct(:, s), &
+                                                response_density_direct_exact(:, r)))
+                  IF (exact_density_response_ready) &
+                     projected_term = projected_term - 0.5_dp* &
+                                      (DOT_PRODUCT(energy_cross_density(:, r), response_density_exact(:, s)) + &
+                                       DOT_PRODUCT(energy_cross_density(:, s), response_density_exact(:, r)))
+                  rot_hessian_projector_physical(r, s) = &
+                     rot_hessian_projector_physical(r, s) + projected_term
+                  rot_hessian_projector_physical_diagref(r, s) = &
+                     rot_hessian_projector_physical_diagref(r, s) + projected_term
+               END DO
+            END DO
+         END IF
          ! Rebuild the off-diagonal projector-response active block with the
          ! same history-qualified physical pair weights used by the Direct
          ! Schur model below.  The early Fermi-window split is a conservative
@@ -9120,6 +9176,10 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_direct_quality_ema, &
                   local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
                   ot_kp_schur_projector_response_min_samples)
+               projector_density_history_quality = projector_density_history_quality* &
+                                                   MAX(0.0_dp, MIN(1.0_dp, &
+                                                                   local_ot_env(1)% &
+                                                                   schur_projector_density_full_direct_trust_ema))
                projector_density_history_weight = &
                   MAX(projector_density_history_weight, &
                       kpoint_ot_projector_coupled_weight( &
@@ -9142,6 +9202,9 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_quality_ema, &
                   local_ot_env(1)%schur_projector_density_full_quality_samples, &
                   ot_kp_schur_projector_response_min_samples)
+               projector_density_history_quality = projector_density_history_quality* &
+                                                   MAX(0.0_dp, MIN(1.0_dp, &
+                                                                   local_ot_env(1)%schur_projector_density_full_trust_ema))
                projector_density_history_weight = &
                   MAX(projector_density_history_weight, &
                       kpoint_ot_projector_coupled_weight( &
@@ -9164,6 +9227,10 @@ CONTAINS
                   local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
                   local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
                   ot_kp_schur_projector_response_min_samples)
+               projector_density_history_quality = projector_density_history_quality* &
+                                                   MAX(0.0_dp, MIN(1.0_dp, &
+                                                                   local_ot_env(1)% &
+                                                                   schur_projector_density_full_global_trust_ema))
                projector_density_history_weight = &
                   MAX(projector_density_history_weight, &
                       kpoint_ot_projector_coupled_weight( &
@@ -14950,14 +15017,16 @@ CONTAINS
             END IF
             IF (projector_physical_direct_density_model_calibrated_drop > &
                 EPSILON(projector_physical_direct_density_model_calibrated_drop) .AND. &
-                projector_physical_direct_density_response_weighted_step <= response_trust .AND. &
-                projector_physical_direct_density_response_abs_step <= response_abs_trust) THEN
+                projector_physical_direct_density_trust_quality >= &
+                0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
                local_ot_env(1)%schur_projector_density_pending = .TRUE.
                local_ot_env(1)%schur_projector_density_drop = &
                   local_ot_env(1)%schur_projector_density_drop + &
+                  MIN(1.0_dp, MAX(0.0_dp, projector_physical_direct_density_trust_quality))* &
                   projector_physical_direct_density_model_calibrated_drop
                local_ot_env(1)%schur_projector_density_lowcurv = &
                   local_ot_env(1)%schur_projector_density_lowcurv + &
+                  MIN(1.0_dp, MAX(0.0_dp, projector_physical_direct_density_trust_quality))* &
                   projector_physical_direct_density_model_calibrated_drop* &
                   projector_physical_density_low_curv_fraction
             END IF
@@ -15012,8 +15081,8 @@ CONTAINS
             END IF
             IF (density_full_history_drop > &
                 ot_kp_schur_projector_density_full_min_drop .AND. &
-                density_full_history_weighted_trust_ratio <= 1.0_dp .AND. &
-                density_full_history_abs_trust_ratio <= 1.0_dp) THEN
+                density_full_history_trust_quality >= &
+                0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
                IF (.NOT. local_ot_env(1)%schur_projector_density_full_pending) THEN
                   local_ot_env(1)%schur_projector_density_full_drop = 0.0_dp
                   local_ot_env(1)%schur_projector_density_full_trust = 1.0_dp
@@ -15023,6 +15092,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_pending = .TRUE.
                local_ot_env(1)%schur_projector_density_full_drop = &
                   local_ot_env(1)%schur_projector_density_full_drop + &
+                  MIN(1.0_dp, MAX(0.0_dp, density_full_history_trust_quality))* &
                   density_full_history_drop
                local_ot_env(1)%schur_projector_density_full_trust = &
                   MIN(local_ot_env(1)%schur_projector_density_full_trust, &
@@ -15036,6 +15106,7 @@ CONTAINS
                IF (density_full_candidate_selected) &
                   local_ot_env(1)%schur_projector_density_full_selected = &
                   local_ot_env(1)%schur_projector_density_full_selected + &
+                  MIN(1.0_dp, MAX(0.0_dp, density_full_history_trust_quality))* &
                   density_full_history_drop
             END IF
             IF (density_full_global_candidate_selected .AND. &
@@ -15130,8 +15201,8 @@ CONTAINS
             END IF
             IF (density_full_direct_history_drop > &
                 ot_kp_schur_projector_density_full_min_drop .AND. &
-                density_full_direct_history_weighted_trust_ratio <= 1.0_dp .AND. &
-                density_full_direct_history_abs_trust_ratio <= 1.0_dp) THEN
+                density_full_direct_history_trust_quality >= &
+                0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
                IF (.NOT. local_ot_env(1)%schur_projector_density_full_direct_pending) THEN
                   local_ot_env(1)%schur_projector_density_full_direct_drop = 0.0_dp
                   local_ot_env(1)%schur_projector_density_full_direct_trust = 1.0_dp
@@ -15141,6 +15212,7 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_direct_pending = .TRUE.
                local_ot_env(1)%schur_projector_density_full_direct_drop = &
                   local_ot_env(1)%schur_projector_density_full_direct_drop + &
+                  MIN(1.0_dp, MAX(0.0_dp, density_full_direct_history_trust_quality))* &
                   density_full_direct_history_drop
                local_ot_env(1)%schur_projector_density_full_direct_trust = &
                   MIN(local_ot_env(1)%schur_projector_density_full_direct_trust, &
@@ -15154,6 +15226,7 @@ CONTAINS
                IF (density_full_direct_candidate_selected) &
                   local_ot_env(1)%schur_projector_density_fdir_selected = &
                   local_ot_env(1)%schur_projector_density_fdir_selected + &
+                  MIN(1.0_dp, MAX(0.0_dp, density_full_direct_history_trust_quality))* &
                   density_full_direct_history_drop
             END IF
             IF (exact_density_response_ready) THEN
@@ -17608,21 +17681,41 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
       LOGICAL                                            :: do_probe
 
+      LOGICAL                                            :: stale_residual_probe
+      REAL(KIND=dp)                                      :: required_drop_ratio
+
          do_probe = .FALSE.
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
          IF (quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
          IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
-         IF (candidate_expected_drop < ot_kp_schur_projector_density_fdir_probe_ratio* &
+
+         stale_residual_probe = .FALSE.
+         IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
+            stale_residual_probe = &
+               dense_residual_quality <= 2.0_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
+               selected_residual_quality_ema < ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+               MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio) .AND. &
+               quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               MOD(samples, MAX(1, 2*ot_kp_schur_calibration_min_samples)) == 0
+         END IF
+
+         required_drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+         IF (stale_residual_probe) &
+            required_drop_ratio = MIN(required_drop_ratio, &
+                                      ot_kp_schur_projector_density_fdir_refresh_ratio)
+         IF (candidate_expected_drop < required_drop_ratio* &
              MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
 
          IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
-            IF (selected_residual_quality_ema < &
-                ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
-            IF (selected_residual_quality < &
-                0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+            IF (.NOT. stale_residual_probe) THEN
+               IF (selected_residual_quality_ema < &
+                   ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                   MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+               IF (selected_residual_quality < &
+                   0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                   MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+            END IF
          END IF
 
          do_probe = .TRUE.
@@ -18967,8 +19060,10 @@ CONTAINS
       INTEGER                                            :: ie, imo, jmo, r, s
       LOGICAL                                            :: fd_cluster_used
       REAL(KIND=dp) :: channel_occ_curv_max, density_plateau_full_response, &
-         density_plateau_response, density_response, projector_centered_shift, projector_response, &
-         projector_weight, raw_response, safe_centered_shift, weighted_curv_sum
+         density_plateau_response, density_response, density_response_alignment, &
+         projector_centered_shift, projector_response, projector_response_norm, &
+         projector_safe_response_dot, projector_weight, raw_response, safe_centered_shift, &
+         safe_response_norm, weighted_curv_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_floor_audit_column, &
          density_full_centered_column, density_full_column, density_mixed_column, &
          density_plateau_centered_column, density_plateau_column, density_projector_column, eps_m, &
@@ -19158,6 +19253,28 @@ CONTAINS
                   density_full_centered_column(:) = density_full_centered_column(:) - &
                                                     safe_centered_shift
                END IF
+               projector_safe_response_dot = 0.0_dp
+               projector_response_norm = 0.0_dp
+               safe_response_norm = 0.0_dp
+               DO ie = 1, nmo
+                  IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
+                     projector_safe_response_dot = projector_safe_response_dot + &
+                                                   MAX(0.0_dp, occ_curv_channel(ie))* &
+                                                   density_plateau_centered_column(ie)* &
+                                                   density_full_centered_column(ie)
+                     projector_response_norm = projector_response_norm + &
+                                               MAX(0.0_dp, occ_curv_channel(ie))* &
+                                               density_plateau_centered_column(ie)**2
+                     safe_response_norm = safe_response_norm + &
+                                          MAX(0.0_dp, occ_curv_channel(ie))* &
+                                          density_full_centered_column(ie)**2
+                  END IF
+               END DO
+               density_response_alignment = 0.0_dp
+               IF (projector_response_norm > EPSILON(projector_response_norm) .AND. &
+                   safe_response_norm > EPSILON(safe_response_norm)) &
+                  density_response_alignment = projector_safe_response_dot/ &
+                                               SQRT(projector_response_norm*safe_response_norm)
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      density_mixed_column(ie) = &
@@ -19165,7 +19282,8 @@ CONTAINS
                                                             density_full_column(ie), &
                                                             occ_curv_channel(ie), channel_occ_curv_max, &
                                                             density_plateau_centered_column(ie), &
-                                                            density_full_centered_column(ie))
+                                                            density_full_centered_column(ie), &
+                                                            density_response_alignment)
                      density_floor_audit_column(ie) = &
                         kpoint_ot_physical_density_floor_audit_response(density_plateau_column(ie), &
                                                                         density_full_column(ie), &
