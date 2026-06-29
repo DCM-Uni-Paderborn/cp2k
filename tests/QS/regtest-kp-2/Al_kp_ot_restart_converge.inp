@@ -1,11 +1,12 @@
 ! Slow/manual companion to the default k-point OT restart smoke test.
 ! Run after Al_kp_ot_restart_write/read/continue.inp; this input is not listed
 ! in TEST_FILES.toml so the default regtest stays cheap.
-! Current 2026-06 HIGH diagnostic with selected-step full-density-global
-! history calibration: the default restart smoke remains cheap, while a
-! continuation from the advanced Direct-density restart crosses EPS_SCF=1E-6
-! (effective OT residual about 9.8E-7) without first/last-band smearing
-! warnings and without the previous "Unsupported content type" signature.
+! Current 2026-06 HIGH diagnostic with residual-tail CG history damping:
+! the default restart smoke remains cheap, while a continuation from the
+! advanced Direct-density restart crosses EPS_SCF=1E-6 in 258 SCF steps
+! (effective OT residual 9.92E-7, Mermin free energy -8.14585270050942 Ha)
+! without first/last-band smearing warnings and without the previous
+! "Unsupported content type" signature.
 ! Keep this as a manual physics companion until the fresh write/read/continue
 ! chain is fast enough for a non-default converged regtest.
 &GLOBAL
@@ -35,7 +36,7 @@
       ! Tight enough to exercise the hard k-point OT physics path.  This
       ! companion is intentionally not part of the default regtest list.
       EPS_SCF 1.0E-6
-      MAX_SCF 950
+      MAX_SCF 320
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC

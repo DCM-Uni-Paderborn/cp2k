@@ -114,12 +114,14 @@
 # Slow/manual residual-tail companion: run Al_kp_ot_restart_converge.inp after
 # the write/read/continue chain. It is intentionally not listed here, so the
 # default restart/smearing regtest stays cheap. With selected-step
-# full-density-global history calibration, continuation from an already
-# advanced Direct-density restart now crosses the 1E-6 metallic Mermin path:
-# OT_SCF_convergence ~= 9.8E-7, without first/last-band smearing warnings or
-# the previously reported "Unsupported content type" signature.  Keep this
-# manual until the fresh write/read/continue chain is fast enough for a
-# non-default converged physics companion.
+# full-density-global history calibration and residual-tail CG history damping,
+# continuation from an already advanced Direct-density restart now crosses the
+# 1E-6 metallic Mermin path in 258 SCF steps:
+# OT_SCF_convergence = 9.92E-7, E_total = Mermin =
+# -8.14585270050942 Ha, without first/last-band smearing warnings or the
+# previously reported "Unsupported content type" signature.  Keep this manual
+# until the fresh write/read/continue chain is fast enough for a non-default
+# converged physics companion.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]
