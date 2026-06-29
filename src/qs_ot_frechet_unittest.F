@@ -92,6 +92,8 @@ PROGRAM qs_ot_frechet_unittest
                                                       5.0E-7_dp, nfail)
    CALL check_complex_projector_density_hessian_split("complex projector density Hessian split", &
                                                       5.0E-7_dp, nfail)
+   CALL check_complex_projector_physical_invariant_base( &
+      "complex projector physical invariant base", 5.0E-7_dp, nfail)
    CALL check_complex_occ_projector_gauge_separation("complex occupation-projector gauge separation", &
                                                      1.0E-7_dp, nfail)
    CALL check_complex_occ_projector_curvature_cap("complex occupation-projector curvature cap", &
@@ -3713,6 +3715,140 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_hessian_split
+
+! **************************************************************************************************
+!> \brief Check that the physical projector base keeps the moving spectral projector invariant.
+!>        The spectral projector part of Tr[P(CHC) CHC] is unitary-invariant for fixed occupations.
+!>        Therefore the no-response rotation Hessian is the finite moving-projector Hessian,
+!>        equivalently the diagonal fixed-occupation Hessian scaled by the non-projector weight.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_physical_invariant_base(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nrot = n*(n - 1)
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            fd_step = 2.0E-5_dp, &
+                                                            projector_weight = 0.58_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, chc, occ_blended, occ_diag, u
+      INTEGER                                            :: i, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: correct_err, legacy_gap
+      REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hdiag_frozen, hfixed_blended, hmoving
+
+      base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1) = CMPLX(-0.34_dp, 0.0_dp, KIND=dp)
+      base(2, 2) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
+      base(3, 3) = CMPLX(0.29_dp, 0.0_dp, KIND=dp)
+      base(1, 2) = CMPLX(0.047_dp, -0.029_dp, KIND=dp)
+      base(1, 3) = CMPLX(-0.041_dp, 0.026_dp, KIND=dp)
+      base(2, 3) = CMPLX(0.031_dp, 0.039_dp, KIND=dp)
+      base(2, 1) = CONJG(base(1, 2))
+      base(3, 1) = CONJG(base(1, 3))
+      base(3, 2) = CONJG(base(2, 3))
+      occ_scale(:) = [1.48_dp, 0.83_dp, 0.25_dp]
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.047_dp
+      x_re(1, 3) = -0.031_dp
+      x_re(2, 3) = 0.029_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+         END DO
+      END DO
+
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.019_dp
+      x_im(2, 2) = -0.017_dp
+      x_im(3, 3) = 0.021_dp
+      x_im(1, 2) = -0.023_dp
+      x_im(1, 3) = 0.018_dp
+      x_im(2, 3) = 0.022_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+
+      r = 0
+      DO j = 2, n
+         DO i = 1, j - 1
+            r = r + 1
+            var_i(r) = i
+            var_j(r) = j
+            var_kind(r) = 1
+            r = r + 1
+            var_i(r) = i
+            var_j(r) = j
+            var_kind(r) = 2
+         END DO
+      END DO
+
+      occ_diag(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         occ_diag(i, i) = CMPLX(occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, u)
+      chc(:, :) = MATMUL(CONJG(TRANSPOSE(u)), MATMUL(base, u))
+      CALL dense_spectral_occ_projector_from_chc(chc, occ_scale, occ_blended)
+      occ_blended(:, :) = projector_weight*occ_blended(:, :)
+      DO i = 1, n
+         occ_blended(i, i) = occ_blended(i, i) + &
+                             CMPLX((1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+
+      DO s = 1, nrot
+         x_p_re(:, :) = x_re(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_diag, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_diag, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hdiag_frozen(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_blended, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_blended, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hfixed_blended(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_blended_projector_rotation_gradient(x_p_re, x_p_im, base, occ_scale, &
+                                                        projector_weight, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_blended_projector_rotation_gradient(x_m_re, x_m_im, base, occ_scale, &
+                                                        projector_weight, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hmoving(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+      END DO
+
+      correct_err = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hdiag_frozen(:, :)))
+      legacy_gap = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hfixed_blended(:, :)))
+
+      IF (correct_err > tol .OR. legacy_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "failed with error/legacy_gap", &
+            correct_err, legacy_gap
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), "OK with error/legacy_gap", &
+            correct_err, legacy_gap
+      END IF
+
+   END SUBROUTINE check_complex_projector_physical_invariant_base
 
 ! **************************************************************************************************
 !> \brief Separate projector-basis gauge noise from physical occupation response.
