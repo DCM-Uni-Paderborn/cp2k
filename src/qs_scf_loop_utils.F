@@ -17918,15 +17918,23 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: selected_samples
       LOGICAL                                            :: promoted
 
-      INTEGER                                            :: promotion_samples
+      INTEGER                                            :: promotion_samples, &
+                                                            shadow_promotion_samples
+      LOGICAL                                            :: selected_promoted, shadow_promoted
 
          promotion_samples = MAX(min_samples, 5*min_samples)
-         promoted = samples >= promotion_samples .AND. &
-                    drop_ratio >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                    history_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                    ema_quality >= 0.9_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                    selected_samples >= min_samples .AND. &
-                    selected_quality >= ot_kp_schur_projector_response_quality_min_ratio
+         shadow_promotion_samples = MAX(promotion_samples, 10*min_samples)
+         selected_promoted = samples >= promotion_samples .AND. &
+                             drop_ratio >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                             history_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                             ema_quality >= 0.9_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                             selected_samples >= min_samples .AND. &
+                             selected_quality >= ot_kp_schur_projector_response_quality_min_ratio
+         shadow_promoted = samples >= shadow_promotion_samples .AND. &
+                           drop_ratio >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                           history_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                           ema_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+         promoted = selected_promoted .OR. shadow_promoted
 
       END FUNCTION kpoint_ot_mixed_direct_promoted
 
