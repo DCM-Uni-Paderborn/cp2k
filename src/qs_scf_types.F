@@ -207,6 +207,9 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: physical_trace_raw_free_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_diag_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_actual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_raw_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_quality_ema = 0.0_dp
@@ -216,6 +219,9 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: physical_trace_raw_free_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_diag_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp
@@ -327,6 +333,9 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: physical_trace_raw_free_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_diag_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_actual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_raw_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_quality_ema = 0.0_dp
@@ -336,6 +345,9 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: physical_trace_raw_free_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_diag_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
       REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
       REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp

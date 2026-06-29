@@ -64,7 +64,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 9
+   INTEGER, PARAMETER                   :: ot_restart_version = 10
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -530,7 +530,7 @@ CONTAINS
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
       LOGICAL, DIMENSION(27)                             :: log_payload
-      REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload
 
       nchannel = SIZE(qs_ot_env)
@@ -753,7 +753,13 @@ CONTAINS
                                qs_ot_env(ichannel)%schur_projector_density_full_global_weighted_trust, &
                                qs_ot_env(ichannel)%schur_projector_density_full_global_weighted_trust_ema, &
                                qs_ot_env(ichannel)%schur_projector_density_full_global_abs_trust, &
-                               qs_ot_env(ichannel)%schur_projector_density_full_global_abs_trust_ema]
+                               qs_ot_env(ichannel)%schur_projector_density_full_global_abs_trust_ema, &
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_ema, &
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_diag_ema, &
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_free_ema, &
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_quality_ema, &
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_diag_quality_ema, &
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_free_quality_ema]
 
          IF (ires > 0) THEN
             WRITE (ires) int_payload
@@ -892,7 +898,8 @@ CONTAINS
       INTEGER, DIMENSION(17)                             :: schur_int_payload
       LOGICAL                                            :: payload_found
       LOGICAL, DIMENSION(27)                             :: log_payload
-      REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
+      REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
@@ -932,9 +939,14 @@ CONTAINS
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_pos
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_energy
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_grad
-            IF (version_read >= 9) THEN
+            IF (version_read >= 10) THEN
                READ (rst_unit) schur_int_payload
                READ (rst_unit) schur_real_payload
+            ELSE IF (version_read == 9) THEN
+               READ (rst_unit) schur_int_payload
+               READ (rst_unit) schur_real_payload_v9
+               schur_real_payload(:) = 0.0_dp
+               schur_real_payload(1:118) = schur_real_payload_v9
             ELSE IF (version_read == 8) THEN
                READ (rst_unit) schur_int_payload_v8
                READ (rst_unit) schur_real_payload_v8
@@ -1249,6 +1261,18 @@ CONTAINS
             schur_real_payload(117)
          scf_env%qs_ot_restart%channel(ichannel)%density_full_global_abs_trust_ema = &
             schur_real_payload(118)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_ema = &
+            schur_real_payload(119)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_diag_ema = &
+            schur_real_payload(120)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_free_ema = &
+            schur_real_payload(121)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_quality_ema = &
+            schur_real_payload(122)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_diag_quality_ema = &
+            schur_real_payload(123)
+         scf_env%qs_ot_restart%channel(ichannel)%physical_trace_invariant_free_quality_ema = &
+            schur_real_payload(124)
 
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_x) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)
