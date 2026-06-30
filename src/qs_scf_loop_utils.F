@@ -11064,6 +11064,10 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_trace_active_ema, &
                      local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
                      local_ot_env(1)%schur_projector_mixed_direct_quality_samples)
+                  projector_physical_direct_trace_active_basis_weight = &
+                     kpoint_ot_physical_direct_density_mix( &
+                     projector_physical_direct_trace_active_basis_weight, &
+                     projector_density_history_weight, residual_delta)
                   IF (projector_physical_direct_trace_active_basis_weight > &
                       EPSILON(projector_physical_direct_trace_active_basis_weight)) THEN
                      projector_physical_direct_delta(:, :) = &
@@ -17646,6 +17650,28 @@ CONTAINS
          row_floor = MIN(frontier_floor, row_floor)
 
       END FUNCTION kpoint_ot_physical_rotation_floor
+
+! **************************************************************************************************
+!> \brief active-window curvature blend driven by accepted density-response history
+!> \param active_weight current active-window trace weight
+!> \param density_history_weight accepted density-response history weight
+!> \param residual_delta current OT residual
+!> \return trace-active curvature weight for the physical Direct model
+! **************************************************************************************************
+      FUNCTION kpoint_ot_physical_direct_density_mix(active_weight, density_history_weight, &
+                                                     residual_delta) RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: active_weight, density_history_weight, &
+                                                            residual_delta
+      REAL(KIND=dp)                                      :: mix_weight
+
+         mix_weight = MIN(ot_kp_schur_projector_trace_active_max_weight, &
+                          MAX(0.0_dp, active_weight))
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+
+         mix_weight = MAX(mix_weight, MIN(ot_kp_schur_projector_trace_active_max_weight, &
+                                          MAX(0.0_dp, density_history_weight)))
+
+      END FUNCTION kpoint_ot_physical_direct_density_mix
 
 ! **************************************************************************************************
 !> \brief pair-aware row floor for the raw Schur fallback in the metallic residual tail

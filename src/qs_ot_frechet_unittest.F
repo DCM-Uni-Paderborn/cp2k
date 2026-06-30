@@ -252,6 +252,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-14_dp, nfail)
    CALL check_projector_direct_floor_density_schur( &
       "complex projector Direct floor-density Schur blend", 5.0E-13_dp, nfail)
+   CALL check_projector_direct_density_curvature_mix( &
+      "complex projector Direct density curvature mix", 5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
                                                   5.0E-12_dp, nfail)
    CALL check_projector_modal_response_negative_floor( &
@@ -9853,6 +9855,41 @@ CONTAINS
    END SUBROUTINE check_projector_raw_tail_rotation_floor
 
 ! **************************************************************************************************
+!> \brief Accepted density-response history should harden the active-window Direct blend only in tail.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_density_curvature_mix(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: above_tail, capped_tail, err, tail
+
+      above_tail = dense_physical_direct_density_mix(0.20_dp, 0.60_dp, 2.0E-4_dp, &
+                                                     1.0E-4_dp, 0.95_dp)
+      tail = dense_physical_direct_density_mix(0.20_dp, 0.60_dp, 1.0E-6_dp, &
+                                               1.0E-4_dp, 0.95_dp)
+      capped_tail = dense_physical_direct_density_mix(-0.10_dp, 2.0_dp, 1.0E-6_dp, &
+                                                      1.0E-4_dp, 0.95_dp)
+
+      err = ABS(above_tail - 0.20_dp)
+      err = MAX(err, ABS(tail - 0.60_dp))
+      err = MAX(err, ABS(capped_tail - 0.95_dp))
+
+      IF (err > tol .OR. tail <= above_tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with above/tail/capped", above_tail, tail, capped_tail
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with above/tail/capped", above_tail, tail, capped_tail
+      END IF
+
+   END SUBROUTINE check_projector_direct_density_curvature_mix
+
+! **************************************************************************************************
 !> \brief Dense copy of the residual-tail gauge-step quality.
 !> \param gauge_ratio ...
 !> \param gauge_ratio_ema ...
@@ -9902,6 +9939,28 @@ CONTAINS
       IF (residual_delta <= tail_delta) row_floor = MAX(row_floor, pair_floor)
 
    END FUNCTION dense_raw_tail_rotation_floor
+
+! **************************************************************************************************
+!> \brief Dense mirror of the physical Direct density-history curvature blend.
+!> \param active_weight ...
+!> \param density_history_weight ...
+!> \param residual_delta ...
+!> \param tail_delta ...
+!> \param max_weight ...
+!> \return trace-active curvature mix weight
+! **************************************************************************************************
+   FUNCTION dense_physical_direct_density_mix(active_weight, density_history_weight, residual_delta, &
+                                              tail_delta, max_weight) RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: active_weight, density_history_weight, &
+                                                            residual_delta, tail_delta, max_weight
+      REAL(KIND=dp)                                      :: mix_weight
+
+      mix_weight = MIN(max_weight, MAX(0.0_dp, active_weight))
+      IF (residual_delta > tail_delta) RETURN
+
+      mix_weight = MAX(mix_weight, MIN(max_weight, MAX(0.0_dp, density_history_weight)))
+
+   END FUNCTION dense_physical_direct_density_mix
 
 ! **************************************************************************************************
 !> \brief Dense copy of the sign-aware negative Projector-response mode balance.
