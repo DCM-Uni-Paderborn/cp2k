@@ -705,7 +705,7 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: acceptance_tol = 1.0E-12_dp
 
       INTEGER                                            :: best_index, count, handle, i
-      LOGICAL                                            :: mermin_search
+      LOGICAL                                            :: mermin_boundary_extend, mermin_search
       REAL(KIND=dp) :: best_drop, best_energy, denom, ds, fa, fb, fc, model_drop, model_quality, &
          nom, pos, slope_mismatch, slope_model, tol, val, xa, xb, xc
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -763,7 +763,11 @@ CONTAINS
          IF (model_drop > EPSILON(model_drop)) model_quality = best_drop/model_drop
          tol = acceptance_tol*MAX(1.0_dp, ABS(best_energy))
          mermin_search = use_three_point_mermin_search(qs_ot_env)
-         IF (mermin_search .AND. best_index /= 1 .AND. val >= best_energy - tol) THEN
+         mermin_boundary_extend = mermin_search .AND. best_index == count .AND. &
+                                  fc < fb .AND. fb < fa .AND. val >= best_energy - tol
+         IF (mermin_boundary_extend) THEN
+            qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*1.4_dp
+         ELSE IF (mermin_search .AND. best_index /= 1 .AND. val >= best_energy - tol) THEN
             qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
          ELSE IF (val < fa .AND. val <= fb .AND. val <= fc) THEN ! OK, we go to a minimum
             ! we take a guard against too large steps
@@ -772,7 +776,7 @@ CONTAINS
          ELSE ! just take an extended step
             qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*2.0_dp
          END IF
-         IF (mermin_search .AND. best_index /= 1) THEN
+         IF (mermin_search .AND. best_index /= 1 .AND. .NOT. mermin_boundary_extend) THEN
             qs_ot_env(1)%mermin_ls_sample_pending = .TRUE.
             qs_ot_env(1)%mermin_ls_best_sample_index = best_index
             qs_ot_env(1)%mermin_ls_reference_energy = fa
@@ -782,7 +786,7 @@ CONTAINS
             qs_ot_env(1)%mermin_ls_model_quality = model_quality
             qs_ot_env(1)%mermin_ls_best_sample_pos = qs_ot_env(1)%OT_pos(best_index)
             qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
-         ELSE IF (mermin_search) THEN
+         ELSE IF (mermin_search .AND. .NOT. mermin_boundary_extend) THEN
             qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
          END IF
          IF (mermin_search) THEN
@@ -794,14 +798,35 @@ CONTAINS
                   qs_ot_env(1)%ot_grad(1), slope_model, slope_mismatch, qs_ot_env(1)%OT_pos(count + 1)
             END IF
          END IF
-         qs_ot_env(1)%energy_only = .FALSE.
-         qs_ot_env(1)%line_search_might_be_done = .TRUE.
+         qs_ot_env(1)%energy_only = mermin_boundary_extend
+         qs_ot_env(1)%line_search_might_be_done = .NOT. mermin_boundary_extend
       CASE (4:)
          IF (.NOT. use_three_point_mermin_search(qs_ot_env)) CPABORT("NYI")
-         ! Restarted or legacy Mermin 3-point histories can already be past the
-         ! endpoint.  Accept the current coordinates as a fresh history point
-         ! instead of replaying non-reversible auxiliary-energy trust steps.
-         qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(count)
+         IF (count == 4 .AND. qs_ot_env(1)%OT_pos(4) > qs_ot_env(1)%OT_pos(3) .AND. &
+             qs_ot_env(1)%OT_energy(3) < qs_ot_env(1)%OT_energy(2) .AND. &
+             qs_ot_env(1)%OT_energy(2) < qs_ot_env(1)%OT_energy(1)) THEN
+            best_index = 3
+            IF (qs_ot_env(1)%OT_energy(4) < qs_ot_env(1)%OT_energy(3)) best_index = 4
+            best_energy = qs_ot_env(1)%OT_energy(best_index)
+            best_drop = qs_ot_env(1)%OT_energy(1) - best_energy
+            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
+            IF (best_index /= 1) THEN
+               qs_ot_env(1)%mermin_ls_sample_pending = .TRUE.
+               qs_ot_env(1)%mermin_ls_best_sample_index = best_index
+               qs_ot_env(1)%mermin_ls_reference_energy = qs_ot_env(1)%OT_energy(1)
+               qs_ot_env(1)%mermin_ls_best_sample_energy = best_energy
+               qs_ot_env(1)%mermin_ls_best_sample_drop = best_drop
+               qs_ot_env(1)%mermin_ls_model_drop = best_drop
+               qs_ot_env(1)%mermin_ls_model_quality = 1.0_dp
+               qs_ot_env(1)%mermin_ls_best_sample_pos = qs_ot_env(1)%OT_pos(best_index)
+               qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
+            END IF
+         ELSE
+            ! Restarted or legacy Mermin 3-point histories can already be past the
+            ! endpoint.  Accept the current coordinates as a fresh history point
+            ! instead of replaying non-reversible auxiliary-energy trust steps.
+            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(count)
+         END IF
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = .TRUE.
       CASE DEFAULT
