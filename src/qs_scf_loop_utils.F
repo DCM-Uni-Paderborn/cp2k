@@ -6725,52 +6725,52 @@ CONTAINS
          projector_response_gap_avg, projector_response_gap_max
       REAL(KIND=dp) :: projector_response_gap_norm, projector_response_gdot_energy, &
          projector_response_gdot_rotation, projector_response_gdotp, &
-         projector_response_model_calibrated_drop, projector_response_model_drop, &
-         projector_response_model_gap, projector_response_model_gap_drop, &
-         projector_response_model_gap_ratio, projector_response_model_gap_trust, &
-         projector_response_norm_energy, projector_response_norm_ratio, &
-         projector_response_norm_rotation, projector_response_normp, &
-         projector_response_quality_for_selection, projector_response_response_abs_step, &
-         projector_response_response_abs_trust_ratio
-      REAL(KIND=dp) :: projector_response_response_weighted_step, &
+         projector_response_metric_norm_energy, projector_response_metric_norm_rotation, &
+         projector_response_metric_normp, projector_response_model_calibrated_drop, &
+         projector_response_model_drop, projector_response_model_gap, &
+         projector_response_model_gap_drop, projector_response_model_gap_ratio, &
+         projector_response_model_gap_trust, projector_response_norm_energy, &
+         projector_response_norm_ratio, projector_response_norm_rotation, projector_response_normp
+      REAL(KIND=dp) :: projector_response_quality_for_selection, &
+         projector_response_response_abs_step, projector_response_response_abs_trust_ratio, &
+         projector_response_response_weighted_step, &
          projector_response_response_weighted_trust_ratio, projector_response_scale_quality, &
          projector_response_trust_quality, projector_response_trust_scale, &
          projector_response_unit_abs_step, projector_response_unit_weighted_step, &
          rayleigh_edge_gap, residual_delta, residual_reference_quality, response_abs_step, &
          response_abs_trust, response_abs_trust_ratio, response_mixed_diag_avg, &
-         response_penalty_diag_sum, response_penalty_term, response_shift, response_step_max, &
-         response_trust, response_trust_base, response_trust_factor
-      REAL(KIND=dp) :: response_trust_ratio, response_weighted_step, &
+         response_penalty_diag_sum
+      REAL(KIND=dp) :: response_penalty_term, response_shift, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
          response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, rot_grad_active_fraction_avg, &
          rot_grad_active_fraction_max, rot_grad_active_im, rot_grad_active_re, &
          rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, rot_grad_gap_im, &
          rot_grad_gap_re, rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, &
-         rot_grad_gauge_re, rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
-         rot_grad_inactive_weight_sum, rot_grad_pair_fraction, rot_grad_physical_norm, &
-         rot_grad_rest_fraction, rot_grad_sq
-      REAL(KIND=dp) :: rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, &
-         row_floor_max, row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
+         rot_grad_gauge_re, rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re
+      REAL(KIND=dp) :: rot_grad_inactive_weight_sum, rot_grad_pair_fraction, &
+         rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq, &
+         rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, row_floor_max, &
+         row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
          row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
          schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
          spectral_resp_correction_negative, spectral_resp_cross_drop, &
-         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff, &
-         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
-         split_curvature_scale
-      REAL(KIND=dp) :: split_dense_expected_ratio, split_density_projector_fraction, &
-         split_diag_shift_max, split_diag_shift_sum, split_direction_scale, split_expected_drop, &
-         split_gdot_energy, split_gdot_rotation, split_gdotp, split_model_calibrated_drop, &
-         split_model_drop, split_model_gap_ratio, split_norm_energy, split_norm_ratio, &
-         split_norm_rotation, split_normp, split_occgap_shadow_drop, &
-         split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
-         split_quality_for_selection, split_residual_delta, split_residual_quality, &
-         split_response_abs_step, split_response_abs_trust
-      REAL(KIND=dp) :: split_response_abs_trust_ratio, split_response_step, split_response_trust, &
-         split_response_trust_factor, split_response_weighted_step, &
-         split_response_weighted_trust_ratio, split_rot_floor_min, split_scale_quality, &
-         split_schur_diag_min, split_trust_quality, step_gauge_quality, tether_curv_diag_max, &
-         tether_curv_diag_sum, tether_projected_term, tether_response, tether_response_diag_sum, &
-         tether_strength, tether_weight, total_curv_diag_max, total_curv_diag_sum, z_shift, &
-         z_weight
+         spectral_resp_negative_coeff, spectral_resp_negative_drop
+      REAL(KIND=dp) :: spectral_resp_positive_coeff, spectral_resp_positive_drop, &
+         spectral_resp_raw_negative_fraction, spectral_resp_weight, split_curvature_scale, &
+         split_dense_expected_ratio, split_density_projector_fraction, split_diag_shift_max, &
+         split_diag_shift_sum, split_direction_scale, split_expected_drop, split_gdot_energy, &
+         split_gdot_rotation, split_gdotp, split_model_calibrated_drop, split_model_drop, &
+         split_model_gap_ratio, split_norm_energy, split_norm_ratio, split_norm_rotation, &
+         split_normp, split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, &
+         split_quality_for_calibration
+      REAL(KIND=dp) :: split_quality_for_selection, split_residual_delta, split_residual_quality, &
+         split_response_abs_step, split_response_abs_trust, split_response_abs_trust_ratio, &
+         split_response_step, split_response_trust, split_response_trust_factor, &
+         split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, &
+         split_scale_quality, split_schur_diag_min, split_trust_quality, step_gauge_quality, &
+         tether_curv_diag_max, tether_curv_diag_sum, tether_projected_term, tether_response, &
+         tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max
+      REAL(KIND=dp) :: total_curv_diag_sum, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, constrained_sol, &
          constrained_z_e, curv, density_descent_rx_e, density_descent_z_e, &
          density_full_global_rx_e, density_full_global_sol, density_full_rx_e, density_full_sol, &
@@ -7738,6 +7738,9 @@ CONTAINS
          projector_response_model_gap_drop = 0.0_dp
          projector_response_model_gap_ratio = 0.0_dp
          projector_response_model_gap_trust = HUGE(1.0_dp)
+         projector_response_metric_norm_energy = 0.0_dp
+         projector_response_metric_norm_rotation = 0.0_dp
+         projector_response_metric_normp = 0.0_dp
          projector_response_norm_energy = 0.0_dp
          projector_response_norm_rotation = 0.0_dp
          projector_response_normp = 0.0_dp
@@ -10295,11 +10298,24 @@ CONTAINS
                      projector_response_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
                      projector_response_norm_energy = DOT_PRODUCT(projector_response_z_e, projector_response_z_e)
                      projector_response_norm_rotation = DOT_PRODUCT(sol, sol)
+                     CALL kpoint_ot_mixed_projected_term(projector_response_z_e, projector_response_z_e, &
+                                                         occ_curv, tether_curv, occ_curv_projection_sum, &
+                                                         channel_nmo, e_offset, &
+                                                         projector_response_metric_norm_energy)
+                     projector_response_metric_norm_energy = &
+                        MAX(0.0_dp, projector_response_metric_norm_energy)
+                     projector_response_metric_norm_rotation = ABS(kpoint_ot_symmetric_quad(schur_metric, sol))
+                     IF (projector_response_metric_norm_rotation <= &
+                         EPSILON(projector_response_metric_norm_rotation)) &
+                        projector_response_metric_norm_rotation = kpoint_ot_symmetric_abs_quad(schur_metric, sol)
                      projector_response_gdotp = projector_response_gdot_energy + projector_response_gdot_rotation
                      projector_response_normp = projector_response_norm_energy + projector_response_norm_rotation
+                     projector_response_metric_normp = projector_response_metric_norm_energy + &
+                                                       projector_response_metric_norm_rotation
                      projector_response_norm_ratio = projector_response_normp/MAX(gnorm, EPSILON(1.0_dp))
                      IF (projector_response_gdotp > 0.0_dp .AND. &
                          projector_response_normp > EPSILON(projector_response_normp) .AND. &
+                         projector_response_metric_normp > EPSILON(projector_response_metric_normp) .AND. &
                          projector_response_norm_ratio <= max_norm_ratio) THEN
                         projector_response_unit_abs_step = MAXVAL(ABS(projector_response_rx_e))
                         CALL para_env_inter_kp%max(projector_response_unit_abs_step)
@@ -10320,7 +10336,8 @@ CONTAINS
                         projector_response_direction_scale = &
                            MIN(1.0_dp, projector_response_trust_scale, &
                                projector_response_gdotp/ &
-                               MAX(projector_response_normp, EPSILON(projector_response_normp)))
+                               MAX(projector_response_metric_normp, &
+                                   EPSILON(projector_response_metric_normp)))
                         projector_response_scale_quality = &
                            kpoint_ot_schur_scale_quality(projector_response_direction_scale, schur_min_coupled_scale)
                         projector_response_z_e(:) = projector_response_direction_scale*projector_response_z_e(:)
@@ -10329,7 +10346,7 @@ CONTAINS
                                                         projector_response_gdotp - &
                                                         0.5_dp*projector_response_direction_scale* &
                                                         projector_response_direction_scale* &
-                                                        projector_response_normp
+                                                        projector_response_metric_normp
                         projector_response_response_abs_step = &
                            projector_response_direction_scale*projector_response_unit_abs_step
                         projector_response_response_weighted_step = &
