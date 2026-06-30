@@ -1998,6 +1998,77 @@ CONTAINS
    END FUNCTION kpoint_ot_physical_density_response
 
 ! **************************************************************************************************
+!> \brief residual-aware filter for unsupported projector-density gauge response
+!> \param density_response physical density response before accepted-history filtering
+!> \param density_projector_response finite projector eigenvalue response
+!> \param density_safe_response gauge-safe dP/occupation-curvature response
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \param step_gauge_quality accepted residual quality of recent gauge-like steps
+!> \param density_projector_centered_response ...
+!> \param density_safe_centered_response ...
+!> \param density_response_alignment ...
+!> \return density response with unsupported gauge-like pieces softly suppressed
+! **************************************************************************************************
+   FUNCTION kpoint_ot_residual_gauge_density_response(density_response, density_projector_response, &
+                                                      density_safe_response, occ_curv, occ_curv_max, &
+                                                      step_gauge_quality, density_projector_centered_response, &
+                                                      density_safe_centered_response, density_response_alignment) &
+      RESULT(filtered_response)
+      REAL(KIND=dp), INTENT(IN) :: density_response, density_projector_response, &
+         density_safe_response, occ_curv, occ_curv_max, step_gauge_quality
+      REAL(KIND=dp), INTENT(IN), OPTIONAL :: density_projector_centered_response, &
+         density_safe_centered_response, density_response_alignment
+      REAL(KIND=dp)                                      :: filtered_response
+
+      LOGICAL                                            :: globally_supported_response, &
+                                                            locally_supported_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, projector_abs, residual_weight, &
+         response_support, safe_abs, sign_projector_response, sign_safe_response
+
+      filtered_response = density_response
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      residual_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, step_gauge_quality))
+      IF (residual_weight <= EPSILON(residual_weight)) RETURN
+
+      active_fraction = occ_curv/MAX(occ_curv, &
+                                     ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      sign_projector_response = density_projector_response
+      sign_safe_response = density_safe_response
+      IF (PRESENT(density_projector_centered_response)) &
+         sign_projector_response = density_projector_centered_response
+      IF (PRESENT(density_safe_centered_response)) &
+         sign_safe_response = density_safe_centered_response
+      alignment = 0.0_dp
+      IF (PRESENT(density_response_alignment)) &
+         alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
+
+      projector_abs = ABS(density_projector_response)
+      safe_abs = ABS(density_safe_response)
+      locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                   projector_abs <= EPSILON(projector_abs)
+      globally_supported_response = alignment > 0.25_dp .AND. &
+                                    safe_abs > EPSILON(safe_abs) .AND. &
+                                    projector_abs <= alignment*safe_abs
+      response_support = 0.0_dp
+      IF (locally_supported_response .OR. globally_supported_response) THEN
+         IF (projector_abs > EPSILON(projector_abs)) THEN
+            response_support = MIN(1.0_dp, safe_abs/projector_abs)
+         ELSE
+            response_support = 1.0_dp
+         END IF
+      END IF
+
+      damping = 1.0_dp - residual_weight*(1.0_dp - response_support)* &
+                (1.0_dp - active_fraction)**2
+      filtered_response = MAX(0.0_dp, MIN(1.0_dp, damping))*density_response
+
+   END FUNCTION kpoint_ot_residual_gauge_density_response
+
+! **************************************************************************************************
 !> \brief shadow-only finite-floor physical diagonal projector-density response
 !> \param density_projector_response finite projector eigenvalue response
 !> \param density_safe_response gauge-safe dP/occupation-curvature response, audit only
@@ -7832,6 +7903,14 @@ CONTAINS
          split_residual_quality = 1.0_dp
          split_residual_competitive = .TRUE.
          step_gauge_quality = 1.0_dp
+         IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+            step_gauge_quality = &
+               kpoint_ot_schur_step_gauge_quality(local_ot_env(1)%schur_step_gauge_ratio, &
+                                                  local_ot_env(1)%schur_step_gauge_ratio_ema, &
+                                                  local_ot_env(1)%schur_step_gauge_residual_quality, &
+                                                  local_ot_env(1)%schur_step_gauge_residual_quality_ema, &
+                                                  local_ot_env(1)%schur_step_gauge_quality_samples)
+         END IF
          constrained_quality_for_selection = ot_kp_schur_calibrated_quality_min_ratio
          split_trust_quality = 1.0_dp
          split_density_projector_fraction = 0.0_dp
@@ -8021,6 +8100,7 @@ CONTAINS
                                                     projector_physical_shadow_enabled, &
                                                     projector_density_full_audit_enabled, &
                                                     projector_plateau_gap_model_enabled, &
+                                                    step_gauge_quality, &
                                                     rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                     rot_hessian_projector_physical, &
                                                     rot_hessian_projector_physical_offdiag, &
@@ -9610,14 +9690,6 @@ CONTAINS
                dense_coupled_gate_quality_ema >= ot_kp_schur_quality_min_ratio .AND. &
                dense_coupled_gate_quality >= 0.5_dp*ot_kp_schur_quality_min_ratio .AND. &
                dense_residual_quality_strict >= ot_kp_schur_calibrated_quality_min_ratio
-         END IF
-         IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
-            step_gauge_quality = &
-               kpoint_ot_schur_step_gauge_quality(local_ot_env(1)%schur_step_gauge_ratio, &
-                                                  local_ot_env(1)%schur_step_gauge_ratio_ema, &
-                                                  local_ot_env(1)%schur_step_gauge_residual_quality, &
-                                                  local_ot_env(1)%schur_step_gauge_residual_quality_ema, &
-                                                  local_ot_env(1)%schur_step_gauge_quality_samples)
          END IF
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
              local_ot_env(1)%schur_model_quality_samples >= ot_kp_schur_calibration_min_samples) THEN
@@ -19457,6 +19529,7 @@ CONTAINS
 !> \param compute_projector_shadow ...
 !> \param compute_density_full_audit ...
 !> \param compute_projector_plateau_audit ...
+!> \param step_gauge_quality ...
 !> \param rot_hessian ...
 !> \param rot_hessian_coupled ...
 !> \param rot_hessian_projector ...
@@ -19479,6 +19552,7 @@ CONTAINS
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
                                                  occ_curv_channel, var_i, var_j, var_kind, compute_projector_shadow, &
                                                  compute_density_full_audit, compute_projector_plateau_audit, &
+                                                 step_gauge_quality, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, &
                                                  rot_hessian_projector_physical_offdiag, &
@@ -19497,6 +19571,7 @@ CONTAINS
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       LOGICAL, INTENT(IN) :: compute_projector_shadow, compute_density_full_audit, &
          compute_projector_plateau_audit
+      REAL(KIND=dp), INTENT(IN)                          :: step_gauge_quality
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT) :: rot_hessian, rot_hessian_coupled, &
          rot_hessian_projector, rot_hessian_projector_physical, &
          rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_plateau, &
@@ -19737,6 +19812,15 @@ CONTAINS
                                                             density_plateau_centered_column(ie), &
                                                             density_full_centered_column(ie), &
                                                             density_response_alignment)
+                     density_mixed_column(ie) = &
+                        kpoint_ot_residual_gauge_density_response(density_mixed_column(ie), &
+                                                                  density_plateau_column(ie), &
+                                                                  density_full_column(ie), &
+                                                                  occ_curv_channel(ie), channel_occ_curv_max, &
+                                                                  step_gauge_quality, &
+                                                                  density_plateau_centered_column(ie), &
+                                                                  density_full_centered_column(ie), &
+                                                                  density_response_alignment)
                      density_floor_audit_column(ie) = &
                         kpoint_ot_physical_density_floor_audit_response(density_plateau_column(ie), &
                                                                         density_full_column(ie), &

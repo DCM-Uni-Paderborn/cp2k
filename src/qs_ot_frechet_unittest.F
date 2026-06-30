@@ -122,6 +122,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector bounded density-response helper", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_helper( &
       "complex projector physical density-response helper", 5.0E-14_dp, nfail)
+   CALL check_projector_residual_gauge_density_response( &
+      "complex projector residual gauge density-response", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_centered_sign( &
       "complex projector physical density centered-sign blend", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_global_alignment( &
@@ -4869,6 +4871,60 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_helper
+
+! **************************************************************************************************
+!> \brief Check residual-aware filtering of unsupported projector-density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_residual_gauge_density_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp)                                      :: aligned_response, base_response, &
+                                                            damped_response, err, good_response, &
+                                                            occ_curv, occ_curv_max, &
+                                                            partial_response
+
+      occ_curv_max = 4.0E-2_dp
+      occ_curv = 4.0E-4_dp
+      base_response = dense_physical_density_response(1.0_dp, -0.10_dp, occ_curv, occ_curv_max, &
+                                                      response_ratio_gate, 1.0_dp, -0.10_dp, 0.0_dp)
+      good_response = residual_gauge_density_response(base_response, 1.0_dp, -0.10_dp, &
+                                                      occ_curv, occ_curv_max, response_ratio_gate, &
+                                                      1.0_dp, 1.0_dp, -0.10_dp, 0.0_dp)
+      damped_response = residual_gauge_density_response(base_response, 1.0_dp, -0.10_dp, &
+                                                        occ_curv, occ_curv_max, response_ratio_gate, &
+                                                        0.0_dp, 1.0_dp, -0.10_dp, 0.0_dp)
+      partial_response = residual_gauge_density_response(base_response, 1.0_dp, 0.25_dp, &
+                                                         occ_curv, occ_curv_max, response_ratio_gate, &
+                                                         0.0_dp, 1.0_dp, 0.25_dp, 0.0_dp)
+      aligned_response = residual_gauge_density_response(base_response, 1.0_dp, 2.0_dp, &
+                                                         occ_curv, occ_curv_max, response_ratio_gate, &
+                                                         0.0_dp, 1.0_dp, 2.0_dp, 0.0_dp)
+
+      err = ABS(good_response - base_response)
+      err = MAX(err, ABS(damped_response - 0.75_dp*base_response))
+      err = MAX(err, ABS(partial_response - 0.8125_dp*base_response))
+      err = MAX(err, ABS(aligned_response - base_response))
+
+      IF (err > tol .OR. damped_response >= good_response .OR. &
+          partial_response <= damped_response .OR. partial_response >= good_response) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/base/good/damped/partial", err, base_response, good_response, &
+            damped_response, partial_response
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/base/good/damped/partial", err, base_response, good_response, &
+            damped_response, partial_response
+      END IF
+
+   END SUBROUTINE check_projector_residual_gauge_density_response
 
 ! **************************************************************************************************
 !> \brief Check that the density-response blend compares fixed-N centered signs.
@@ -10621,6 +10677,78 @@ CONTAINS
       rotation_floor = rotation_floor + gap_fraction*residual_weight*(gauge_floor - rotation_floor)
 
    END FUNCTION residual_gauge_rotation_floor
+
+! **************************************************************************************************
+!> \brief Dense mirror of the residual-tail gauge density-response filter.
+!> \param density_response ...
+!> \param density_projector_response ...
+!> \param density_safe_response ...
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \param response_ratio_gate ...
+!> \param step_gauge_quality ...
+!> \param density_projector_centered_response ...
+!> \param density_safe_centered_response ...
+!> \param density_response_alignment ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION residual_gauge_density_response(density_response, density_projector_response, &
+                                            density_safe_response, occ_curv, occ_curv_max, &
+                                            response_ratio_gate, step_gauge_quality, &
+                                            density_projector_centered_response, &
+                                            density_safe_centered_response, &
+                                            density_response_alignment) RESULT(filtered_response)
+      REAL(KIND=dp), INTENT(IN) :: density_response, density_projector_response, &
+         density_safe_response, occ_curv, occ_curv_max, response_ratio_gate, step_gauge_quality
+      REAL(KIND=dp), INTENT(IN), OPTIONAL :: density_projector_centered_response, &
+         density_safe_centered_response, density_response_alignment
+      REAL(KIND=dp)                                      :: filtered_response
+
+      LOGICAL                                            :: globally_supported_response, &
+                                                            locally_supported_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, projector_abs, residual_weight, &
+         response_support, safe_abs, sign_projector_response, sign_safe_response
+
+      filtered_response = density_response
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      residual_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, step_gauge_quality))
+      IF (residual_weight <= EPSILON(residual_weight)) RETURN
+
+      active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      sign_projector_response = density_projector_response
+      sign_safe_response = density_safe_response
+      IF (PRESENT(density_projector_centered_response)) &
+         sign_projector_response = density_projector_centered_response
+      IF (PRESENT(density_safe_centered_response)) &
+         sign_safe_response = density_safe_centered_response
+      alignment = 0.0_dp
+      IF (PRESENT(density_response_alignment)) &
+         alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
+
+      projector_abs = ABS(density_projector_response)
+      safe_abs = ABS(density_safe_response)
+      locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                   projector_abs <= EPSILON(projector_abs)
+      globally_supported_response = alignment > 0.25_dp .AND. &
+                                    safe_abs > EPSILON(safe_abs) .AND. &
+                                    projector_abs <= alignment*safe_abs
+      response_support = 0.0_dp
+      IF (locally_supported_response .OR. globally_supported_response) THEN
+         IF (projector_abs > EPSILON(projector_abs)) THEN
+            response_support = MIN(1.0_dp, safe_abs/projector_abs)
+         ELSE
+            response_support = 1.0_dp
+         END IF
+      END IF
+
+      damping = 1.0_dp - residual_weight*(1.0_dp - response_support)* &
+                (1.0_dp - active_fraction)**2
+      filtered_response = MAX(0.0_dp, MIN(1.0_dp, damping))*density_response
+
+   END FUNCTION residual_gauge_density_response
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.
