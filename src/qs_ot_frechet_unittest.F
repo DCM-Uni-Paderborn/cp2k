@@ -8243,8 +8243,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: low_ema, low_mermin, low_quality, &
-                                                            low_residual, low_samples, ready, &
+      LOGICAL                                            :: calibrated_rescue, low_ema, low_mermin, &
+                                                            low_quality, low_residual, &
+                                                            low_samples, raw_stale, ready, &
                                                             tail_veto
       REAL(KIND=dp)                                      :: err
 
@@ -8262,20 +8263,24 @@ CONTAINS
                                                     2.4E-1_dp, 9.9E-1_dp, 40)
       low_mermin = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                   2.5E-1_dp, 7.9E-1_dp, 40)
+      raw_stale = dense_metric_tail_bridge_ready(5.0E-5_dp, 3.0E-2_dp, 4.0E-2_dp, 22, &
+                                                 9.0E-1_dp, 9.9E-1_dp, 40)
+      calibrated_rescue = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.0E-1_dp, 6.0E-1_dp, 22, &
+                                                         9.0E-1_dp, 9.9E-1_dp, 40)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_ema .OR. &
-          low_residual .OR. low_mermin) err = 1.0_dp
+          low_residual .OR. low_mermin .OR. raw_stale .OR. .NOT. calibrated_rescue) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
-            "failed with ready/tail/samples/quality/ema/residual/mermin", ready, tail_veto, &
-            low_samples, low_quality, low_ema, low_residual, low_mermin
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/ema/residual/mermin/raw/cal", ready, tail_veto, &
+            low_samples, low_quality, low_ema, low_residual, low_mermin, raw_stale, calibrated_rescue
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
-            "OK with ready/tail/samples/quality/ema/residual/mermin", ready, tail_veto, &
-            low_samples, low_quality, low_ema, low_residual, low_mermin
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/ema/residual/mermin/raw/cal", ready, tail_veto, &
+            low_samples, low_quality, low_ema, low_residual, low_mermin, raw_stale, calibrated_rescue
       END IF
 
    END SUBROUTINE check_projector_dense_metric_tail_bridge

@@ -349,9 +349,12 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_occgap_shadow_gap_ratio = 0.0_dp
       INTEGER :: schur_occgap_shadow_quality_samples = 0
       REAL(KIND=dp) :: schur_coupled_quality = 0.0_dp, schur_coupled_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_calibrated_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_residual_quality = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_coupled_calibrated_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_response_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_step_negative = 0.0_dp
@@ -998,10 +1001,13 @@ CONTAINS
       qs_ot_env%schur_occgap_shadow_gap_ratio = 0.0_dp
       qs_ot_env%schur_coupled_quality = 0.0_dp
       qs_ot_env%schur_coupled_quality_ema = 0.0_dp
+      qs_ot_env%schur_coupled_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_coupled_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_residual_quality = 0.0_dp
       qs_ot_env%schur_coupled_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_coupled_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_measured_sum = 0.0_dp
+      qs_ot_env%schur_coupled_calibrated_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_mode_drop = 0.0_dp
       qs_ot_env%schur_projector_mode_response_drop = 0.0_dp
       qs_ot_env%schur_projector_mode_step_negative = 0.0_dp
