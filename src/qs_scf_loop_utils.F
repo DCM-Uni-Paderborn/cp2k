@@ -10194,6 +10194,9 @@ CONTAINS
                         row_floor = kpoint_ot_physical_rotation_floor(sigma, schur(r, r), &
                                                                       schur(r, r), rot_floor(r))
                      END IF
+                     row_floor = kpoint_ot_residual_gauge_rotation_floor( &
+                                 row_floor, schur_gauge_curvature_floor, &
+                                 var_occ_gap_weight(r), step_gauge_quality)
                   END IF
                ELSE
                   row_floor = kpoint_ot_raw_tail_rotation_floor(row_floor, rot_floor(r), residual_delta)
@@ -18350,6 +18353,35 @@ CONTAINS
          quality = MIN(1.0_dp, MAX(MAX(0.25_dp, ot_kp_schur_calibrated_quality_min_ratio), quality))
 
       END FUNCTION kpoint_ot_schur_step_gauge_quality
+
+! **************************************************************************************************
+!> \brief residual-tail floor for gauge-like rotations
+!> \param base_floor current rotation floor
+!> \param gauge_floor upper gauge floor for nearly equal-occupation pairs
+!> \param occ_gap_weight occupation-gap character of this rotation
+!> \param step_gauge_quality residual quality of accepted gauge-like steps
+!> \return floor raised only for gauge-like rotations with poor residual history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_residual_gauge_rotation_floor(base_floor, gauge_floor, occ_gap_weight, &
+                                                       step_gauge_quality) RESULT(rotation_floor)
+      REAL(KIND=dp), INTENT(IN)                          :: base_floor, gauge_floor, occ_gap_weight, &
+                                                            step_gauge_quality
+      REAL(KIND=dp)                                      :: rotation_floor
+
+      REAL(KIND=dp)                                      :: gap_fraction, residual_weight
+
+         rotation_floor = MAX(0.0_dp, base_floor)
+         IF (gauge_floor <= rotation_floor) RETURN
+
+         gap_fraction = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
+         residual_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, step_gauge_quality))
+         IF (gap_fraction <= EPSILON(gap_fraction) .OR. &
+             residual_weight <= EPSILON(residual_weight)) RETURN
+
+         rotation_floor = rotation_floor + &
+                          gap_fraction*residual_weight*(gauge_floor - rotation_floor)
+
+      END FUNCTION kpoint_ot_residual_gauge_rotation_floor
 
 ! **************************************************************************************************
 !> \brief ...

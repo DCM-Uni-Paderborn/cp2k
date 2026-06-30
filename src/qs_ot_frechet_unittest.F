@@ -216,6 +216,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density full-Direct probe drop", 5.0E-14_dp, nfail)
    CALL check_projector_dense_metric_tail_bridge( &
       "complex projector dense metric tail bridge", 5.0E-14_dp, nfail)
+   CALL check_projector_residual_gauge_floor( &
+      "complex projector residual gauge floor", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
                                                 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_basis_weight("complex projector trace-active Direct basis", &
@@ -8286,6 +8288,40 @@ CONTAINS
    END SUBROUTINE check_projector_dense_metric_tail_bridge
 
 ! **************************************************************************************************
+!> \brief Check the residual-aware gauge rotation floor.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_residual_gauge_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, gap_pair, gauge_pair, good_history, &
+                                                            mixed_pair
+
+      good_history = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 1.0_dp)
+      gap_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 1.0_dp, 0.25_dp)
+      gauge_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 0.25_dp)
+      mixed_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.4_dp, 0.5_dp)
+
+      err = MAX(ABS(good_history - 0.5_dp), ABS(gap_pair - 0.5_dp))
+      err = MAX(err, ABS(gauge_pair - 1.25_dp))
+      err = MAX(err, ABS(mixed_pair - 0.8_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/good/gap/gauge/mixed", err, good_history, gap_pair, gauge_pair, mixed_pair
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/good/gap/gauge/mixed", err, good_history, gap_pair, gauge_pair, mixed_pair
+      END IF
+
+   END SUBROUTINE check_projector_residual_gauge_floor
+
+! **************************************************************************************************
 !> \brief Check that raw trace-gauge motion promotes the active Direct Hessian blend.
 !> \param label ...
 !> \param tol ...
@@ -10557,6 +10593,34 @@ CONTAINS
       bridge_ready = .TRUE.
 
    END FUNCTION dense_metric_tail_bridge_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of the residual-tail gauge rotation floor.
+!> \param base_floor ...
+!> \param gauge_floor ...
+!> \param occ_gap_weight ...
+!> \param step_gauge_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION residual_gauge_rotation_floor(base_floor, gauge_floor, occ_gap_weight, &
+                                          step_gauge_quality) RESULT(rotation_floor)
+      REAL(KIND=dp), INTENT(IN)                          :: base_floor, gauge_floor, occ_gap_weight, &
+                                                            step_gauge_quality
+      REAL(KIND=dp)                                      :: rotation_floor
+
+      REAL(KIND=dp)                                      :: gap_fraction, residual_weight
+
+      rotation_floor = MAX(0.0_dp, base_floor)
+      IF (gauge_floor <= rotation_floor) RETURN
+
+      gap_fraction = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
+      residual_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, step_gauge_quality))
+      IF (gap_fraction <= EPSILON(gap_fraction) .OR. &
+          residual_weight <= EPSILON(residual_weight)) RETURN
+
+      rotation_floor = rotation_floor + gap_fraction*residual_weight*(gauge_floor - rotation_floor)
+
+   END FUNCTION residual_gauge_rotation_floor
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the trace-active Direct Hessian blend weight.
