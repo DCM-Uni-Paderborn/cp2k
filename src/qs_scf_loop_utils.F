@@ -6791,21 +6791,23 @@ CONTAINS
          projector_physical_direct_trace_invariant_trust_quality, &
          projector_physical_direct_trace_local_separate_weight
       REAL(KIND=dp) :: projector_physical_direct_trace_ratio, &
-         projector_physical_direct_trace_scale_diag_avg, projector_physical_direct_trust_quality, &
+         projector_physical_direct_trace_scale_diag_avg, &
+         projector_physical_direct_trace_trust_gap_drop, projector_physical_direct_trust_quality, &
          projector_physical_direct_trust_scale, projector_physical_direct_unit_abs_step, &
          projector_physical_direct_unit_model_gap, projector_physical_direct_unit_model_gap_drop, &
          projector_physical_direct_unit_trace_gap_drop, &
          projector_physical_direct_unit_trace_invariant_gap_drop, &
          projector_physical_direct_unit_weighted_step, projector_physical_direction_scale, &
-         projector_physical_expected_drop, projector_physical_gdot_energy
-      REAL(KIND=dp) :: projector_physical_gdot_rotation, projector_physical_gdotp, &
-         projector_physical_model_calibrated_drop, projector_physical_model_drop, &
-         projector_physical_model_gap, projector_physical_model_gap_drop, &
-         projector_physical_model_gap_ratio, projector_physical_model_gap_trust, &
-         projector_physical_norm_energy, projector_physical_norm_ratio, &
-         projector_physical_norm_rotation, projector_physical_normp, &
-         projector_physical_offdiag_abs_avg, projector_physical_offdiag_abs_ratio, &
-         projector_physical_offdiag_active_abs_avg, projector_physical_offdiag_delta_max
+         projector_physical_expected_drop
+      REAL(KIND=dp) :: projector_physical_gdot_energy, projector_physical_gdot_rotation, &
+         projector_physical_gdotp, projector_physical_model_calibrated_drop, &
+         projector_physical_model_drop, projector_physical_model_gap, &
+         projector_physical_model_gap_drop, projector_physical_model_gap_ratio, &
+         projector_physical_model_gap_trust, projector_physical_norm_energy, &
+         projector_physical_norm_ratio, projector_physical_norm_rotation, &
+         projector_physical_normp, projector_physical_offdiag_abs_avg, &
+         projector_physical_offdiag_abs_ratio, projector_physical_offdiag_active_abs_avg, &
+         projector_physical_offdiag_delta_max
       REAL(KIND=dp) :: projector_physical_offdiag_diag_avg, &
          projector_physical_offdiag_inactive_abs_avg, projector_physical_offdiag_mode_abs_quad, &
          projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
@@ -7798,6 +7800,7 @@ CONTAINS
          projector_physical_direct_trace_invariant_ratio = 0.0_dp
          projector_physical_direct_trace_invariant_term = 0.0_dp
          projector_physical_direct_trace_invariant_trust_quality = 1.0_dp
+         projector_physical_direct_trace_trust_gap_drop = 0.0_dp
          projector_physical_direct_trace_ratio = 0.0_dp
          projector_physical_direct_trust_quality = 1.0_dp
          projector_physical_direction_scale = 0.0_dp
@@ -13485,6 +13488,14 @@ CONTAINS
                            kpoint_ot_direct_trace_model_gap_drop( &
                            projector_physical_direct_trace_actual_quad, &
                            projector_physical_direct_trace_active_quad, 1.0_dp)
+                        projector_physical_direct_trace_trust_gap_drop = &
+                           projector_physical_direct_unit_trace_invariant_gap_drop
+                        IF (projector_physical_direct_mixed_enabled .AND. &
+                            projector_physical_direct_unit_trace_gap_drop > &
+                            EPSILON(projector_physical_direct_unit_trace_gap_drop)) &
+                           projector_physical_direct_trace_trust_gap_drop = &
+                           MIN(projector_physical_direct_trace_trust_gap_drop, &
+                               projector_physical_direct_unit_trace_gap_drop)
                         projector_physical_direct_trust_scale = 1.0_dp
                         IF (response_trust > EPSILON(response_trust) .AND. &
                             projector_physical_direct_unit_weighted_step > &
@@ -13581,7 +13592,7 @@ CONTAINS
                               kpoint_ot_direct_trace_mismatch_trust( &
                               projector_physical_direct_model_drop, &
                               direction_scale*direction_scale* &
-                              projector_physical_direct_unit_trace_invariant_gap_drop, &
+                              projector_physical_direct_trace_trust_gap_drop, &
                               projector_physical_trace_invariant_quality_for_selection, &
                               local_ot_env(1)%schur_projector_physical_quality_samples)
                            projector_physical_direct_model_gap_trust = schur_model_gap_factor*response_trust
@@ -16134,7 +16145,7 @@ CONTAINS
                      projector_physical_direct_diag_compensation, &
                      projector_physical_direct_diag_shift_avg, &
                      projector_physical_direct_direction_scale*projector_physical_direct_direction_scale* &
-                     projector_physical_direct_unit_trace_invariant_gap_drop
+                     projector_physical_direct_trace_trust_gap_drop
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                      " OT Schur projector phys direct active-response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
                      projector_physical_direct_response_weight, &
@@ -16337,8 +16348,8 @@ CONTAINS
                      projector_physical_direct_trace_invariant_diag_quad, &
                      projector_physical_direct_trace_invariant_free_quad, &
                      projector_physical_direct_trace_active_quad
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,5(1X,ES16.8))') &
-                     " OT Schur projector phys direct trace model-gap audit mixed unit scaled vector invgap cdrop:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,6(1X,ES16.8))') &
+                     " OT Schur projector phys direct trace model-gap audit mixed unit scaled vector invgap trustgap cdrop:", &
                      projector_physical_direct_mixed_enabled, &
                      projector_physical_direct_unit_trace_gap_drop, &
                      projector_physical_direct_direction_scale*projector_physical_direct_direction_scale* &
@@ -16346,6 +16357,8 @@ CONTAINS
                      projector_physical_direct_unit_model_gap_drop, &
                      projector_physical_direct_direction_scale*projector_physical_direct_direction_scale* &
                      projector_physical_direct_unit_trace_invariant_gap_drop, &
+                     projector_physical_direct_direction_scale*projector_physical_direct_direction_scale* &
+                     projector_physical_direct_trace_trust_gap_drop, &
                      projector_physical_direct_model_calibrated_drop
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                      " OT Schur projector phys direct trace split actual_diag actual_free raw_diag raw_free "// &
