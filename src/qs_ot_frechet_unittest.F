@@ -9254,10 +9254,11 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: scale = 0.74_dp, &
                                                             trace_active = -0.23_dp, &
-                                                            trace_actual = 0.04_dp
+                                                            trace_actual = 0.04_dp, &
+                                                            trace_invariant = 0.86_dp
 
-      REAL(KIND=dp)                                      :: err, expected_trace_gap, model_drop, &
-                                                            trace_gap, vector_gap
+      REAL(KIND=dp) :: err, expected_mixed_trust, expected_trace_gap, invariant_gap, &
+         invariant_trust, mixed_trust, mixed_trust_gap, model_drop, trace_gap, vector_gap
       REAL(KIND=dp), DIMENSION(4)                        :: curv, response_actual, response_model
 
       curv(:) = [0.55_dp, 0.23_dp, 0.12_dp, 0.07_dp]
@@ -9266,18 +9267,29 @@ CONTAINS
 
       vector_gap = 0.5_dp*scale*scale*SUM(curv(:)*(response_model(:) - response_actual(:))**2)
       trace_gap = dense_direct_trace_model_gap_drop(trace_actual, trace_active, scale)
+      invariant_gap = dense_direct_trace_model_gap_drop(trace_actual, trace_invariant, scale)
+      mixed_trust_gap = MIN(trace_gap, invariant_gap)
       expected_trace_gap = 0.5_dp*scale*scale*ABS(trace_actual - trace_active)
       model_drop = 1.0_dp
+      mixed_trust = dense_direct_trace_mismatch_trust(model_drop, mixed_trust_gap, 0.10_dp, 16)
+      invariant_trust = dense_direct_trace_mismatch_trust(model_drop, invariant_gap, 0.10_dp, 16)
+      expected_mixed_trust = model_drop/(model_drop + 0.90_dp*trace_gap)
 
       err = ABS(trace_gap - expected_trace_gap)
+      err = MAX(err, ABS(mixed_trust - expected_mixed_trust))
       IF (err > tol .OR. vector_gap > tol .OR. trace_gap <= 0.0_dp .OR. &
-          trace_gap/model_drop <= 0.05_dp) THEN
+          trace_gap/model_drop <= 0.05_dp .OR. ABS(mixed_trust_gap - trace_gap) > tol .OR. &
+          mixed_trust <= invariant_trust) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/vector/trace/ratio", err, vector_gap, trace_gap, trace_gap/model_drop
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/vector/trace/ratio/invgap/tgap/mtrust/itrust", &
+            err, vector_gap, trace_gap, trace_gap/model_drop, invariant_gap, mixed_trust_gap, &
+            mixed_trust, invariant_trust
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/vector/trace/ratio", err, vector_gap, trace_gap, trace_gap/model_drop
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/vector/trace/ratio/invgap/tgap/mtrust/itrust", &
+            err, vector_gap, trace_gap, trace_gap/model_drop, invariant_gap, mixed_trust_gap, &
+            mixed_trust, invariant_trust
       END IF
 
    END SUBROUTINE check_projector_direct_trace_model_gap
