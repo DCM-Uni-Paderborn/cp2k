@@ -10498,9 +10498,13 @@ CONTAINS
                     ot_kp_schur_calibration_min_samples .OR. &
                     projector_density_history_weight > EPSILON(projector_density_history_weight))) THEN
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_response_ready) &
+                  IF (exact_density_direct_response_ready) THEN
+                     response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                     response_density_direct_exact(:, :)
+                  ELSE IF (exact_density_response_ready) THEN
                      response_physical_model(:, :) = response_physical_model(:, :) + &
                                                      response_density_exact(:, :)
+                  END IF
                   projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
                   CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
@@ -10672,9 +10676,13 @@ CONTAINS
                                                           rot_hessian_projector_physical_offdiag(:, :) - &
                                                           rot_hessian_projector_physical_offdiag_active(:, :)
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_response_ready) &
+                  IF (exact_density_direct_response_ready) THEN
+                     response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                     response_density_direct_exact(:, :)
+                  ELSE IF (exact_density_response_ready) THEN
                      response_physical_model(:, :) = response_physical_model(:, :) + &
                                                      response_density_exact(:, :)
+                  END IF
                   projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
                   CALL project_kpoint_ot_schur_response(projector_physical_model_e, &
                                                         occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
@@ -10906,9 +10914,13 @@ CONTAINS
                      rot_hessian(:, :) + &
                      rot_hessian_projector_physical_offdiag_active(:, :)
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_response_ready) &
+                  IF (exact_density_direct_response_ready) THEN
+                     response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                     response_density_direct_exact(:, :)
+                  ELSE IF (exact_density_response_ready) THEN
                      response_physical_model(:, :) = response_physical_model(:, :) + &
                                                      response_density_exact(:, :)
+                  END IF
                   projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
                   CALL project_kpoint_ot_schur_response(projector_physical_model_e, &
                                                         occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
