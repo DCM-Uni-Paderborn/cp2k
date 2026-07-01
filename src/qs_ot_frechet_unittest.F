@@ -194,6 +194,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density floor global projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_floor_response( &
       "complex projector density direct floor response", 5.0E-14_dp, nfail)
+   CALL check_projector_density_floor_bootstrap_weight( &
+      "complex projector density floor bootstrap weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_density_audit_trust_quality( &
@@ -7740,6 +7742,69 @@ CONTAINS
    END SUBROUTINE check_projector_density_direct_floor_response
 
 ! **************************************************************************************************
+!> \brief Check the conservative Direct floor-density bootstrap gate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_floor_bootstrap_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: active_source, boot, err, expected_boot, expected_over, high_lowcurv, &
+         high_residual, low_mermin, no_exact, no_floor, no_samples, over_mermin
+
+      boot = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.96_dp, 6, &
+                                                         2.0E-5_dp, 1.0E-6_dp, &
+                                                         2.0E-2_dp, 0.0_dp)
+      over_mermin = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 1.50_dp, 6, &
+                                                                2.0E-5_dp, 1.0E-6_dp, &
+                                                                2.0E-2_dp, 0.0_dp)
+      high_residual = dense_direct_floor_density_bootstrap_weight(2.0E-5_dp, 0.96_dp, 6, &
+                                                                  2.0E-5_dp, 1.0E-6_dp, &
+                                                                  2.0E-2_dp, 0.0_dp)
+      no_samples = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.96_dp, 3, &
+                                                               2.0E-5_dp, 1.0E-6_dp, &
+                                                               2.0E-2_dp, 0.0_dp)
+      low_mermin = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.70_dp, 6, &
+                                                               2.0E-5_dp, 1.0E-6_dp, &
+                                                               2.0E-2_dp, 0.0_dp)
+      high_lowcurv = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.96_dp, 6, &
+                                                                 2.0E-5_dp, 1.0E-6_dp, &
+                                                                 3.0E-1_dp, 0.0_dp)
+      active_source = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.96_dp, 6, &
+                                                                  2.0E-5_dp, 1.0E-6_dp, &
+                                                                  2.0E-2_dp, 2.0E-5_dp)
+      no_floor = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.96_dp, 6, &
+                                                             0.0_dp, 1.0E-6_dp, &
+                                                             2.0E-2_dp, 0.0_dp)
+      no_exact = dense_direct_floor_density_bootstrap_weight(5.0E-6_dp, 0.96_dp, 6, &
+                                                             2.0E-5_dp, 0.0_dp, &
+                                                             2.0E-2_dp, 0.0_dp)
+
+      expected_boot = 2.5E-2_dp*0.96_dp*(1.0_dp - 2.0E-2_dp/2.5E-1_dp)
+      expected_over = 2.5E-2_dp*(1.0_dp - 2.0E-2_dp/2.5E-1_dp)
+      err = ABS(boot - expected_boot)
+      err = MAX(err, ABS(over_mermin - expected_over))
+
+      IF (err > tol .OR. boot <= 0.0_dp .OR. over_mermin <= boot .OR. &
+          high_residual > tol .OR. no_samples > tol .OR. low_mermin > tol .OR. &
+          high_lowcurv > tol .OR. active_source > tol .OR. no_floor > tol .OR. &
+          no_exact > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed with err/boot/over/hr/ns/lm/hl/as/nf/ne", err, boot, over_mermin, &
+            high_residual, no_samples, low_mermin, high_lowcurv, active_source, no_floor, no_exact
+      ELSE
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK with err/boot/over/hr/ns/lm/hl/as/nf/ne", err, boot, over_mermin, &
+            high_residual, no_samples, low_mermin, high_lowcurv, active_source, no_floor, no_exact
+      END IF
+
+   END SUBROUTINE check_projector_density_floor_bootstrap_weight
+
+! **************************************************************************************************
 !> \brief Check that global fixed-N density-response trust follows the Mermin metric.
 !> \param label ...
 !> \param tol ...
@@ -10759,6 +10824,52 @@ CONTAINS
       quality = MIN(quality, recent_cap)
 
    END FUNCTION dense_floor_bootstrap_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of the Direct floor-density bootstrap gate.
+!> \param residual_delta ...
+!> \param mermin_quality_ema ...
+!> \param mermin_samples ...
+!> \param floor_abs_avg ...
+!> \param floor_exact_abs_avg ...
+!> \param floor_low_curv_fraction ...
+!> \param projected_abs_avg ...
+!> \return conservative Direct floor-density bootstrap weight
+! **************************************************************************************************
+   FUNCTION dense_direct_floor_density_bootstrap_weight(residual_delta, mermin_quality_ema, &
+                                                        mermin_samples, floor_abs_avg, &
+                                                        floor_exact_abs_avg, floor_low_curv_fraction, &
+                                                        projected_abs_avg) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, mermin_quality_ema, &
+                                                            floor_abs_avg, floor_exact_abs_avg, &
+                                                            floor_low_curv_fraction, projected_abs_avg
+      INTEGER, INTENT(IN)                                :: mermin_samples
+      REAL(KIND=dp)                                      :: weight
+
+      REAL(KIND=dp), PARAMETER                           :: bootstrap_weight = 2.5E-2_dp, &
+                                                            lowcurv_max = 2.5E-1_dp, &
+                                                            mermin_min = 8.0E-1_dp, &
+                                                            response_full_delta = 1.2E-5_dp, &
+                                                            trace_active_max_weight = 9.5E-1_dp
+      INTEGER, PARAMETER                                 :: calibration_min_samples = 4
+      REAL(KIND=dp)                                      :: low_curv_quality, source_limit
+
+      weight = 0.0_dp
+      IF (residual_delta > response_full_delta) RETURN
+      IF (mermin_samples < calibration_min_samples) RETURN
+      IF (mermin_quality_ema < mermin_min) RETURN
+      IF (floor_abs_avg <= EPSILON(floor_abs_avg)) RETURN
+      IF (floor_exact_abs_avg <= EPSILON(floor_exact_abs_avg)) RETURN
+      IF (floor_low_curv_fraction > lowcurv_max) RETURN
+      source_limit = MAX(1.0E1_dp*floor_exact_abs_avg, 1.0E-1_dp*floor_abs_avg)
+      IF (projected_abs_avg > source_limit) RETURN
+
+      low_curv_quality = 1.0_dp - floor_low_curv_fraction/lowcurv_max
+      low_curv_quality = MAX(0.0_dp, MIN(1.0_dp, low_curv_quality))
+      weight = bootstrap_weight*MIN(1.0_dp, mermin_quality_ema)*low_curv_quality
+      weight = MIN(0.5_dp*trace_active_max_weight, MAX(0.0_dp, weight))
+
+   END FUNCTION dense_direct_floor_density_bootstrap_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the physical Direct tail-probe bootstrap gate.

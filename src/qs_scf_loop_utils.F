@@ -178,6 +178,9 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_negative_balance_floor = 1.5E-1_dp, &
                                         ot_kp_schur_projector_negative_balance_max = 5.0E-1_dp, &
                                         ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
+                                        ot_kp_schur_projector_density_floor_bootstrap_weight = 2.5E-2_dp, &
+                                        ot_kp_schur_projector_density_floor_bootstrap_lowcurv_max = 2.5E-1_dp, &
+                                        ot_kp_schur_projector_density_floor_bootstrap_mermin_min = 8.0E-1_dp, &
                                         ot_kp_schur_projector_trace_active_max_weight = 9.5E-1_dp, &
                                         ot_kp_schur_projector_density_full_min_drop = 1.0E-12_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_ratio = 8.0E-1_dp, &
@@ -6688,6 +6691,7 @@ CONTAINS
       REAL(KIND=dp) :: projector_physical_direct_euclidean_scale, &
          projector_physical_direct_expected_drop, &
          projector_physical_direct_floor_density_maturity, &
+         projector_physical_direct_floor_density_bootstrap_weight, &
          projector_physical_direct_floor_density_quality, &
          projector_physical_direct_floor_density_trust_quality, &
          projector_physical_direct_floor_density_weight, &
@@ -7845,6 +7849,7 @@ CONTAINS
          projector_physical_trace_split_quality = 0.0_dp
          projector_physical_direct_density_audit_quality = 1.0_dp
          projector_physical_direct_floor_density_maturity = 0.0_dp
+         projector_physical_direct_floor_density_bootstrap_weight = 0.0_dp
          projector_physical_direct_floor_density_quality = 0.0_dp
          projector_physical_direct_floor_density_trust_quality = 1.0_dp
          projector_physical_direct_floor_density_weight = 0.0_dp
@@ -8716,10 +8721,32 @@ CONTAINS
                END IF
             END IF
          END IF
+         IF (projector_physical_direct_floor_density_weight <= &
+             EPSILON(projector_physical_direct_floor_density_weight) .AND. &
+             exact_density_floor_audit_ready) THEN
+            projector_physical_direct_floor_density_bootstrap_weight = &
+               kpoint_ot_direct_floor_density_bootstrap_weight( &
+               residual_delta, local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+               local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+               projector_density_floor_audit_abs_avg, projector_density_floor_audit_exact_abs_avg, &
+               projector_density_floor_audit_low_curv_fraction, projector_density_full_global_abs_avg)
+            IF (projector_physical_direct_floor_density_bootstrap_weight > &
+                EPSILON(projector_physical_direct_floor_density_bootstrap_weight)) THEN
+               projector_physical_direct_floor_density_quality = &
+                  MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                      MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                          local_ot_env(1)%mermin_ls_accepted_quality_ema))
+               projector_physical_direct_floor_density_trust_quality = 1.0_dp
+               projector_physical_direct_floor_density_maturity = 0.0_dp
+               projector_physical_direct_floor_density_weight = &
+                  projector_physical_direct_floor_density_bootstrap_weight
+            END IF
+         END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,5(1X,ES16.8),1X,I8)') &
-            " OT Schur projector phys direct density mix group weight mature qhist tqhist absavg samples:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8),1X,I8)') &
+            " OT Schur projector phys direct density mix group weight boot mature qhist tqhist absavg samples:", &
             target_group, projector_physical_direct_floor_density_weight, &
+            projector_physical_direct_floor_density_bootstrap_weight, &
             projector_physical_direct_floor_density_maturity, &
             projector_physical_direct_floor_density_quality, &
             projector_physical_direct_floor_density_trust_quality, &
@@ -18055,6 +18082,49 @@ CONTAINS
          quality = kpoint_ot_direct_selected_probe_quality(quality, selected_quality, samples, min_samples)
 
       END FUNCTION kpoint_ot_direct_floor_selected_quality
+
+! **************************************************************************************************
+!> \brief tiny floor-density bootstrap before selected density-response history exists
+!> \param residual_delta current OT residual
+!> \param mermin_quality_ema accepted Mermin line-search quality EMA
+!> \param mermin_samples accepted Mermin line-search quality samples
+!> \param floor_abs_avg floor-audit source magnitude
+!> \param floor_exact_abs_avg exact floor-response magnitude
+!> \param floor_low_curv_fraction low-curvature contribution to the floor model
+!> \param projected_abs_avg projected physical density source magnitude
+!> \return conservative floor-density Direct blend weight
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_floor_density_bootstrap_weight(residual_delta, mermin_quality_ema, &
+                                                               mermin_samples, floor_abs_avg, &
+                                                               floor_exact_abs_avg, floor_low_curv_fraction, &
+                                                               projected_abs_avg) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, mermin_quality_ema, &
+                                                            floor_abs_avg, floor_exact_abs_avg, &
+                                                            floor_low_curv_fraction, projected_abs_avg
+      INTEGER, INTENT(IN)                                :: mermin_samples
+      REAL(KIND=dp)                                      :: weight
+
+      REAL(KIND=dp)                                      :: low_curv_quality, source_limit
+
+         weight = 0.0_dp
+         IF (residual_delta > ot_kp_schur_projector_response_full_delta) RETURN
+         IF (mermin_samples < ot_kp_schur_calibration_min_samples) RETURN
+         IF (mermin_quality_ema < ot_kp_schur_projector_density_floor_bootstrap_mermin_min) RETURN
+         IF (floor_abs_avg <= EPSILON(floor_abs_avg)) RETURN
+         IF (floor_exact_abs_avg <= EPSILON(floor_exact_abs_avg)) RETURN
+         IF (floor_low_curv_fraction > ot_kp_schur_projector_density_floor_bootstrap_lowcurv_max) RETURN
+         source_limit = MAX(1.0E1_dp*floor_exact_abs_avg, 1.0E-1_dp*floor_abs_avg)
+         IF (projected_abs_avg > source_limit) RETURN
+
+         low_curv_quality = 1.0_dp - &
+                            floor_low_curv_fraction/ot_kp_schur_projector_density_floor_bootstrap_lowcurv_max
+         low_curv_quality = MAX(0.0_dp, MIN(1.0_dp, low_curv_quality))
+         weight = ot_kp_schur_projector_density_floor_bootstrap_weight* &
+                  MIN(1.0_dp, mermin_quality_ema)*low_curv_quality
+         weight = MIN(0.5_dp*ot_kp_schur_projector_trace_active_max_weight, &
+                      MAX(0.0_dp, weight))
+
+      END FUNCTION kpoint_ot_direct_floor_density_bootstrap_weight
 
 ! **************************************************************************************************
 !> \brief trust-safe tail probe for calibrated full-density response candidates
