@@ -9812,30 +9812,38 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp)                                      :: early, err, good_residual, neutral, &
-                                                            persistent, spike
+                                                            persistent, plateau_adjusted, &
+                                                            plateau_raw, spike
 
       early = dense_schur_step_gauge_quality(38.0_dp, 0.66_dp, 0.0_dp, 0.0_dp, 3)
       spike = dense_schur_step_gauge_quality(38.0_dp, 0.66_dp, 0.0_dp, 0.005_dp, 52)
       persistent = dense_schur_step_gauge_quality(2.0_dp, 2.2_dp, 0.0_dp, 0.0_dp, 52)
       neutral = dense_schur_step_gauge_quality(0.8_dp, 0.66_dp, 0.0_dp, 0.005_dp, 52)
       good_residual = dense_schur_step_gauge_quality(38.0_dp, 0.66_dp, 0.30_dp, 0.28_dp, 52)
+      plateau_adjusted = dense_schur_step_gauge_quality(4.44_dp, 3.15_dp, 0.25_dp, 0.152_dp, 104)
+      plateau_raw = dense_schur_step_gauge_quality( &
+                    4.44_dp, 3.15_dp, &
+                    dense_step_gauge_residual_quality(0.0_dp, 0.25_dp), &
+                    dense_step_gauge_residual_quality(0.0_dp, 0.152_dp), 104)
 
       err = ABS(early - 1.0_dp)
       err = MAX(err, ABS(spike - 0.35_dp))
       err = MAX(err, ABS(persistent - 0.93_dp))
       err = MAX(err, ABS(neutral - 1.0_dp))
       err = MAX(err, ABS(good_residual - 1.0_dp))
+      err = MAX(err, ABS(plateau_raw - 0.706_dp))
 
       IF (err > tol .OR. spike >= persistent .OR. spike >= neutral .OR. &
-          persistent >= neutral .OR. good_residual < 1.0_dp) THEN
+          persistent >= neutral .OR. good_residual < 1.0_dp .OR. &
+          plateau_raw >= plateau_adjusted .OR. plateau_raw > 0.75_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with early/spike/persistent/neutral/good", early, spike, persistent, &
-            neutral, good_residual
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with early/spike/persistent/neutral/good/padj/praw", early, spike, persistent, &
+            neutral, good_residual, plateau_adjusted, plateau_raw
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with early/spike/persistent/neutral/good", early, spike, persistent, &
-            neutral, good_residual
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with early/spike/persistent/neutral/good/padj/praw", early, spike, persistent, &
+            neutral, good_residual, plateau_adjusted, plateau_raw
       END IF
 
    END SUBROUTINE check_projector_tail_gauge_quality
@@ -9943,6 +9951,21 @@ CONTAINS
       quality = MIN(1.0_dp, MAX(0.25_dp, quality))
 
    END FUNCTION dense_schur_step_gauge_quality
+
+! **************************************************************************************************
+!> \brief Dense copy of the strict residual quality used for gauge-like tail rotations.
+!> \param raw_residual_quality ...
+!> \param residual_quality ...
+!> \return quality in [0,+inf]
+! **************************************************************************************************
+   FUNCTION dense_step_gauge_residual_quality(raw_residual_quality, residual_quality) RESULT(gauge_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_residual_quality, residual_quality
+      REAL(KIND=dp)                                      :: gauge_quality
+
+      gauge_quality = MIN(MAX(0.0_dp, raw_residual_quality), &
+                          MAX(0.0_dp, residual_quality))
+
+   END FUNCTION dense_step_gauge_residual_quality
 
 ! **************************************************************************************************
 !> \brief Dense copy of the raw-fallback residual-tail rotation floor.

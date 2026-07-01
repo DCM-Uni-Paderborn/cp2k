@@ -3574,8 +3574,8 @@ CONTAINS
       LOGICAL                                            :: mermin_search
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          constrained_calibrated_predicted_drop, constrained_calibrated_quality_ratio, &
-         constrained_predicted_drop, constrained_quality_ratio, measured_drop, &
-         occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, predicted_drop, &
+         constrained_predicted_drop, constrained_quality_ratio, gauge_residual_quality_ratio, &
+         measured_drop, occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, predicted_drop, &
          projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality, &
          projector_density_audit_quality_ratio, projector_density_descent_predicted_drop, &
          projector_density_descent_quality_ratio, projector_density_descent_selected_predicted_drop
@@ -3785,6 +3785,8 @@ CONTAINS
             local_ot_env(1)%schur_model_flavor = 0
             RETURN
          END IF
+         gauge_residual_quality_ratio = &
+            kpoint_ot_step_gauge_residual_quality(raw_residual_quality_ratio, residual_quality_ratio)
          quality_ratio = 0.0_dp
          calibrated_quality_ratio = 0.0_dp
          IF (mermin_search .AND. predicted_drop > EPSILON(predicted_drop)) &
@@ -3833,10 +3835,10 @@ CONTAINS
              local_ot_env(1)%schur_step_gauge_ratio > EPSILON(local_ot_env(1)%schur_step_gauge_ratio)) THEN
             samples = MIN(local_ot_env(1)%schur_step_gauge_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_step_gauge_quality_samples = samples
-            local_ot_env(1)%schur_step_gauge_residual_quality = residual_quality_ratio
+            local_ot_env(1)%schur_step_gauge_residual_quality = gauge_residual_quality_ratio
             IF (samples == 1) THEN
                local_ot_env(1)%schur_step_gauge_ratio_ema = local_ot_env(1)%schur_step_gauge_ratio
-               local_ot_env(1)%schur_step_gauge_residual_quality_ema = residual_quality_ratio
+               local_ot_env(1)%schur_step_gauge_residual_quality_ema = gauge_residual_quality_ratio
             ELSE
                local_ot_env(1)%schur_step_gauge_ratio_ema = &
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
@@ -3845,7 +3847,7 @@ CONTAINS
                local_ot_env(1)%schur_step_gauge_residual_quality_ema = &
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                   local_ot_env(1)%schur_step_gauge_residual_quality_ema + &
-                  ot_kp_schur_quality_ema_alpha*residual_quality_ratio
+                  ot_kp_schur_quality_ema_alpha*gauge_residual_quality_ratio
             END IF
          END IF
          constrained_predicted_drop = local_ot_env(1)%schur_constrained_drop
@@ -18502,6 +18504,21 @@ CONTAINS
          quality = 1.0_dp/trust_ratio
 
       END FUNCTION kpoint_ot_schur_metric_trust_quality
+
+! **************************************************************************************************
+!> \brief residual quality used for gauge-like tail rotations
+!> \param raw_residual_quality unmodified residual-drop ratio
+!> \param residual_quality line-search/plateau adjusted residual quality
+!> \return strict residual quality for the gauge-step history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_step_gauge_residual_quality(raw_residual_quality, residual_quality) RESULT(gauge_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_residual_quality, residual_quality
+      REAL(KIND=dp)                                      :: gauge_quality
+
+         gauge_quality = MIN(MAX(0.0_dp, raw_residual_quality), &
+                             MAX(0.0_dp, residual_quality))
+
+      END FUNCTION kpoint_ot_step_gauge_residual_quality
 
 ! **************************************************************************************************
 !> \brief shadow tail quality from accepted gauge-like rotation content
