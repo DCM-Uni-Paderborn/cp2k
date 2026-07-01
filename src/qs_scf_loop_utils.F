@@ -1860,6 +1860,19 @@ CONTAINS
    END FUNCTION kpoint_ot_pair_projector_weight
 
 ! **************************************************************************************************
+!> \brief physical density-norm weight for inactive rotation residuals
+!> \param occ_gap occupation-number difference scaled to [0, 1]
+!> \return squared occupation-gap weight
+! **************************************************************************************************
+   FUNCTION kpoint_ot_residual_occ_gap_weight(occ_gap) RESULT(gap_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: occ_gap
+      REAL(KIND=dp)                                      :: gap_weight
+
+      gap_weight = MIN(1.0_dp, MAX(0.0_dp, occ_gap))**2
+
+   END FUNCTION kpoint_ot_residual_occ_gap_weight
+
+! **************************************************************************************************
 !> \brief history-qualified physical projector weight for one rotation variable
 !> \param projector_weight ...
 !> \param active_weight ...
@@ -6440,7 +6453,8 @@ CONTAINS
       REAL(KIND=dp) :: accepted_step_fermi_norm, accepted_step_fermi_re, accepted_step_gap_im, &
          accepted_step_gap_norm, accepted_step_gap_re, accepted_step_gap_weight, &
          accepted_step_gauge_im, accepted_step_gauge_norm, accepted_step_gauge_ratio, &
-         accepted_step_gauge_re, accepted_step_gauge_weight, accepted_step_sq, &
+         accepted_step_gauge_re, accepted_step_gauge_weight, accepted_step_gap_fraction, &
+         accepted_step_sq, &
          channel_occ_curv_max, channel_projector_weight, constrained_diag_shift_avg, &
          constrained_direction_scale, constrained_expected_drop, constrained_expected_drop_ratio, &
          constrained_gdot_energy, constrained_gdot_rotation, constrained_gdotp, &
@@ -6940,7 +6954,7 @@ CONTAINS
       REAL(KIND=dp) :: rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, &
          rot_grad_energy_norm, rot_grad_fermi_weight, rot_grad_gap_im, rot_grad_gap_re, &
          rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
-         rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
+         rot_grad_gap_fraction, rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
          rot_grad_inactive_weight_sum, rot_grad_pair_fraction, rot_grad_physical_norm, &
          rot_grad_rest_fraction, rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, &
          row_floor_avg, row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
@@ -8261,22 +8275,26 @@ CONTAINS
             rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
             rot_grad_rest_fraction = 1.0_dp - rot_grad_pair_fraction
             rot_grad_fermi_weight = rot_grad_pair_fraction
+            rot_grad_gap_fraction = kpoint_ot_residual_occ_gap_weight(var_occ_gap_weight(r))
             rot_grad_sq = grad_rot(r)*grad_rot(r)
-            rot_grad_gap_weight = rot_grad_gap_weight + rot_grad_rest_fraction*var_occ_gap_weight(r)
+            rot_grad_gap_weight = rot_grad_gap_weight + &
+                                  rot_grad_rest_fraction*rot_grad_gap_fraction
             rot_grad_gauge_weight = rot_grad_gauge_weight + &
-                                    rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))
+                                    rot_grad_rest_fraction*(1.0_dp - rot_grad_gap_fraction)
             IF (var_kind(r) == 1) THEN
                rot_grad_active_re = rot_grad_active_re + rot_grad_pair_fraction*rot_grad_sq
                rot_grad_inactive_re = rot_grad_inactive_re + rot_grad_rest_fraction*rot_grad_sq
-               rot_grad_gap_re = rot_grad_gap_re + rot_grad_rest_fraction*var_occ_gap_weight(r)*rot_grad_sq
+               rot_grad_gap_re = rot_grad_gap_re + &
+                                  rot_grad_rest_fraction*rot_grad_gap_fraction*rot_grad_sq
                rot_grad_gauge_re = rot_grad_gauge_re + &
-                                   rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))*rot_grad_sq
+                                   rot_grad_rest_fraction*(1.0_dp - rot_grad_gap_fraction)*rot_grad_sq
             ELSE
                rot_grad_active_im = rot_grad_active_im + rot_grad_pair_fraction*rot_grad_sq
                rot_grad_inactive_im = rot_grad_inactive_im + rot_grad_rest_fraction*rot_grad_sq
-               rot_grad_gap_im = rot_grad_gap_im + rot_grad_rest_fraction*var_occ_gap_weight(r)*rot_grad_sq
+               rot_grad_gap_im = rot_grad_gap_im + &
+                                  rot_grad_rest_fraction*rot_grad_gap_fraction*rot_grad_sq
                rot_grad_gauge_im = rot_grad_gauge_im + &
-                                   rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))*rot_grad_sq
+                                   rot_grad_rest_fraction*(1.0_dp - rot_grad_gap_fraction)*rot_grad_sq
             END IF
             rot_grad_active_weight_sum = rot_grad_active_weight_sum + rot_grad_fermi_weight
             rot_grad_inactive_weight_sum = rot_grad_inactive_weight_sum + rot_grad_rest_fraction
@@ -16046,24 +16064,25 @@ CONTAINS
                rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
                rot_grad_rest_fraction = 1.0_dp - rot_grad_pair_fraction
                rot_grad_fermi_weight = rot_grad_pair_fraction
+               accepted_step_gap_fraction = kpoint_ot_residual_occ_gap_weight(var_occ_gap_weight(r))
                accepted_step_sq = sol(r)*sol(r)
                accepted_step_gap_weight = accepted_step_gap_weight + &
-                                          rot_grad_rest_fraction*var_occ_gap_weight(r)
+                                          rot_grad_rest_fraction*accepted_step_gap_fraction
                accepted_step_gauge_weight = accepted_step_gauge_weight + &
-                                            rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))
+                                            rot_grad_rest_fraction*(1.0_dp - accepted_step_gap_fraction)
                IF (var_kind(r) == 1) THEN
                   accepted_step_fermi_re = accepted_step_fermi_re + rot_grad_fermi_weight*accepted_step_sq
                   accepted_step_gap_re = accepted_step_gap_re + &
-                                         rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
+                                         rot_grad_rest_fraction*accepted_step_gap_fraction*accepted_step_sq
                   accepted_step_gauge_re = accepted_step_gauge_re + &
-                                           rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
+                                           rot_grad_rest_fraction*(1.0_dp - accepted_step_gap_fraction)* &
                                            accepted_step_sq
                ELSE
                   accepted_step_fermi_im = accepted_step_fermi_im + rot_grad_fermi_weight*accepted_step_sq
                   accepted_step_gap_im = accepted_step_gap_im + &
-                                         rot_grad_rest_fraction*var_occ_gap_weight(r)*accepted_step_sq
+                                         rot_grad_rest_fraction*accepted_step_gap_fraction*accepted_step_sq
                   accepted_step_gauge_im = accepted_step_gauge_im + &
-                                           rot_grad_rest_fraction*(1.0_dp - var_occ_gap_weight(r))* &
+                                           rot_grad_rest_fraction*(1.0_dp - accepted_step_gap_fraction)* &
                                            accepted_step_sq
                END IF
             END DO
