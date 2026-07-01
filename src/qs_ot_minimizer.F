@@ -59,6 +59,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_tail_jump_norm = 1.0E-10_dp, &
                                         ot_cg_kp_residual_tail_min_delta = 3.0E-6_dp, &
                                         ot_cg_kp_residual_tail_max_delta = 5.0E-6_dp, &
+                                        ot_cg_kp_mermin_residual_growth_ratio = 1.5_dp, &
+                                        ot_cg_kp_mermin_residual_growth_max_delta = 1.2E-5_dp, &
                                         ot_cg_kp_mermin_recovery_tail_min_delta = 1.5E-6_dp, &
                                         ot_cg_kp_mermin_recovery_tail_max_delta = 5.0E-6_dp, &
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
@@ -1195,12 +1197,13 @@ CONTAINS
                                                             schur_last_attempt, schur_last_flavor
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
          reset_to_sd, residual_history_reset, residual_tail_spike_reset, schur_history_change, &
-         schur_history_mixed, schur_projector_jump_reset, schur_projector_tail_reset
+         schur_history_mixed, schur_projector_jump_reset, schur_projector_tail_reset, &
+         mermin_residual_growth_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
          residual_trust_quality, residual_trust_scale, sample_accepted_drop, sample_gap, &
-         sample_quality, test_down, tmp
+         sample_quality, sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1216,6 +1219,7 @@ CONTAINS
       END DO
       history_spike_reset = .FALSE.
       negative_beta = .FALSE.
+      mermin_residual_growth_reset = .FALSE.
       residual_history_reset = .FALSE.
       residual_tail_spike_reset = .FALSE.
       residual_trust_quality = 1.0_dp
@@ -1436,6 +1440,27 @@ CONTAINS
          sample_quality = 0.0_dp
          IF (qs_ot_env(1)%mermin_ls_best_sample_drop > EPSILON(1.0_dp)) &
             sample_quality = sample_accepted_drop/qs_ot_env(1)%mermin_ls_best_sample_drop
+         sample_residual_growth_ratio = 0.0_dp
+         IF (qs_ot_env(1)%schur_model_delta > EPSILON(1.0_dp)) &
+            sample_residual_growth_ratio = qs_ot_env(1)%delta/qs_ot_env(1)%schur_model_delta
+         mermin_residual_growth_reset = &
+            qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+            qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+            sample_accepted_drop > ot_cg_kp_mermin_recovery_step_floor .AND. &
+            qs_ot_env(1)%schur_model_delta >= ot_cg_kp_mermin_recovery_tail_min_delta .AND. &
+            qs_ot_env(1)%schur_model_delta <= ot_cg_kp_mermin_residual_growth_max_delta .AND. &
+            qs_ot_env(1)%delta > ot_cg_kp_mermin_residual_growth_ratio* &
+            qs_ot_env(1)%schur_model_delta
+         IF (mermin_residual_growth_reset) THEN
+            qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
+            qs_ot_env(1)%schur_residual_history_quality = 0.0_dp
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                  " OT Mermin LS residual growth reset prev next ratio adrop bdrop:", &
+                  qs_ot_env(1)%schur_model_delta, qs_ot_env(1)%delta, sample_residual_growth_ratio, &
+                  sample_accepted_drop, qs_ot_env(1)%mermin_ls_best_sample_drop
+            END IF
+         END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,12(1X,ES16.8))') &
                " OT Mermin LS accepted-state audit idx ref best accepted bdrop adrop gap q mdrop mq bpos next delta:", &
