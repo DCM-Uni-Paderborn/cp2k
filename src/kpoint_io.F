@@ -64,7 +64,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 10
+   INTEGER, PARAMETER                   :: ot_restart_version = 11
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -522,16 +522,16 @@ CONTAINS
 
       INTEGER                                            :: ichannel, ihist, nchannel, ndiis, nener, &
                                                             nmo, nmo_ortho
-      INTEGER, DIMENSION(13)                             :: int_payload
+      INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(17)                             :: schur_int_payload
       LOGICAL :: has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, has_ener_x, &
          has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
          has_matrix_history, has_matrix_history_im, has_matrix_x, has_matrix_x_im, &
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
-      LOGICAL, DIMENSION(27)                             :: log_payload
+      LOGICAL, DIMENSION(28)                             :: log_payload
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload
-      REAL(KIND=dp), DIMENSION(8)                        :: real_payload
+      REAL(KIND=dp), DIMENSION(19)                       :: real_payload
 
       nchannel = SIZE(qs_ot_env)
       IF (ires > 0) THEN
@@ -600,7 +600,10 @@ CONTAINS
                         qs_ot_env(ichannel)%line_search_right, &
                         qs_ot_env(ichannel)%line_search_mid, &
                         qs_ot_env(ichannel)%line_search_count, &
-                        qs_ot_env(ichannel)%diis_iter, nener, ndiis]
+                        qs_ot_env(ichannel)%diis_iter, &
+                        qs_ot_env(ichannel)%mermin_ls_best_sample_index, &
+                        qs_ot_env(ichannel)%mermin_ls_accepted_quality_samples, &
+                        nener, ndiis]
          log_payload = [qs_ot_env(ichannel)%state_allocated, &
                         qs_ot_env(ichannel)%has_complex_kpoint_state, &
                         qs_ot_env(ichannel)%settings%do_rotation, &
@@ -613,12 +616,24 @@ CONTAINS
                         has_rot_mat_gx_old_im, has_ener_dx, has_ener_gx_old, &
                         has_diis_scalars, has_matrix_history, has_matrix_history_im, &
                         has_rot_history, has_rot_history_im, has_ener_history, &
-                        has_matrix_x, has_matrix_x_im]
+                        has_matrix_x, has_matrix_x_im, &
+                        qs_ot_env(ichannel)%mermin_ls_sample_pending]
          real_payload = [qs_ot_env(ichannel)%kpoint_weight, &
                          qs_ot_env(ichannel)%delta, qs_ot_env(ichannel)%gnorm, &
                          qs_ot_env(ichannel)%gnorm_old, qs_ot_env(ichannel)%etotal, &
                          qs_ot_env(ichannel)%gradient, qs_ot_env(ichannel)%ds_min, &
-                         qs_ot_env(ichannel)%broyden_adaptive_sigma]
+                         qs_ot_env(ichannel)%broyden_adaptive_sigma, &
+                         qs_ot_env(ichannel)%mermin_ls_reference_energy, &
+                         qs_ot_env(ichannel)%mermin_ls_best_sample_energy, &
+                         qs_ot_env(ichannel)%mermin_ls_best_sample_drop, &
+                         qs_ot_env(ichannel)%mermin_ls_model_drop, &
+                         qs_ot_env(ichannel)%mermin_ls_model_quality, &
+                         qs_ot_env(ichannel)%mermin_ls_best_sample_pos, &
+                         qs_ot_env(ichannel)%mermin_ls_next_pos, &
+                         qs_ot_env(ichannel)%mermin_ls_accepted_quality, &
+                         qs_ot_env(ichannel)%mermin_ls_accepted_quality_ema, &
+                         qs_ot_env(ichannel)%mermin_ls_accepted_gap, &
+                         qs_ot_env(ichannel)%mermin_ls_accepted_gap_ema]
          schur_int_payload = [qs_ot_env(ichannel)%schur_projector_density_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_audit_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_descent_quality_samples, &
@@ -893,17 +908,20 @@ CONTAINS
                                                             nener, version_read
       INTEGER, DIMENSION(11)                             :: schur_int_payload_v4
       INTEGER, DIMENSION(12)                             :: schur_int_payload_v5
-      INTEGER, DIMENSION(13)                             :: int_payload, schur_int_payload_v6
+      INTEGER, DIMENSION(13)                             :: int_payload_v10, schur_int_payload_v6
       INTEGER, DIMENSION(14)                             :: schur_int_payload_v8
+      INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(17)                             :: schur_int_payload
       LOGICAL                                            :: payload_found
-      LOGICAL, DIMENSION(27)                             :: log_payload
+      LOGICAL, DIMENSION(27)                             :: log_payload_v10
+      LOGICAL, DIMENSION(28)                             :: log_payload
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
-      REAL(KIND=dp), DIMENSION(8)                        :: real_payload
+      REAL(KIND=dp), DIMENSION(8)                        :: real_payload_v10
+      REAL(KIND=dp), DIMENSION(19)                       :: real_payload
       REAL(KIND=dp), DIMENSION(87)                       :: schur_real_payload_v7
       REAL(KIND=dp), DIMENSION(89)                       :: schur_real_payload_v8
 
@@ -933,9 +951,24 @@ CONTAINS
       ALLOCATE (scf_env%qs_ot_restart%channel(nchannel))
       DO ichannel = 1, nchannel
          IF (para_env%is_source()) THEN
-            READ (rst_unit) int_payload
-            READ (rst_unit) log_payload
-            READ (rst_unit) real_payload
+            IF (version_read >= 11) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload
+               READ (rst_unit) real_payload
+            ELSE
+               READ (rst_unit) int_payload_v10
+               READ (rst_unit) log_payload_v10
+               READ (rst_unit) real_payload_v10
+               int_payload(:) = 0
+               int_payload(1:11) = int_payload_v10(1:11)
+               int_payload(14:15) = int_payload_v10(12:13)
+               log_payload(:) = .FALSE.
+               log_payload(1:27) = log_payload_v10
+               real_payload(:) = 0.0_dp
+               real_payload(1:8) = real_payload_v10
+               real_payload(16) = 1.0_dp
+               real_payload(17) = 1.0_dp
+            END IF
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_pos
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_energy
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_grad
@@ -1018,8 +1051,10 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%line_search_mid = int_payload(9)
          scf_env%qs_ot_restart%channel(ichannel)%line_search_count = int_payload(10)
          scf_env%qs_ot_restart%channel(ichannel)%diis_iter = int_payload(11)
-         nener = int_payload(12)
-         ndiis = int_payload(13)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_best_sample_index = int_payload(12)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_quality_samples = int_payload(13)
+         nener = int_payload(14)
+         ndiis = int_payload(15)
          scf_env%qs_ot_restart%channel(ichannel)%diis_m = ndiis
          scf_env%qs_ot_restart%channel(ichannel)%has_complex_kpoint_state = log_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%do_rotation = log_payload(3)
@@ -1047,6 +1082,7 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%has_ener_history = log_payload(25)
          scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x = log_payload(26)
          scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x_im = log_payload(27)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_sample_pending = log_payload(28)
          scf_env%qs_ot_restart%channel(ichannel)%kpoint_weight = real_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%delta = real_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%gnorm = real_payload(3)
@@ -1055,6 +1091,17 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%gradient = real_payload(6)
          scf_env%qs_ot_restart%channel(ichannel)%ds_min = real_payload(7)
          scf_env%qs_ot_restart%channel(ichannel)%broyden_adaptive_sigma = real_payload(8)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_reference_energy = real_payload(9)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_best_sample_energy = real_payload(10)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_best_sample_drop = real_payload(11)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_model_drop = real_payload(12)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_model_quality = real_payload(13)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_best_sample_pos = real_payload(14)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_next_pos = real_payload(15)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_quality = real_payload(16)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_quality_ema = real_payload(17)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_gap = real_payload(18)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_gap_ema = real_payload(19)
          scf_env%qs_ot_restart%channel(ichannel)%density_quality_samples = schur_int_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%density_audit_samples = schur_int_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_quality_samples = schur_int_payload(3)

@@ -74,21 +74,23 @@
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # These restart read/continue jobs are deliberately short, non-converged
-# restart-I/O smokes.  Keep the smearing, entropic-energy, and restart guards
-# strict, but allow small OMP reduction/path differences in the early OT energy.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.00634251030746},
-                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.00634251030746},
+# restart-I/O smokes.  The version-11 payload also preserves the accepted
+# Mermin line-search quality used by the k-point OT response trust model.
+# Keep the smearing, entropic-energy, and restart guards strict, but allow
+# small OMP reduction/path differences in the early OT energy.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.00634304354720},
+                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.00634304354720},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14563968384500},
-                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14563968384500},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14564222410374},
+                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14564222410374},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203104008E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=5.6830E-4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-1, ref=5.1744E-4},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},

@@ -1258,6 +1258,7 @@ CONTAINS
                            ot_env%schur_projector_density_full_direct_quality_samples > 0 .OR. &
                            ot_env%schur_projector_density_fdir_sel_quality_samples > 0 .OR. &
                            ot_env%schur_projector_density_full_global_quality_samples > 0 .OR. &
+                           ot_env%mermin_ls_accepted_quality_samples > 0 .OR. &
                            ot_env%schur_projector_mixed_direct_quality_samples > 0)
             IF (.NOT. cache%valid) CYCLE
             cache%spin_index = ot_env%spin_index
@@ -1283,6 +1284,8 @@ CONTAINS
                ot_env%schur_projector_density_fdir_sel_quality_samples
             cache%density_full_global_quality_samples = &
                ot_env%schur_projector_density_full_global_quality_samples
+            cache%mermin_ls_accepted_quality_samples = &
+               ot_env%mermin_ls_accepted_quality_samples
             cache%density_quality = ot_env%schur_projector_density_quality
             cache%density_quality_ema = ot_env%schur_projector_density_quality_ema
             cache%density_drop_sum = ot_env%schur_projector_density_drop_sum
@@ -1446,6 +1449,10 @@ CONTAINS
             cache%mixed_direct_drop_sum = ot_env%schur_projector_mixed_direct_drop_sum
             cache%mixed_direct_measured_sum = ot_env%schur_projector_mixed_direct_measured_sum
             cache%mixed_direct_weight_ema = ot_env%schur_projector_mixed_direct_weight_ema
+            cache%mermin_ls_accepted_quality = ot_env%mermin_ls_accepted_quality
+            cache%mermin_ls_accepted_quality_ema = ot_env%mermin_ls_accepted_quality_ema
+            cache%mermin_ls_accepted_gap = ot_env%mermin_ls_accepted_gap
+            cache%mermin_ls_accepted_gap_ema = ot_env%mermin_ls_accepted_gap_ema
          END ASSOCIATE
       END DO
 
@@ -1545,6 +1552,8 @@ CONTAINS
                cache%density_fdir_sel_quality_samples
             qs_ot_env%schur_projector_density_full_global_quality_samples = &
                cache%density_full_global_quality_samples
+            qs_ot_env%mermin_ls_accepted_quality_samples = &
+               cache%mermin_ls_accepted_quality_samples
             qs_ot_env%schur_projector_density_quality = cache%density_quality
             qs_ot_env%schur_projector_density_quality_ema = cache%density_quality_ema
             qs_ot_env%schur_projector_density_drop_sum = cache%density_drop_sum
@@ -1706,6 +1715,10 @@ CONTAINS
             qs_ot_env%schur_projector_mixed_direct_drop_sum = cache%mixed_direct_drop_sum
             qs_ot_env%schur_projector_mixed_direct_measured_sum = cache%mixed_direct_measured_sum
             qs_ot_env%schur_projector_mixed_direct_weight_ema = cache%mixed_direct_weight_ema
+            qs_ot_env%mermin_ls_accepted_quality = cache%mermin_ls_accepted_quality
+            qs_ot_env%mermin_ls_accepted_quality_ema = cache%mermin_ls_accepted_quality_ema
+            qs_ot_env%mermin_ls_accepted_gap = cache%mermin_ls_accepted_gap
+            qs_ot_env%mermin_ls_accepted_gap_ema = cache%mermin_ls_accepted_gap_ema
             EXIT
          END ASSOCIATE
       END DO
@@ -2683,6 +2696,36 @@ CONTAINS
          qs_ot_env%ds_min = scf_env%qs_ot_restart%channel(ot_channel)%ds_min
          qs_ot_env%broyden_adaptive_sigma = &
             scf_env%qs_ot_restart%channel(ot_channel)%broyden_adaptive_sigma
+         IF (scf_env%qs_ot_restart%format_version >= 11) THEN
+            qs_ot_env%mermin_ls_sample_pending = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_sample_pending
+            qs_ot_env%mermin_ls_best_sample_index = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_index
+            qs_ot_env%mermin_ls_reference_energy = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_reference_energy
+            qs_ot_env%mermin_ls_best_sample_energy = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_energy
+            qs_ot_env%mermin_ls_best_sample_drop = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_drop
+            qs_ot_env%mermin_ls_model_drop = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_model_drop
+            qs_ot_env%mermin_ls_model_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_model_quality
+            qs_ot_env%mermin_ls_best_sample_pos = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_pos
+            qs_ot_env%mermin_ls_next_pos = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_next_pos
+            qs_ot_env%mermin_ls_accepted_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_quality_samples
+            qs_ot_env%mermin_ls_accepted_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_quality
+            qs_ot_env%mermin_ls_accepted_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_quality_ema
+            qs_ot_env%mermin_ls_accepted_gap = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_gap
+            qs_ot_env%mermin_ls_accepted_gap_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_gap_ema
+         END IF
          IF (restore_schur_calibration .AND. scf_env%qs_ot_restart%format_version >= 4) THEN
             qs_ot_env%schur_projector_density_pending = .FALSE.
             qs_ot_env%schur_projector_density_audit_pending = .FALSE.

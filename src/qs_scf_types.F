@@ -116,9 +116,23 @@ MODULE qs_scf_types
       INTEGER :: line_search_left = -1, line_search_right = -1, line_search_mid = -1
       INTEGER :: line_search_count = -1, diis_iter = -1
       LOGICAL :: line_search_might_be_done = .FALSE., energy_only = .FALSE.
+      LOGICAL :: mermin_ls_sample_pending = .FALSE.
+      INTEGER :: mermin_ls_best_sample_index = 0
+      INTEGER :: mermin_ls_accepted_quality_samples = 0
       REAL(KIND=dp) :: delta = 0.0_dp, gnorm = 0.0_dp, gnorm_old = 0.0_dp
       REAL(KIND=dp) :: etotal = 0.0_dp, gradient = 0.0_dp, ds_min = 0.0_dp
       REAL(KIND=dp) :: broyden_adaptive_sigma = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_reference_energy = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_best_sample_energy = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_best_sample_drop = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_model_drop = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_model_quality = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_best_sample_pos = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_next_pos = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
       INTEGER :: density_quality_samples = 0, density_audit_samples = 0
       INTEGER :: density_descent_quality_samples = 0
       INTEGER :: density_descent_selected_quality_samples = 0
@@ -284,6 +298,7 @@ MODULE qs_scf_types
       INTEGER :: density_full_direct_quality_samples = 0
       INTEGER :: density_fdir_sel_quality_samples = 0
       INTEGER :: density_full_global_quality_samples = 0
+      INTEGER :: mermin_ls_accepted_quality_samples = 0
       REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
       REAL(KIND=dp) :: density_lowcurv_ema = 0.0_dp, density_lowcurv_quality_ema = 0.0_dp
@@ -366,6 +381,10 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: mixed_direct_quality = 0.0_dp, mixed_direct_quality_ema = 0.0_dp
       REAL(KIND=dp) :: mixed_direct_drop_sum = 0.0_dp, mixed_direct_measured_sum = 0.0_dp
       REAL(KIND=dp) :: mixed_direct_weight_ema = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
       LOGICAL :: density_descent_support_ready = .FALSE.
    END TYPE qs_ot_schur_density_calibration_channel_type
 
