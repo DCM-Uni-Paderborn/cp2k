@@ -2000,7 +2000,11 @@ CONTAINS
                                    safe_abs > EPSILON(safe_abs) .AND. &
                                    projector_abs > EPSILON(projector_abs)
       IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
-         safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
+         IF (globally_aligned_safe_response) THEN
+            safe_cap = MAX(4.0_dp*projector_abs, SQRT(response_shape)*safe_abs)
+         ELSE
+            safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
+         END IF
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
          safe_component = (1.0_dp - safe_blend)*density_projector_response + &

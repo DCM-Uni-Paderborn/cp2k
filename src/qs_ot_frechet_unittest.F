@@ -128,6 +128,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical density centered-sign blend", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_global_alignment( &
       "complex projector physical density global alignment", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_density_global_low_curv( &
+      "complex projector physical density global low-curv response", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_convexity( &
       "complex projector physical density-response convexity", 5.0E-14_dp, nfail)
    CALL check_projector_density_floor_audit_response_helper( &
@@ -5037,6 +5039,54 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_global_alignment
+
+! **************************************************************************************************
+!> \brief Check that globally coherent fixed-N density response is not damped twice.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_density_global_low_curv(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp) :: active_fraction, expected_response, global_response, local_response, &
+         occ_curv, occ_curv_max, raw_response, response_shape, safe_response
+
+      occ_curv_max = 4.0E-2_dp
+      occ_curv = 4.0E-5_dp
+      raw_response = 1.0E-5_dp
+      safe_response = 1.0E-1_dp
+
+      active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      expected_response = response_shape*((1.0_dp - active_fraction)*raw_response + &
+                                          active_fraction*SQRT(response_shape)*safe_response)
+
+      local_response = dense_physical_density_response(raw_response, safe_response, &
+                                                       occ_curv, occ_curv_max, response_ratio_gate)
+      global_response = dense_physical_density_response(raw_response, safe_response, &
+                                                        occ_curv, occ_curv_max, response_ratio_gate, &
+                                                        raw_response, safe_response, 0.80_dp)
+
+      IF (ABS(global_response - expected_response) > tol .OR. &
+          global_response <= 2.0_dp*local_response .OR. &
+          global_response >= response_shape*safe_response) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with global/expected/local/shape/safe", global_response, expected_response, &
+            local_response, response_shape, safe_response
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with global/expected/local/shape/safe", global_response, expected_response, &
+            local_response, response_shape, safe_response
+      END IF
+
+   END SUBROUTINE check_projector_physical_density_global_low_curv
 
 ! **************************************************************************************************
 !> \brief Check that conflicting density responses are blended, not extrapolated.
@@ -15253,7 +15303,11 @@ CONTAINS
                                    safe_abs > EPSILON(safe_abs) .AND. &
                                    projector_abs > EPSILON(projector_abs)
       IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
-         safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
+         IF (globally_aligned_safe_response) THEN
+            safe_cap = MAX(4.0_dp*projector_abs, SQRT(response_shape)*safe_abs)
+         ELSE
+            safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
+         END IF
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
          safe_component = (1.0_dp - safe_blend)*density_projector_response + &
