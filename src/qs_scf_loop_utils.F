@@ -19757,7 +19757,8 @@ CONTAINS
          base = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
          CALL dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, &
                                                local_ot_env(local_channel)%delta, occ_mat, &
-                                               occ_curv_channel, ot_kp_projector_occupation_gauge_gap)
+                                               occ_curv_channel, ot_kp_projector_occupation_gauge_gap, &
+                                               projector_window_gap)
          occ_mat_coupled(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO imo = 1, nmo
             occ_mat_coupled(imo, imo) = CMPLX(2.0_dp*kpoint_weight*occupation_numbers(imo), 0.0_dp, KIND=dp)
@@ -19841,10 +19842,12 @@ CONTAINS
             END DO
             CALL dense_history_safe_occ_projector(chc_p, occupation_numbers, kpoint_weight, &
                                                   local_ot_env(local_channel)%delta, occ_mat_p, &
-                                                  occ_curv_channel, ot_kp_projector_occupation_gauge_gap)
+                                                  occ_curv_channel, ot_kp_projector_occupation_gauge_gap, &
+                                                  projector_window_gap)
             CALL dense_history_safe_occ_projector(chc_m, occupation_numbers, kpoint_weight, &
                                                   local_ot_env(local_channel)%delta, occ_mat_m, &
-                                                  occ_curv_channel, ot_kp_projector_occupation_gauge_gap)
+                                                  occ_curv_channel, ot_kp_projector_occupation_gauge_gap, &
+                                                  projector_window_gap)
             CALL dense_ref_rotation_gradient(x_p_re, x_p_im, base, occ_mat_p, grad_p_re, grad_p_im, eps_p)
             CALL dense_ref_rotation_gradient(x_m_re, x_m_im, base, occ_mat_m, grad_m_re, grad_m_im, eps_m)
             DO r = first_var, last_var
@@ -20149,15 +20152,17 @@ CONTAINS
 !> \param occ_mat ...
 !> \param occ_curv_channel ...
 !> \param gauge_gap ...
+!> \param projector_window_gap ...
 ! **************************************************************************************************
       SUBROUTINE dense_history_safe_occ_projector(chc, occupation_numbers, kpoint_weight, delta, occ_mat, &
-                                                  occ_curv_channel, gauge_gap)
+                                                  occ_curv_channel, gauge_gap, projector_window_gap)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv_channel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
       INTEGER                                            :: i, n
@@ -20173,7 +20178,8 @@ CONTAINS
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
             occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_work(:))))
             CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_work)
-            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_work)
+            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_work, &
+                                                    projector_window_gap)
          END IF
          weighted_evec(:, :) = evec(:, :)
          DO i = 1, n
@@ -20281,10 +20287,10 @@ CONTAINS
                ALLOCATE (occ_mat_p(n, n), occ_mat_m(n, n))
                CALL dense_history_safe_occ_projector(chc + projector_fd_step*dchc, occupation_numbers, &
                                                      kpoint_weight, delta, occ_mat_p, occ_curv_channel, &
-                                                     gauge_gap)
+                                                     gauge_gap, projector_window_gap)
                CALL dense_history_safe_occ_projector(chc - projector_fd_step*dchc, occupation_numbers, &
                                                      kpoint_weight, delta, occ_mat_m, occ_curv_channel, &
-                                                     gauge_gap)
+                                                     gauge_gap, projector_window_gap)
                docc_mat(:, :) = (occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*projector_fd_step)
                kernel(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(docc_mat, evec))
                ! The finite-difference projector value still contains arbitrary
