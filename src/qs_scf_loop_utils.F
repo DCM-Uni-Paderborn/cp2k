@@ -8634,7 +8634,7 @@ CONTAINS
          ! keep the Direct model blend history controlled.  Individual trial
          ! line-search probes can miss the local Direct response and should
          ! not switch this correction on/off between probes in the same tail.
-         IF (exact_density_full_audit_ready .AND. &
+         IF ((exact_density_floor_audit_ready .OR. exact_density_full_audit_ready) .AND. &
              local_ot_env(1)%schur_projector_density_full_global_quality_samples > 0 .AND. &
              local_ot_env(1)%schur_projector_density_full_global_drop_sum > &
              ot_kp_schur_projector_density_full_min_drop .AND. &
@@ -8692,19 +8692,27 @@ CONTAINS
                      (1.0_dp - projector_physical_direct_floor_density_weight)* &
                      energy_cross_density(:, :) + &
                      projector_physical_direct_floor_density_weight* &
-                     energy_cross_density_full_audit(:, :)
+                     MERGE(energy_cross_density_floor_audit(:, :), &
+                           energy_cross_density_full_audit(:, :), &
+                           exact_density_floor_audit_ready)
                   response_density_direct_exact(:, :) = &
                      (1.0_dp - projector_physical_direct_floor_density_weight)* &
                      response_density_exact(:, :) + &
                      projector_physical_direct_floor_density_weight* &
-                     response_density_full_audit_exact(:, :)
+                     MERGE(response_density_floor_audit_exact(:, :), &
+                           response_density_full_audit_exact(:, :), &
+                           exact_density_floor_audit_ready)
                ELSE
                   energy_cross_density_direct(:, :) = &
                      projector_physical_direct_floor_density_weight* &
-                     energy_cross_density_full_audit(:, :)
+                     MERGE(energy_cross_density_floor_audit(:, :), &
+                           energy_cross_density_full_audit(:, :), &
+                           exact_density_floor_audit_ready)
                   response_density_direct_exact(:, :) = &
                      projector_physical_direct_floor_density_weight* &
-                     response_density_full_audit_exact(:, :)
+                     MERGE(response_density_floor_audit_exact(:, :), &
+                           response_density_full_audit_exact(:, :), &
+                           exact_density_floor_audit_ready)
                END IF
             END IF
          END IF
