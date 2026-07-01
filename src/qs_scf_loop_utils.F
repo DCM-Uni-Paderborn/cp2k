@@ -1953,7 +1953,8 @@ CONTAINS
          density_safe_centered_response, density_response_alignment
       REAL(KIND=dp)                                      :: density_response
 
-      LOGICAL                                            :: globally_aligned_safe_response, &
+      LOGICAL                                            :: anti_aligned_safe_response, &
+                                                            globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, projector_abs, response_shape, safe_abs, &
          safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
@@ -1984,12 +1985,19 @@ CONTAINS
       globally_aligned_safe_response = alignment > 0.25_dp .AND. &
                                        safe_abs > EPSILON(safe_abs) .AND. &
                                        projector_abs <= alignment*safe_abs
+      anti_aligned_safe_response = PRESENT(density_projector_centered_response) .AND. &
+                                   PRESENT(density_safe_centered_response) .AND. &
+                                   sign_projector_response*sign_safe_response < 0.0_dp .AND. &
+                                   safe_abs > EPSILON(safe_abs) .AND. &
+                                   projector_abs > EPSILON(projector_abs)
       IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
          safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
          safe_component = (1.0_dp - safe_blend)*density_projector_response + &
                           safe_blend*safe_component
+      ELSE IF (anti_aligned_safe_response) THEN
+         safe_component = SIGN(MIN(projector_abs, safe_abs), density_safe_response)
       END IF
       ! The density channel follows the finite spectral response, but augments it
       ! with the gauge-safe diagonal occupation response when both point along

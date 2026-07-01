@@ -4920,8 +4920,9 @@ CONTAINS
       err = MAX(err, ABS(partial_response - 0.8125_dp*base_response))
       err = MAX(err, ABS(aligned_response - base_response))
 
-      IF (err > tol .OR. damped_response >= good_response .OR. &
-          partial_response <= damped_response .OR. partial_response >= good_response) THEN
+      IF (err > tol .OR. ABS(damped_response) >= ABS(good_response) .OR. &
+          ABS(partial_response) <= ABS(damped_response) .OR. &
+          ABS(partial_response) >= ABS(good_response)) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
             "failed with error/base/good/damped/partial", err, base_response, good_response, &
@@ -4990,8 +4991,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp)                                      :: aligned_response, blocked_response, &
-                                                            expected_response, occ_curv, &
+      REAL(KIND=dp)                                      :: aligned_response, blocked_expected, &
+                                                            blocked_response, expected_response, occ_curv, &
                                                             occ_curv_max, raw_response, &
                                                             safe_response
 
@@ -5006,17 +5007,20 @@ CONTAINS
       aligned_response = dense_physical_density_response(raw_response, safe_response, &
                                                          occ_curv, occ_curv_max, response_ratio_gate, &
                                                          0.002_dp, -0.020_dp, 0.80_dp)
+      blocked_expected = -raw_response
       expected_response = safe_response
 
-      IF (ABS(blocked_response - raw_response) > tol .OR. &
+      IF (ABS(blocked_response - blocked_expected) > tol .OR. &
           ABS(aligned_response - expected_response) > tol .OR. &
           ABS(aligned_response) <= ABS(blocked_response)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "failed with blocked/aligned/expected", blocked_response, aligned_response, expected_response
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with blocked/blockexp/aligned/expected", blocked_response, blocked_expected, &
+            aligned_response, expected_response
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "OK with blocked/aligned/expected", blocked_response, aligned_response, expected_response
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with blocked/blockexp/aligned/expected", blocked_response, blocked_expected, &
+            aligned_response, expected_response
       END IF
 
    END SUBROUTINE check_projector_physical_density_global_alignment
@@ -14525,7 +14529,8 @@ CONTAINS
          density_safe_centered_response, density_response_alignment
       REAL(KIND=dp)                                      :: density_response
 
-      LOGICAL                                            :: globally_aligned_safe_response, &
+      LOGICAL                                            :: anti_aligned_safe_response, &
+                                                            globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, projector_abs, response_shape, safe_abs, &
          safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
@@ -14555,12 +14560,19 @@ CONTAINS
       globally_aligned_safe_response = alignment > 0.25_dp .AND. &
                                        safe_abs > EPSILON(safe_abs) .AND. &
                                        projector_abs <= alignment*safe_abs
+      anti_aligned_safe_response = PRESENT(density_projector_centered_response) .AND. &
+                                   PRESENT(density_safe_centered_response) .AND. &
+                                   sign_projector_response*sign_safe_response < 0.0_dp .AND. &
+                                   safe_abs > EPSILON(safe_abs) .AND. &
+                                   projector_abs > EPSILON(projector_abs)
       IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
          safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
          safe_blend = active_fraction
          safe_component = (1.0_dp - safe_blend)*density_projector_response + &
                           safe_blend*safe_component
+      ELSE IF (anti_aligned_safe_response) THEN
+         safe_component = SIGN(MIN(projector_abs, safe_abs), density_safe_response)
       END IF
       density_response = response_shape*safe_component
 
