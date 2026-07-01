@@ -8861,6 +8861,52 @@ CONTAINS
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples)
             END IF
          END IF
+         IF (projector_density_selected_history_weight > &
+             EPSILON(projector_density_selected_history_weight)) THEN
+            projector_physical_direct_floor_density_weight = &
+               MAX(projector_physical_direct_floor_density_weight, &
+                   projector_density_selected_history_weight)
+            projector_physical_direct_floor_density_quality = &
+               MAX(projector_physical_direct_floor_density_quality, &
+                   MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                       projector_physical_direct_density_selected_mermin_quality))
+            projector_physical_direct_floor_density_trust_quality = &
+               MAX(projector_physical_direct_floor_density_trust_quality, &
+                   MIN(1.0_dp, MAX(0.0_dp, &
+                                   projector_physical_direct_density_mix_residual_quality)))
+         END IF
+         IF (projector_physical_direct_floor_density_weight > &
+             EPSILON(projector_physical_direct_floor_density_weight) .AND. &
+             (exact_density_floor_audit_ready .OR. exact_density_full_audit_ready)) THEN
+            exact_density_direct_response_ready = .TRUE.
+            IF (exact_density_response_ready) THEN
+               energy_cross_density_direct(:, :) = &
+                  (1.0_dp - projector_physical_direct_floor_density_weight)* &
+                  energy_cross_density(:, :) + &
+                  projector_physical_direct_floor_density_weight* &
+                  MERGE(energy_cross_density_floor_audit(:, :), &
+                        energy_cross_density_full_audit(:, :), &
+                        exact_density_floor_audit_ready)
+               response_density_direct_exact(:, :) = &
+                  (1.0_dp - projector_physical_direct_floor_density_weight)* &
+                  response_density_exact(:, :) + &
+                  projector_physical_direct_floor_density_weight* &
+                  MERGE(response_density_floor_audit_exact(:, :), &
+                        response_density_full_audit_exact(:, :), &
+                        exact_density_floor_audit_ready)
+            ELSE
+               energy_cross_density_direct(:, :) = &
+                  projector_physical_direct_floor_density_weight* &
+                  MERGE(energy_cross_density_floor_audit(:, :), &
+                        energy_cross_density_full_audit(:, :), &
+                        exact_density_floor_audit_ready)
+               response_density_direct_exact(:, :) = &
+                  projector_physical_direct_floor_density_weight* &
+                  MERGE(response_density_floor_audit_exact(:, :), &
+                        response_density_full_audit_exact(:, :), &
+                        exact_density_floor_audit_ready)
+            END IF
+         END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,13(1X,ES16.8),2(1X,I8))') &
             " OT Schur projector phys direct density mix group weight boot mature qhist tqhist absavg "// &
