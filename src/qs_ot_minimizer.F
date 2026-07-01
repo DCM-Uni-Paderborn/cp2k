@@ -66,7 +66,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
-                                        ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp
+                                        ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
+                                        ot_cg_kp_residual_spike_quality_ceiling = 0.0_dp
 
 CONTAINS
 !
@@ -1196,14 +1197,14 @@ CONTAINS
                                                             schur_attempt, schur_flavor, &
                                                             schur_last_attempt, schur_last_flavor
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
-         reset_to_sd, residual_history_reset, residual_tail_spike_reset, schur_history_change, &
-         schur_history_mixed, schur_projector_jump_reset, schur_projector_tail_reset, &
-         mermin_residual_growth_reset
+         reset_to_sd, residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
+         schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
+         schur_projector_tail_reset, mermin_residual_growth_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
-         residual_trust_quality, residual_trust_scale, sample_accepted_drop, sample_gap, &
-         sample_quality, sample_residual_growth_ratio, test_down, tmp
+         residual_spike_quality, residual_trust_quality, residual_trust_scale, sample_accepted_drop, &
+         sample_gap, sample_quality, sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1221,6 +1222,8 @@ CONTAINS
       negative_beta = .FALSE.
       mermin_residual_growth_reset = .FALSE.
       residual_history_reset = .FALSE.
+      residual_spike_history_reset = .FALSE.
+      residual_spike_quality = 1.0_dp
       residual_tail_spike_reset = .FALSE.
       residual_trust_quality = 1.0_dp
       reset_to_sd = .FALSE.
@@ -1536,6 +1539,30 @@ CONTAINS
       IF (history_spike_reset) THEN
          beta_pr = 0.0_dp
          reset_to_sd = .TRUE.
+      END IF
+      residual_spike_history_reset = history_spike_reset .AND. &
+                                     qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
+                                     qs_ot_env(1)%kpoint_physical_delta > &
+                                     ot_cg_kp_mermin_recovery_tail_min_delta .AND. &
+                                     qs_ot_env(1)%kpoint_physical_delta < &
+                                     ot_cg_kp_mermin_recovery_tail_max_delta .AND. &
+                                     (schur_projector_tail_reset .OR. residual_tail_spike_reset)
+      IF (residual_spike_history_reset) THEN
+         residual_spike_quality = ot_cg_kp_residual_spike_quality_ceiling
+         IF (gnorm_ratio > EPSILON(1.0_dp)) &
+            residual_spike_quality = MIN(residual_spike_quality, 1.0_dp/SQRT(gnorm_ratio))
+         qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
+         qs_ot_env(1)%schur_residual_history_quality = &
+            MIN(qs_ot_env(1)%schur_residual_history_quality, residual_spike_quality)
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),2(1X,I6))') &
+               " OT CG residual spike trust reset q ratio delta rscale flavor last:", &
+               residual_spike_quality, gnorm_ratio, qs_ot_env(1)%kpoint_physical_delta, &
+               MAX(ot_cg_kp_residual_trust_min_scale, &
+                   MIN(1.0_dp, SQRT(MAX(residual_spike_quality, &
+                                         ot_cg_kp_residual_trust_quality_floor)))), &
+               schur_flavor, schur_last_flavor
+         END IF
       END IF
       residual_history_reset = complex_kpoint_history .AND. &
                                qs_ot_env(1)%settings%occupation_preconditioner .AND. &
