@@ -13893,7 +13893,7 @@ CONTAINS
          END DO
       END DO
       CALL dense_projector_cluster_modal_occupation(evals(1:2), occ_curv(1:2), occ_slope(1:2), &
-                                                    modal_energy, modal_occ)
+                                                    modal_energy, modal_occ, modal_curv)
       cluster_col(:) = work(1:2, 3)
       modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), cluster_col)
       DO a = 1, 2
@@ -14003,9 +14003,9 @@ CONTAINS
          END DO
       END DO
       CALL dense_projector_cluster_modal_occupation(evals(1:2), occ_curv(1:2), occ_slope(1:2), &
-                                                    modal_energy_a, modal_occ_a)
+                                                    modal_energy_a, modal_occ_a, modal_curv_a)
       CALL dense_projector_cluster_modal_occupation(evals(3:4), occ_curv(3:4), occ_slope(3:4), &
-                                                    modal_energy_b, modal_occ_b)
+                                                    modal_energy_b, modal_occ_b, modal_curv_b)
       modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec_a)), MATMUL(work(1:2, 3:4), cluster_evec_b))
       DO b = 1, 2
          DO a = 1, 2
@@ -14079,10 +14079,10 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
       INTEGER                                            :: a, b, i
       REAL(KIND=dp)                                      :: charge_err, coeff_new, coeff_old, &
-                                                            component_weight, denom, err, &
-                                                            herm_err, raw_gap, slope_cap
+                                                            component_weight, curv_sum, denom, err, &
+                                                            herm_err, mu_response, raw_gap, shape_err, slope_cap
       REAL(KIND=dp), DIMENSION(3)                        :: cluster_eval, modal_curv, modal_energy, &
-                                                            modal_occ_new, modal_occ_old
+                                                            modal_occ_expected, modal_occ_new, modal_occ_old
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
 
       evals(:) = [-0.010000_dp, -0.009990_dp, -0.009980_dp, 1.23_dp]
@@ -14120,7 +14120,14 @@ CONTAINS
          END DO
       END DO
       CALL dense_projector_cluster_modal_occupation(evals(1:3), occ_curv(1:3), occ_slope(1:3), &
-                                                    modal_energy, modal_occ_new)
+                                                    modal_energy, modal_occ_new, modal_curv)
+      curv_sum = SUM(MAX(0.0_dp, modal_curv(:)))
+      mu_response = DOT_PRODUCT(MAX(0.0_dp, modal_curv(:)), modal_energy(:))/curv_sum
+      DO a = 1, 3
+         modal_occ_expected(a) = SUM(occ_slope(1:3))/3.0_dp - &
+                                 2.0_dp*MAX(0.0_dp, modal_curv(a))* &
+                                 (modal_energy(a) - mu_response)
+      END DO
 
       modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), work(1:3, 4))
       response_col_new(:) = modal_col(:)
@@ -14148,14 +14155,16 @@ CONTAINS
       herm_err = MAXVAL(ABS(kernel(4, 1:3) - CONJG(kernel(1:3, 4))))
       raw_gap = MAXVAL(ABS(expected_new(:) - expected_old(:)))
       charge_err = ABS(SUM(modal_occ_new(:)) - SUM(occ_slope(1:3)))
+      shape_err = MAXVAL(ABS(modal_occ_new(:) - modal_occ_expected(:)))
 
-      IF (err > tol .OR. herm_err > tol .OR. charge_err > tol .OR. raw_gap < active_tol) THEN
+      IF (err > tol .OR. herm_err > tol .OR. charge_err > tol .OR. shape_err > tol .OR. &
+          raw_gap < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with err/herm/charge/rawgap", err, herm_err, charge_err, raw_gap
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with err/herm/charge/shape/rawgap", err, herm_err, charge_err, shape_err, raw_gap
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with err/herm/charge/rawgap", err, herm_err, charge_err, raw_gap
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with err/herm/charge/shape/rawgap", err, herm_err, charge_err, shape_err, raw_gap
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_cluster_modal_occ_shape
@@ -14797,18 +14806,41 @@ CONTAINS
 !> \param occ_slope ...
 !> \param modal_energy ...
 !> \param modal_occ ...
+!> \param modal_curv ...
 ! **************************************************************************************************
-   SUBROUTINE dense_projector_cluster_modal_occupation(evals, occ_curv, occ_slope, modal_energy, modal_occ)
+   SUBROUTINE dense_projector_cluster_modal_occupation(evals, occ_curv, occ_slope, modal_energy, modal_occ, &
+                                                       modal_curv)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_curv, occ_slope, modal_energy
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_occ
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: modal_curv
 
       INTEGER                                            :: i, m
-      REAL(KIND=dp)                                      :: delta_e, eval_center, fit_den, fit_num, &
-                                                            occ_mean, physical_slope, slope_cap
+      REAL(KIND=dp)                                      :: curv, curv_sum, delta_e, eval_center, fit_den, &
+                                                            fit_num, mu_shift, occ_mean, physical_slope, &
+                                                            slope_cap
 
       m = SIZE(evals)
       modal_occ(:) = 0.0_dp
       IF (m <= 0) RETURN
+
+      IF (PRESENT(modal_curv)) THEN
+         curv_sum = 0.0_dp
+         mu_shift = 0.0_dp
+         DO i = 1, m
+            curv = MAX(0.0_dp, modal_curv(i))
+            curv_sum = curv_sum + curv
+            mu_shift = mu_shift + curv*modal_energy(i)
+         END DO
+         IF (curv_sum > EPSILON(curv_sum)) THEN
+            mu_shift = mu_shift/curv_sum
+            occ_mean = SUM(occ_slope(1:m))/REAL(m, KIND=dp)
+            DO i = 1, m
+               modal_occ(i) = occ_mean - 2.0_dp*MAX(0.0_dp, modal_curv(i))* &
+                              (modal_energy(i) - mu_shift)
+            END DO
+            RETURN
+         END IF
+      END IF
 
       occ_mean = SUM(occ_slope(1:m))/REAL(m, KIND=dp)
       eval_center = SUM(evals(1:m))/REAL(m, KIND=dp)
@@ -14943,7 +14975,8 @@ CONTAINS
                END DO
             END DO
             CALL dense_projector_cluster_modal_occupation(evals(first:last), occ_curv(first:last), &
-                                                          occ_slope(first:last), modal_energy, modal_occ)
+                                                          occ_slope(first:last), modal_energy, modal_occ, &
+                                                          modal_curv)
             cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
             DO a = 1, m
                cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
@@ -15028,7 +15061,8 @@ CONTAINS
                END DO
             END DO
             CALL dense_projector_cluster_modal_occupation(evals(first:last), occ_curv(first:last), &
-                                                          occ_slope(first:last), modal_energy, modal_occ)
+                                                          occ_slope(first:last), modal_energy, modal_occ, &
+                                                          modal_curv)
             first_b = last + 1
             DO WHILE (first_b <= n)
                last_b = first_b
@@ -15058,7 +15092,8 @@ CONTAINS
                   END DO
                   CALL dense_projector_cluster_modal_occupation(evals(first_b:last_b), &
                                                                 occ_curv(first_b:last_b), &
-                                                                occ_slope(first_b:last_b), modal_energy_b, modal_occ_b)
+                                                                occ_slope(first_b:last_b), modal_energy_b, &
+                                                                modal_occ_b, modal_curv_b)
                   modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), &
                                              MATMUL(work(first:last, first_b:last_b), cluster_evec_b))
                   DO b = 1, m_b
