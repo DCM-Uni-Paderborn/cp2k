@@ -214,6 +214,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
+   CALL check_projector_density_descent_tail_probe( &
+      "complex projector density-descent tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_probe_drop( &
       "complex projector density full-Direct probe drop", 5.0E-14_dp, nfail)
    CALL check_projector_dense_metric_tail_bridge( &
@@ -8267,6 +8269,71 @@ CONTAINS
    END SUBROUTINE check_projector_density_full_direct_tail_probe
 
 ! **************************************************************************************************
+!> \brief Check that fixed-N density-descent candidates can collect residual-tail history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_descent_tail_probe(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL :: low_drop, low_quality, low_recovery, ready, selected_bad, selected_ok, &
+         selected_recent_bad, tail_veto, trust_veto, weak_drop
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                               0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                               0.0_dp, 0.0_dp, 0, 0.40_dp)
+      tail_veto = dense_density_descent_tail_probe(2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                   0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                   0.0_dp, 0.0_dp, 0, 0.40_dp)
+      low_quality = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                     0.04_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                     0.0_dp, 0.0_dp, 0, 0.40_dp)
+      low_recovery = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                      0.06_dp, 0.49_dp, 1.0_dp, 1.0_dp, &
+                                                      0.0_dp, 0.0_dp, 0, 0.40_dp)
+      low_drop = dense_density_descent_tail_probe(5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, &
+                                                  0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                  0.0_dp, 0.0_dp, 0, 0.40_dp)
+      weak_drop = dense_density_descent_tail_probe(5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, &
+                                                   0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                   0.0_dp, 0.0_dp, 0, 0.40_dp)
+      trust_veto = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                    0.06_dp, 0.80_dp, 1.01_dp, 1.0_dp, &
+                                                    0.0_dp, 0.0_dp, 0, 0.40_dp)
+      selected_ok = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                     0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                     0.40_dp, 0.40_dp, 4, 0.40_dp)
+      selected_bad = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                      0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                      0.40_dp, 0.20_dp, 4, 0.40_dp)
+      selected_recent_bad = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                             0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                             0.05_dp, 0.40_dp, 4, 0.40_dp)
+      err = 0.0_dp
+      IF (.NOT. ready .OR. tail_veto .OR. low_quality .OR. low_recovery .OR. low_drop .OR. &
+          weak_drop .OR. trust_veto .OR. .NOT. selected_ok .OR. selected_bad .OR. &
+          selected_recent_bad) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "failed with ready/tail/quality/recovery/drop/weak/trust/sel/bad/recent", ready, tail_veto, &
+            low_quality, low_recovery, low_drop, weak_drop, trust_veto, selected_ok, selected_bad, &
+            selected_recent_bad
+      ELSE
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "OK with ready/tail/quality/recovery/drop/weak/trust/sel/bad/recent", ready, tail_veto, &
+            low_quality, low_recovery, low_drop, weak_drop, trust_veto, selected_ok, selected_bad, &
+            selected_recent_bad
+      END IF
+
+   END SUBROUTINE check_projector_density_descent_tail_probe
+
+! **************************************************************************************************
 !> \brief Check that residual-tail Direct shadow drops are visible only to trust-safe probes.
 !> \param label ...
 !> \param tol ...
@@ -10699,6 +10766,57 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of the density-descent residual-tail close-call gate.
+!> \param residual_delta ...
+!> \param candidate_expected_drop ...
+!> \param reference_expected_drop ...
+!> \param quality_for_selection ...
+!> \param gap_recoverable_fraction ...
+!> \param weighted_trust_ratio ...
+!> \param abs_trust_ratio ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \param dense_residual_quality ...
+!> \return true if the density-descent candidate is a trust-safe residual-tail close call
+! **************************************************************************************************
+   FUNCTION dense_density_descent_tail_probe(residual_delta, candidate_expected_drop, &
+                                             reference_expected_drop, quality_for_selection, &
+                                             gap_recoverable_fraction, weighted_trust_ratio, &
+                                             abs_trust_ratio, selected_residual_quality, &
+                                             selected_residual_quality_ema, selected_samples, &
+                                             dense_residual_quality) RESULT(do_probe)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, quality_for_selection, &
+                                                            gap_recoverable_fraction, weighted_trust_ratio, &
+                                                            abs_trust_ratio, selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+      REAL(KIND=dp)                                      :: residual_reference
+
+      do_probe = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (quality_for_selection < 5.0E-2_dp) RETURN
+      IF (gap_recoverable_fraction < 5.0E-1_dp) RETURN
+      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
+      IF (candidate_expected_drop < 8.0E-1_dp*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+      IF (weighted_trust_ratio > 1.0_dp) RETURN
+      IF (abs_trust_ratio > 1.0_dp) RETURN
+
+      IF (selected_samples >= 4) THEN
+         residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
+         IF (selected_residual_quality_ema < 8.0E-1_dp*residual_reference) RETURN
+         IF (selected_residual_quality < 4.0E-1_dp*residual_reference) RETURN
+      END IF
+
+      do_probe = .TRUE.
+
+   END FUNCTION dense_density_descent_tail_probe
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the residual-tail Direct-density shadow probe drop.
