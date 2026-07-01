@@ -6563,8 +6563,9 @@ CONTAINS
          projector_density_floor_audit_gap_abs_avg, &
          projector_density_floor_audit_low_curv_fraction, &
          projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg
-      REAL(KIND=dp) :: projector_density_full_global_abs_avg, projector_density_history_quality, &
-         projector_density_history_weight, projector_diag_compensation, &
+      REAL(KIND=dp) :: projector_density_active_mix_weight, projector_density_full_global_abs_avg, &
+         projector_density_history_quality, projector_density_history_weight, &
+         projector_density_selected_history_weight, projector_diag_compensation, &
          projector_diagref_quality_for_selection, projector_diagref_weight, &
          projector_gauge_abs_avg, projector_gauge_delta_max, projector_hessian_abs_avg, &
          projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
@@ -6682,13 +6683,15 @@ CONTAINS
          projector_physical_direct_density_probe_branch_expected_drop, &
          projector_physical_direct_density_probe_expected_drop, &
          projector_physical_direct_density_quality_for_selection
-      REAL(KIND=dp) :: projector_physical_direct_density_recent_residual_quality, &
+      REAL(KIND=dp) :: projector_physical_direct_density_mix_residual_quality, &
+         projector_physical_direct_density_recent_residual_quality, &
          projector_physical_direct_density_response_abs_step, &
          projector_physical_direct_density_response_abs_trust_ratio, &
          projector_physical_direct_density_response_weighted_step, &
          projector_physical_direct_density_response_weighted_trust_ratio, &
          projector_physical_direct_density_scale_quality, &
          projector_physical_direct_density_selected_history_quality, &
+         projector_physical_direct_density_selected_mermin_quality, &
          projector_physical_direct_density_shadow_expected_drop, &
          projector_physical_direct_density_shadow_quality_for_selection, &
          projector_physical_direct_density_trust_quality
@@ -7661,8 +7664,10 @@ CONTAINS
          projector_hessian_delta_diag_avg = 0.0_dp
          projector_hessian_delta_max = 0.0_dp
          projector_hessian_diag_avg = 0.0_dp
+         projector_density_active_mix_weight = 0.0_dp
          projector_density_history_quality = 1.0_dp
          projector_density_history_weight = 0.0_dp
+         projector_density_selected_history_weight = 0.0_dp
          projector_physical_abs_avg = 0.0_dp
          projector_physical_delta_diag_avg = 0.0_dp
          projector_physical_delta_max = 0.0_dp
@@ -7875,6 +7880,10 @@ CONTAINS
          projector_physical_direct_density_quality_for_selection = 0.0_dp
          projector_physical_direct_density_probe_branch_expected_drop = 0.0_dp
          projector_physical_direct_density_probe_expected_drop = 0.0_dp
+         projector_physical_direct_density_mix_residual_quality = 0.0_dp
+         projector_physical_direct_density_recent_residual_quality = 1.0_dp
+         projector_physical_direct_density_selected_history_quality = 0.0_dp
+         projector_physical_direct_density_selected_mermin_quality = 0.0_dp
          projector_physical_direct_density_shadow_quality_for_selection = 0.0_dp
          density_descent_bootstrap_maturity = 0.0_dp
          density_descent_bootstrap_quality = 0.0_dp
@@ -8776,16 +8785,54 @@ CONTAINS
                   projector_physical_direct_floor_density_bootstrap_weight
             END IF
          END IF
+         IF (local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples >= &
+             ot_kp_schur_calibration_min_samples) THEN
+            projector_physical_direct_density_selected_mermin_quality = &
+               kpoint_ot_schur_history_quality( &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+               ot_kp_schur_calibration_min_samples, &
+               0.0_dp, 0.0_dp, &
+               ot_kp_schur_projector_response_quality_max_ratio)
+            projector_physical_direct_density_selected_history_quality = &
+               projector_physical_direct_density_selected_mermin_quality
+            IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+               projector_physical_direct_density_recent_residual_quality = &
+                  kpoint_ot_selected_tail_residual_quality( &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema)
+               projector_physical_direct_density_mix_residual_quality = &
+                  kpoint_ot_selected_tail_mix_residual_quality( &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema)
+               projector_physical_direct_density_selected_history_quality = &
+                  projector_physical_direct_density_selected_history_quality* &
+                  projector_physical_direct_density_recent_residual_quality
+               projector_density_selected_history_weight = &
+                  kpoint_ot_direct_density_selected_mix_weight( &
+                  residual_delta, projector_physical_direct_density_selected_mermin_quality, &
+                  projector_physical_direct_density_mix_residual_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples)
+            END IF
+         END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8),1X,I8)') &
-            " OT Schur projector phys direct density mix group weight boot mature qhist tqhist absavg samples:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,10(1X,ES16.8),2(1X,I8))') &
+            " OT Schur projector phys direct density mix group weight boot mature qhist tqhist absavg "// &
+            "selw selq selrq selmixrq samples sels:", &
             target_group, projector_physical_direct_floor_density_weight, &
             projector_physical_direct_floor_density_bootstrap_weight, &
             projector_physical_direct_floor_density_maturity, &
             projector_physical_direct_floor_density_quality, &
             projector_physical_direct_floor_density_trust_quality, &
             projector_density_full_global_abs_avg, &
-            local_ot_env(1)%schur_projector_density_full_global_quality_samples
+            projector_density_selected_history_weight, &
+            projector_physical_direct_density_selected_mermin_quality, &
+            projector_physical_direct_density_recent_residual_quality, &
+            projector_physical_direct_density_mix_residual_quality, &
+            local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+            local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples
          IF (exact_density_direct_response_ready) THEN
             DO s = 1, nrot
                DO r = 1, nrot
@@ -9482,29 +9529,9 @@ CONTAINS
             0.0_dp, &
             ot_kp_schur_projector_response_quality_min_ratio, &
             ot_kp_schur_projector_response_quality_max_ratio)
-         projector_physical_direct_density_selected_history_quality = 0.0_dp
-         projector_physical_direct_density_recent_residual_quality = 1.0_dp
          projector_physical_direct_density_selected_probe_ready = .FALSE.
          IF (local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples >= &
              ot_kp_schur_calibration_min_samples) THEN
-            projector_physical_direct_density_selected_history_quality = &
-               kpoint_ot_schur_history_quality( &
-               local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
-               local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
-               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema, &
-               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
-               ot_kp_schur_calibration_min_samples, &
-               0.0_dp, 0.0_dp, &
-               ot_kp_schur_projector_response_quality_max_ratio)
-            IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
-               projector_physical_direct_density_recent_residual_quality = &
-                  kpoint_ot_selected_tail_residual_quality( &
-                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
-                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema)
-               projector_physical_direct_density_selected_history_quality = &
-                  projector_physical_direct_density_selected_history_quality* &
-                  projector_physical_direct_density_recent_residual_quality
-            END IF
             projector_physical_direct_density_quality_for_selection = &
                kpoint_ot_direct_selected_probe_quality( &
                projector_physical_direct_density_quality_for_selection, &
@@ -9604,6 +9631,8 @@ CONTAINS
                MAX(projector_density_history_weight, &
                    projector_physical_direct_floor_density_weight)
          END IF
+         projector_density_active_mix_weight = &
+            MAX(projector_density_history_weight, projector_density_selected_history_weight)
          density_descent_quality_for_selection = &
             kpoint_ot_schur_history_quality( &
             local_ot_env(1)%schur_projector_density_descent_drop_sum, &
@@ -11212,7 +11241,7 @@ CONTAINS
                   projector_physical_direct_trace_active_basis_weight = &
                      kpoint_ot_physical_direct_density_mix( &
                      projector_physical_direct_trace_active_basis_weight, &
-                     projector_density_history_weight, residual_delta)
+                     projector_density_active_mix_weight, residual_delta)
                   IF (projector_physical_direct_trace_active_basis_weight > &
                       EPSILON(projector_physical_direct_trace_active_basis_weight)) THEN
                      projector_physical_direct_delta(:, :) = &
@@ -18213,6 +18242,75 @@ CONTAINS
                                             EPSILON(1.0_dp)))))
 
       END FUNCTION kpoint_ot_selected_tail_residual_quality
+
+! **************************************************************************************************
+!> \brief EMA-stabilized residual quality for non-promoting active-Hessian tail mix
+!> \param selected_residual_quality latest selected-step residual quality
+!> \param selected_residual_quality_ema EMA of selected-step residual quality
+!> \return residual-quality factor for tiny Direct-density active-Hessian mix
+! **************************************************************************************************
+      FUNCTION kpoint_ot_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                            selected_residual_quality_ema) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: recent_quality
+
+         quality = MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality_ema))
+         IF (quality <= EPSILON(quality)) RETURN
+
+         IF (selected_residual_quality > EPSILON(selected_residual_quality)) THEN
+            recent_quality = SQRT(MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality/ &
+                                                  MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                                      EPSILON(1.0_dp)))))
+            quality = SQRT(quality*recent_quality)
+         ELSE
+            quality = 0.5_dp*quality
+         END IF
+         quality = MAX(0.0_dp, MIN(1.0_dp, quality))
+
+      END FUNCTION kpoint_ot_selected_tail_mix_residual_quality
+
+! **************************************************************************************************
+!> \brief residual-aware active-Hessian mix from accepted Direct-density tail history
+!> \param residual_delta current OT residual
+!> \param selected_mermin_quality accepted selected-step Mermin-drop quality
+!> \param selected_residual_quality accepted selected-step residual quality cap
+!> \param selected_samples number of accepted selected Direct-density samples
+!> \return bounded active Direct-Hessian mix weight for the residual tail
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_density_selected_mix_weight(residual_delta, selected_mermin_quality, &
+                                                            selected_residual_quality, selected_samples) &
+         RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_mermin_quality, &
+                                                            selected_residual_quality
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: weight
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: maturity, mermin_weight, residual_weight
+
+         weight = 0.0_dp
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (selected_samples < ot_kp_schur_calibration_min_samples) RETURN
+         IF (selected_mermin_quality < 0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (selected_residual_quality <= EPSILON(selected_residual_quality)) RETURN
+
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - &
+                                   ot_kp_schur_calibration_min_samples + 1)
+         maturity = REAL(MAX(0, selected_samples - ot_kp_schur_calibration_min_samples + 1), KIND=dp)/ &
+                    REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+         mermin_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, selected_mermin_quality)))
+         residual_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, selected_residual_quality)))
+         weight = 0.25_dp*ot_kp_schur_projector_trace_active_max_weight* &
+                  maturity*mermin_weight*residual_weight
+         weight = MIN(0.25_dp*ot_kp_schur_projector_trace_active_max_weight, &
+                      MAX(0.0_dp, weight))
+
+      END FUNCTION kpoint_ot_direct_density_selected_mix_weight
 
 ! **************************************************************************************************
 !> \brief whether the dense metric-response scale may bridge a residual-tail fallback
