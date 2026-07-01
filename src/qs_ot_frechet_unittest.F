@@ -224,6 +224,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density-descent tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_probe_drop( &
       "complex projector density full-Direct probe drop", 5.0E-14_dp, nfail)
+   CALL check_projector_density_selected_tail_mix( &
+      "complex projector density selected tail mix", 5.0E-14_dp, nfail)
    CALL check_projector_dense_metric_tail_bridge( &
       "complex projector dense metric tail bridge", 5.0E-14_dp, nfail)
    CALL check_projector_residual_gauge_floor( &
@@ -7433,12 +7435,12 @@ CONTAINS
           soft_metric_norm >= soft_euclid_norm .OR. indef_signed_norm >= 0.0_dp .OR. &
           indef_abs_norm <= ABS(indef_signed_norm)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
             "failed with err/scale/curv/drop/legacy/rnorm/snorm/sdrop/isgn/iabs", err, trust_scale, &
             curvature_scale, metric_drop, legacy_drop, norm_rotation, solved_metric_norm, &
             solved_metric_drop, indef_signed_norm, indef_abs_norm
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
             "OK with err/scale/curv/drop/legacy/rnorm/snorm/sdrop/isgn/iabs", err, trust_scale, &
             curvature_scale, metric_drop, legacy_drop, norm_rotation, solved_metric_norm, &
             solved_metric_drop, indef_signed_norm, indef_abs_norm
@@ -8608,6 +8610,61 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_full_direct_probe_drop
+
+! **************************************************************************************************
+!> \brief Check that selected Direct-density history only gives a tiny non-promoting tail mix.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_selected_tail_mix(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: early_expected, early_weight, err, good_mix_quality, good_strict_quality, &
+         mature_weight, strict_zero_quality, tail_veto, weak_quality, young_history, zero_mix_quality
+
+      strict_zero_quality = dense_selected_tail_residual_quality(0.0_dp, 0.1188258236_dp)
+      zero_mix_quality = dense_selected_tail_mix_residual_quality(0.0_dp, 0.1188258236_dp)
+      good_strict_quality = dense_selected_tail_residual_quality(0.25_dp, 0.25_dp)
+      good_mix_quality = dense_selected_tail_mix_residual_quality(0.25_dp, 0.25_dp)
+      tail_veto = dense_direct_density_selected_mix_weight(2.0E-4_dp, 0.0267028466_dp, &
+                                                           zero_mix_quality, 4)
+      young_history = dense_direct_density_selected_mix_weight(2.0E-5_dp, 0.0267028466_dp, &
+                                                               zero_mix_quality, 3)
+      weak_quality = dense_direct_density_selected_mix_weight(2.0E-5_dp, 0.024_dp, &
+                                                              zero_mix_quality, 4)
+      early_weight = dense_direct_density_selected_mix_weight(2.0E-5_dp, 0.0267028466_dp, &
+                                                              zero_mix_quality, 4)
+      early_expected = 0.25_dp*0.95_dp*(1.0_dp/13.0_dp)* &
+                       SQRT(0.0267028466_dp)*SQRT(zero_mix_quality)
+      mature_weight = dense_direct_density_selected_mix_weight(2.0E-5_dp, 1.0_dp, 1.0_dp, 20)
+
+      err = ABS(strict_zero_quality)
+      err = MAX(err, ABS(zero_mix_quality - 0.0594129118_dp))
+      err = MAX(err, ABS(good_strict_quality - 0.25_dp))
+      err = MAX(err, ABS(good_mix_quality - 0.5_dp))
+      err = MAX(err, ABS(tail_veto))
+      err = MAX(err, ABS(young_history))
+      err = MAX(err, ABS(weak_quality))
+      err = MAX(err, ABS(early_weight - early_expected))
+      err = MAX(err, ABS(mature_weight - 0.2375_dp))
+
+      IF (err > tol .OR. early_weight <= 0.0_dp .OR. early_weight >= 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed err/strict0/mix0/strictg/mixg/tail/young/weak/early/expected/mature", &
+            err, strict_zero_quality, zero_mix_quality, good_strict_quality, good_mix_quality, &
+            tail_veto, young_history, weak_quality, early_weight, early_expected, mature_weight
+      ELSE
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK err/strict0/mix0/strictg/mixg/tail/young/weak/early/expected/mature", &
+            err, strict_zero_quality, zero_mix_quality, good_strict_quality, good_mix_quality, &
+            tail_veto, young_history, weak_quality, early_weight, early_expected, mature_weight
+      END IF
+
+   END SUBROUTINE check_projector_density_selected_tail_mix
 
 ! **************************************************************************************************
 !> \brief Check the residual-tail dense metric-response bridge gate.
@@ -11122,6 +11179,84 @@ CONTAINS
       probe_drop = shadow_expected_drop
 
    END FUNCTION dense_density_full_direct_probe_drop
+
+! **************************************************************************************************
+!> \brief Dense mirror of the strict selected-step residual tail cap.
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_selected_tail_residual_quality(selected_residual_quality, &
+                                                 selected_residual_quality_ema) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      REAL(KIND=dp)                                      :: quality
+
+      quality = MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality_ema))
+      quality = quality*SQRT(MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality/2.5E-1_dp)))
+
+   END FUNCTION dense_selected_tail_residual_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of the EMA-stabilized selected residual tail mix cap.
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                     selected_residual_quality_ema) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: recent_quality
+
+      quality = MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality_ema))
+      IF (quality <= EPSILON(quality)) RETURN
+
+      IF (selected_residual_quality > EPSILON(selected_residual_quality)) THEN
+         recent_quality = SQRT(MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality/2.5E-1_dp)))
+         quality = SQRT(quality*recent_quality)
+      ELSE
+         quality = 0.5_dp*quality
+      END IF
+      quality = MAX(0.0_dp, MIN(1.0_dp, quality))
+
+   END FUNCTION dense_selected_tail_mix_residual_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of selected Direct-density active-Hessian tail mix weight.
+!> \param residual_delta ...
+!> \param selected_mermin_quality ...
+!> \param selected_residual_quality ...
+!> \param selected_samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_density_selected_mix_weight(residual_delta, selected_mermin_quality, &
+                                                     selected_residual_quality, selected_samples) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_mermin_quality, &
+                                                            selected_residual_quality
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: weight
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: maturity, mermin_weight, residual_weight
+
+      weight = 0.0_dp
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (selected_samples < 4) RETURN
+      IF (selected_mermin_quality < 2.5E-2_dp) RETURN
+      IF (selected_residual_quality <= EPSILON(selected_residual_quality)) RETURN
+
+      maturity_samples = 13
+      maturity = REAL(MAX(0, selected_samples - 4 + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+      mermin_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, selected_mermin_quality)))
+      residual_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, selected_residual_quality)))
+      weight = 0.25_dp*0.95_dp*maturity*mermin_weight*residual_weight
+      weight = MIN(0.25_dp*0.95_dp, MAX(0.0_dp, weight))
+
+   END FUNCTION dense_direct_density_selected_mix_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the residual-tail dense metric-response bridge gate.
