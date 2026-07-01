@@ -7921,10 +7921,11 @@ CONTAINS
                                                             min_quality = 0.10_dp
 
       REAL(KIND=dp) :: capped_floor_quality, early_bad_quality, early_bootstrap_quality, &
-         early_floor_quality, early_good_quality, err, mature_bad_quality, &
-         mature_bootstrap_quality, mature_floor_quality, no_samples_bootstrap_quality, &
-         no_samples_floor_quality, no_samples_quality, probe_early_quality, probe_mature_quality, &
-         recent_bootstrap_quality, stale_bootstrap_quality
+         early_capped_bootstrap_quality, early_floor_quality, early_good_quality, err, &
+         mature_bad_quality, mature_bootstrap_quality, mature_floor_quality, &
+         no_samples_bootstrap_quality, no_samples_floor_quality, no_samples_quality, &
+         probe_early_quality, probe_mature_quality, recent_bootstrap_quality, &
+         stale_bootstrap_quality
 
       no_samples_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
                                                                  0.05_dp, 3, 4, 8, &
@@ -7959,6 +7960,9 @@ CONTAINS
       recent_bootstrap_quality = dense_floor_bootstrap_history_quality(max_quality, &
                                                                        0.171683247_dp, 0.440422594_dp, 79, 8, &
                                                                        min_quality, max_quality)
+      early_capped_bootstrap_quality = dense_floor_bootstrap_history_quality(0.745910488_dp, &
+                                                                             0.151939554_dp, 0.431667199_dp, 3, &
+                                                                             1, min_quality, max_quality)
       mature_bootstrap_quality = dense_floor_bootstrap_history_quality(max_quality, &
                                                                        0.0309592052_dp, 0.0805830466_dp, 85, 8, &
                                                                        min_quality, max_quality)
@@ -7979,6 +7983,8 @@ CONTAINS
       err = MAX(err, ABS(no_samples_bootstrap_quality - max_quality))
       err = MAX(err, ABS(early_bootstrap_quality - SQRT(0.154524141_dp*max_quality)))
       err = MAX(err, ABS(recent_bootstrap_quality - SQRT(0.171683247_dp*0.440422594_dp)))
+      err = MAX(err, ABS(early_capped_bootstrap_quality - &
+                         SQRT(0.151939554_dp*0.431667199_dp)))
       err = MAX(err, ABS(mature_bootstrap_quality - &
                          MAX(min_quality, SQRT(0.0309592052_dp*min_quality))))
       err = MAX(err, ABS(stale_bootstrap_quality - max_quality))
@@ -7989,24 +7995,27 @@ CONTAINS
           early_floor_quality <= mature_floor_quality .OR. mature_floor_quality >= min_quality .OR. &
           capped_floor_quality >= max_quality .OR. &
           early_bootstrap_quality >= max_quality .OR. recent_bootstrap_quality >= early_bootstrap_quality .OR. &
+          early_capped_bootstrap_quality >= recent_bootstrap_quality .OR. &
           mature_bootstrap_quality >= recent_bootstrap_quality .OR. &
           stale_bootstrap_quality <= mature_bootstrap_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,16(1X,ES12.5))') TRIM(label), &
-            "failed err/no/early/mature/good/probe/mprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootm/stale", &
+         WRITE (*, '(A,1X,A,17(1X,ES12.5))') TRIM(label), &
+            "failed err/no/early/mature/good/probe/mprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootecap/bootm/stale", &
             err, no_samples_quality, &
             early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
             probe_mature_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality, &
             capped_floor_quality, no_samples_bootstrap_quality, early_bootstrap_quality, &
-            recent_bootstrap_quality, mature_bootstrap_quality, stale_bootstrap_quality
+            recent_bootstrap_quality, early_capped_bootstrap_quality, mature_bootstrap_quality, &
+            stale_bootstrap_quality
       ELSE
-         WRITE (*, '(A,1X,A,16(1X,ES12.5))') TRIM(label), &
-            "OK err/no/early/mature/good/probe/mprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootm/stale", &
+         WRITE (*, '(A,1X,A,17(1X,ES12.5))') TRIM(label), &
+            "OK err/no/early/mature/good/probe/mprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootecap/bootm/stale", &
             err, no_samples_quality, &
             early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
             probe_mature_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality, &
             capped_floor_quality, no_samples_bootstrap_quality, early_bootstrap_quality, &
-            recent_bootstrap_quality, mature_bootstrap_quality, stale_bootstrap_quality
+            recent_bootstrap_quality, early_capped_bootstrap_quality, mature_bootstrap_quality, &
+            stale_bootstrap_quality
       END IF
 
    END SUBROUTINE check_projector_direct_selected_history_quality

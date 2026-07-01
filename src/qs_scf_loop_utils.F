@@ -12874,6 +12874,14 @@ CONTAINS
                                      ot_kp_schur_projector_response_quality_min_ratio, &
                                      0.5_dp*dense_quality_for_selection))
                            END IF
+                           IF (density_full_global_bootstrap_ready .AND. &
+                               local_ot_env(1)%schur_projector_density_full_global_quality_samples > 0) &
+                              density_full_global_quality_for_selection = &
+                              kpoint_ot_floor_bootstrap_history_quality( &
+                              density_full_global_quality_for_selection, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                              local_ot_env(1)%schur_projector_density_full_global_quality_samples, 1)
                            density_full_global_history_scale = &
                               kpoint_ot_direct_history_step_scale( &
                               density_full_global_quality_for_selection, &
@@ -14392,7 +14400,10 @@ CONTAINS
                      .NOT. density_descent_candidate_selected .AND. &
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
-                     1.0_dp, 1.0_dp, 0, dense_residual_quality)))) THEN
+                     local_ot_env(1)%schur_projector_density_full_global_quality, &
+                     local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                     local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                     dense_residual_quality)))) THEN
                   attempt_failed = .FALSE.
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
@@ -14920,7 +14931,10 @@ CONTAINS
                      .NOT. density_descent_candidate_selected .AND. &
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
-                     1.0_dp, 1.0_dp, 0, dense_residual_quality)))) THEN
+                     local_ot_env(1)%schur_projector_density_full_global_quality, &
+                     local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                     local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                     dense_residual_quality)))) THEN
                   attempt_failed = .FALSE.
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
