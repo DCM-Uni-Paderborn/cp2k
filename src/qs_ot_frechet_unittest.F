@@ -320,6 +320,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_offblock_modal_cap( &
+      "history-safe occupation-projector cluster offblock modal cap", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_pair_response( &
       "history-safe occupation-projector cluster-pair response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_modal_occ_shape( &
@@ -4002,7 +4004,7 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 3
-      REAL(KIND=dp), PARAMETER                           :: gap = 8.0E-5_dp, gauge_gap = 3.0E-5_dp
+      REAL(KIND=dp), PARAMETER                           :: gap = 6.0E-5_dp, gauge_gap = 3.0E-5_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_mat
       REAL(KIND=dp)                                      :: capped_coeff, err, max_cap, raw_coeff, &
@@ -4155,7 +4157,7 @@ CONTAINS
    END SUBROUTINE check_complex_occ_projector_gauge_plateau
 
 ! **************************************************************************************************
-!> \brief Keep the gauge plateau local, but cap non-Fermi divided-difference slopes.
+!> \brief Keep the gauge plateau local, but thermally cap non-Fermi divided-difference slopes.
 !> \param label ...
 !> \param tol ...
 !> \param nfail ...
@@ -4183,7 +4185,8 @@ CONTAINS
 
       occ_curv(:) = [0.031_dp, 0.027_dp, 0.004_dp]
       occ_noisy(:) = [0.75_dp, 0.21_dp, 0.12_dp]
-      cap = 2.0_dp*MAX(occ_curv(1), occ_curv(2))
+      cap = dense_projector_pair_slope_cap(-gap, gauge_gap, occ_curv(1), occ_curv(2), &
+                                           MAXVAL(MAX(0.0_dp, occ_curv(:))))
 
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_raw)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_noisy, docc_plateau, &
@@ -14300,7 +14303,8 @@ CONTAINS
             coeff = 0.0_dp
          END IF
          coeff = MIN(0.0_dp, coeff)
-         slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(3)))
+         slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(3), &
+                                                     MAXVAL(MAX(0.0_dp, occ_curv(:))))
          coeff = MAX(coeff, -slope_cap)
          modal_col(a) = coeff*modal_col(a)
       END DO
@@ -14330,6 +14334,111 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_cluster_offblock_response
+
+! **************************************************************************************************
+!> \brief Check that near thermal offblocks use the shared modal occupation slope cap.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_offblock_modal_cap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(2)                     :: cluster_col, expected_col, expected_modal_col, &
+                                                            legacy_col, legacy_modal_col
+      COMPLEX(KIND=dp), DIMENSION(2, 2)                  :: cluster_evec, cluster_work
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
+      INTEGER                                            :: a, b, i, iact
+      REAL(KIND=dp)                                      :: cap_near, cap_old, cap_ratio, coeff, &
+                                                            component_weight, denom, err, herm_err, raw_gap, &
+                                                            slope_cap
+      REAL(KIND=dp), DIMENSION(2)                        :: cluster_eval, modal_curv, modal_energy, &
+                                                            modal_occ
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
+
+      evals(:) = [-0.010000_dp, -0.009990_dp, -0.009910_dp, 0.42_dp]
+      occ_slope(:) = [1.02_dp, 1.01_dp, 0.18_dp, 0.04_dp]
+      occ_curv(:) = [0.038_dp, 1.0E-5_dp, 1.0E-5_dp, 0.004_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 1) = CMPLX(0.12_dp, 0.0_dp, KIND=dp)
+      work(2, 2) = CMPLX(-0.08_dp, 0.0_dp, KIND=dp)
+      work(3, 3) = CMPLX(0.03_dp, 0.0_dp, KIND=dp)
+      work(1, 2) = CMPLX(2.0E-4_dp, -1.0E-4_dp, KIND=dp)
+      work(1, 3) = CMPLX(0.21_dp, -0.06_dp, KIND=dp)
+      work(2, 3) = CMPLX(0.03_dp, 0.01_dp, KIND=dp)
+      DO i = 2, n
+         work(i, 1:i - 1) = CONJG(work(1:i - 1, i))
+      END DO
+
+      kernel(:, :) = CMPLX(9.0_dp, -3.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel)
+
+      cluster_work(:, :) = 0.5_dp*(work(1:2, 1:2) + CONJG(TRANSPOSE(work(1:2, 1:2))))
+      CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv)
+      modal_energy(:) = 0.0_dp
+      DO a = 1, 2
+         DO b = 1, 2
+            component_weight = ABS(cluster_evec(b, a))**2
+            modal_energy(a) = modal_energy(a) + component_weight*evals(b)
+         END DO
+      END DO
+      CALL dense_projector_cluster_modal_occupation(evals(1:2), occ_curv(1:2), occ_slope(1:2), &
+                                                    modal_energy, modal_occ, modal_curv)
+
+      cluster_col(:) = work(1:2, 3)
+      expected_modal_col(:) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), cluster_col)
+      legacy_modal_col(:) = expected_modal_col(:)
+      DO a = 1, 2
+         denom = modal_energy(a) - evals(3)
+         IF (ABS(denom) > SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))) THEN
+            coeff = (modal_occ(a) - occ_slope(3))/denom
+         ELSE
+            coeff = 0.0_dp
+         END IF
+         coeff = MIN(0.0_dp, coeff)
+         slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(3), &
+                                                     MAXVAL(MAX(0.0_dp, occ_curv(:))))
+         expected_modal_col(a) = MAX(coeff, -slope_cap)*expected_modal_col(a)
+         slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(3)))
+         legacy_modal_col(a) = MAX(coeff, -slope_cap)*legacy_modal_col(a)
+      END DO
+      expected_col(:) = projector_weight*MATMUL(cluster_evec, expected_modal_col)
+      legacy_col(:) = projector_weight*MATMUL(cluster_evec, legacy_modal_col)
+
+      iact = 1
+      IF (modal_curv(2) > modal_curv(1)) iact = 2
+      denom = modal_energy(iact) - evals(3)
+      cap_near = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(iact), occ_curv(3), &
+                                                MAXVAL(MAX(0.0_dp, occ_curv(:))))
+      cap_old = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(iact), occ_curv(3)))
+      cap_ratio = 0.0_dp
+      IF (cap_old > EPSILON(cap_old)) cap_ratio = cap_near/cap_old
+
+      err = MAX(ABS(kernel(1, 3) - expected_col(1)), ABS(kernel(2, 3) - expected_col(2)))
+      herm_err = MAX(ABS(kernel(3, 1) - CONJG(kernel(1, 3))), &
+                     ABS(kernel(3, 2) - CONJG(kernel(2, 3))))
+      raw_gap = MAXVAL(ABS(expected_col(:) - legacy_col(:)))
+
+      IF (err > tol .OR. herm_err > tol .OR. raw_gap < active_tol .OR. cap_ratio > 0.10_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with err/herm/rawgap/capratio", err, herm_err, raw_gap, cap_ratio
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with err/herm/rawgap/capratio", err, herm_err, raw_gap, cap_ratio
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_offblock_modal_cap
 
 ! **************************************************************************************************
 !> \brief Check that near-degenerate cluster-to-cluster blocks use a covariant divided difference.
@@ -14412,7 +14521,8 @@ CONTAINS
                coeff = 0.0_dp
             END IF
             coeff = MIN(0.0_dp, coeff)
-            slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv_a(a), modal_curv_b(b)))
+            slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv_a(a), modal_curv_b(b), &
+                                                        MAXVAL(MAX(0.0_dp, occ_curv(:))))
             coeff = MAX(coeff, -slope_cap)
             modal_block(a, b) = coeff*modal_block(a, b)
          END DO
@@ -14538,7 +14648,8 @@ CONTAINS
          END IF
          coeff_new = MIN(0.0_dp, coeff_new)
          coeff_old = MIN(0.0_dp, coeff_old)
-         slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(4)))
+         slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(4), &
+                                                     MAXVAL(MAX(0.0_dp, occ_curv(:))))
          coeff_new = MAX(coeff_new, -slope_cap)
          coeff_old = MAX(coeff_old, -slope_cap)
          response_col_new(a) = coeff_new*response_col_new(a)
@@ -14797,6 +14908,39 @@ CONTAINS
       pair_gap = gauge_gap + active_fraction*(thermal_gap - gauge_gap)
 
    END FUNCTION dense_projector_occupation_pair_gap
+
+! **************************************************************************************************
+!> \brief Production-like divided-difference slope cap for finite occupation-projector response pairs.
+!> \param denom ...
+!> \param gauge_gap ...
+!> \param occ_curv_i ...
+!> \param occ_curv_j ...
+!> \param occ_curv_max ...
+!> \param projector_window_gap ...
+!> \return slope cap with shared-slope filtering inside the thermal response window
+! **************************************************************************************************
+   FUNCTION dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv_i, occ_curv_j, occ_curv_max, &
+                                           projector_window_gap) RESULT(slope_cap)
+      REAL(KIND=dp), INTENT(IN)                          :: denom, gauge_gap, occ_curv_i, occ_curv_j, &
+                                                            occ_curv_max
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      REAL(KIND=dp)                                      :: slope_cap
+
+      REAL(KIND=dp)                                      :: local_gap
+
+      slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_i, occ_curv_j))
+      IF (slope_cap <= EPSILON(slope_cap)) RETURN
+
+      IF (PRESENT(projector_window_gap)) THEN
+         local_gap = dense_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
+                                                         occ_curv_max, projector_window_gap)
+      ELSE
+         local_gap = dense_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
+                                                         occ_curv_max)
+      END IF
+      IF (ABS(denom) <= local_gap) slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv_i, occ_curv_j))
+
+   END FUNCTION dense_projector_pair_slope_cap
 
 ! **************************************************************************************************
 !> \brief occupation-window projector weight for one dense rotation-pair fixture
@@ -15073,10 +15217,11 @@ CONTAINS
             END IF
             coeff = MIN(0.0_dp, coeff)
             IF (PRESENT(occ_curv)) THEN
-               slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
                IF (PRESENT(gauge_gap)) THEN
-                  IF (ABS(denom) <= 4.0_dp*gauge_gap) &
-                     slope_cap = MIN(slope_cap, dense_shared_occ_slope(occ_curv(i), occ_curv(j)))
+                  slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv(i), occ_curv(j), &
+                                                              MAXVAL(MAX(0.0_dp, occ_curv(:))))
+               ELSE
+                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
                END IF
                IF (slope_cap > EPSILON(slope_cap)) THEN
                   coeff = MAX(coeff, -slope_cap)
@@ -15415,7 +15560,13 @@ CONTAINS
                      offdiag_coeff = 0.0_dp
                   END IF
                   offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
-                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(j)))
+                  IF (PRESENT(projector_window_gap)) THEN
+                     slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(j), &
+                                                                occ_curv_max, projector_window_gap)
+                  ELSE
+                     slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(j), &
+                                                                occ_curv_max)
+                  END IF
                   IF (slope_cap > EPSILON(slope_cap)) THEN
                      offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
                   ELSE
@@ -15509,7 +15660,14 @@ CONTAINS
                            offdiag_coeff = 0.0_dp
                         END IF
                         offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
-                        slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), modal_curv_b(b)))
+                        IF (PRESENT(projector_window_gap)) THEN
+                           slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), &
+                                                                      modal_curv_b(b), occ_curv_max, &
+                                                                      projector_window_gap)
+                        ELSE
+                           slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), &
+                                                                      modal_curv_b(b), occ_curv_max)
+                        END IF
                         IF (slope_cap > EPSILON(slope_cap)) THEN
                            offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
                         ELSE

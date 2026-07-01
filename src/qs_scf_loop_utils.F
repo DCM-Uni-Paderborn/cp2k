@@ -2232,6 +2232,40 @@ CONTAINS
    END FUNCTION kpoint_ot_projector_occupation_pair_gap
 
 ! **************************************************************************************************
+!> \brief bounded divided-difference slope for finite occupation-projector response pairs
+!> \param denom ...
+!> \param gauge_gap ...
+!> \param occ_curv_i ...
+!> \param occ_curv_j ...
+!> \param occ_curv_max ...
+!> \param projector_window_gap ...
+!> \return slope cap preserving far projector response but filtering near thermal gauge noise
+! **************************************************************************************************
+   FUNCTION kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, occ_curv_i, occ_curv_j, occ_curv_max, &
+                                               projector_window_gap) RESULT(slope_cap)
+      REAL(KIND=dp), INTENT(IN)                          :: denom, gauge_gap, occ_curv_i, occ_curv_j, &
+                                                            occ_curv_max
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      REAL(KIND=dp)                                      :: slope_cap
+
+      REAL(KIND=dp)                                      :: local_gap
+
+      slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_i, occ_curv_j))
+      IF (slope_cap <= EPSILON(slope_cap)) RETURN
+
+      IF (PRESENT(projector_window_gap)) THEN
+         local_gap = kpoint_ot_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
+                                                             occ_curv_max, projector_window_gap)
+      ELSE
+         local_gap = kpoint_ot_projector_occupation_pair_gap(gauge_gap, occ_curv_i, occ_curv_j, &
+                                                             occ_curv_max)
+      END IF
+      IF (ABS(denom) <= local_gap) &
+         slope_cap = MIN(slope_cap, kpoint_ot_shared_occ_slope(occ_curv_i, occ_curv_j))
+
+   END FUNCTION kpoint_ot_projector_pair_slope_cap
+
+! **************************************************************************************************
 !> \brief Direct-model trace compensation for the physical Projector Schur correction
 !> \param coupled_weight ...
 !> \param direct_delta_diag_avg ...
@@ -20524,11 +20558,19 @@ CONTAINS
                END IF
                coeff = MIN(0.0_dp, coeff)
                IF (PRESENT(occ_curv_channel)) THEN
-                  slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(i), occ_curv_channel(j)))
                   IF (PRESENT(gauge_gap)) THEN
-                     IF (ABS(denom) <= 4.0_dp*gauge_gap) &
-                        slope_cap = MIN(slope_cap, &
-                                        kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(j)))
+                     IF (PRESENT(projector_window_gap)) THEN
+                        slope_cap = kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, &
+                                                                       occ_curv_channel(i), &
+                                                                       occ_curv_channel(j), &
+                                                                       occ_curv_max, projector_window_gap)
+                     ELSE
+                        slope_cap = kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, &
+                                                                       occ_curv_channel(i), &
+                                                                       occ_curv_channel(j), occ_curv_max)
+                     END IF
+                  ELSE
+                     slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv_channel(i), occ_curv_channel(j)))
                   END IF
                   IF (slope_cap > EPSILON(slope_cap)) THEN
                      coeff = MAX(coeff, -slope_cap)
@@ -20768,7 +20810,14 @@ CONTAINS
                         offdiag_coeff = 0.0_dp
                      END IF
                      offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
-                     slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv_channel(j)))
+                     IF (PRESENT(projector_window_gap)) THEN
+                        slope_cap = kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), &
+                                                                       occ_curv_channel(j), occ_curv_max, &
+                                                                       projector_window_gap)
+                     ELSE
+                        slope_cap = kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), &
+                                                                       occ_curv_channel(j), occ_curv_max)
+                     END IF
                      IF (slope_cap > EPSILON(slope_cap)) THEN
                         offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
                      ELSE
@@ -20867,7 +20916,14 @@ CONTAINS
                               offdiag_coeff = 0.0_dp
                            END IF
                            offdiag_coeff = MIN(0.0_dp, offdiag_coeff)
-                           slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), modal_curv_b(b)))
+                           IF (PRESENT(projector_window_gap)) THEN
+                              slope_cap = kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), &
+                                                                             modal_curv_b(b), occ_curv_max, &
+                                                                             projector_window_gap)
+                           ELSE
+                              slope_cap = kpoint_ot_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), &
+                                                                             modal_curv_b(b), occ_curv_max)
+                           END IF
                            IF (slope_cap > EPSILON(slope_cap)) THEN
                               offdiag_coeff = MAX(offdiag_coeff, -slope_cap)
                            ELSE
