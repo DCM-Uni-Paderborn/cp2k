@@ -1865,24 +1865,30 @@ CONTAINS
 !> \param active_weight ...
 !> \param occ_gap_weight ...
 !> \param density_weight ...
+!> \param density_response_weight optional fixed-N density-response character
 !> \return ...
 ! **************************************************************************************************
    FUNCTION kpoint_ot_physical_pair_projector_weight(projector_weight, active_weight, occ_gap_weight, &
-                                                     density_weight) RESULT(pair_weight)
+                                                     density_weight, density_response_weight) RESULT(pair_weight)
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight, active_weight, &
                                                             occ_gap_weight, density_weight
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: density_response_weight
       REAL(KIND=dp)                                      :: pair_weight
 
       REAL(KIND=dp)                                      :: gap_fraction, qualified_response_weight, &
-                                                            response_weight
+                                                            response_character, response_weight
 
       pair_weight = MAX(0.0_dp, active_weight)
       IF (projector_weight <= 0.0_dp) RETURN
 
       gap_fraction = MIN(1.0_dp, MAX(0.0_dp, occ_gap_weight))
+      response_character = gap_fraction
+      IF (PRESENT(density_response_weight)) &
+         response_character = MAX(response_character, &
+                                  MIN(1.0_dp, MAX(0.0_dp, density_response_weight)))
       response_weight = MIN(1.0_dp, MAX(0.0_dp, density_weight))
       qualified_response_weight = SQRT(SQRT(response_weight))
-      pair_weight = MAX(pair_weight, projector_weight*gap_fraction*qualified_response_weight)
+      pair_weight = MAX(pair_weight, projector_weight*response_character*qualified_response_weight)
       pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
 
    END FUNCTION kpoint_ot_physical_pair_projector_weight
@@ -6902,9 +6908,12 @@ CONTAINS
       REAL(KIND=dp) :: projector_physical_trust_scale, projector_physical_unit_abs_step, &
          projector_physical_unit_weighted_step, projector_plateau_gap_quality_for_selection, &
          projector_response_direction_scale, projector_response_expected_drop, &
+         projector_response_character_abs_avg, projector_response_character_fraction, &
+         projector_response_character_max, &
          projector_response_gap_avg, projector_response_gap_max, projector_response_gap_norm, &
          projector_response_gdot_energy, projector_response_gdot_rotation, &
-         projector_response_gdotp, projector_response_metric_norm_energy, &
+         projector_response_gdotp, projector_response_metric_norm_energy, projector_response_signal, &
+         projector_response_signal_max, &
          projector_response_metric_norm_rotation, projector_response_metric_normp, &
          projector_response_model_calibrated_drop
       REAL(KIND=dp) :: projector_response_model_drop, projector_response_model_gap, &
@@ -6974,7 +6983,8 @@ CONTAINS
          projector_physical_sol, projector_physical_z_e, projector_response_rx_e, &
          projector_response_sol, projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, &
          rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, var_occ_gap_weight, &
-         var_projector_active_weight, var_projector_weight, z_density_floor_audit_trial, &
+         var_projector_active_weight, var_projector_response_weight, var_projector_weight, &
+         z_density_floor_audit_trial, &
          z_density_full_audit_trial, z_density_full_global_trial, z_density_full_trial, &
          z_density_plateau_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_density_trial, z_e, z_exact_physical_trial, &
@@ -7181,7 +7191,7 @@ CONTAINS
                    projector_offdiag_sol(nrot), projector_inactive_offdiag_sol(nrot), &
                    projector_response_sol(nrot), split_sol(nrot), &
                    var_occ_gap_weight(nrot), var_projector_active_weight(nrot), &
-                   var_projector_weight(nrot))
+                   var_projector_response_weight(nrot), var_projector_weight(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot), projector_physical_direct_active_lcomp(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
@@ -7275,6 +7285,7 @@ CONTAINS
          projector_response_rx_e(:) = 0.0_dp
          projector_response_z_e(:) = 0.0_dp
          var_projector_active_weight(:) = 0.0_dp
+         var_projector_response_weight(:) = 0.0_dp
          var_occ_gap_weight(:) = 0.0_dp
          var_projector_weight(:) = 0.0_dp
          grad_rot(:) = 0.0_dp
@@ -8518,6 +8529,28 @@ CONTAINS
             CALL project_kpoint_ot_schur_response(response_density_full_global(:, s), occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
          END DO
+         projector_response_signal_max = 0.0_dp
+         var_projector_response_weight(:) = 0.0_dp
+         DO r = 1, nrot
+            projector_response_signal = 0.0_dp
+            DO ie = 1, ne
+               projector_response_signal = projector_response_signal + &
+                                           MAX(0.0_dp, occ_curv(ie))*response_density_full_global(ie, r)**2
+            END DO
+            IF (projector_response_signal > EPSILON(projector_response_signal)) THEN
+               var_projector_response_weight(r) = SQRT(projector_response_signal)
+               projector_response_signal_max = MAX(projector_response_signal_max, &
+                                                   var_projector_response_weight(r))
+            END IF
+         END DO
+         IF (projector_response_signal_max > EPSILON(projector_response_signal_max)) THEN
+            var_projector_response_weight(:) = &
+               MIN(1.0_dp, MAX(0.0_dp, var_projector_response_weight(:)/projector_response_signal_max))
+         END IF
+         projector_response_character_abs_avg = SUM(var_projector_response_weight(:))
+         projector_response_character_max = MAXVAL(var_projector_response_weight(:))
+         projector_response_character_fraction = &
+            REAL(COUNT(var_projector_response_weight(:) > EPSILON(1.0_dp)), KIND=dp)
          projector_density_full_global_abs_avg = SUM(ABS(response_density_full_global(:, :)))
          projector_physical_density_active_abs_avg = SUM(ABS(response_density_physical(:, :)))
          projector_physical_density_gap_abs_avg = &
@@ -8531,6 +8564,9 @@ CONTAINS
          CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_active_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_gap_abs_avg)
+         CALL para_env_inter_kp%sum(projector_response_character_abs_avg)
+         CALL para_env_inter_kp%sum(projector_response_character_fraction)
+         CALL para_env_inter_kp%max(projector_response_character_max)
          CALL para_env_inter_kp%max(projector_physical_density_gap_abs_max)
          projector_density_floor_audit_abs_avg = projector_density_floor_audit_abs_avg/ &
                                                  REAL(MAX(1, ne*nrot), KIND=dp)
@@ -8546,6 +8582,10 @@ CONTAINS
                                                      REAL(MAX(1, ne*nrot), KIND=dp)
          projector_physical_density_gap_abs_avg = projector_physical_density_gap_abs_avg/ &
                                                   REAL(MAX(1, ne*nrot), KIND=dp)
+         projector_response_character_abs_avg = projector_response_character_abs_avg/ &
+                                                REAL(MAX(1, nrot), KIND=dp)
+         projector_response_character_fraction = projector_response_character_fraction/ &
+                                                 REAL(MAX(1, nrot), KIND=dp)
          IF (projector_physical_density_full_abs_avg > &
              EPSILON(projector_physical_density_full_abs_avg)) &
             projector_physical_density_active_fraction = &
@@ -8818,9 +8858,9 @@ CONTAINS
             END IF
          END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,10(1X,ES16.8),2(1X,I8))') &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,13(1X,ES16.8),2(1X,I8))') &
             " OT Schur projector phys direct density mix group weight boot mature qhist tqhist absavg "// &
-            "selw selq selrq selmixrq samples sels:", &
+            "selw selq selrq selmixrq rchavg rchmax rchfrac samples sels:", &
             target_group, projector_physical_direct_floor_density_weight, &
             projector_physical_direct_floor_density_bootstrap_weight, &
             projector_physical_direct_floor_density_maturity, &
@@ -8831,6 +8871,9 @@ CONTAINS
             projector_physical_direct_density_selected_mermin_quality, &
             projector_physical_direct_density_recent_residual_quality, &
             projector_physical_direct_density_mix_residual_quality, &
+            projector_response_character_abs_avg, &
+            projector_response_character_max, &
+            projector_response_character_fraction, &
             local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
             local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples
          IF (exact_density_direct_response_ready) THEN
@@ -8867,12 +8910,14 @@ CONTAINS
                   kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
                                                            var_projector_active_weight(r), &
                                                            var_occ_gap_weight(r), &
-                                                           projector_physical_direct_floor_density_weight)
+                                                           projector_physical_direct_floor_density_weight, &
+                                                           var_projector_response_weight(r))
                projector_physical_active_weight_s = &
                   kpoint_ot_physical_pair_projector_weight(var_projector_weight(s), &
                                                            var_projector_active_weight(s), &
                                                            var_occ_gap_weight(s), &
-                                                           projector_physical_direct_floor_density_weight)
+                                                           projector_physical_direct_floor_density_weight, &
+                                                           var_projector_response_weight(s))
                projector_offdiag_active_weight = 0.0_dp
                IF (var_projector_weight(r) + var_projector_weight(s) > &
                    EPSILON(projector_offdiag_active_weight)) THEN
@@ -8919,12 +8964,14 @@ CONTAINS
                   kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
                                                            var_projector_active_weight(r), &
                                                            var_occ_gap_weight(r), &
-                                                           projector_physical_direct_floor_density_weight)
+                                                           projector_physical_direct_floor_density_weight, &
+                                                           var_projector_response_weight(r))
                projector_physical_active_weight_s = &
                   kpoint_ot_physical_pair_projector_weight(var_projector_weight(s), &
                                                            var_projector_active_weight(s), &
                                                            var_occ_gap_weight(s), &
-                                                           projector_physical_direct_floor_density_weight)
+                                                           projector_physical_direct_floor_density_weight, &
+                                                           var_projector_response_weight(s))
                projector_physical_covariant_delta = &
                   -0.5_dp*(var_projector_weight(r) + var_projector_weight(s))*rot_hessian(r, s)
                projector_physical_active_covariant_delta = &
@@ -8973,7 +9020,8 @@ CONTAINS
                kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
                                                         var_projector_active_weight(r), &
                                                         var_occ_gap_weight(r), &
-                                                        projector_physical_direct_floor_density_weight)
+                                                        projector_physical_direct_floor_density_weight, &
+                                                        var_projector_response_weight(r))
             projector_physical_covariant_delta = -var_projector_weight(r)*rot_hessian(r, r)
             projector_physical_active_covariant_delta = -projector_physical_active_weight_r*rot_hessian(r, r)
             projector_physical_residual_delta = rot_hessian_projector_physical(r, r) - rot_hessian(r, r) - &
@@ -8997,12 +9045,14 @@ CONTAINS
                   kpoint_ot_physical_pair_projector_weight(var_projector_weight(r), &
                                                            var_projector_active_weight(r), &
                                                            var_occ_gap_weight(r), &
-                                                           projector_physical_direct_floor_density_weight)
+                                                           projector_physical_direct_floor_density_weight, &
+                                                           var_projector_response_weight(r))
                projector_physical_active_weight_s = &
                   kpoint_ot_physical_pair_projector_weight(var_projector_weight(s), &
                                                            var_projector_active_weight(s), &
                                                            var_occ_gap_weight(s), &
-                                                           projector_physical_direct_floor_density_weight)
+                                                           projector_physical_direct_floor_density_weight, &
+                                                           var_projector_response_weight(s))
                projector_physical_covariant_delta = -0.5_dp*(var_projector_weight(r) + &
                                                              var_projector_weight(s))*rot_hessian(r, s)
                projector_physical_active_covariant_delta = &
@@ -16190,6 +16240,10 @@ CONTAINS
                      projector_physical_density_full_abs_avg, projector_physical_density_active_abs_avg, &
                      projector_physical_density_gap_abs_avg, projector_physical_density_gap_abs_max, &
                      projector_physical_density_active_fraction
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,ES16.8))') &
+                     " OT Schur projector physical response character avg max frac:", &
+                     projector_response_character_abs_avg, projector_response_character_max, &
+                     projector_response_character_fraction
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1(1X,L1),4(1X,ES16.8))') &
                      " OT Schur projector physical density floor-audit ready abs exact_abs gap lowfrac:", &
                      exact_density_floor_audit_ready, projector_density_floor_audit_abs_avg, &
