@@ -286,6 +286,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector fd fixed-N trace", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_thermal_cluster_gap( &
       "history-safe occupation-projector thermal cluster gap", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_thermal_no_fd_offblock( &
+      "history-safe occupation-projector thermal no-fd offblock", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_diagonal_cluster_fd( &
       "history-safe occupation-projector diagonal cluster finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_degenerate_physical_split( &
@@ -12713,6 +12715,78 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_thermal_cluster_gap
 
 ! **************************************************************************************************
+!> \brief Check that the no-FD projector derivative still uses the thermal cluster window.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_thermal_no_fd_offblock(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, &
+         gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_expected, &
+                                                            docc_raw, docc_safe
+      INTEGER                                            :: i
+      LOGICAL                                            :: fd_used
+      REAL(KIND=dp)                                      :: active, err, gap, occ_tol, pair_gap, &
+                                                            raw_gap
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_raw, &
+                                                            occ_scale, occ_window
+
+      evals(:) = [-0.010000_dp, -0.004000_dp, 0.31_dp]
+      occ_scale(:) = [1.20_dp, 0.20_dp, 0.06_dp]
+      occ_curv(:) = [10.0_dp, 9.0_dp, 0.004_dp]
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 3) = CMPLX(0.13_dp, -0.08_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(-0.07_dp, 0.05_dp, KIND=dp)
+      dchc(3, 1) = CONJG(dchc(1, 3))
+      dchc(3, 2) = CONJG(dchc(2, 3))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap, fd_used, &
+                                                           projector_window_gap)
+
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_raw)
+      occ_window(:) = occ_raw(:)
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_window, &
+                                                    projector_window_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_window, docc_expected, &
+                                                       occ_curv, gauge_gap)
+      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_raw, docc_raw, occ_curv, gauge_gap)
+      docc_expected(:, :) = projector_weight*docc_expected(:, :)
+      docc_raw(:, :) = projector_weight*docc_raw(:, :)
+
+      err = MAXVAL(ABS(docc_safe(:, :) - docc_expected(:, :)))
+      raw_gap = MAXVAL(ABS(docc_expected(:, :) - docc_raw(:, :)))
+      active = MAXVAL(ABS(docc_expected(:, :)))
+      gap = evals(2) - evals(1)
+      pair_gap = dense_projector_occupation_pair_gap(gauge_gap, occ_curv(1), occ_curv(2), &
+                                                     MAXVAL(occ_curv(:)), projector_window_gap)
+
+      IF (fd_used .OR. gap > pair_gap .OR. err > tol .OR. raw_gap < active_tol .OR. &
+          active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5),1(1X,L1))') TRIM(label), &
+            "failed with err/rawgap/active/gap/pairgap/fd", err, raw_gap, active, gap, pair_gap, fd_used
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5),1(1X,L1))') TRIM(label), &
+            "OK with err/rawgap/active/gap/pairgap/fd", err, raw_gap, active, gap, pair_gap, fd_used
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_thermal_no_fd_offblock
+
+! **************************************************************************************************
 !> \brief Check that diagonal splitting inside a near-degenerate cluster uses the cluster path.
 !> \param label ...
 !> \param tol ...
@@ -14608,7 +14682,8 @@ CONTAINS
                   use_projector_fd = .TRUE.
             END DO
          END DO
-         CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_work)
+         CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, &
+                                                       occ_work, projector_window_gap)
          IF (use_projector_fd) THEN
             IF (PRESENT(fd_cluster_used)) fd_cluster_used = .TRUE.
             projector_fd_step = 1.0E-7_dp

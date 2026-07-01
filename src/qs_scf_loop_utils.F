@@ -20244,7 +20244,8 @@ CONTAINS
          IF (PRESENT(occ_curv_channel)) occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv_channel(:)))
          CALL monotone_occupation_slopes(occ_scale, occ_tol, occ_slope)
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
-            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, occ_slope)
+            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, &
+                                                    occ_slope, projector_window_gap)
          use_projector_fd = .FALSE.
          IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
             work_norm = MAXVAL(ABS(work(:, :)))
@@ -20305,6 +20306,9 @@ CONTAINS
             END IF
          END IF
          diag_response_shift = 0.0_dp
+         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
+            CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, &
+                                                    occ_slope, projector_window_gap)
          IF (PRESENT(occ_curv_channel)) THEN
             occ_curv_sum = SUM(MAX(0.0_dp, occ_curv_channel(:)))
             IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
