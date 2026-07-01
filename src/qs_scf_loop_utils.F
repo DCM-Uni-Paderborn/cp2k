@@ -157,6 +157,7 @@ MODULE qs_scf_loop_utils
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_calibration_min_samples = 4
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_constrained_min_samples = 6
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_projector_response_min_samples = 8
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_projector_spectral_probe_max_failures = 2
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_calibration_floor = 2.5E-1_dp, &
                                         ot_kp_schur_calibration_max_scale = 1.2_dp, &
                                         ot_kp_schur_calibrated_quality_max_ratio = 2.5_dp, &
@@ -5508,9 +5509,10 @@ CONTAINS
             local_ot_env(1)%schur_projector_physical_quality >= &
             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
          ! Let robust spectral shadow history promote the candidate early,
-         ! but only after one accepted spectral step has anchored the scale.
+         ! but do not make one positive, overpredicted probe a permanent veto.
          local_ot_env(1)%schur_projector_spectral_candidate_enabled = &
-            local_ot_env(1)%schur_projector_spectral_selected_failure_samples == 0 .AND. &
+            local_ot_env(1)%schur_projector_spectral_selected_failure_samples < &
+            ot_kp_schur_projector_spectral_probe_max_failures .AND. &
             local_ot_env(1)%schur_projector_spectral_dot_ema > 0.0_dp .AND. &
             local_ot_env(1)%schur_projector_spectral_norm_ema > 0.0_dp .AND. &
             ((local_ot_env(1)%schur_projector_spectral_selected_quality_samples >= &
@@ -12305,8 +12307,11 @@ CONTAINS
                               .AND. &
                               local_ot_env(1)%schur_projector_spectral_selected_quality_samples < &
                               ot_kp_schur_projector_response_min_samples .AND. &
-                              local_ot_env(1)%schur_projector_spectral_selected_failure_samples == &
-                              0 .AND. &
+                              local_ot_env(1)%schur_projector_spectral_selected_failure_samples < &
+                              ot_kp_schur_projector_spectral_probe_max_failures .AND. &
+                              (local_ot_env(1)%schur_projector_spectral_selected_failure_samples == 0 .OR. &
+                               local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
+                               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .AND. &
                               local_ot_env(1)%schur_projector_spectral_quality_samples >= &
                               ot_kp_schur_projector_response_min_samples .AND. &
                               projector_physical_direct_spectral_shadow_quality_for_probe >= &
