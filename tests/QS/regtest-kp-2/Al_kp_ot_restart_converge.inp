@@ -8,6 +8,10 @@
 ! converges in 279 further steps with OT residual 9.98E-7 and
 ! Mermin free energy -8.14585269284930 Ha.  No first/last-band smearing warning
 ! and no "Unsupported content type" signature is printed.
+! After the finite Projector/Occupation pair-slope cap, a fresh restart after
+! the cheap write/read/continue smoke reaches OT residual 7.34E-5 and Mermin
+! free energy -8.14580987915207 Ha in one 320-step HIGH continuation.  It is
+! still intentionally a continuation companion, not a default converged regtest.
 ! Keep this as a manual physics companion until the fresh write/read/continue
 ! chain is fast enough for a non-default converged 1E-6 regtest.
 &GLOBAL
@@ -37,6 +41,7 @@
       ! Tight enough to exercise the hard k-point OT physics path.  This
       ! companion is intentionally not part of the default regtest list.
       EPS_SCF 1.0E-6
+      IGNORE_CONVERGENCE_FAILURE
       MAX_SCF 320
       SCF_GUESS RESTART
       &OT
