@@ -188,6 +188,8 @@ PROGRAM qs_ot_frechet_unittest
                                                    5.0E-13_dp, nfail)
    CALL check_projector_density_global_fixed_n_projection( &
       "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
+   CALL check_projector_density_exact_source_projection( &
+      "complex projector density exact source projection", 5.0E-12_dp, nfail)
    CALL check_projector_density_floor_global_projection( &
       "complex projector density floor global projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_floor_response( &
@@ -7499,6 +7501,103 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_global_fixed_n_projection
+
+! **************************************************************************************************
+!> \brief Check that density sources entering the exact response are fixed-N/tether projected first.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_exact_source_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6, nrot = 2
+
+      INTEGER                                            :: info, r
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      LOGICAL                                            :: projected
+      REAL(KIND=dp)                                      :: err, exact_gap, exact_residual, raw_occ_residual, &
+                                                            raw_tether_residual, source_gap, source_residual
+      REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h_projected, h_raw
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_projected, b_raw, exact_projected, exact_raw, &
+                                                            projected_density, raw_density, zero_tether
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.31_dp, 0.74_dp, 0.16_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      tether_curv(:) = [0.05_dp, 0.02_dp, 0.08_dp, 0.07_dp, 0.03_dp, 0.0_dp]
+      raw_density(:, 1) = [0.31_dp, -0.17_dp, 0.22_dp, 0.48_dp, -0.36_dp, 0.18_dp]
+      raw_density(:, 2) = [-0.22_dp, 0.19_dp, -0.11_dp, -0.40_dp, 0.27_dp, -0.15_dp]
+      zero_tether(:, :) = 0.0_dp
+
+      projected_density(:, :) = raw_density(:, :)
+      source_residual = 0.0_dp
+      raw_occ_residual = 0.0_dp
+      raw_tether_residual = 0.0_dp
+      DO r = 1, nrot
+         raw_occ_residual = MAX(raw_occ_residual, ABS(DOT_PRODUCT(occ_curv(:), raw_density(:, r))))
+         raw_tether_residual = MAX(raw_tether_residual, &
+                                   dense_response_tether_residual(raw_density(:, r), tether_curv, &
+                                                                  channel_nmo, e_offset))
+         CALL dense_project_response_metric_distributed(projected_density(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         IF (.NOT. projected) source_residual = HUGE(source_residual)
+         source_residual = MAX(source_residual, ABS(DOT_PRODUCT(occ_curv(:), projected_density(:, r))))
+         source_residual = MAX(source_residual, &
+                               dense_response_tether_residual(projected_density(:, r), tether_curv, &
+                                                              channel_nmo, e_offset))
+      END DO
+      source_gap = MAXVAL(ABS(projected_density(:, :) - raw_density(:, :)))
+
+      CALL build_test_mixed_energy_block(channel_nmo, e_offset, raw_density, zero_tether, h_raw, b_raw)
+      CALL build_test_mixed_energy_block(channel_nmo, e_offset, projected_density, zero_tether, &
+                                         h_projected, b_projected)
+      exact_raw(:, :) = b_raw(:, :)
+      exact_projected(:, :) = b_projected(:, :)
+      CALL dgesv(ne, nrot, h_raw, ne, ipiv, exact_raw, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed raw dgesv", info
+         RETURN
+      END IF
+      CALL dgesv(ne, nrot, h_projected, ne, ipiv, exact_projected, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed projected dgesv", info
+         RETURN
+      END IF
+
+      exact_residual = 0.0_dp
+      DO r = 1, nrot
+         CALL dense_project_response_metric_distributed(exact_raw(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         CALL dense_project_response_metric_distributed(exact_projected(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         exact_residual = MAX(exact_residual, ABS(DOT_PRODUCT(occ_curv(:), exact_projected(:, r))))
+         exact_residual = MAX(exact_residual, &
+                              dense_response_tether_residual(exact_projected(:, r), tether_curv, &
+                                                             channel_nmo, e_offset))
+      END DO
+      exact_gap = MAXVAL(ABS(exact_projected(:, :) - exact_raw(:, :)))
+      err = MAX(source_residual, exact_residual)
+
+      IF (err > tol .OR. raw_occ_residual < 1.0E-2_dp .OR. raw_tether_residual < 1.0E-3_dp .OR. &
+          source_gap < 1.0E-2_dp .OR. exact_gap < 1.0E-5_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with err/rawocc/rawtether/sourcegap/exactgap", err, raw_occ_residual, &
+            raw_tether_residual, source_gap, exact_gap
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with err/rawocc/rawtether/sourcegap/exactgap", err, raw_occ_residual, &
+            raw_tether_residual, source_gap, exact_gap
+      END IF
+
+   END SUBROUTINE check_projector_density_exact_source_projection
 
 ! **************************************************************************************************
 !> \brief Check that floor-limited density response is suitable for global fixed-N projection.

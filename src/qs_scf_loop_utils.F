@@ -8504,8 +8504,10 @@ CONTAINS
             projector_physical_density_active_abs_avg/projector_physical_density_full_abs_avg
          exact_density_response_ready = .FALSE.
          IF (projector_physical_shadow_enabled) THEN
-            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_physical, &
-                                                       0.0_dp*response_density_physical, 0.0_dp*grad_e, &
+            ! The density source for the exact Mermin response must live in the
+            ! same fixed-N/tether gauge as the solved energy response.
+            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                       0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
                                                        channel_nmo, e_offset, energy_hessian, &
                                                        energy_cross_density, response_density_exact, &
                                                        z_density_trial, ipiv_energy, exact_density_response_ready, &
