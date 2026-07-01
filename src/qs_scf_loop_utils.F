@@ -20136,11 +20136,11 @@ CONTAINS
                      ! occupation-response component.  The raw diagonal
                      ! derivative is still exposed through the audit channel.
                      density_plateau_response = density_mixed_column(ie)
-                     ! The full plateau-density response enters the dense Mermin
-                     ! energy block below, whose fixed-N projector is global over
-                     ! the spin/k group.  Keep channel-uniform components here so
-                     ! physical inter-k charge transfer is not removed before the
-                     ! global chemical-potential projection.
+                     ! The full density response below keeps channel-uniform
+                     ! components for the global fixed-N Mermin projector.  The
+                     ! plateau-gap model is only a local trust/audit source, so
+                     ! feed it the local fixed-N centered shape and do not let
+                     ! channel gauge shifts inflate the response trust.
                      density_plateau_full_response = density_projector_column(ie)
                      density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                         occ_curv_channel(ie)
@@ -20155,7 +20155,7 @@ CONTAINS
                         response_density_physical(first_energy + ie - 1, s) = &
                            density_plateau_response
                         response_density_plateau(first_energy + ie - 1, s) = &
-                           density_plateau_full_response
+                           density_plateau_centered_column(ie)
                         response_occ_physical(first_energy + ie - 1, s) = &
                            response_occ_physical(first_energy + ie - 1, s) - &
                            response_density_physical(first_energy + ie - 1, s)

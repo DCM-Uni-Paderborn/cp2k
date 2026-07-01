@@ -142,6 +142,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density eigen-response split", 2.0E-8_dp, nfail)
    CALL check_projector_density_local_mean_dP_rejection( &
       "complex projector density local-mean dP rejection", 5.0E-14_dp, nfail)
+   CALL check_projector_density_plateau_trust_centering( &
+      "complex projector density plateau-trust centering", 5.0E-14_dp, nfail)
    CALL check_complex_projector_density_eigen_floor_filter( &
       "complex projector density eigen floor filter", 5.0E-14_dp, nfail)
    CALL check_projector_active_rotation_pair_weight( &
@@ -5618,6 +5620,68 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_local_mean_dP_rejection
+
+! **************************************************************************************************
+!> \brief Check that plateau trust removes local gauge shifts but full response keeps global transfer.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_plateau_trust_centering(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 2, ne = 6
+
+      INTEGER                                            :: first_energy, local_channel, nmo
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      LOGICAL                                            :: full_projected
+      REAL(KIND=dp)                                      :: err, full_metric, local_metric, &
+                                                            raw_local_norm, shift, weight_sum
+      REAL(KIND=dp), DIMENSION(ne)                       :: full_global, occ_curv, plateau_trust, &
+                                                            projector_response, tether_curv
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.045_dp, 0.030_dp, 0.006_dp, 0.026_dp, 0.015_dp, 0.004_dp]
+      tether_curv(:) = 0.0_dp
+      projector_response(:) = [0.31_dp, 0.31_dp, 0.31_dp, -0.18_dp, -0.18_dp, -0.18_dp]
+
+      plateau_trust(:) = projector_response(:)
+      raw_local_norm = 0.0_dp
+      DO local_channel = 1, nchannels
+         nmo = channel_nmo(local_channel)
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+         shift = DOT_PRODUCT(occ_curv(first_energy:first_energy + nmo - 1), &
+                             plateau_trust(first_energy:first_energy + nmo - 1))/weight_sum
+         raw_local_norm = MAX(raw_local_norm, ABS(shift))
+         plateau_trust(first_energy:first_energy + nmo - 1) = &
+            plateau_trust(first_energy:first_energy + nmo - 1) - shift
+      END DO
+
+      full_global(:) = projector_response(:)
+      CALL dense_project_response_metric(full_global, occ_curv, tether_curv, &
+                                         channel_nmo, e_offset, full_projected)
+      CALL dense_projected_mixed_metric(plateau_trust, plateau_trust, occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, local_metric)
+      CALL dense_projected_mixed_metric(full_global, full_global, occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, full_metric)
+      err = MAXVAL(ABS(plateau_trust(:)))
+      err = MAX(err, ABS(DOT_PRODUCT(occ_curv(:), full_global(:))))
+
+      IF (.NOT. full_projected .OR. err > tol .OR. raw_local_norm < 1.0E-1_dp .OR. &
+          local_metric > tol .OR. full_metric < 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/local/full/raw", err, local_metric, full_metric, raw_local_norm
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/local/full/raw", err, local_metric, full_metric, raw_local_norm
+      END IF
+
+   END SUBROUTINE check_projector_density_plateau_trust_centering
 
 ! **************************************************************************************************
 !> \brief Check that gauge-free eigenvalue density response is floor-limited but not active-weight damped.
