@@ -463,7 +463,7 @@ CONTAINS
       INTEGER                                            :: handle, ispin
       LOGICAL                                            :: disable_diis, has_unit_metric, &
                                                             my_added_mos_auto_grow
-      REAL(dp)                                           :: diis_error, saved_eps_diis
+      REAL(dp)                                           :: diis_error, old_kTS, saved_eps_diis
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -565,6 +565,7 @@ CONTAINS
       IF (disable_diis) scf_control%eps_diis = saved_eps_diis
 
       CALL get_qs_env(qs_env=qs_env, energy=energy)
+      old_kTS = energy%kTS
       energy%kTS = 0.0_dp
       energy%efermi = 0.0_dp
       mos => kpoints%kp_env(1)%kpoint_env%mos
@@ -573,6 +574,7 @@ CONTAINS
          energy%efermi = energy%efermi + mos(1, ispin)%mu
       END DO
       energy%efermi = energy%efermi/REAL(SIZE(mos, 2), KIND=dp)
+      energy%total = energy%total - old_kTS + energy%kTS
 
       CALL timestop(handle)
 
