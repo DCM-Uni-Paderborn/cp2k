@@ -14668,12 +14668,18 @@ CONTAINS
                                                                        EPSILON(dense_expected_drop)) .OR. &
                     ((.NOT. projector_physical_direct_density_candidate_selected .OR. &
                       projector_physical_direct_density_residual_bad) .AND. &
+                     ( &
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
                      local_ot_env(1)%schur_projector_density_full_selected_residual_quality, &
                      local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
                      local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
-                     dense_residual_quality)))) THEN
+                     dense_residual_quality) .OR. &
+                     kpoint_ot_density_full_tail_refresh_probe( &
+                     density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
+                     local_ot_env(1)%schur_projector_density_full_quality_samples, &
+                     local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
+                     dense_residual_quality))))) THEN
                   attempt_failed = .FALSE.
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
@@ -15211,12 +15217,18 @@ CONTAINS
                                                                        EPSILON(dense_expected_drop)) .OR. &
                     ((.NOT. projector_physical_direct_density_candidate_selected .OR. &
                       projector_physical_direct_density_residual_bad) .AND. &
+                     ( &
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
                      local_ot_env(1)%schur_projector_density_full_selected_residual_quality, &
                      local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
                      local_ot_env(1)%schur_projector_density_full_selected_quality_samples, &
-                     dense_residual_quality)))) THEN
+                     dense_residual_quality) .OR. &
+                     kpoint_ot_density_full_tail_refresh_probe( &
+                     density_full_tail_probe_ready, density_full_expected_drop, dense_expected_drop, &
+                     local_ot_env(1)%schur_projector_density_full_quality_samples, &
+                     local_ot_env(1)%schur_projector_density_full_selected_residual_quality_ema, &
+                     dense_residual_quality))))) THEN
                   attempt_failed = .FALSE.
                   density_full_candidate_selected = .TRUE.
                   density_descent_candidate_selected = .FALSE.
@@ -18697,6 +18709,49 @@ CONTAINS
          do_probe = .TRUE.
 
       END FUNCTION kpoint_ot_density_full_tail_selection_probe
+
+! **************************************************************************************************
+!> \brief periodic refresh probe for stale full-density selected residual history
+!> \param probe_ready prechecked residual, trust, and shadow-history quality gate
+!> \param candidate_expected_drop residual-capped candidate Mermin drop
+!> \param reference_expected_drop currently selected dense-coupled expected drop
+!> \param history_samples number of full-density shadow samples
+!> \param selected_residual_quality_ema residual-quality EMA of selected probes
+!> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \return true if a stale selected residual cap may be refreshed by one probe
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_tail_refresh_probe(probe_ready, candidate_expected_drop, &
+                                                         reference_expected_drop, history_samples, &
+                                                         selected_residual_quality_ema, &
+                                                         dense_residual_quality) RESULT(do_probe)
+      LOGICAL, INTENT(IN)                                :: probe_ready
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
+                                                            reference_expected_drop, &
+                                                            selected_residual_quality_ema, &
+                                                            dense_residual_quality
+      INTEGER, INTENT(IN)                                :: history_samples
+      LOGICAL                                            :: do_probe
+
+      REAL(KIND=dp)                                      :: probe_expected_drop
+
+         do_probe = .FALSE.
+         IF (.NOT. probe_ready) RETURN
+         IF (history_samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (MOD(history_samples, MAX(1, 2*ot_kp_schur_calibration_min_samples)) /= 0) RETURN
+         IF (dense_residual_quality < ot_kp_schur_calibrated_quality_min_ratio) RETURN
+         IF (selected_residual_quality_ema <= EPSILON(selected_residual_quality_ema)) RETURN
+         IF (selected_residual_quality_ema >= &
+             ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+             MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+
+         probe_expected_drop = candidate_expected_drop/ &
+                               MAX(selected_residual_quality_ema, EPSILON(selected_residual_quality_ema))
+         IF (probe_expected_drop < ot_kp_schur_projector_density_fdir_refresh_ratio* &
+             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         do_probe = .TRUE.
+
+      END FUNCTION kpoint_ot_density_full_tail_refresh_probe
 
 ! **************************************************************************************************
 !> \brief trust-safe Direct-density drop used only for residual-tail probe selection
