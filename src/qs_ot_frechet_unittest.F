@@ -158,6 +158,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector active rotation pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_physical_pair_projector_weight( &
       "complex projector physical pair weight", 5.0E-14_dp, nfail)
+   CALL check_projector_response_character_scale( &
+      "complex projector response character scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_active_filter_descent_recovery( &
@@ -6211,6 +6213,44 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_pair_projector_weight
+
+! **************************************************************************************************
+!> \brief Check robust response-character scaling for distributed finite response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_response_character_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, max_only_tail, single_scale, &
+                                                            robust_mid, robust_scale, robust_tail
+
+      robust_scale = dense_projector_response_character_scale(1.0_dp, 0.60_dp)
+      single_scale = dense_projector_response_character_scale(1.0_dp, 1.0_dp)
+      robust_mid = MIN(1.0_dp, 0.40_dp/robust_scale)
+      robust_tail = MIN(1.0_dp, 0.20_dp/robust_scale)
+      max_only_tail = 0.20_dp
+
+      err = ABS(robust_scale - 0.60_dp)
+      err = MAX(err, ABS(single_scale - 1.0_dp))
+      err = MAX(err, ABS(robust_mid - 2.0_dp/3.0_dp))
+      err = MAX(err, ABS(robust_tail - 1.0_dp/3.0_dp))
+
+      IF (err > tol .OR. robust_tail <= max_only_tail .OR. robust_mid <= 0.40_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/scale/single/mid/tail/maxonly", err, robust_scale, single_scale, &
+            robust_mid, robust_tail, max_only_tail
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/scale/single/mid/tail/maxonly", err, robust_scale, single_scale, &
+            robust_mid, robust_tail, max_only_tail
+      END IF
+
+   END SUBROUTINE check_projector_response_character_scale
 
 ! **************************************************************************************************
 !> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
@@ -16253,6 +16293,23 @@ CONTAINS
       pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
 
    END FUNCTION dense_physical_pair_projector_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of robust finite projector response-character scale.
+!> \param response_max ...
+!> \param response_mean ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_response_character_scale(response_max, response_mean) RESULT(response_scale)
+      REAL(KIND=dp), INTENT(IN)                          :: response_max, response_mean
+      REAL(KIND=dp)                                      :: response_scale
+
+      response_scale = MAX(0.0_dp, response_max)
+      IF (response_scale <= EPSILON(response_scale)) RETURN
+      response_scale = MAX(0.50_dp*response_scale, MAX(0.0_dp, response_mean))
+      response_scale = MIN(MAX(0.0_dp, response_max), response_scale)
+
+   END FUNCTION dense_projector_response_character_scale
 
 ! **************************************************************************************************
 !> \brief active Fermi-window weight for dense projector-density response fixtures.

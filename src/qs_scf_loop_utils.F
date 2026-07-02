@@ -1913,6 +1913,23 @@ CONTAINS
    END FUNCTION kpoint_ot_physical_pair_projector_weight
 
 ! **************************************************************************************************
+!> \brief robust scale for finite projector density-response character
+!> \param response_max largest positive channel response amplitude
+!> \param response_mean mean positive channel response amplitude
+!> \return response scale used to map amplitudes to [0,1] character weights
+! **************************************************************************************************
+   FUNCTION kpoint_ot_projector_response_character_scale(response_max, response_mean) RESULT(response_scale)
+      REAL(KIND=dp), INTENT(IN)                          :: response_max, response_mean
+      REAL(KIND=dp)                                      :: response_scale
+
+         response_scale = MAX(0.0_dp, response_max)
+         IF (response_scale <= EPSILON(response_scale)) RETURN
+         response_scale = MAX(0.50_dp*response_scale, MAX(0.0_dp, response_mean))
+         response_scale = MIN(MAX(0.0_dp, response_max), response_scale)
+
+   END FUNCTION kpoint_ot_projector_response_character_scale
+
+! **************************************************************************************************
 !> \brief active Fermi-window weight for the diagonal projector-density response
 !> \param occ_curv ...
 !> \param occ_curv_max ...
@@ -7028,7 +7045,8 @@ CONTAINS
          projector_response_gap_avg, projector_response_gap_max, projector_response_gap_norm, &
          projector_response_gdot_energy, projector_response_gdot_rotation, &
          projector_response_gdotp, projector_response_metric_norm_energy, projector_response_signal, &
-         projector_response_signal_max, &
+         projector_response_signal_count, projector_response_signal_max, projector_response_signal_mean, &
+         projector_response_signal_ref, projector_response_signal_sum, &
          projector_response_metric_norm_rotation, projector_response_metric_normp, &
          projector_response_model_calibrated_drop
       REAL(KIND=dp) :: projector_response_model_drop, projector_response_model_gap, &
@@ -8658,6 +8676,8 @@ CONTAINS
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
          END DO
          projector_response_signal_max = 0.0_dp
+         projector_response_signal_sum = 0.0_dp
+         projector_response_signal_count = 0.0_dp
          var_projector_response_weight(:) = 0.0_dp
          DO r = 1, nrot
             projector_response_signal = 0.0_dp
@@ -8669,11 +8689,19 @@ CONTAINS
                var_projector_response_weight(r) = SQRT(projector_response_signal)
                projector_response_signal_max = MAX(projector_response_signal_max, &
                                                    var_projector_response_weight(r))
+               projector_response_signal_sum = projector_response_signal_sum + &
+                                               var_projector_response_weight(r)
+               projector_response_signal_count = projector_response_signal_count + 1.0_dp
             END IF
          END DO
          IF (projector_response_signal_max > EPSILON(projector_response_signal_max)) THEN
+            projector_response_signal_mean = projector_response_signal_sum/ &
+                                             MAX(1.0_dp, projector_response_signal_count)
+            projector_response_signal_ref = &
+               kpoint_ot_projector_response_character_scale(projector_response_signal_max, &
+                                                            projector_response_signal_mean)
             var_projector_response_weight(:) = &
-               MIN(1.0_dp, MAX(0.0_dp, var_projector_response_weight(:)/projector_response_signal_max))
+               MIN(1.0_dp, MAX(0.0_dp, var_projector_response_weight(:)/projector_response_signal_ref))
          END IF
          projector_response_character_abs_avg = SUM(var_projector_response_weight(:))
          projector_response_character_max = MAXVAL(var_projector_response_weight(:))
