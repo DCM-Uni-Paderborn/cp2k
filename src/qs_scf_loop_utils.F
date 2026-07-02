@@ -14244,11 +14244,22 @@ CONTAINS
                               projector_physical_direct_trust_scale
                            projector_physical_direct_line_step = &
                               direction_scale
-                           IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+                           IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                               projector_physical_direct_quality_for_selection = &
                               kpoint_ot_direct_tail_selection_quality( &
                               projector_physical_direct_quality_for_selection, &
                               projector_physical_direct_history_quality)
+                              projector_physical_direct_quality_for_selection = &
+                              kpoint_ot_direct_tail_residual_selection_quality( &
+                              projector_physical_direct_quality_for_selection, &
+                              projector_physical_trace_invariant_quality_for_selection, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema, &
+                              local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples, &
+                              ot_kp_schur_calibration_min_samples)
+                           END IF
                            ! The physical-direct candidate is selected only after
                            ! accepted-drop history proves it conservative.  Keep the
                            ! Euclidean z.z=g.z scale diagnostic separate from the
@@ -18761,6 +18772,52 @@ CONTAINS
          quality = MIN(quality, MAX(0.0_dp, MIN(1.0_dp, base_quality)))
 
       END FUNCTION kpoint_ot_direct_tail_selection_quality
+
+! **************************************************************************************************
+!> \brief residual-aware selected Direct quality for the metallic tail
+!> \param current_quality Mermin-calibrated Direct quality used for selection
+!> \param trace_quality invariant-trace cap for the physical Direct channel
+!> \param selected_quality latest selected Direct Mermin measured/predicted quality
+!> \param selected_quality_ema selected Direct Mermin quality EMA
+!> \param selected_residual_quality latest selected Direct residual quality
+!> \param selected_residual_quality_ema selected Direct residual quality EMA
+!> \param samples selected Direct accepted samples
+!> \param min_samples minimum selected samples before residual history contributes
+!> \return Direct quality with residual-tail support but bounded by trace quality
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_tail_residual_selection_quality(current_quality, trace_quality, &
+                                                                selected_quality, selected_quality_ema, &
+                                                                selected_residual_quality, &
+                                                                selected_residual_quality_ema, samples, &
+                                                                min_samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: current_quality, trace_quality, &
+                                                            selected_quality, selected_quality_ema, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: mermin_signal, residual_support, trace_cap
+
+         quality = MAX(0.0_dp, MIN(1.0_dp, current_quality))
+         IF (samples < min_samples) RETURN
+
+         mermin_signal = MAX(0.0_dp, MIN(1.0_dp, selected_quality_ema))
+         IF (selected_quality > EPSILON(selected_quality)) &
+            mermin_signal = MAX(0.0_dp, MIN(mermin_signal, &
+                                            MAX(0.0_dp, MIN(1.0_dp, selected_quality))))
+         IF (mermin_signal < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         residual_support = kpoint_ot_selected_tail_residual_quality( &
+                            selected_residual_quality, selected_residual_quality_ema)
+         IF (residual_support <= EPSILON(residual_support)) RETURN
+
+         trace_cap = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                         MAX(0.0_dp, MIN(1.0_dp, trace_quality)))
+         quality = MAX(quality, MIN(trace_cap, residual_support))
+         quality = MAX(0.0_dp, MIN(1.0_dp, quality))
+
+      END FUNCTION kpoint_ot_direct_tail_residual_selection_quality
 
 ! **************************************************************************************************
 !> \brief maturity-weighted selected-history calibration for physical Direct selection

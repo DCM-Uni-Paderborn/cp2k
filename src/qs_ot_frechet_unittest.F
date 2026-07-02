@@ -9778,6 +9778,8 @@ CONTAINS
 
       REAL(KIND=dp)                                      :: err, expected_shadow, expected_stale, &
                                                             no_history, product_collapse, shadow_floor, &
+                                                            residual_cap_quality, residual_floor_quality, &
+                                                            residual_no_history_quality, residual_veto_quality, &
                                                             shadow_quality, stale_floor, &
                                                             stale_selected_quality, trace_quality
 
@@ -9792,21 +9794,43 @@ CONTAINS
       expected_stale = SQRT(trace_quality*stale_selected_quality)
       product_collapse = trace_quality*stale_selected_quality
       no_history = dense_direct_tail_selection_quality(trace_quality, 1.0_dp)
+      residual_floor_quality = dense_direct_tail_residual_selection_quality( &
+                               1.90E-1_dp, 5.00E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
+                               4.83E-1_dp, 2.58E-1_dp, 10, 4)
+      residual_cap_quality = dense_direct_tail_residual_selection_quality( &
+                             1.90E-1_dp, 2.20E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
+                             4.83E-1_dp, 2.58E-1_dp, 10, 4)
+      residual_veto_quality = dense_direct_tail_residual_selection_quality( &
+                              1.90E-1_dp, 5.00E-1_dp, 2.00E-2_dp, 4.00E-2_dp, &
+                              4.83E-1_dp, 2.58E-1_dp, 10, 4)
+      residual_no_history_quality = dense_direct_tail_residual_selection_quality( &
+                                    1.90E-1_dp, 5.00E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
+                                    4.83E-1_dp, 2.58E-1_dp, 3, 4)
 
       err = ABS(shadow_floor - expected_shadow)
       err = MAX(err, ABS(stale_floor - expected_stale))
       err = MAX(err, ABS(no_history - trace_quality))
+      err = MAX(err, ABS(residual_floor_quality - 2.58E-1_dp))
+      err = MAX(err, ABS(residual_cap_quality - 2.20E-1_dp))
+      err = MAX(err, ABS(residual_veto_quality - 1.90E-1_dp))
+      err = MAX(err, ABS(residual_no_history_quality - 1.90E-1_dp))
 
       IF (err > tol .OR. stale_floor <= 100.0_dp*product_collapse .OR. &
-          stale_floor >= shadow_floor .OR. shadow_floor > trace_quality) THEN
+          stale_floor >= shadow_floor .OR. shadow_floor > trace_quality .OR. &
+          residual_floor_quality <= 1.90E-1_dp .OR. &
+          residual_cap_quality > 2.20E-1_dp + tol .OR. &
+          residual_veto_quality > 1.90E-1_dp + tol .OR. &
+          residual_no_history_quality > 1.90E-1_dp + tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with error/trace/shadow/stale_floor/stale/product", err, trace_quality, shadow_floor, &
-            stale_floor, stale_selected_quality, product_collapse
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rno", err, trace_quality, &
+            shadow_floor, stale_floor, stale_selected_quality, product_collapse, residual_floor_quality, &
+            residual_cap_quality, residual_veto_quality, residual_no_history_quality
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with error/trace/shadow/stale_floor/stale/product", err, trace_quality, shadow_floor, &
-            stale_floor, stale_selected_quality, product_collapse
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rno", err, trace_quality, &
+            shadow_floor, stale_floor, stale_selected_quality, product_collapse, residual_floor_quality, &
+            residual_cap_quality, residual_veto_quality, residual_no_history_quality
       END IF
 
    END SUBROUTINE check_projector_direct_tail_selection_quality
@@ -12776,6 +12800,51 @@ CONTAINS
       quality = MIN(quality, MAX(0.0_dp, MIN(1.0_dp, base_quality)))
 
    END FUNCTION dense_direct_tail_selection_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of residual-aware selected Direct tail quality.
+!> \param current_quality ...
+!> \param trace_quality ...
+!> \param selected_quality ...
+!> \param selected_quality_ema ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param samples ...
+!> \param min_samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_tail_residual_selection_quality(current_quality, trace_quality, &
+                                                         selected_quality, selected_quality_ema, &
+                                                         selected_residual_quality, &
+                                                         selected_residual_quality_ema, samples, &
+                                                         min_samples) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: current_quality, trace_quality, &
+                                                            selected_quality, selected_quality_ema, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: mermin_signal, residual_support, trace_cap
+
+      quality = MAX(0.0_dp, MIN(1.0_dp, current_quality))
+      IF (samples < min_samples) RETURN
+
+      mermin_signal = MAX(0.0_dp, MIN(1.0_dp, selected_quality_ema))
+      IF (selected_quality > EPSILON(selected_quality)) &
+         mermin_signal = MAX(0.0_dp, MIN(mermin_signal, &
+                                         MAX(0.0_dp, MIN(1.0_dp, selected_quality))))
+      IF (mermin_signal < 5.0E-2_dp) RETURN
+
+      residual_support = dense_selected_tail_residual_quality(selected_residual_quality, &
+                                                              selected_residual_quality_ema)
+      IF (residual_support <= EPSILON(residual_support)) RETURN
+
+      trace_cap = MAX(1.0E-1_dp, MAX(0.0_dp, MIN(1.0_dp, trace_quality)))
+      quality = MAX(quality, MIN(trace_cap, residual_support))
+      quality = MAX(0.0_dp, MIN(1.0_dp, quality))
+
+   END FUNCTION dense_direct_tail_residual_selection_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of accepted-drop Direct history growth.
