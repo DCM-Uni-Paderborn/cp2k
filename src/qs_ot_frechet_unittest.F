@@ -246,6 +246,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_spectral_metric_norm_scale("complex projector spectral metric norm scale", &
                                                    5.0E-14_dp, nfail)
+   CALL check_projector_spectral_selected_history_promotion( &
+      "complex projector spectral selected-history promotion", 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
       "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_promotion("complex projector mixed Direct promotion", &
@@ -9266,6 +9268,55 @@ CONTAINS
    END SUBROUTINE check_projector_spectral_metric_norm_scale
 
 ! **************************************************************************************************
+!> \brief Check that mature spectral shadow history can promote a good early selected step.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_spectral_selected_history_promotion(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: early_promotes, failure_veto, &
+                                                            no_selected_veto, recent_veto, &
+                                                            shadow_veto
+      REAL(KIND=dp)                                      :: err
+
+      early_promotes = dense_spectral_selected_history_promotion( &
+         1, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+      no_selected_veto = dense_spectral_selected_history_promotion( &
+         0, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+      recent_veto = dense_spectral_selected_history_promotion( &
+         1, 0, 0.67_dp, 0.020_dp, 0.076_dp, 0.020_dp, 2.0E-6_dp, 1.2E-7_dp, &
+         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+      shadow_veto = dense_spectral_selected_history_promotion( &
+         1, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+         7, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+      failure_veto = dense_spectral_selected_history_promotion( &
+         1, 2, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+
+      err = 0.0_dp
+      IF (.NOT. early_promotes .OR. no_selected_veto .OR. recent_veto .OR. shadow_veto .OR. &
+          failure_veto) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "failed with early/no-selected/recent/shadow/failure", early_promotes, &
+            no_selected_veto, recent_veto, shadow_veto, failure_veto
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "OK with early/no-selected/recent/shadow/failure", early_promotes, &
+            no_selected_veto, recent_veto, shadow_veto, failure_veto
+      END IF
+
+   END SUBROUTINE check_projector_spectral_selected_history_promotion
+
+! **************************************************************************************************
 !> \brief Check accepted-drop consistency scaling of mixed Direct history.
 !> \param label ...
 !> \param tol ...
@@ -11115,6 +11166,82 @@ CONTAINS
       END IF
 
    END FUNCTION dense_direct_tail_probe_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of the spectral selected-history candidate promotion gate.
+!> \param selected_samples ...
+!> \param selected_failures ...
+!> \param selected_quality_ema ...
+!> \param selected_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_residual_quality ...
+!> \param selected_drop_sum ...
+!> \param selected_measured_sum ...
+!> \param shadow_samples ...
+!> \param shadow_drop_sum ...
+!> \param shadow_measured_sum ...
+!> \param shadow_quality_ema ...
+!> \param shadow_quality ...
+!> \param shadow_floor_ema ...
+!> \param shadow_dot_ema ...
+!> \param shadow_norm_ema ...
+!> \return true if selected spectral history may promote the candidate
+! **************************************************************************************************
+   FUNCTION dense_spectral_selected_history_promotion(selected_samples, selected_failures, &
+                                                      selected_quality_ema, selected_quality, &
+                                                      selected_residual_quality_ema, &
+                                                      selected_residual_quality, selected_drop_sum, &
+                                                      selected_measured_sum, shadow_samples, &
+                                                      shadow_drop_sum, shadow_measured_sum, &
+                                                      shadow_quality_ema, shadow_quality, &
+                                                      shadow_floor_ema, shadow_dot_ema, &
+                                                      shadow_norm_ema) RESULT(enabled)
+      INTEGER, INTENT(IN)                                :: selected_failures, selected_samples, &
+                                                            shadow_samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_drop_sum, selected_measured_sum, &
+                                                            selected_quality, selected_quality_ema, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema, &
+                                                            shadow_dot_ema, shadow_drop_sum, &
+                                                            shadow_floor_ema, shadow_measured_sum, &
+                                                            shadow_norm_ema, shadow_quality, &
+                                                            shadow_quality_ema
+      LOGICAL                                            :: enabled
+
+      LOGICAL                                            :: ema_ok, recent_ok, selected_sums_ok, &
+                                                            shadow_history_ok
+
+      enabled = .FALSE.
+      IF (selected_failures >= 2) RETURN
+      IF (shadow_dot_ema <= 0.0_dp .OR. shadow_norm_ema <= 0.0_dp) RETURN
+
+      selected_sums_ok = selected_drop_sum > EPSILON(selected_drop_sum) .AND. &
+                         selected_measured_sum > 0.0_dp
+      ema_ok = selected_quality_ema >= 1.0E-1_dp .OR. &
+               selected_residual_quality_ema >= 1.0E-1_dp
+      recent_ok = selected_quality >= 5.0E-2_dp .OR. selected_residual_quality >= 1.0E-1_dp
+
+      IF (selected_samples >= 8 .AND. selected_sums_ok .AND. ema_ok .AND. recent_ok) THEN
+         enabled = .TRUE.
+         RETURN
+      END IF
+
+      IF (selected_samples >= 3 .AND. selected_sums_ok .AND. &
+          selected_residual_quality_ema >= 1.0E-1_dp .AND. &
+          selected_residual_quality >= 1.0E-1_dp .AND. ema_ok .AND. recent_ok) THEN
+         enabled = .TRUE.
+         RETURN
+      END IF
+
+      shadow_history_ok = shadow_samples >= 8 .AND. &
+                          shadow_drop_sum > EPSILON(shadow_drop_sum) .AND. &
+                          shadow_measured_sum > 0.0_dp .AND. &
+                          shadow_floor_ema > EPSILON(shadow_floor_ema) .AND. &
+                          shadow_quality_ema >= 1.0E-1_dp .AND. shadow_quality >= 5.0E-2_dp
+      enabled = selected_samples > 0 .AND. selected_sums_ok .AND. ema_ok .AND. recent_ok .AND. &
+                shadow_history_ok
+
+   END FUNCTION dense_spectral_selected_history_promotion
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density Direct residual-tail close-call gate.
