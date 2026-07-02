@@ -10830,7 +10830,10 @@ CONTAINS
                     ot_kp_schur_calibration_min_samples .OR. &
                     projector_density_history_weight > EPSILON(projector_density_history_weight))) THEN
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_direct_response_ready) THEN
+                  IF (exact_density_full_response_ready) THEN
+                     response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                     response_density_full_exact(:, :)
+                  ELSE IF (exact_density_direct_response_ready) THEN
                      response_physical_model(:, :) = response_physical_model(:, :) + &
                                                      response_density_direct_exact(:, :)
                   ELSE IF (exact_density_response_ready) THEN
@@ -11012,7 +11015,10 @@ CONTAINS
                                                           rot_hessian_projector_physical_offdiag(:, :) - &
                                                           rot_hessian_projector_physical_offdiag_active(:, :)
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_direct_response_ready) THEN
+                  IF (exact_density_full_response_ready) THEN
+                     response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                     response_density_full_exact(:, :)
+                  ELSE IF (exact_density_direct_response_ready) THEN
                      response_physical_model(:, :) = response_physical_model(:, :) + &
                                                      response_density_direct_exact(:, :)
                   ELSE IF (exact_density_response_ready) THEN
@@ -11250,7 +11256,10 @@ CONTAINS
                      rot_hessian(:, :) + &
                      rot_hessian_projector_physical_offdiag_active(:, :)
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_direct_response_ready) THEN
+                  IF (exact_density_full_response_ready) THEN
+                     response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                     response_density_full_exact(:, :)
+                  ELSE IF (exact_density_direct_response_ready) THEN
                      response_physical_model(:, :) = response_physical_model(:, :) + &
                                                      response_density_direct_exact(:, :)
                   ELSE IF (exact_density_response_ready) THEN
@@ -12196,9 +12205,13 @@ CONTAINS
                             local_ot_env(1)%schur_projector_mode_quality_samples >= &
                             ot_kp_schur_calibration_min_samples) THEN
                            response_physical_model(:, :) = response_exact_physical(:, :)
-                           IF (exact_density_direct_response_ready) &
+                           IF (exact_density_full_response_ready) THEN
+                              response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                              response_density_full_exact(:, :)
+                           ELSE IF (exact_density_direct_response_ready) THEN
                               response_physical_model(:, :) = response_physical_model(:, :) + &
                                                               response_density_direct_exact(:, :)
+                           END IF
                            CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                          rot_hessian_projector_physical_active, &
                                                                        projector_physical_direct_spectral_sol, response_exact_raw, &
@@ -13504,9 +13517,13 @@ CONTAINS
                      IF (local_ot_env(1)%schur_projector_mode_quality_samples >= &
                          ot_kp_schur_calibration_min_samples) THEN
                         response_physical_model(:, :) = response_exact_physical(:, :)
-                        IF (exact_density_direct_response_ready) &
+                        IF (exact_density_full_response_ready) THEN
+                           response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                           response_density_full_exact(:, :)
+                        ELSE IF (exact_density_direct_response_ready) THEN
                            response_physical_model(:, :) = response_physical_model(:, :) + &
                                                            response_density_direct_exact(:, :)
+                        END IF
                         CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                       rot_hessian_projector_physical_active, &
                                                                       projector_physical_direct_sol, response_exact_raw, &
