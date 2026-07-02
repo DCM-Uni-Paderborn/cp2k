@@ -146,6 +146,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density eigen-response split", 2.0E-8_dp, nfail)
    CALL check_complex_projector_density_cluster_split_response( &
       "complex projector density cluster-split response", 5.0E-12_dp, nfail)
+   CALL check_complex_projector_density_near_cluster_response( &
+      "complex projector density near-cluster response", 5.0E-11_dp, nfail)
    CALL check_projector_density_local_mean_dP_rejection( &
       "complex projector density local-mean dP rejection", 5.0E-14_dp, nfail)
    CALL check_projector_density_plateau_trust_centering( &
@@ -5762,6 +5764,120 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_density_cluster_split_response
+
+! **************************************************************************************************
+!> \brief Check that near-cluster off-diagonal occupation response survives in a rotated REF basis.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_near_cluster_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            collapse_tol = 1.0E-6_dp, &
+                                                            fd_step = 1.0E-7_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.55_dp, &
+                                                            response_ratio_gate = 2.0E-2_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, &
+                                                            docc_safe, q, work
+      INTEGER                                            :: i
+      LOGICAL                                            :: fd_used
+      REAL(KIND=dp)                                      :: alignment, collapse_ratio, err, &
+                                                            filtered_err, occ_curv_max, occ_sum, &
+                                                            projector_norm, safe_norm, unit
+      REAL(KIND=dp), DIMENSION(n) :: density_projector, density_projector_centered, &
+         density_safe, density_safe_centered, eig_response, filtered_response, occ_curv, occ_scale, &
+         physical_response, projector_evals_m, projector_evals_p
+
+      unit = 1.0_dp/SQRT(2.0_dp)
+      q(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      q(1, 1) = CMPLX(unit, 0.0_dp, KIND=dp)
+      q(2, 1) = CMPLX(unit, 0.0_dp, KIND=dp)
+      q(1, 2) = CMPLX(unit, 0.0_dp, KIND=dp)
+      q(2, 2) = CMPLX(-unit, 0.0_dp, KIND=dp)
+      q(3, 3) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc_eig(1, 1) = CMPLX(-0.010000_dp, 0.0_dp, KIND=dp)
+      chc_eig(2, 2) = CMPLX(-0.009982_dp, 0.0_dp, KIND=dp)
+      chc_eig(3, 3) = CMPLX(0.420_dp, 0.0_dp, KIND=dp)
+      dchc_eig(1, 2) = CMPLX(0.060_dp, -0.040_dp, KIND=dp)
+      dchc_eig(2, 1) = CONJG(dchc_eig(1, 2))
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+
+      occ_scale(:) = [1.10_dp, 0.40_dp, 0.05_dp]
+      occ_curv(:) = [0.045_dp, 0.045_dp, 0.004_dp]
+      occ_curv_max = MAXVAL(occ_curv(:))
+
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap, fd_used)
+      CALL diag_complex(chc + fd_step*dchc, work, projector_evals_p)
+      CALL diag_complex(chc - fd_step*dchc, work, projector_evals_m)
+      eig_response(:) = (projector_evals_p(:) - projector_evals_m(:))/(2.0_dp*fd_step)
+      density_projector(:) = -projector_weight*eig_response(:)
+      density_safe(:) = 0.0_dp
+      DO i = 1, n
+         IF (occ_curv(i) > EPSILON(occ_curv(i))) &
+            density_safe(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
+      END DO
+
+      density_projector_centered(:) = density_projector(:)
+      density_safe_centered(:) = density_safe(:)
+      occ_sum = SUM(MAX(0.0_dp, occ_curv(:)))
+      IF (occ_sum > EPSILON(occ_sum)) THEN
+         density_projector_centered(:) = density_projector_centered(:) - &
+            DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_projector_centered(:))/occ_sum
+         density_safe_centered(:) = density_safe_centered(:) - &
+            DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_safe_centered(:))/occ_sum
+      END IF
+
+      projector_norm = MAXVAL(ABS(density_projector_centered(:)))
+      safe_norm = MAXVAL(ABS(density_safe_centered(:)))
+      collapse_ratio = projector_norm/MAX(safe_norm, EPSILON(safe_norm))
+      alignment = 0.0_dp
+      IF (projector_norm > EPSILON(projector_norm) .AND. safe_norm > EPSILON(safe_norm)) &
+         alignment = DOT_PRODUCT(MAX(0.0_dp, occ_curv(:))*density_projector_centered(:), &
+                                 density_safe_centered(:))/ &
+                     SQRT(DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_projector_centered(:)**2)* &
+                          DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_safe_centered(:)**2))
+
+      DO i = 1, n
+         physical_response(i) = dense_physical_density_response(density_projector(i), density_safe(i), &
+                                                                occ_curv(i), occ_curv_max, &
+                                                                response_ratio_gate, &
+                                                                density_projector_centered(i), &
+                                                                density_safe_centered(i), alignment)
+         filtered_response(i) = residual_gauge_density_response(physical_response(i), &
+                                                                density_projector(i), density_safe(i), &
+                                                                occ_curv(i), occ_curv_max, &
+                                                                response_ratio_gate, 0.0_dp, &
+                                                                density_projector_centered(i), &
+                                                                density_safe_centered(i), alignment)
+      END DO
+      err = MAXVAL(ABS(physical_response(1:2) - density_safe_centered(1:2)))
+      filtered_err = MAXVAL(ABS(filtered_response(1:2) - physical_response(1:2)))
+
+      IF (.NOT. fd_used .OR. collapse_ratio > collapse_tol .OR. safe_norm < active_tol .OR. &
+          err > tol .OR. filtered_err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5),1(1X,L1))') TRIM(label), &
+            "failed with collapse/safe/err/ferr/align/fd", collapse_ratio, safe_norm, err, &
+            filtered_err, alignment, fd_used
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5),1(1X,L1))') TRIM(label), &
+            "OK with collapse/safe/err/ferr/align/fd", collapse_ratio, safe_norm, err, &
+            filtered_err, alignment, fd_used
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_near_cluster_response
 
 ! **************************************************************************************************
 !> \brief Check that local-mean-matched dP diagonals are not a valid density-response replacement.
