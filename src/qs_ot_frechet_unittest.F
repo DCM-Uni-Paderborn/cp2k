@@ -8459,8 +8459,9 @@ CONTAINS
                                                             max_quality = 1.25_dp, &
                                                             tail_delta = 1.0E-4_dp
 
-      REAL(KIND=dp)                                      :: err, expected_moderate, expected_weak, &
-                                                            good_quality, immature_quality, &
+      REAL(KIND=dp)                                      :: err, expected_moderate, expected_near, &
+                                                            expected_weak, good_quality, immature_quality, &
+                                                            near_gate_quality, &
                                                             moderate_quality, outside_tail_quality, &
                                                             weak_quality, zero_quality
 
@@ -8472,6 +8473,9 @@ CONTAINS
          1.25_dp, 0.50_dp, 0.50_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
       moderate_quality = dense_offdiag_tail_residual_quality( &
          1.25_dp, 0.04_dp, 0.05_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
+      near_gate_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.018_dp, 0.020_dp, 104, tail_delta, tail_delta, cal_quality, &
+         max_quality)
       weak_quality = dense_offdiag_tail_residual_quality( &
          1.25_dp, 0.00536993433_dp, 0.00883931517_dp, 104, tail_delta, tail_delta, &
          cal_quality, max_quality)
@@ -8479,25 +8483,30 @@ CONTAINS
          1.25_dp, 0.0_dp, 0.0_dp, 104, tail_delta, tail_delta, cal_quality, max_quality)
 
       expected_moderate = max_quality*(0.5_dp*(0.05_dp + 0.04_dp)/cal_quality)
+      expected_near = max_quality*(0.5_dp*(0.020_dp + 0.018_dp)/cal_quality)
+      err = ABS(near_gate_quality - expected_near)
       expected_weak = max_quality*(0.5_dp*(0.00883931517_dp + 0.00536993433_dp)/ &
                                    cal_quality)
-      err = ABS(immature_quality - max_quality)
+      err = MAX(err, ABS(immature_quality - max_quality))
       err = MAX(err, ABS(outside_tail_quality - max_quality))
       err = MAX(err, ABS(good_quality - max_quality))
       err = MAX(err, ABS(moderate_quality - expected_moderate))
       err = MAX(err, ABS(weak_quality - expected_weak))
       err = MAX(err, ABS(zero_quality))
 
-      IF (err > tol .OR. weak_quality >= 0.10_dp .OR. zero_quality > tol .OR. &
+      IF (err > tol .OR. near_gate_quality >= 0.10_dp .OR. weak_quality >= 0.10_dp .OR. &
+          zero_quality > tol .OR. &
           moderate_quality <= weak_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed err/immature/outside/good/moderate/weak/zero", err, immature_quality, &
-            outside_tail_quality, good_quality, moderate_quality, weak_quality, zero_quality
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed err/immature/outside/good/moderate/near/weak/zero", err, immature_quality, &
+            outside_tail_quality, good_quality, moderate_quality, near_gate_quality, &
+            weak_quality, zero_quality
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK err/immature/outside/good/moderate/weak/zero", err, immature_quality, &
-            outside_tail_quality, good_quality, moderate_quality, weak_quality, zero_quality
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK err/immature/outside/good/moderate/near/weak/zero", err, immature_quality, &
+            outside_tail_quality, good_quality, moderate_quality, near_gate_quality, &
+            weak_quality, zero_quality
       END IF
 
    END SUBROUTINE check_projector_offdiag_tail_residual_quality
