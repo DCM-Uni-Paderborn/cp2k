@@ -3,9 +3,11 @@
 ! not listed in TEST_FILES.toml so the default restart/smearing regtest stays
 ! cheap.
 ! Current 2026-07 HIGH diagnostic after switching the inactive-rotation
-! residual split to a density-norm occupation-gap weight: a late-tail restart
-! at OT residual 1.12E-6 converges in 22 further steps with OT residual
-! 9.93E-7 and Mermin free energy -8.14585254470721 Ha.  No first/last-band
+! residual split to a density-norm occupation-gap weight and using selected
+! spectral residual history: the write/read/continue/converge companion reaches
+! OT residual 9.96E-7 in 201 SCF steps with Mermin free energy
+! -8.14585265951153 Ha.  A final-restart guard reads that payload and
+! reconverges in one SCF step at -8.14585265981938 Ha.  No first/last-band
 ! smearing warning and no "Unsupported content type" signature is printed.
 ! This is still intentionally a continuation companion, not a default
 ! converged regtest.
