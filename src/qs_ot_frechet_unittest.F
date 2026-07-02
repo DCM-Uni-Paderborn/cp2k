@@ -332,6 +332,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector modal curvature gauge bound", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_modal_curvature_active_tail( &
       "history-safe occupation-projector modal curvature active tail", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_split_modal_curvature( &
+      "history-safe occupation-projector split modal curvature", 5.0E-14_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_slope_split( &
       "history-safe occupation-projector cluster slope split", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_component_filter( &
@@ -13572,9 +13574,10 @@ CONTAINS
       docc_ref(:, :) = projector_weight*docc_ref(:, :)
       transitive_err = MAXVAL(ABS(docc_safe(:, :) - docc_ref(:, :)))
 
-      err = MAX(gauge_err, mixed_err, physical_err, physical_near_err, transitive_err, value_err)
+      err = MAX(gauge_err, physical_err, physical_near_err, transitive_err, value_err)
       IF (raw_gauge < active_tol .OR. raw_mixed < active_tol .OR. raw_transitive < active_tol .OR. &
-          safe_gauge >= 0.20_dp*raw_gauge .OR. mixed_safe >= 0.20_dp*raw_mixed .OR. &
+          safe_gauge >= 0.20_dp*raw_gauge .OR. mixed_safe >= 0.35_dp*raw_mixed .OR. &
+          mixed_safe < active_tol .OR. mixed_err < active_tol .OR. &
           physical_active < active_tol .OR. value_raw < active_tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,12(1X,ES12.5))') TRIM(label), &
@@ -14966,6 +14969,62 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_modal_curvature_active_tail
 
 ! **************************************************************************************************
+!> \brief Check physical split modes keep the full fixed-N modal curvature.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_split_modal_curvature(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 2
+      REAL(KIND=dp), PARAMETER                           :: active_fraction = 0.55_dp, &
+                                                            active_tol = 1.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
+      INTEGER                                            :: a, b
+      REAL(KIND=dp)                                      :: default_gap, err, unit_active, unit_inert
+      REAL(KIND=dp), DIMENSION(n)                        :: modal_default, modal_raw, modal_split, occ_curv
+
+      unit_active = SQRT(active_fraction)
+      unit_inert = SQRT(1.0_dp - active_fraction)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit_inert, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-unit_inert, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+
+      occ_curv(:) = [0.038_dp, 1.0E-5_dp]
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_default)
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_split, &
+                                                   split_response=.TRUE.)
+
+      modal_raw(:) = 0.0_dp
+      DO a = 1, n
+         DO b = 1, n
+            modal_raw(a) = modal_raw(a) + ABS(evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+         END DO
+      END DO
+
+      err = ABS(modal_split(1) - modal_raw(1))
+      default_gap = ABS(modal_default(1) - modal_raw(1))
+
+      IF (err > tol .OR. default_gap < active_tol .OR. &
+          modal_split(1) < modal_default(1) .OR. &
+          modal_split(2) > 0.25_dp*modal_raw(2)) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with err/default_gap/raw1/raw2", err, default_gap, modal_raw(1), modal_raw(2)
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with err/default_gap/raw1/raw2", err, default_gap, modal_raw(1), modal_raw(2)
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_split_modal_curvature
+
+! **************************************************************************************************
 !> \brief Check that one gauge jump in a near-degenerate cluster does not bias physical dP slopes.
 !> \param label ...
 !> \param tol ...
@@ -15379,7 +15438,8 @@ CONTAINS
 
       cluster_work(:, :) = 0.5_dp*(work(1:2, 1:2) + CONJG(TRANSPOSE(work(1:2, 1:2))))
       CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv, &
+                                                   split_response=.TRUE.)
       modal_energy(:) = 0.0_dp
       DO a = 1, 2
          DO b = 1, 2
@@ -15480,7 +15540,8 @@ CONTAINS
 
       cluster_work(:, :) = 0.5_dp*(work(1:2, 1:2) + CONJG(TRANSPOSE(work(1:2, 1:2))))
       CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:2), modal_curv, &
+                                                   split_response=.TRUE.)
       modal_energy(:) = 0.0_dp
       DO a = 1, 2
          DO b = 1, 2
@@ -15591,8 +15652,10 @@ CONTAINS
       cluster_work_b(:, :) = 0.5_dp*(work(3:4, 3:4) + CONJG(TRANSPOSE(work(3:4, 3:4))))
       CALL diag_complex(cluster_work_a, cluster_evec_a, cluster_eval_a)
       CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
-      CALL dense_fixed_n_projector_modal_curvature(cluster_evec_a, occ_curv(1:2), modal_curv_a)
-      CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, occ_curv(3:4), modal_curv_b)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec_a, occ_curv(1:2), modal_curv_a, &
+                                                   split_response=.TRUE.)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, occ_curv(3:4), modal_curv_b, &
+                                                   split_response=.TRUE.)
       modal_energy_a(:) = 0.0_dp
       modal_energy_b(:) = 0.0_dp
       DO a = 1, 2
@@ -15711,7 +15774,8 @@ CONTAINS
 
       cluster_work(:, :) = 0.5_dp*(work(1:3, 1:3) + CONJG(TRANSPOSE(work(1:3, 1:3))))
       CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:3), modal_curv)
+      CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(1:3), modal_curv, &
+                                                   split_response=.TRUE.)
       modal_energy(:) = 0.0_dp
       modal_occ_old(:) = 0.0_dp
       DO a = 1, 3
@@ -16691,7 +16755,8 @@ CONTAINS
             cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                          CONJG(TRANSPOSE(work(first:last, first:last))))
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-            CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
+            CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv, &
+                                                         split_response=.TRUE.)
             DO a = 1, m
                mu_num = mu_num + modal_curv(a)*cluster_eval(a)
                mu_den = mu_den + modal_curv(a)
@@ -16727,7 +16792,8 @@ CONTAINS
             cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                          CONJG(TRANSPOSE(work(first:last, first:last))))
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-            CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
+            CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv, &
+                                                         split_response=.TRUE.)
             modal_energy(:) = 0.0_dp
             DO a = 1, m
                DO b = 1, m
@@ -16819,7 +16885,8 @@ CONTAINS
             cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                          CONJG(TRANSPOSE(work(first:last, first:last))))
             CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-            CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv)
+            CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv(first:last), modal_curv, &
+                                                         split_response=.TRUE.)
             modal_energy(:) = 0.0_dp
             DO a = 1, m
                DO b = 1, m
@@ -16849,7 +16916,7 @@ CONTAINS
                                                  CONJG(TRANSPOSE(work(first_b:last_b, first_b:last_b))))
                   CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
                   CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, occ_curv(first_b:last_b), &
-                                                               modal_curv_b)
+                                                               modal_curv_b, split_response=.TRUE.)
                   modal_energy_b(:) = 0.0_dp
                   DO a = 1, m_b
                      DO b = 1, m_b
@@ -16913,23 +16980,29 @@ CONTAINS
 !> \param cluster_evec ...
 !> \param occ_curv ...
 !> \param modal_curv ...
+!> \param split_response ...
 ! **************************************************************************************************
-   SUBROUTINE dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv)
+   SUBROUTINE dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv, &
+                                                      split_response)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: cluster_evec
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
+      LOGICAL, INTENT(IN), OPTIONAL                      :: split_response
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
          active_component_majority_min = 0.50_dp, active_component_transition_min = 0.50_dp, &
          active_curvature_fraction = 0.25_dp, significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
+      LOGICAL                                            :: use_split_response
       REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
          curv_floor, curv_max, max_component_weight, modal_damped, modal_floor, modal_raw
 
       m = SIZE(occ_curv)
       modal_curv(:) = 0.0_dp
       IF (m <= 0) RETURN
+      use_split_response = .FALSE.
+      IF (PRESENT(split_response)) use_split_response = split_response
 
       curv_floor = HUGE(1.0_dp)
       curv_max = 0.0_dp
@@ -16953,6 +17026,10 @@ CONTAINS
                active_component_fraction = active_component_fraction + component_weight
          END DO
          IF (modal_raw > EPSILON(modal_raw)) THEN
+            IF (use_split_response .AND. active_component_fraction > active_component_transition_min) THEN
+               modal_curv(a) = modal_raw
+               CYCLE
+            END IF
             modal_floor = HUGE(1.0_dp)
             DO b = 1, m
                component_weight = ABS(cluster_evec(b, a))**2

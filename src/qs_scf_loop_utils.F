@@ -21464,7 +21464,7 @@ CONTAINS
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
                CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                            modal_curv)
+                                                            modal_curv, split_response=.TRUE.)
                DO a = 1, m
                   mu_num = mu_num + modal_curv(a)*cluster_eval(a)
                   mu_den = mu_den + modal_curv(a)
@@ -21502,7 +21502,7 @@ CONTAINS
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
                CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                            modal_curv)
+                                                            modal_curv, split_response=.TRUE.)
                modal_energy(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
@@ -21601,7 +21601,7 @@ CONTAINS
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
                CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                            modal_curv)
+                                                            modal_curv, split_response=.TRUE.)
                modal_energy(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
@@ -21633,7 +21633,7 @@ CONTAINS
                      CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
                      CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, &
                                                                   occ_curv_channel(first_b:last_b), &
-                                                                  modal_curv_b)
+                                                                  modal_curv_b, split_response=.TRUE.)
                      modal_energy_b(:) = 0.0_dp
                      DO a = 1, m_b
                         DO b = 1, m_b
@@ -21698,23 +21698,29 @@ CONTAINS
 !> \param cluster_evec ...
 !> \param occ_curv ...
 !> \param modal_curv ...
+!> \param split_response ...
 ! **************************************************************************************************
-      SUBROUTINE dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv)
+      SUBROUTINE dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv, &
+                                                         split_response)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: cluster_evec
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
+      LOGICAL, INTENT(IN), OPTIONAL                      :: split_response
 
       REAL(KIND=dp), PARAMETER :: active_component_fraction_min = 0.60_dp, &
          active_component_majority_min = 0.50_dp, active_component_transition_min = 0.50_dp, &
          active_curvature_fraction = 0.25_dp, significant_component_fraction = 0.5_dp
 
       INTEGER                                            :: a, b, m
+      LOGICAL                                            :: use_split_response
       REAL(KIND=dp) :: active_blend, active_component_fraction, component_weight, curv, &
          curv_floor, curv_max, max_component_weight, modal_damped, modal_floor, modal_raw
 
          m = SIZE(occ_curv)
          modal_curv(:) = 0.0_dp
          IF (m <= 0) RETURN
+         use_split_response = .FALSE.
+         IF (PRESENT(split_response)) use_split_response = split_response
 
          curv_floor = HUGE(1.0_dp)
          curv_max = 0.0_dp
@@ -21738,6 +21744,10 @@ CONTAINS
                   active_component_fraction = active_component_fraction + component_weight
             END DO
             IF (modal_raw > EPSILON(modal_raw)) THEN
+               IF (use_split_response .AND. active_component_fraction > active_component_transition_min) THEN
+                  modal_curv(a) = modal_raw
+                  CYCLE
+               END IF
                modal_floor = HUGE(1.0_dp)
                DO b = 1, m
                   component_weight = ABS(cluster_evec(b, a))**2
