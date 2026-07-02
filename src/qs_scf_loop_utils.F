@@ -6641,8 +6641,9 @@ CONTAINS
          density_plateau_response_weighted_trust_ratio, density_plateau_scale_quality, &
          density_plateau_trust_quality
       REAL(KIND=dp) :: density_projector_control_delta, density_projector_fraction, &
-         density_projector_trust_scale, diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, &
-         diag_shift, diag_shift_avg, diag_shift_fraction, diag_shift_max, diag_shift_sum, &
+         density_projector_response_trust_fraction, density_projector_trust_scale, diag_prefloor_avg, &
+         diag_prefloor_max, diag_prefloor_min, diag_shift, diag_shift_avg, diag_shift_fraction, &
+         diag_shift_max, diag_shift_sum, &
          direct_pg_correction_drop, direct_pg_correction_negative, direct_pg_cross_drop, &
          direct_pg_metric_drop, direct_pg_metric_ratio, direct_pg_metric_step, &
          direct_pg_negative_coeff, direct_pg_negative_drop, direct_pg_positive_coeff, &
@@ -9473,8 +9474,16 @@ CONTAINS
                   ot_kp_canonical_density_max_weight
                density_projector_fraction = density_projector_trust_scale* &
                                             MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction))
+               density_projector_response_trust_fraction = density_projector_fraction
+               ! The density blend may be active early; only let it tighten the
+               ! Schur response trust when the residual has reached the coupled tail.
+               IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) &
+                  density_projector_response_trust_fraction = density_projector_response_trust_fraction* &
+                                                             MIN(1.0_dp, &
+                                                                 ot_kp_schur_projector_coupled_tail_delta/ &
+                                                                 MAX(residual_delta, EPSILON(1.0_dp)))
                response_trust_factor = MAX(ot_kp_schur_response_trust_min_factor, &
-                                           1.0_dp - density_projector_fraction)
+                                           1.0_dp - density_projector_response_trust_fraction)
             END IF
             response_trust = response_trust_base*response_trust_factor
          END IF
