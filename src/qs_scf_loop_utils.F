@@ -7041,7 +7041,8 @@ CONTAINS
          projector_response_response_weighted_trust_ratio, projector_response_scale_quality, &
          projector_response_trust_quality
       REAL(KIND=dp) :: projector_response_trust_scale, projector_response_unit_abs_step, &
-         projector_response_unit_weighted_step, rayleigh_edge_gap, residual_delta, &
+         projector_response_unit_weighted_step, projector_tail_active_delta_diag_avg, &
+         projector_tail_active_delta_weight, projector_tail_delta_diag_avg, rayleigh_edge_gap, residual_delta, &
          residual_reference_quality, response_abs_step, response_abs_trust, &
          response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
          response_penalty_term, response_shift, response_step_max, response_trust, &
@@ -7799,6 +7800,9 @@ CONTAINS
          projector_density_history_quality = 1.0_dp
          projector_density_history_weight = 0.0_dp
          projector_density_selected_history_weight = 0.0_dp
+         projector_tail_active_delta_diag_avg = 0.0_dp
+         projector_tail_active_delta_weight = 0.0_dp
+         projector_tail_delta_diag_avg = 0.0_dp
          projector_physical_abs_avg = 0.0_dp
          projector_physical_delta_diag_avg = 0.0_dp
          projector_physical_delta_max = 0.0_dp
@@ -10588,6 +10592,9 @@ CONTAINS
                END IF
                CYCLE
             END IF
+            projector_tail_active_delta_diag_avg = 0.0_dp
+            projector_tail_active_delta_weight = 0.0_dp
+            projector_tail_delta_diag_avg = projector_hessian_delta_diag_avg
             IF (schur_attempt <= 2) THEN
                schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
             ELSE IF (schur_attempt == 3) THEN
@@ -10600,9 +10607,32 @@ CONTAINS
                                                  projector_density_history_weight)
                schur(:, :) = rot_hessian_coupled(:, :) + &
                              projector_coupled_weight*(rot_hessian_projector(:, :) - rot_hessian(:, :))
+               IF (exact_attempt_response .AND. exact_physical_response_ready .AND. &
+                   residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                   projector_density_active_mix_weight > EPSILON(projector_density_active_mix_weight)) THEN
+                  projector_tail_active_delta_weight = &
+                     kpoint_ot_projector_tail_active_delta_weight(projector_coupled_weight, &
+                                                                 projector_density_active_mix_weight)
+                  IF (projector_tail_active_delta_weight > EPSILON(projector_tail_active_delta_weight)) THEN
+                     schur(:, :) = schur(:, :) + projector_coupled_weight* &
+                                   projector_tail_active_delta_weight* &
+                                   (rot_hessian_projector_physical_active(:, :) - &
+                                    rot_hessian_projector(:, :))
+                     projector_tail_active_delta_diag_avg = 0.0_dp
+                     DO r = 1, nrot
+                        projector_tail_active_delta_diag_avg = projector_tail_active_delta_diag_avg + &
+                           rot_hessian_projector_physical_active(r, r) - rot_hessian(r, r)
+                     END DO
+                     projector_tail_active_delta_diag_avg = &
+                        projector_tail_active_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                     projector_tail_delta_diag_avg = &
+                        (1.0_dp - projector_tail_active_delta_weight)*projector_hessian_delta_diag_avg + &
+                        projector_tail_active_delta_weight*projector_tail_active_delta_diag_avg
+                  END IF
+               END IF
                IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                   projector_diag_compensation = &
-                  MAX(0.0_dp, -projector_coupled_weight*projector_hessian_delta_diag_avg)
+                  MAX(0.0_dp, -projector_coupled_weight*projector_tail_delta_diag_avg)
             ELSE
                schur(:, :) = rot_hessian(:, :)
                IF (exact_physical_response_ready .AND. &
@@ -10786,6 +10816,14 @@ CONTAINS
                   " OT Schur row-floor step audit group att shifted_frac shift_quad step_norm dsum dmax:", &
                   target_group, schur_attempt, row_floor_step_fraction, row_floor_shift_quad, &
                   row_floor_step_norm, diag_shift_sum, diag_shift_max
+               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+                   schur_attempt == 3 .AND. exact_attempt_response) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
+                  " OT Schur projector tail active-delta mix group att weight absw rawdiag actdiag mixdiag:", &
+                  target_group, schur_attempt, projector_tail_active_delta_weight, &
+                  projector_coupled_weight*projector_tail_active_delta_weight, &
+                  projector_hessian_delta_diag_avg, projector_tail_active_delta_diag_avg, &
+                  projector_tail_delta_diag_avg
                IF (schur_attempt <= 2) THEN
                   IF (exact_energy_model_ready) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
@@ -19806,6 +19844,26 @@ CONTAINS
                             MAX(1.0_dp, 1.0_dp + diag_ratio)
 
       END FUNCTION kpoint_ot_projector_coupled_weight
+
+! **************************************************************************************************
+!> \brief map accepted density-response history weight to a Projector-delta blend fraction
+!> \param projector_weight active finite Projector-Hessian weight in the Schur block
+!> \param density_history_weight accepted-drop calibrated physical density-response weight
+!> \return fraction in [0,1] used to replace the raw Projector delta by the filtered physical delta
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_tail_active_delta_weight(projector_weight, density_history_weight) &
+         RESULT(delta_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, density_history_weight
+      REAL(KIND=dp)                                      :: delta_weight
+
+         delta_weight = 0.0_dp
+         IF (projector_weight <= EPSILON(projector_weight)) RETURN
+         IF (density_history_weight <= EPSILON(density_history_weight)) RETURN
+
+         delta_weight = MIN(1.0_dp, MAX(0.0_dp, density_history_weight)/ &
+                            MAX(projector_weight, EPSILON(projector_weight)))
+
+      END FUNCTION kpoint_ot_projector_tail_active_delta_weight
 
 ! **************************************************************************************************
 !> \brief finite Projector-response residual taper used by modal response audits

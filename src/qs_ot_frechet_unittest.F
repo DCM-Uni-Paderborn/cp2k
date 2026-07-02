@@ -266,6 +266,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-14_dp, nfail)
    CALL check_projector_coupled_tail_weight("complex projector coupled tail weight", &
                                             5.0E-14_dp, nfail)
+   CALL check_projector_tail_active_delta_weight("complex projector active-delta tail weight", &
+                                                 5.0E-14_dp, nfail)
    CALL check_projector_direct_delta_eigen_copy("complex projector Direct delta eigen copy", &
                                                 5.0E-13_dp, nfail)
    CALL check_projector_active_residual_filter("complex projector active residual filter", &
@@ -9965,6 +9967,46 @@ CONTAINS
    END SUBROUTINE check_projector_coupled_tail_weight
 
 ! **************************************************************************************************
+!> \brief Check conversion from absolute density-history weight to Projector-delta blend fraction.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_tail_active_delta_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, full_blend, no_density, no_projector, &
+                                                            partial_blend, saturated_blend
+
+      no_projector = dense_projector_tail_active_delta_weight(0.0_dp, 0.05_dp)
+      no_density = dense_projector_tail_active_delta_weight(0.10_dp, 0.0_dp)
+      partial_blend = dense_projector_tail_active_delta_weight(0.10_dp, 0.025_dp)
+      full_blend = dense_projector_tail_active_delta_weight(0.10_dp, 0.10_dp)
+      saturated_blend = dense_projector_tail_active_delta_weight(0.05_dp, 0.20_dp)
+
+      err = ABS(no_projector)
+      err = MAX(err, ABS(no_density))
+      err = MAX(err, ABS(partial_blend - 0.25_dp))
+      err = MAX(err, ABS(full_blend - 1.0_dp))
+      err = MAX(err, ABS(saturated_blend - 1.0_dp))
+
+      IF (err > tol .OR. partial_blend <= no_density .OR. full_blend < partial_blend .OR. &
+          saturated_blend < full_blend) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/noproj/nodens/partial/full/saturated", err, no_projector, &
+            no_density, partial_blend, full_blend, saturated_blend
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/noproj/nodens/partial/full/saturated", err, no_projector, &
+            no_density, partial_blend, full_blend, saturated_blend
+      END IF
+
+   END SUBROUTINE check_projector_tail_active_delta_weight
+
+! **************************************************************************************************
 !> \brief Check that Direct-Delta eigenspaces do not overwrite the production curvature matrix.
 !> \param label ...
 !> \param tol ...
@@ -12649,6 +12691,25 @@ CONTAINS
                          MAX(1.0_dp, 1.0_dp + diag_ratio)
 
    END FUNCTION dense_projector_coupled_tail_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of active density-response Projector-delta blend fraction.
+!> \param projector_weight ...
+!> \param density_history_weight ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_tail_active_delta_weight(projector_weight, density_history_weight) RESULT(delta_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: projector_weight, density_history_weight
+      REAL(KIND=dp)                                      :: delta_weight
+
+      delta_weight = 0.0_dp
+      IF (projector_weight <= EPSILON(projector_weight)) RETURN
+      IF (density_history_weight <= EPSILON(density_history_weight)) RETURN
+
+      delta_weight = MIN(1.0_dp, MAX(0.0_dp, density_history_weight)/ &
+                         MAX(projector_weight, EPSILON(projector_weight)))
+
+   END FUNCTION dense_projector_tail_active_delta_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of accepted-drop trust for low-curvature density response.
