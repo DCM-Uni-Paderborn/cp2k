@@ -1980,8 +1980,9 @@ CONTAINS
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, response_shape, safe_abs, &
-         safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, &
+         response_shape, safe_abs, safe_blend, safe_cap, safe_component, sign_projector_response, &
+         sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -1991,15 +1992,18 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_component = density_projector_response
+      projector_component = density_projector_response
       sign_projector_response = density_projector_response
       sign_safe_response = density_safe_response
-      IF (PRESENT(density_projector_centered_response)) &
+      IF (PRESENT(density_projector_centered_response)) THEN
+         projector_component = density_projector_centered_response
          sign_projector_response = density_projector_centered_response
+      END IF
       IF (PRESENT(density_safe_centered_response)) &
          sign_safe_response = density_safe_centered_response
-      projector_abs = ABS(density_projector_response)
-      safe_abs = ABS(density_safe_response)
+      safe_component = projector_component
+      projector_abs = ABS(projector_component)
+      safe_abs = ABS(sign_safe_response)
       alignment = 0.0_dp
       IF (PRESENT(density_response_alignment)) &
          alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
@@ -2020,19 +2024,18 @@ CONTAINS
          ELSE
             safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          END IF
-         safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
+         safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
          safe_blend = active_fraction
-         safe_component = (1.0_dp - safe_blend)*density_projector_response + &
+         safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*safe_component
       ELSE IF (anti_aligned_safe_response) THEN
-         safe_component = SIGN(MIN(projector_abs, safe_abs), density_safe_response)
+         safe_component = SIGN(MIN(projector_abs, safe_abs), sign_safe_response)
       END IF
-      ! The density channel follows the finite spectral response, but augments it
-      ! with the gauge-safe diagonal occupation response when both point along
-      ! the same physical density direction.  The same active-window shape that
-      ! scales the final response also caps the safe component: fully active
-      ! Fermi-window channels keep their fixed-N curvature, while inert bands
-      ! still receive a quadratic low-curvature suppression.
+      ! The density channel follows the finite spectral response, but once the
+      ! fixed-N centered columns are available they also set the response
+      ! magnitude.  This keeps channel-uniform dP gauge shifts out of the
+      ! physical Schur curvature while the raw full-density columns remain
+      ! available for audit/Direct models.
       density_response = response_shape*safe_component
 
    END FUNCTION kpoint_ot_physical_density_response
@@ -2086,8 +2089,8 @@ CONTAINS
       IF (PRESENT(density_response_alignment)) &
          alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
 
-      projector_abs = ABS(density_projector_response)
-      safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(sign_projector_response)
+      safe_abs = ABS(sign_safe_response)
       locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
                                    projector_abs <= EPSILON(projector_abs)
       globally_supported_response = alignment > 0.25_dp .AND. &

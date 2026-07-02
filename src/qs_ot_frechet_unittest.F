@@ -126,6 +126,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector residual gauge density-response", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_centered_sign( &
       "complex projector physical density centered-sign blend", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_density_centered_magnitude( &
+      "complex projector physical density centered-magnitude blend", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_global_alignment( &
       "complex projector physical density global alignment", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_global_low_curv( &
@@ -4985,7 +4987,7 @@ CONTAINS
       centered_response = dense_physical_density_response(raw_response, safe_response, &
                                                           occ_curv, occ_curv_max, response_ratio_gate, &
                                                           -0.02_dp, -0.04_dp)
-      err = ABS(centered_response - safe_response)
+      err = ABS(centered_response + 0.04_dp)
 
       IF (err > tol .OR. ABS(uncentered_response - raw_response) > tol .OR. &
           centered_response*safe_response <= 0.0_dp) THEN
@@ -5000,6 +5002,49 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_centered_sign
+
+! **************************************************************************************************
+!> \brief Check that fixed-N centered columns also set physical response magnitudes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_density_centered_magnitude(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp)                                      :: centered_response, err, legacy_gap, &
+                                                            occ_curv, occ_curv_max, raw_centered, &
+                                                            raw_response, safe_centered, safe_response
+
+      occ_curv_max = 4.0E-2_dp
+      occ_curv = occ_curv_max
+      raw_response = 0.52_dp
+      safe_response = 0.49_dp
+      raw_centered = 0.02_dp
+      safe_centered = -0.01_dp
+
+      centered_response = dense_physical_density_response(raw_response, safe_response, &
+                                                          occ_curv, occ_curv_max, response_ratio_gate, &
+                                                          raw_centered, safe_centered)
+      err = ABS(centered_response - safe_centered)
+      legacy_gap = ABS(centered_response + MIN(ABS(raw_response), ABS(safe_response)))
+
+      IF (err > tol .OR. ABS(centered_response) > ABS(raw_centered) + tol .OR. legacy_gap < 0.25_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/response/centered/legacygap", err, centered_response, &
+            safe_centered, legacy_gap
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/response/centered/legacygap", err, centered_response, &
+            safe_centered, legacy_gap
+      END IF
+
+   END SUBROUTINE check_projector_physical_density_centered_magnitude
 
 ! **************************************************************************************************
 !> \brief Check that a globally coherent fixed-N density response can recover local safe components.
@@ -5030,8 +5075,8 @@ CONTAINS
       aligned_response = dense_physical_density_response(raw_response, safe_response, &
                                                          occ_curv, occ_curv_max, response_ratio_gate, &
                                                          0.002_dp, -0.020_dp, 0.80_dp)
-      blocked_expected = -raw_response
-      expected_response = safe_response
+      blocked_expected = -0.002_dp
+      expected_response = -0.020_dp
 
       IF (ABS(blocked_response - blocked_expected) > tol .OR. &
           ABS(aligned_response - expected_response) > tol .OR. &
@@ -11881,8 +11926,8 @@ CONTAINS
       IF (PRESENT(density_response_alignment)) &
          alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
 
-      projector_abs = ABS(density_projector_response)
-      safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(sign_projector_response)
+      safe_abs = ABS(sign_safe_response)
       locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
                                    projector_abs <= EPSILON(projector_abs)
       globally_supported_response = alignment > 0.25_dp .AND. &
@@ -15719,8 +15764,8 @@ CONTAINS
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, response_shape, safe_abs, &
-         safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, response_shape, &
+         safe_abs, safe_blend, safe_cap, safe_component, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -15729,15 +15774,18 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_component = density_projector_response
+      projector_component = density_projector_response
       sign_projector_response = density_projector_response
       sign_safe_response = density_safe_response
-      IF (PRESENT(density_projector_centered_response)) &
+      IF (PRESENT(density_projector_centered_response)) THEN
+         projector_component = density_projector_centered_response
          sign_projector_response = density_projector_centered_response
+      END IF
       IF (PRESENT(density_safe_centered_response)) &
          sign_safe_response = density_safe_centered_response
-      projector_abs = ABS(density_projector_response)
-      safe_abs = ABS(density_safe_response)
+      safe_component = projector_component
+      projector_abs = ABS(projector_component)
+      safe_abs = ABS(sign_safe_response)
       alignment = 0.0_dp
       IF (PRESENT(density_response_alignment)) &
          alignment = MIN(1.0_dp, MAX(-1.0_dp, density_response_alignment))
@@ -15758,12 +15806,12 @@ CONTAINS
          ELSE
             safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          END IF
-         safe_component = SIGN(MIN(safe_abs, safe_cap), density_safe_response)
+         safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
          safe_blend = active_fraction
-         safe_component = (1.0_dp - safe_blend)*density_projector_response + &
+         safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*safe_component
       ELSE IF (anti_aligned_safe_response) THEN
-         safe_component = SIGN(MIN(projector_abs, safe_abs), density_safe_response)
+         safe_component = SIGN(MIN(projector_abs, safe_abs), sign_safe_response)
       END IF
       density_response = response_shape*safe_component
 
