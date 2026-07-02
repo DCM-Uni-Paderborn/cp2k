@@ -157,6 +157,7 @@ MODULE qs_scf_loop_utils
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_calibration_min_samples = 4
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_constrained_min_samples = 6
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_projector_response_min_samples = 8
+   INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_projector_spectral_selected_min_samples = 3
    INTEGER, PARAMETER, PRIVATE :: ot_kp_schur_projector_spectral_probe_max_failures = 2
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_schur_calibration_floor = 2.5E-1_dp, &
                                         ot_kp_schur_calibration_max_scale = 1.2_dp, &
@@ -3642,7 +3643,8 @@ CONTAINS
       SUBROUTINE update_kpoint_ot_schur_line_search_quality()
 
       INTEGER                                            :: local_channel, samples
-      LOGICAL                                            :: mermin_search
+      LOGICAL                                            :: mermin_search, spectral_selected_ema_ok, &
+                                                            spectral_selected_recent_ok
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          constrained_calibrated_predicted_drop, constrained_calibrated_quality_ratio, &
          constrained_predicted_drop, constrained_quality_ratio, gauge_residual_quality_ratio, &
@@ -5464,29 +5466,38 @@ CONTAINS
                   measured_drop/projector_spectral_selected_predicted_drop
                local_ot_env(1)%schur_projector_spectral_selected_quality = &
                   projector_spectral_selected_quality_ratio
+               local_ot_env(1)%schur_projector_spectral_selected_residual_quality = &
+                  residual_quality_ratio
                samples = MIN(local_ot_env(1)%schur_projector_spectral_selected_quality_samples + 1, &
                              HUGE(samples) - 1)
                local_ot_env(1)%schur_projector_spectral_selected_quality_samples = samples
                IF (samples == 1) THEN
                   local_ot_env(1)%schur_projector_spectral_selected_quality_ema = &
                      projector_spectral_selected_quality_ratio
+                  local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema = &
+                     residual_quality_ratio
                ELSE
                   local_ot_env(1)%schur_projector_spectral_selected_quality_ema = &
                      (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                      local_ot_env(1)%schur_projector_spectral_selected_quality_ema + &
                      ot_kp_schur_quality_ema_alpha*projector_spectral_selected_quality_ratio
+                  local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*residual_quality_ratio
                END IF
                local_ot_env(1)%schur_projector_spectral_selected_drop_sum = &
                   local_ot_env(1)%schur_projector_spectral_selected_drop_sum + &
                   projector_spectral_selected_predicted_drop
                local_ot_env(1)%schur_projector_spectral_selected_measured_sum = &
                   local_ot_env(1)%schur_projector_spectral_selected_measured_sum + measured_drop
-               ! A positive but badly overpredicted spectral probe still
-               ! damages the tight residual tail.  Count it as a selected
-               ! calibration failure so subsequent steps fall back to the
-               ! coupled/density response history instead of re-probing.
+               ! A positive but badly overpredicted spectral probe is only
+               ! damaging in the tail if it also fails to reduce the physical
+               ! residual. Keep residual-good directions alive even when the
+               ! local Mermin drop model is temporarily pessimistic.
                IF (projector_spectral_selected_quality_ratio < &
-                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) &
+                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                   residual_quality_ratio < ot_kp_schur_projector_response_quality_min_ratio) &
                   local_ot_env(1)%schur_projector_spectral_selected_failure_samples = &
                   MIN(local_ot_env(1)%schur_projector_spectral_selected_failure_samples + 1, &
                       HUGE(samples) - 1)
@@ -5496,6 +5507,8 @@ CONTAINS
                       HUGE(samples) - 1)
                local_ot_env(1)%schur_projector_spectral_selected_quality = 0.0_dp
                local_ot_env(1)%schur_projector_spectral_selected_quality_ema = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_selected_residual_quality = 0.0_dp
+               local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema = 0.0_dp
             END IF
          END IF
          ! A too-large physical quality ratio means the shadow model is
@@ -5510,6 +5523,16 @@ CONTAINS
             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
          ! Let robust spectral shadow history promote the candidate early,
          ! but do not make one positive, overpredicted probe a permanent veto.
+         spectral_selected_ema_ok = &
+            local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
+            ot_kp_schur_projector_response_quality_min_ratio .OR. &
+            local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema >= &
+            ot_kp_schur_projector_response_quality_min_ratio
+         spectral_selected_recent_ok = &
+            local_ot_env(1)%schur_projector_spectral_selected_quality >= &
+            0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .OR. &
+            local_ot_env(1)%schur_projector_spectral_selected_residual_quality >= &
+            ot_kp_schur_projector_response_quality_min_ratio
          local_ot_env(1)%schur_projector_spectral_candidate_enabled = &
             local_ot_env(1)%schur_projector_spectral_selected_failure_samples < &
             ot_kp_schur_projector_spectral_probe_max_failures .AND. &
@@ -5520,18 +5543,22 @@ CONTAINS
               local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
               EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
               local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
-              local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
+              spectral_selected_ema_ok .AND. spectral_selected_recent_ok) .OR. &
+             (local_ot_env(1)%schur_projector_spectral_selected_quality_samples >= &
+              ot_kp_schur_projector_spectral_selected_min_samples .AND. &
+              local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
+              EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
+              local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
+              local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema >= &
               ot_kp_schur_projector_response_quality_min_ratio .AND. &
-              local_ot_env(1)%schur_projector_spectral_selected_quality >= &
-              0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .OR. &
+              local_ot_env(1)%schur_projector_spectral_selected_residual_quality >= &
+              ot_kp_schur_projector_response_quality_min_ratio .AND. &
+              spectral_selected_ema_ok .AND. spectral_selected_recent_ok) .OR. &
              (local_ot_env(1)%schur_projector_spectral_selected_quality_samples > 0 .AND. &
               local_ot_env(1)%schur_projector_spectral_selected_drop_sum > &
               EPSILON(local_ot_env(1)%schur_projector_spectral_selected_drop_sum) .AND. &
               local_ot_env(1)%schur_projector_spectral_selected_measured_sum > 0.0_dp .AND. &
-              local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
-              ot_kp_schur_projector_response_quality_min_ratio .AND. &
-              local_ot_env(1)%schur_projector_spectral_selected_quality >= &
-              0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+              spectral_selected_ema_ok .AND. spectral_selected_recent_ok .AND. &
               local_ot_env(1)%schur_projector_spectral_quality_samples >= &
               ot_kp_schur_projector_response_min_samples .AND. &
               local_ot_env(1)%schur_projector_spectral_drop_sum > &
@@ -5980,12 +6007,14 @@ CONTAINS
                local_ot_env(1)%schur_projector_spectral_emin, &
                local_ot_env(1)%schur_projector_spectral_emin_ema, &
                local_ot_env(1)%schur_projector_spectral_candidate_enabled
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),5(1X,ES16.8))') &
-               " OT Schur LS projector spectral selected history n fail ratio ema pred meas latest:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),7(1X,ES16.8))') &
+               " OT Schur LS projector spectral selected history n fail ratio ema rq rqema pred meas latest:", &
                local_ot_env(1)%schur_projector_spectral_selected_quality_samples, &
                local_ot_env(1)%schur_projector_spectral_selected_failure_samples, &
                local_ot_env(1)%schur_projector_spectral_selected_quality, &
                local_ot_env(1)%schur_projector_spectral_selected_quality_ema, &
+               local_ot_env(1)%schur_projector_spectral_selected_residual_quality, &
+               local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema, &
                local_ot_env(1)%schur_projector_spectral_selected_drop_sum, &
                local_ot_env(1)%schur_projector_spectral_selected_measured_sum, &
                projector_spectral_selected_predicted_drop
@@ -12311,6 +12340,8 @@ CONTAINS
                               ot_kp_schur_projector_spectral_probe_max_failures .AND. &
                               (local_ot_env(1)%schur_projector_spectral_selected_failure_samples == 0 .OR. &
                                local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
+                               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .OR. &
+                               local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema >= &
                                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .AND. &
                               local_ot_env(1)%schur_projector_spectral_quality_samples >= &
                               ot_kp_schur_projector_response_min_samples .AND. &

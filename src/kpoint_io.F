@@ -64,7 +64,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 11
+   INTEGER, PARAMETER                   :: ot_restart_version = 12
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -530,7 +530,7 @@ CONTAINS
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
       LOGICAL, DIMENSION(28)                             :: log_payload
-      REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
 
       nchannel = SIZE(qs_ot_env)
@@ -774,7 +774,9 @@ CONTAINS
                                qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_free_ema, &
                                qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_quality_ema, &
                                qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_diag_quality_ema, &
-                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_free_quality_ema]
+                               qs_ot_env(ichannel)%schur_projector_physical_trace_invariant_free_quality_ema, &
+                               qs_ot_env(ichannel)%schur_projector_spectral_selected_residual_quality, &
+                               qs_ot_env(ichannel)%schur_projector_spectral_selected_residual_quality_ema]
 
          IF (ires > 0) THEN
             WRITE (ires) int_payload
@@ -916,7 +918,8 @@ CONTAINS
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
       LOGICAL, DIMENSION(28)                             :: log_payload
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
-      REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload
+      REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload_v11
+      REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
@@ -972,9 +975,14 @@ CONTAINS
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_pos
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_energy
             READ (rst_unit) scf_env%qs_ot_restart%channel(ichannel)%ot_grad
-            IF (version_read >= 10) THEN
+            IF (version_read >= 12) THEN
                READ (rst_unit) schur_int_payload
                READ (rst_unit) schur_real_payload
+            ELSE IF (version_read >= 10) THEN
+               READ (rst_unit) schur_int_payload
+               READ (rst_unit) schur_real_payload_v11
+               schur_real_payload(:) = 0.0_dp
+               schur_real_payload(1:124) = schur_real_payload_v11
             ELSE IF (version_read == 9) THEN
                READ (rst_unit) schur_int_payload
                READ (rst_unit) schur_real_payload_v9
@@ -1031,6 +1039,7 @@ CONTAINS
             schur_real_payload(113) = 1.0_dp
             schur_real_payload(114) = 1.0_dp
          END IF
+         IF (version_read < 12) schur_real_payload(126) = 1.0_dp
          CALL para_env%bcast(int_payload)
          CALL para_env%bcast(log_payload)
          CALL para_env%bcast(real_payload)
@@ -1201,6 +1210,10 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_quality_ema = schur_real_payload(49)
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_drop_sum = schur_real_payload(50)
          scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_measured_sum = schur_real_payload(51)
+         scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_residual_quality = &
+            schur_real_payload(125)
+         scf_env%qs_ot_restart%channel(ichannel)%spectral_selected_residual_quality_ema = &
+            schur_real_payload(126)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected = schur_real_payload(52)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality = schur_real_payload(53)
          scf_env%qs_ot_restart%channel(ichannel)%response_selected_quality_ema = schur_real_payload(54)

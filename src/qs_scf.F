@@ -2960,6 +2960,10 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality
             qs_ot_env%schur_projector_spectral_selected_quality_ema = &
                scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality_ema
+            qs_ot_env%schur_projector_spectral_selected_residual_quality = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_residual_quality
+            qs_ot_env%schur_projector_spectral_selected_residual_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_residual_quality_ema
             qs_ot_env%schur_projector_spectral_selected_drop_sum = &
                scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_drop_sum
             qs_ot_env%schur_projector_spectral_selected_measured_sum = &

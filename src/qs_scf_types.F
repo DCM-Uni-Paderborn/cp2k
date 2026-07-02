@@ -260,6 +260,8 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: mixed_direct_weight = 0.0_dp, mixed_direct_weight_ema = 0.0_dp
       REAL(KIND=dp) :: spectral_selected_quality = 0.0_dp
       REAL(KIND=dp) :: spectral_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_residual_quality_ema = 1.0_dp
       REAL(KIND=dp) :: spectral_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: spectral_selected_measured_sum = 0.0_dp
       TYPE(cp_fm_type), POINTER :: matrix_x => NULL(), matrix_x_im => NULL()
