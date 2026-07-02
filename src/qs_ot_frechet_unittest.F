@@ -8696,7 +8696,7 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL :: low_drop, low_quality, low_samples, ready, selected_bad, selected_floor, &
-         selected_ok, selected_recent_bad, tail_veto, weak_drop
+         selected_ok, selected_recent_bad, stale_interval_veto, stale_refresh, tail_veto, weak_drop
       REAL(KIND=dp)                                      :: err
 
       ready = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
@@ -8714,28 +8714,32 @@ CONTAINS
       selected_ok = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                          0.20_dp, 8, 0.40_dp, 0.40_dp, 4, 0.40_dp)
       selected_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                          0.20_dp, 8, 0.40_dp, 0.20_dp, 4, 0.40_dp)
+                                                          0.20_dp, 8, 0.40_dp, 0.20_dp, 4, 0.70_dp)
       selected_recent_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                                  0.20_dp, 8, 0.05_dp, 0.40_dp, 4, 0.40_dp)
       selected_floor = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                             0.20_dp, 8, 0.21_dp, 0.21_dp, 4, 0.0_dp)
+      stale_refresh = dense_density_full_direct_tail_probe(5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, &
+                                                           0.25_dp, 8, 0.05_dp, 0.10_dp, 4, 0.25_dp)
+      stale_interval_veto = dense_density_full_direct_tail_probe(5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, &
+                                                                 0.25_dp, 9, 0.05_dp, 0.10_dp, 4, 0.25_dp)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_drop .OR. &
           weak_drop .OR. .NOT. selected_ok .OR. selected_bad .OR. selected_recent_bad .OR. &
-          .NOT. selected_floor) err = 1.0_dp
+          .NOT. selected_floor .OR. .NOT. stale_refresh .OR. stale_interval_veto) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
-            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor", ready, tail_veto, &
+         WRITE (*, '(A,1X,A,12(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/stale/int", ready, tail_veto, &
             low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
-            selected_floor
+            selected_floor, stale_refresh, stale_interval_veto
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
-            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor", ready, tail_veto, &
+         WRITE (*, '(A,1X,A,12(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/stale/int", ready, tail_veto, &
             low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
-            selected_floor
+            selected_floor, stale_refresh, stale_interval_veto
       END IF
 
    END SUBROUTINE check_projector_density_full_direct_tail_probe
@@ -11638,18 +11642,35 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
       LOGICAL                                            :: do_probe
 
+      LOGICAL                                            :: stale_residual_probe
+      REAL(KIND=dp)                                      :: required_drop_ratio
+
       do_probe = .FALSE.
       IF (residual_delta > 1.0E-4_dp) RETURN
       IF (samples < 8) RETURN
       IF (quality_ema < 1.0E-1_dp) RETURN
       IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
-      IF (candidate_expected_drop < 8.0E-1_dp*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+
+      stale_residual_probe = .FALSE.
+      IF (selected_samples >= 4) THEN
+         stale_residual_probe = dense_residual_quality <= 5.0E-1_dp .AND. &
+                                selected_residual_quality_ema < 8.0E-1_dp* &
+                                MAX(dense_residual_quality, 2.5E-1_dp) .AND. &
+                                quality_ema >= 2.0E-1_dp .AND. &
+                                MOD(samples, 8) == 0
+      END IF
+
+      required_drop_ratio = 8.0E-1_dp
+      IF (stale_residual_probe) required_drop_ratio = MIN(required_drop_ratio, 2.0E-1_dp)
+      IF (candidate_expected_drop < required_drop_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
 
       IF (selected_samples >= 4) THEN
-         IF (selected_residual_quality_ema < 8.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
-            RETURN
-         IF (selected_residual_quality < 4.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
-            RETURN
+         IF (.NOT. stale_residual_probe) THEN
+            IF (selected_residual_quality_ema < 8.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
+               RETURN
+            IF (selected_residual_quality < 4.0E-1_dp*MAX(dense_residual_quality, 2.5E-1_dp)) &
+               RETURN
+         END IF
       END IF
 
       do_probe = .TRUE.
