@@ -340,6 +340,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector cluster-pair response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_modal_occ_shape( &
       "history-safe occupation-projector cluster modal occupation", 5.0E-12_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_kernel_invariants( &
+      "history-safe occupation-projector cluster kernel invariants", 5.0E-12_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
                                               5.0E-9_dp, nfail)
    CALL check_complex_canonical_tether_gradient("complex canonical tether gradient", &
@@ -13944,7 +13946,7 @@ CONTAINS
       CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_window, &
                                                     projector_window_gap)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_window, docc_expected, &
-                                                       occ_curv, gauge_gap)
+                                                       occ_curv, gauge_gap, projector_window_gap)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_raw, docc_raw, occ_curv, gauge_gap)
       docc_expected(:, :) = projector_weight*docc_expected(:, :)
       docc_raw(:, :) = projector_weight*docc_raw(:, :)
@@ -15397,6 +15399,99 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_cluster_modal_occ_shape
 
 ! **************************************************************************************************
+!> \brief Check mixed cluster/singleton fixed-N kernel invariants independently of the formula mirror.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_kernel_invariants(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 5
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-5_dp, gauge_gap = 5.0E-5_dp, &
+         projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, kernel_back, kernel_q, q, work, &
+                                                            work_q
+      COMPLEX(KIND=dp)                                   :: phase1, phase2, sentinel
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, c1, c2, cov_err, herm_err, s1, s2, &
+                                                            trace_leak
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
+
+      evals(:) = [-0.010000_dp, -0.010000_dp, 0.105000_dp, 0.105000_dp, 0.42_dp]
+      occ_slope(:) = [0.86_dp, 0.86_dp, 0.30_dp, 0.30_dp, 0.04_dp]
+      occ_curv(:) = [0.052_dp, 0.052_dp, 0.027_dp, 0.027_dp, 0.006_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 1) = CMPLX(0.08_dp, 0.0_dp, KIND=dp)
+      work(2, 2) = CMPLX(-0.03_dp, 0.0_dp, KIND=dp)
+      work(3, 3) = CMPLX(0.04_dp, 0.0_dp, KIND=dp)
+      work(4, 4) = CMPLX(-0.02_dp, 0.0_dp, KIND=dp)
+      work(5, 5) = CMPLX(0.015_dp, 0.0_dp, KIND=dp)
+      work(1, 2) = CMPLX(0.14_dp, -0.09_dp, KIND=dp)
+      work(3, 4) = CMPLX(-0.11_dp, 0.07_dp, KIND=dp)
+      work(1, 3) = CMPLX(0.05_dp, -0.03_dp, KIND=dp)
+      work(1, 4) = CMPLX(-0.04_dp, -0.02_dp, KIND=dp)
+      work(2, 3) = CMPLX(0.03_dp, 0.06_dp, KIND=dp)
+      work(2, 4) = CMPLX(-0.02_dp, 0.05_dp, KIND=dp)
+      work(1, 5) = CMPLX(0.04_dp, 0.01_dp, KIND=dp)
+      work(3, 5) = CMPLX(-0.03_dp, 0.02_dp, KIND=dp)
+      DO i = 2, n
+         work(i, 1:i - 1) = CONJG(work(1:i - 1, i))
+      END DO
+
+      sentinel = CMPLX(9.0_dp, -3.0_dp, KIND=dp)
+      kernel(:, :) = sentinel
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel, projector_window_gap)
+
+      trace_leak = 0.0_dp
+      DO i = 1, n
+         trace_leak = trace_leak + REAL(kernel(i, i), KIND=dp)
+      END DO
+      trace_leak = ABS(trace_leak)
+      herm_err = MAXVAL(ABS(kernel(:, :) - CONJG(TRANSPOSE(kernel(:, :)))))
+      active = MAXVAL(ABS(kernel(:, :)))
+
+      q(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      c1 = COS(0.37_dp)
+      s1 = SIN(0.37_dp)
+      phase1 = CMPLX(COS(0.43_dp), SIN(0.43_dp), KIND=dp)
+      q(1, 1) = CMPLX(c1, 0.0_dp, KIND=dp)
+      q(1, 2) = phase1*s1
+      q(2, 1) = -CONJG(phase1)*s1
+      q(2, 2) = CMPLX(c1, 0.0_dp, KIND=dp)
+      c2 = COS(0.29_dp)
+      s2 = SIN(0.29_dp)
+      phase2 = CMPLX(COS(-0.31_dp), SIN(-0.31_dp), KIND=dp)
+      q(3, 3) = CMPLX(c2, 0.0_dp, KIND=dp)
+      q(3, 4) = phase2*s2
+      q(4, 3) = -CONJG(phase2)*s2
+      q(4, 4) = CMPLX(c2, 0.0_dp, KIND=dp)
+      q(5, 5) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+
+      work_q(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(work, q))
+      kernel_q(:, :) = sentinel
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work_q, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel_q, projector_window_gap)
+      kernel_back(:, :) = MATMUL(q, MATMUL(kernel_q, CONJG(TRANSPOSE(q))))
+      cov_err = MAXVAL(ABS(kernel_back(:, :) - kernel(:, :)))
+
+      IF (trace_leak > tol .OR. herm_err > tol .OR. cov_err > tol .OR. active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with trace/herm/cov/active", trace_leak, herm_err, cov_err, active
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with trace/herm/cov/active", trace_leak, herm_err, cov_err, active
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_kernel_invariants
+
+! **************************************************************************************************
 !> \brief Dense PAVA projection to non-increasing occupation slopes.
 !> \param occ_scale ...
 !> \param occ_tol ...
@@ -15885,13 +15980,16 @@ CONTAINS
 !> \param docc_mat ...
 !> \param occ_curv ...
 !> \param gauge_gap ...
+!> \param projector_window_gap ...
 ! **************************************************************************************************
-   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap)
+   SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap, &
+                                                          projector_window_gap)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
@@ -15951,8 +16049,14 @@ CONTAINS
             coeff = MIN(0.0_dp, coeff)
             IF (PRESENT(occ_curv)) THEN
                IF (PRESENT(gauge_gap)) THEN
-                  slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv(i), occ_curv(j), &
-                                                              MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                  IF (PRESENT(projector_window_gap)) THEN
+                     slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv(i), occ_curv(j), &
+                                                                 MAXVAL(MAX(0.0_dp, occ_curv(:))), &
+                                                                 projector_window_gap)
+                  ELSE
+                     slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv(i), occ_curv(j), &
+                                                                 MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                  END IF
                ELSE
                   slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
                END IF
@@ -16072,7 +16176,8 @@ CONTAINS
          DEALLOCATE (evec, evals, kernel, work)
       END IF
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
-         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap)
+         CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap, &
+                                                          projector_window_gap)
       ELSE
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat)
       END IF
