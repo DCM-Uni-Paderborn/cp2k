@@ -9868,6 +9868,12 @@ CONTAINS
                ot_kp_schur_projector_response_ratio_gate
             projector_offdiag_quality_for_selection = &
                projector_offdiag_history_quality*projector_offdiag_history_trust
+            projector_offdiag_quality_for_selection = &
+               kpoint_ot_offdiag_tail_residual_quality( &
+               projector_offdiag_quality_for_selection, &
+               local_ot_env(1)%schur_coupled_residual_quality, &
+               local_ot_env(1)%schur_coupled_residual_quality_ema, &
+               local_ot_env(1)%schur_coupled_quality_samples, residual_delta)
          END IF
          IF (local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples >= &
              ot_kp_schur_projector_response_min_samples) THEN
@@ -9901,6 +9907,12 @@ CONTAINS
             projector_inactive_offdiag_quality_for_selection = &
                projector_inactive_offdiag_history_quality* &
                projector_inactive_offdiag_history_trust
+            projector_inactive_offdiag_quality_for_selection = &
+               kpoint_ot_offdiag_tail_residual_quality( &
+               projector_inactive_offdiag_quality_for_selection, &
+               local_ot_env(1)%schur_coupled_residual_quality, &
+               local_ot_env(1)%schur_coupled_residual_quality_ema, &
+               local_ot_env(1)%schur_coupled_quality_samples, residual_delta)
          END IF
          IF (local_ot_env(1)%schur_split_quality_samples >= ot_kp_schur_calibration_min_samples .OR. &
              local_ot_env(1)%schur_coupled_quality_samples >= ot_kp_schur_calibration_min_samples) &
@@ -18190,6 +18202,47 @@ CONTAINS
          quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
 
       END FUNCTION kpoint_ot_inactive_offdiag_selected_tail_quality
+
+! **************************************************************************************************
+!> \brief residual-tail cap for offdiag projector candidate history
+!> \param base_quality accepted Mermin-drop history quality
+!> \param residual_quality latest accepted coupled residual quality
+!> \param residual_quality_ema EMA of accepted coupled residual quality
+!> \param residual_samples number of coupled accepted samples
+!> \param residual_delta current OT residual delta
+!> \return offdiag candidate selection quality capped by residual consistency
+! **************************************************************************************************
+      FUNCTION kpoint_ot_offdiag_tail_residual_quality(base_quality, residual_quality, &
+                                                       residual_quality_ema, residual_samples, &
+                                                       residual_delta) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, residual_quality, &
+                                                            residual_quality_ema, residual_delta
+      INTEGER, INTENT(IN)                                :: residual_samples
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: residual_cap, residual_ref, residual_signal
+
+         quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, base_quality))
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (residual_samples < 2*ot_kp_schur_calibration_min_samples) RETURN
+
+         residual_signal = MAX(0.0_dp, MIN(1.0_dp, residual_quality_ema))
+         IF (residual_quality > EPSILON(residual_quality)) &
+            residual_signal = MIN(residual_signal, &
+                                  0.5_dp*(residual_signal + &
+                                          MAX(0.0_dp, MIN(1.0_dp, residual_quality))))
+         IF (residual_signal <= EPSILON(residual_signal)) THEN
+            quality = 0.0_dp
+            RETURN
+         END IF
+
+         residual_ref = MAX(ot_kp_schur_calibrated_quality_min_ratio, EPSILON(1.0_dp))
+         residual_cap = ot_kp_schur_projector_response_quality_max_ratio* &
+                        MIN(1.0_dp, residual_signal/residual_ref)
+         quality = MIN(quality, residual_cap)
+         quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
+
+      END FUNCTION kpoint_ot_offdiag_tail_residual_quality
 
 ! **************************************************************************************************
 !> \brief accepted-history gate for conservative projector-response underprediction

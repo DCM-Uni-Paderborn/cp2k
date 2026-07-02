@@ -214,6 +214,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
    CALL check_projector_inactive_offdiag_selected_tail_quality( &
       "complex projector inactive-offdiag selected tail quality", 5.0E-14_dp, nfail)
+   CALL check_projector_offdiag_tail_residual_quality( &
+      "complex projector offdiag tail residual quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_underprediction_quality( &
       "complex projector response underprediction quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_adverse_fraction( &
@@ -8398,6 +8400,64 @@ CONTAINS
    END SUBROUTINE check_projector_inactive_offdiag_selected_tail_quality
 
 ! **************************************************************************************************
+!> \brief Check residual-tail cap for offdiag projector history quality.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_offdiag_tail_residual_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: cal_quality = 0.25_dp, &
+                                                            max_quality = 1.25_dp, &
+                                                            tail_delta = 1.0E-4_dp
+
+      REAL(KIND=dp)                                      :: err, expected_moderate, expected_weak, &
+                                                            good_quality, immature_quality, &
+                                                            moderate_quality, outside_tail_quality, &
+                                                            weak_quality, zero_quality
+
+      immature_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.0_dp, 0.0_dp, 4, tail_delta, tail_delta, cal_quality, max_quality)
+      outside_tail_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.0_dp, 0.0_dp, 16, 2.0_dp*tail_delta, tail_delta, cal_quality, max_quality)
+      good_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.50_dp, 0.50_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
+      moderate_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.04_dp, 0.05_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
+      weak_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.00536993433_dp, 0.00883931517_dp, 104, tail_delta, tail_delta, &
+         cal_quality, max_quality)
+      zero_quality = dense_offdiag_tail_residual_quality( &
+         1.25_dp, 0.0_dp, 0.0_dp, 104, tail_delta, tail_delta, cal_quality, max_quality)
+
+      expected_moderate = max_quality*(0.5_dp*(0.05_dp + 0.04_dp)/cal_quality)
+      expected_weak = max_quality*(0.5_dp*(0.00883931517_dp + 0.00536993433_dp)/ &
+                                   cal_quality)
+      err = ABS(immature_quality - max_quality)
+      err = MAX(err, ABS(outside_tail_quality - max_quality))
+      err = MAX(err, ABS(good_quality - max_quality))
+      err = MAX(err, ABS(moderate_quality - expected_moderate))
+      err = MAX(err, ABS(weak_quality - expected_weak))
+      err = MAX(err, ABS(zero_quality))
+
+      IF (err > tol .OR. weak_quality >= 0.10_dp .OR. zero_quality > tol .OR. &
+          moderate_quality <= weak_quality) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed err/immature/outside/good/moderate/weak/zero", err, immature_quality, &
+            outside_tail_quality, good_quality, moderate_quality, weak_quality, zero_quality
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK err/immature/outside/good/moderate/weak/zero", err, immature_quality, &
+            outside_tail_quality, good_quality, moderate_quality, weak_quality, zero_quality
+      END IF
+
+   END SUBROUTINE check_projector_offdiag_tail_residual_quality
+
+! **************************************************************************************************
 !> \brief Check that accepted Mermin history treats large response ratios as underprediction.
 !> \param label ...
 !> \param tol ...
@@ -11060,6 +11120,51 @@ CONTAINS
       quality = MAX(0.0_dp, MIN(max_quality, quality))
 
    END FUNCTION dense_inactive_offdiag_selected_tail_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of offdiag residual-tail history cap.
+!> \param base_quality ...
+!> \param residual_quality ...
+!> \param residual_quality_ema ...
+!> \param residual_samples ...
+!> \param residual_delta ...
+!> \param tail_delta ...
+!> \param calibrated_min_quality ...
+!> \param max_quality ...
+!> \return offdiag candidate selection quality capped by residual consistency
+! **************************************************************************************************
+   FUNCTION dense_offdiag_tail_residual_quality(base_quality, residual_quality, residual_quality_ema, &
+                                                residual_samples, residual_delta, tail_delta, &
+                                                calibrated_min_quality, max_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, residual_quality, &
+                                                            residual_quality_ema, residual_delta, &
+                                                            tail_delta, calibrated_min_quality, &
+                                                            max_quality
+      INTEGER, INTENT(IN)                                :: residual_samples
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: residual_cap, residual_ref, residual_signal
+
+      quality = MAX(0.0_dp, MIN(max_quality, base_quality))
+      IF (residual_delta > tail_delta) RETURN
+      IF (residual_samples < 8) RETURN
+
+      residual_signal = MAX(0.0_dp, MIN(1.0_dp, residual_quality_ema))
+      IF (residual_quality > EPSILON(residual_quality)) &
+         residual_signal = MIN(residual_signal, &
+                               0.5_dp*(residual_signal + &
+                                       MAX(0.0_dp, MIN(1.0_dp, residual_quality))))
+      IF (residual_signal <= EPSILON(residual_signal)) THEN
+         quality = 0.0_dp
+         RETURN
+      END IF
+
+      residual_ref = MAX(calibrated_min_quality, EPSILON(1.0_dp))
+      residual_cap = max_quality*MIN(1.0_dp, residual_signal/residual_ref)
+      quality = MIN(quality, residual_cap)
+      quality = MAX(0.0_dp, MIN(max_quality, quality))
+
+   END FUNCTION dense_offdiag_tail_residual_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of projector-response candidate gate.
