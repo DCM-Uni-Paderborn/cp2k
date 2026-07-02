@@ -212,6 +212,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector invariant-trace Direct trust", 5.0E-14_dp, nfail)
    CALL check_projector_direct_selected_history_quality( &
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
+   CALL check_projector_inactive_offdiag_selected_tail_quality( &
+      "complex projector inactive-offdiag selected tail quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_underprediction_quality( &
       "complex projector response underprediction quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_adverse_fraction( &
@@ -8326,6 +8328,74 @@ CONTAINS
    END SUBROUTINE check_projector_direct_selected_history_quality
 
 ! **************************************************************************************************
+!> \brief Check mature inactive-offdiag selected history can lose the residual-tail floor.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_inactive_offdiag_selected_tail_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: cal_quality = 0.25_dp, &
+                                                            max_quality = 1.25_dp, &
+                                                            tail_delta = 1.0E-4_dp
+
+      REAL(KIND=dp)                                      :: al_tail_quality, err, expected_al_tail, &
+                                                            good_tail_quality, immature_quality, &
+                                                            outside_tail_quality, weak_tail_quality, &
+                                                            zero_tail_quality
+
+      immature_quality = dense_inactive_offdiag_selected_tail_quality( &
+         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 4, 4, &
+         tail_delta, tail_delta, cal_quality, max_quality)
+      outside_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
+         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 16, 4, &
+         2.0_dp*tail_delta, tail_delta, cal_quality, max_quality)
+      good_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
+         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.50_dp, 0.50_dp, 0.25_dp, 16, 4, &
+         tail_delta, tail_delta, cal_quality, max_quality)
+      al_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
+         0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
+         0.276863603_dp, 0.169491253_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, &
+         cal_quality, max_quality)
+      weak_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
+         0.10_dp, 0.064148488_dp, 2.11544262E-4_dp, 2.03786650E-5_dp, &
+         0.240690437_dp, 0.274936610_dp, 0.10_dp, 21, 4, tail_delta, tail_delta, &
+         cal_quality, max_quality)
+      zero_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
+         0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
+         0.0_dp, 0.0_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, cal_quality, &
+         max_quality)
+
+      expected_al_tail = 0.120821737_dp*SQRT((2.84589460E-5_dp/2.38717371E-4_dp)/ &
+                                             cal_quality)* &
+                         SQRT(0.169491253_dp/cal_quality)
+      err = ABS(immature_quality - 0.75_dp)
+      err = MAX(err, ABS(outside_tail_quality - 0.75_dp))
+      err = MAX(err, ABS(good_tail_quality - 0.75_dp))
+      err = MAX(err, ABS(al_tail_quality - expected_al_tail))
+      err = MAX(err, ABS(weak_tail_quality))
+      err = MAX(err, ABS(zero_tail_quality))
+
+      IF (err > tol .OR. al_tail_quality >= 0.10_dp .OR. weak_tail_quality > tol .OR. &
+          zero_tail_quality > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed err/immature/outside/good/al/weak/zero", err, immature_quality, &
+            outside_tail_quality, good_tail_quality, al_tail_quality, weak_tail_quality, &
+            zero_tail_quality
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK err/immature/outside/good/al/weak/zero", err, immature_quality, &
+            outside_tail_quality, good_tail_quality, al_tail_quality, weak_tail_quality, &
+            zero_tail_quality
+      END IF
+
+   END SUBROUTINE check_projector_inactive_offdiag_selected_tail_quality
+
+! **************************************************************************************************
 !> \brief Check that accepted Mermin history treats large response ratios as underprediction.
 !> \param label ...
 !> \param tol ...
@@ -10842,6 +10912,75 @@ CONTAINS
       quality = MAX(min_quality, MIN(max_quality, quality))
 
    END FUNCTION dense_schur_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of inactive-offdiag selected residual-tail quality.
+!> \param base_quality ...
+!> \param selected_mermin_quality_ema ...
+!> \param selected_predicted_sum ...
+!> \param selected_measured_sum ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param residual_reference_quality ...
+!> \param selected_quality_samples ...
+!> \param min_samples ...
+!> \param residual_delta ...
+!> \param tail_delta ...
+!> \param calibrated_min_quality ...
+!> \param max_quality ...
+!> \return selected inactive-offdiag quality for candidate selection
+! **************************************************************************************************
+   FUNCTION dense_inactive_offdiag_selected_tail_quality(base_quality, selected_mermin_quality_ema, &
+                                                        selected_predicted_sum, selected_measured_sum, &
+                                                        selected_residual_quality, &
+                                                        selected_residual_quality_ema, &
+                                                        residual_reference_quality, &
+                                                        selected_quality_samples, min_samples, &
+                                                        residual_delta, tail_delta, &
+                                                        calibrated_min_quality, max_quality) &
+      RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, selected_mermin_quality_ema, &
+                                                            selected_predicted_sum, selected_measured_sum, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema, &
+                                                            residual_reference_quality, residual_delta, &
+                                                            tail_delta, calibrated_min_quality, max_quality
+      INTEGER, INTENT(IN)                                :: min_samples, selected_quality_samples
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: mermin_factor, mermin_quality, residual_factor, &
+                                                            residual_ref, residual_quality
+
+      quality = MAX(0.0_dp, MIN(max_quality, base_quality))
+      IF (residual_delta > tail_delta) RETURN
+      IF (selected_quality_samples < 2*min_samples) RETURN
+
+      mermin_quality = quality
+      IF (selected_predicted_sum > EPSILON(selected_predicted_sum) .AND. &
+          selected_measured_sum > 0.0_dp) mermin_quality = selected_measured_sum/selected_predicted_sum
+      IF (selected_mermin_quality_ema > 0.0_dp) &
+         mermin_quality = MIN(mermin_quality, selected_mermin_quality_ema)
+      mermin_quality = MAX(0.0_dp, MIN(max_quality, mermin_quality))
+      IF (mermin_quality < 0.10_dp) THEN
+         quality = 0.0_dp
+         RETURN
+      END IF
+
+      residual_ref = MAX(residual_reference_quality, calibrated_min_quality, EPSILON(1.0_dp))
+      residual_quality = MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality_ema))
+      IF (selected_residual_quality > EPSILON(selected_residual_quality)) &
+         residual_quality = MIN(residual_quality, &
+                                0.5_dp*(residual_quality + &
+                                        MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality))))
+
+      mermin_factor = MIN(1.0_dp, SQRT(MAX(0.0_dp, mermin_quality)/ &
+                                       MAX(calibrated_min_quality, EPSILON(1.0_dp))))
+      residual_factor = MIN(1.0_dp, SQRT(residual_quality/residual_ref))
+
+      quality = quality*mermin_factor*residual_factor
+      quality = MAX(0.0_dp, MIN(max_quality, quality))
+
+   END FUNCTION dense_inactive_offdiag_selected_tail_quality
 
 ! **************************************************************************************************
 !> \brief Dense mirror of projector-response candidate gate.

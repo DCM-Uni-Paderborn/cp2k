@@ -9922,14 +9922,17 @@ CONTAINS
                1.0_dp, &
                ot_kp_schur_projector_response_quality_min_ratio, &
                ot_kp_schur_projector_response_quality_max_ratio)
-            IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-                residual_reference_quality > EPSILON(residual_reference_quality)) &
-               projector_inactive_offdiag_selected_quality_for_selection = &
-               projector_inactive_offdiag_selected_quality_for_selection* &
-               MAX(ot_kp_schur_calibrated_quality_min_ratio, &
-                   MIN(1.0_dp, &
-                       local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema/ &
-                       residual_reference_quality))
+            projector_inactive_offdiag_selected_quality_for_selection = &
+               kpoint_ot_inactive_offdiag_selected_tail_quality( &
+               projector_inactive_offdiag_selected_quality_for_selection, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_ema, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_drop_sum, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_measured_sum, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema, &
+               residual_reference_quality, &
+               local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_samples, &
+               residual_delta)
          END IF
          split_quality_for_selection = &
             kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
@@ -18118,6 +18121,70 @@ CONTAINS
          quality = MAX(min_quality, MIN(max_quality, quality))
 
       END FUNCTION kpoint_ot_schur_history_quality
+
+! **************************************************************************************************
+!> \brief residual-tail quality for accepted inactive-offdiag projector steps
+!> \param base_quality accepted selected-history Mermin-drop quality
+!> \param selected_mermin_quality_ema EMA of selected-step Mermin-drop quality
+!> \param selected_predicted_sum accumulated selected-step predicted Mermin drop
+!> \param selected_measured_sum accumulated selected-step measured Mermin drop
+!> \param selected_residual_quality latest selected-step residual quality
+!> \param selected_residual_quality_ema EMA of selected-step residual quality
+!> \param residual_reference_quality split/coupled residual quality reference
+!> \param selected_quality_samples number of accepted selected inactive-offdiag samples
+!> \param residual_delta current OT residual delta
+!> \return selected inactive-offdiag quality for candidate selection
+! **************************************************************************************************
+      FUNCTION kpoint_ot_inactive_offdiag_selected_tail_quality(base_quality, selected_mermin_quality_ema, &
+                                                               selected_predicted_sum, selected_measured_sum, &
+                                                               selected_residual_quality, &
+                                                               selected_residual_quality_ema, &
+                                                               residual_reference_quality, &
+                                                               selected_quality_samples, &
+                                                               residual_delta) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: base_quality, selected_mermin_quality_ema, &
+                                                            selected_predicted_sum, selected_measured_sum, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema, &
+                                                            residual_reference_quality, residual_delta
+      INTEGER, INTENT(IN)                                :: selected_quality_samples
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: mermin_factor, mermin_quality, residual_factor, &
+                                                            residual_ref, residual_quality
+
+         quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, base_quality))
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (selected_quality_samples < 2*ot_kp_schur_calibration_min_samples) RETURN
+
+         mermin_quality = quality
+         IF (selected_predicted_sum > EPSILON(selected_predicted_sum) .AND. &
+             selected_measured_sum > 0.0_dp) mermin_quality = selected_measured_sum/selected_predicted_sum
+         IF (selected_mermin_quality_ema > 0.0_dp) &
+            mermin_quality = MIN(mermin_quality, selected_mermin_quality_ema)
+         mermin_quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                          mermin_quality))
+         IF (mermin_quality < ot_kp_schur_projector_response_quality_min_ratio) THEN
+            quality = 0.0_dp
+            RETURN
+         END IF
+
+         residual_ref = MAX(residual_reference_quality, ot_kp_schur_calibrated_quality_min_ratio, &
+                            EPSILON(1.0_dp))
+         residual_quality = MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality_ema))
+         IF (selected_residual_quality > EPSILON(selected_residual_quality)) &
+            residual_quality = MIN(residual_quality, &
+                                   0.5_dp*(residual_quality + &
+                                           MAX(0.0_dp, MIN(1.0_dp, selected_residual_quality))))
+
+         mermin_factor = MIN(1.0_dp, SQRT(MAX(0.0_dp, mermin_quality)/ &
+                                          MAX(ot_kp_schur_calibrated_quality_min_ratio, EPSILON(1.0_dp))))
+         residual_factor = MIN(1.0_dp, SQRT(residual_quality/residual_ref))
+
+         quality = quality*mermin_factor*residual_factor
+         quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
+
+      END FUNCTION kpoint_ot_inactive_offdiag_selected_tail_quality
 
 ! **************************************************************************************************
 !> \brief accepted-history gate for conservative projector-response underprediction
