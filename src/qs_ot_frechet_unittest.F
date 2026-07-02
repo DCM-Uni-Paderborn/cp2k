@@ -238,6 +238,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct tail selection quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_probe_bootstrap( &
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_tail_close_call( &
+      "complex projector Direct tail close-call", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_tail_probe( &
@@ -9093,6 +9095,56 @@ CONTAINS
    END SUBROUTINE check_projector_direct_tail_probe_bootstrap
 
 ! **************************************************************************************************
+!> \brief Check that a promoted Direct tail close-call can collect selected history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_tail_close_call(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: inactive, low_drop, low_quality, ready, &
+                                                            tail_veto, trust_veto
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_direct_tail_close_call(2.0E-5_dp, 8.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                           .TRUE., .FALSE., .FALSE., 2.0E-3_dp, 4.0E-3_dp, &
+                                           1.0E-2_dp, 1.0_dp)
+      low_drop = dense_direct_tail_close_call(2.0E-5_dp, 7.9E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                              .TRUE., .FALSE., .FALSE., 2.0E-3_dp, 4.0E-3_dp, &
+                                              1.0E-2_dp, 1.0_dp)
+      inactive = dense_direct_tail_close_call(2.0E-5_dp, 8.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                              .FALSE., .FALSE., .FALSE., 2.0E-3_dp, 4.0E-3_dp, &
+                                              1.0E-2_dp, 1.0_dp)
+      low_quality = dense_direct_tail_close_call(2.0E-5_dp, 8.1E-10_dp, 1.0E-9_dp, 0.09_dp, &
+                                                 .TRUE., .FALSE., .FALSE., 2.0E-3_dp, 4.0E-3_dp, &
+                                                 1.0E-2_dp, 1.0_dp)
+      tail_veto = dense_direct_tail_close_call(2.0E-4_dp, 8.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                               .TRUE., .FALSE., .FALSE., 2.0E-3_dp, 4.0E-3_dp, &
+                                               1.0E-2_dp, 1.0_dp)
+      trust_veto = dense_direct_tail_close_call(2.0E-5_dp, 8.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                                .TRUE., .FALSE., .FALSE., 8.0E-1_dp, 4.0E-3_dp, &
+                                                1.0E-2_dp, 1.0_dp)
+      err = 0.0_dp
+      IF (.NOT. ready .OR. low_drop .OR. inactive .OR. low_quality .OR. tail_veto .OR. &
+          trust_veto) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "failed with ready/low/inactive/quality/tail/trust", ready, low_drop, inactive, &
+            low_quality, tail_veto, trust_veto
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "OK with ready/low/inactive/quality/tail/trust", ready, low_drop, inactive, &
+            low_quality, tail_veto, trust_veto
+      END IF
+
+   END SUBROUTINE check_projector_direct_tail_close_call
+
+! **************************************************************************************************
 !> \brief Check that full-density Direct candidates can collect close-call tail history.
 !> \param label ...
 !> \param tol ...
@@ -9724,8 +9776,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: err, no_history, product_collapse, &
-                                                            shadow_floor, shadow_quality, &
+      REAL(KIND=dp)                                      :: err, expected_shadow, expected_stale, &
+                                                            no_history, product_collapse, shadow_floor, &
+                                                            shadow_quality, stale_floor, &
                                                             stale_selected_quality, trace_quality
 
       trace_quality = 7.55E-2_dp
@@ -9734,22 +9787,26 @@ CONTAINS
 
       shadow_floor = dense_direct_tail_selection_quality(trace_quality, &
                                                          MAX(shadow_quality, stale_selected_quality))
+      stale_floor = dense_direct_tail_selection_quality(trace_quality, stale_selected_quality)
+      expected_shadow = SQRT(trace_quality*shadow_quality)
+      expected_stale = SQRT(trace_quality*stale_selected_quality)
       product_collapse = trace_quality*stale_selected_quality
       no_history = dense_direct_tail_selection_quality(trace_quality, 1.0_dp)
 
-      err = ABS(shadow_floor - shadow_quality)
+      err = ABS(shadow_floor - expected_shadow)
+      err = MAX(err, ABS(stale_floor - expected_stale))
       err = MAX(err, ABS(no_history - trace_quality))
 
-      IF (err > tol .OR. shadow_floor <= 100.0_dp*product_collapse .OR. &
-          shadow_floor > trace_quality) THEN
+      IF (err > tol .OR. stale_floor <= 100.0_dp*product_collapse .OR. &
+          stale_floor >= shadow_floor .OR. shadow_floor > trace_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/trace/shadow/stale/product", err, trace_quality, shadow_floor, &
-            stale_selected_quality, product_collapse
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/trace/shadow/stale_floor/stale/product", err, trace_quality, shadow_floor, &
+            stale_floor, stale_selected_quality, product_collapse
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/trace/shadow/stale/product", err, trace_quality, shadow_floor, &
-            stale_selected_quality, product_collapse
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/trace/shadow/stale_floor/stale/product", err, trace_quality, shadow_floor, &
+            stale_floor, stale_selected_quality, product_collapse
       END IF
 
    END SUBROUTINE check_projector_direct_tail_selection_quality
@@ -12028,6 +12085,52 @@ CONTAINS
    END FUNCTION dense_direct_tail_probe_ready
 
 ! **************************************************************************************************
+!> \brief Dense mirror of promoted physical Direct residual-tail close-call selection.
+!> \param residual_delta ...
+!> \param candidate_expected_drop ...
+!> \param reference_expected_drop ...
+!> \param quality_for_selection ...
+!> \param promoted ...
+!> \param mixed_enabled ...
+!> \param tail_probe_ready ...
+!> \param weighted_trust_ratio ...
+!> \param abs_trust_ratio ...
+!> \param model_gap_ratio ...
+!> \param dense_residual_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_tail_close_call(residual_delta, candidate_expected_drop, reference_expected_drop, &
+                                         quality_for_selection, promoted, mixed_enabled, tail_probe_ready, &
+                                         weighted_trust_ratio, abs_trust_ratio, model_gap_ratio, &
+                                         dense_residual_quality) RESULT(do_probe)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, quality_for_selection
+      LOGICAL, INTENT(IN)                                :: promoted, mixed_enabled, tail_probe_ready
+      REAL(KIND=dp), INTENT(IN)                          :: weighted_trust_ratio, abs_trust_ratio, &
+                                                            model_gap_ratio, dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+      REAL(KIND=dp)                                      :: required_drop_ratio
+
+      do_probe = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (.NOT. (promoted .OR. mixed_enabled .OR. tail_probe_ready)) RETURN
+      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
+      IF (quality_for_selection < 1.0E-1_dp) RETURN
+      IF (weighted_trust_ratio > 7.5E-1_dp) RETURN
+      IF (abs_trust_ratio > 7.5E-1_dp) RETURN
+      IF (model_gap_ratio > 7.5E-1_dp) RETURN
+
+      required_drop_ratio = 8.0E-1_dp
+      IF (dense_residual_quality <= 2.5E-1_dp) &
+         required_drop_ratio = MIN(required_drop_ratio, 5.0E-1_dp + dense_residual_quality)
+      IF (candidate_expected_drop < required_drop_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+
+      do_probe = .TRUE.
+
+   END FUNCTION dense_direct_tail_close_call
+
+! **************************************************************************************************
 !> \brief Dense mirror of the spectral selected-history candidate promotion gate.
 !> \param selected_samples ...
 !> \param selected_failures ...
@@ -12668,7 +12771,9 @@ CONTAINS
       IF (history_quality <= 0.0_dp) RETURN
 
       clipped_history = MAX(0.0_dp, MIN(1.0_dp, history_quality))
-      quality = MIN(quality, clipped_history)
+      IF (clipped_history < quality) &
+         quality = SQRT(MAX(0.0_dp, quality*clipped_history))
+      quality = MIN(quality, MAX(0.0_dp, MIN(1.0_dp, base_quality)))
 
    END FUNCTION dense_direct_tail_selection_quality
 

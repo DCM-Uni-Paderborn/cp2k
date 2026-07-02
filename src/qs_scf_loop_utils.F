@@ -2230,6 +2230,54 @@ CONTAINS
    END FUNCTION kpoint_ot_direct_tail_probe_ready
 
 ! **************************************************************************************************
+!> \brief close-call residual-tail probe for promoted physical Direct candidates
+!> \param residual_delta current OT residual
+!> \param candidate_expected_drop calibrated Direct expected Mermin drop
+!> \param reference_expected_drop currently selected dense-coupled expected drop
+!> \param quality_for_selection calibrated Direct selection quality
+!> \param promoted whether the physical Direct candidate has accepted shadow evidence
+!> \param mixed_enabled whether the mixed active/physical Direct model is enabled
+!> \param tail_probe_ready sparse tail-probe bootstrap from selected history
+!> \param weighted_trust_ratio curvature-weighted response trust ratio
+!> \param abs_trust_ratio absolute response trust ratio
+!> \param model_gap_ratio response-model mismatch trust ratio
+!> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \return true if a trust-safe Direct close call may collect selected history
+! **************************************************************************************************
+   FUNCTION kpoint_ot_direct_tail_close_call(residual_delta, candidate_expected_drop, reference_expected_drop, &
+                                             quality_for_selection, promoted, mixed_enabled, tail_probe_ready, &
+                                             weighted_trust_ratio, abs_trust_ratio, model_gap_ratio, &
+                                             dense_residual_quality) RESULT(do_probe)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, quality_for_selection
+      LOGICAL, INTENT(IN)                                :: promoted, mixed_enabled, tail_probe_ready
+      REAL(KIND=dp), INTENT(IN)                          :: weighted_trust_ratio, abs_trust_ratio, &
+                                                            model_gap_ratio, dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+      REAL(KIND=dp)                                      :: required_drop_ratio
+
+         do_probe = .FALSE.
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (.NOT. (promoted .OR. mixed_enabled .OR. tail_probe_ready)) RETURN
+         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (quality_for_selection < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (weighted_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+         IF (abs_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+         IF (model_gap_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+
+         required_drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+         IF (dense_residual_quality <= ot_kp_schur_calibrated_quality_min_ratio) &
+            required_drop_ratio = MIN(required_drop_ratio, &
+                                      0.5_dp + dense_residual_quality)
+         IF (candidate_expected_drop < required_drop_ratio* &
+             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         do_probe = .TRUE.
+
+   END FUNCTION kpoint_ot_direct_tail_close_call
+
+! **************************************************************************************************
 !> \brief shared pair slope for near-degenerate occupation-gauge filtering
 !> \param occ_curv_i ...
 !> \param occ_curv_j ...
@@ -15090,8 +15138,17 @@ CONTAINS
                       projector_physical_direct_tail_probe_ready))) .AND. &
                    projector_physical_candidate_ready .AND. &
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
-                   projector_physical_expected_drop >= &
-                   ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                   (projector_physical_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                       EPSILON(dense_expected_drop)) .OR. &
+                    (projector_physical_direct_candidate_used .AND. &
+                     kpoint_ot_direct_tail_close_call( &
+                     residual_delta, projector_physical_expected_drop, dense_expected_drop, &
+                     projector_physical_direct_quality_for_selection, projector_physical_direct_promoted, &
+                     projector_physical_direct_mixed_enabled, projector_physical_direct_tail_probe_ready, &
+                     projector_physical_direct_response_weighted_trust_ratio, &
+                     projector_physical_direct_response_abs_trust_ratio, &
+                     projector_physical_direct_model_gap_ratio, dense_residual_quality)))) THEN
                   attempt_failed = .FALSE.
                   projector_physical_candidate_selected = .TRUE.
                   projector_physical_direct_candidate_selected = projector_physical_direct_candidate_used
@@ -15638,8 +15695,17 @@ CONTAINS
                       projector_physical_direct_tail_probe_ready))) .AND. &
                    projector_physical_candidate_ready .AND. &
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
-                   projector_physical_expected_drop >= &
-                   ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                   (projector_physical_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
+                                                                       EPSILON(dense_expected_drop)) .OR. &
+                    (projector_physical_direct_candidate_used .AND. &
+                     kpoint_ot_direct_tail_close_call( &
+                     residual_delta, projector_physical_expected_drop, dense_expected_drop, &
+                     projector_physical_direct_quality_for_selection, projector_physical_direct_promoted, &
+                     projector_physical_direct_mixed_enabled, projector_physical_direct_tail_probe_ready, &
+                     projector_physical_direct_response_weighted_trust_ratio, &
+                     projector_physical_direct_response_abs_trust_ratio, &
+                     projector_physical_direct_model_gap_ratio, dense_residual_quality)))) THEN
                   attempt_failed = .FALSE.
                   projector_physical_candidate_selected = .TRUE.
                   projector_physical_direct_candidate_selected = projector_physical_direct_candidate_used
@@ -18678,7 +18744,7 @@ CONTAINS
 !> \brief combine correlated Direct quality histories for residual-tail candidate selection
 !> \param base_quality physical/trace-split quality already calibrated by accepted Mermin drops
 !> \param history_quality selected or shadow Direct history from the same accepted-drop stream
-!> \return conservative non-product quality without double-counting correlated evidence
+!> \return conservative correlated quality without turning stale Direct history into a hard veto
 ! **************************************************************************************************
       FUNCTION kpoint_ot_direct_tail_selection_quality(base_quality, history_quality) RESULT(quality)
       REAL(KIND=dp), INTENT(IN)                          :: base_quality, history_quality
@@ -18690,7 +18756,9 @@ CONTAINS
          IF (history_quality <= 0.0_dp) RETURN
 
          clipped_history = MAX(0.0_dp, MIN(1.0_dp, history_quality))
-         quality = MIN(quality, clipped_history)
+         IF (clipped_history < quality) &
+            quality = SQRT(MAX(0.0_dp, quality*clipped_history))
+         quality = MIN(quality, MAX(0.0_dp, MIN(1.0_dp, base_quality)))
 
       END FUNCTION kpoint_ot_direct_tail_selection_quality
 
