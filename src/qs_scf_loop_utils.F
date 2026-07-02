@@ -15747,7 +15747,8 @@ CONTAINS
                accepted_z_e(:) = z_e(:)
                accepted_sol(:) = sol(:)
                IF (split_candidate_selected) accepted_projector_coupled_weight = 1.0_dp
-               IF (logger%iter_info%print_level >= high_print_level .OR. projector_physical_shadow_enabled) THEN
+               IF (logger%iter_info%print_level >= high_print_level .OR. projector_physical_shadow_enabled .OR. &
+                   projector_plateau_gap_model_enabled) THEN
                   CALL audit_kpoint_ot_hessian_delta_modes(rot_hessian_projector_physical_offdiag_active, sol, &
                                                            model_calibrated_drop, &
                                                            projector_physical_offdiag_mode_negative_fraction, &
@@ -15826,12 +15827,20 @@ CONTAINS
                   accepted_projector_response_weight = projector_mode_response_weight
                   accepted_projector_response_negative = projector_mode_response_correction_negative
                END IF
-               IF (projector_plateau_gap_model_enabled .AND. &
-                   direct_pg_metric_drop > EPSILON(direct_pg_metric_drop)) THEN
-                  accepted_projector_plateau_gap_drop = direct_pg_metric_drop
-                  accepted_projector_plateau_gap_weight = direct_pg_response_weight
-                  accepted_projector_plateau_gap_negative = direct_pg_raw_negative_fraction
-                  accepted_projector_plateau_gap_step = direct_pg_metric_step
+               IF (projector_plateau_gap_model_enabled) THEN
+                  accepted_projector_plateau_gap_drop = &
+                     kpoint_ot_projector_plateau_gap_audit_drop(direct_pg_metric_drop, &
+                                                                 plateau_gap_mode_abs_quad)
+                  IF (accepted_projector_plateau_gap_drop > &
+                      EPSILON(accepted_projector_plateau_gap_drop)) THEN
+                     accepted_projector_plateau_gap_weight = &
+                        MAX(direct_pg_response_weight, MIN(1.0_dp, MAX(0.0_dp, &
+                                                                       plateau_gap_mode_quad_abs_ratio)))
+                     accepted_projector_plateau_gap_negative = &
+                        MAX(direct_pg_raw_negative_fraction, plateau_gap_mode_negative_fraction)
+                     accepted_projector_plateau_gap_step = &
+                        MAX(direct_pg_metric_step, plateau_gap_mode_step_negative_fraction)
+                  END IF
                END IF
                EXIT
             END IF
@@ -19900,6 +19909,23 @@ CONTAINS
                             MAX(projector_weight, EPSILON(projector_weight)))
 
       END FUNCTION kpoint_ot_projector_tail_active_delta_weight
+
+! **************************************************************************************************
+!> \brief accepted-drop audit source for finite projector plateau-gap modes
+!> \param direct_metric_drop projected direct-response Mermin metric drop
+!> \param mode_abs_quad absolute accepted-step quadratic in the plateau-gap Hessian delta
+!> \return positive drop used to calibrate plateau-gap history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_plateau_gap_audit_drop(direct_metric_drop, mode_abs_quad) &
+         RESULT(audit_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: direct_metric_drop, mode_abs_quad
+      REAL(KIND=dp)                                      :: audit_drop
+
+         audit_drop = MAX(0.0_dp, direct_metric_drop)
+         IF (mode_abs_quad > EPSILON(mode_abs_quad)) &
+            audit_drop = MAX(audit_drop, 0.5_dp*MAX(0.0_dp, mode_abs_quad))
+
+      END FUNCTION kpoint_ot_projector_plateau_gap_audit_drop
 
 ! **************************************************************************************************
 !> \brief finite Projector-response residual taper used by modal response audits

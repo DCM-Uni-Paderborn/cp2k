@@ -160,6 +160,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical pair weight", 5.0E-14_dp, nfail)
    CALL check_projector_response_character_scale( &
       "complex projector response character scale", 5.0E-14_dp, nfail)
+   CALL check_projector_plateau_gap_audit_drop( &
+      "complex projector plateau-gap audit drop", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_active_filter_descent_recovery( &
@@ -6251,6 +6253,38 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_response_character_scale
+
+! **************************************************************************************************
+!> \brief Check that plateau-gap history can learn from nonzero Hessian-mode audit.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_plateau_gap_audit_drop(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: direct_dominates, err, mode_dominates, none
+
+      none = dense_projector_plateau_gap_audit_drop(0.0_dp, 0.0_dp)
+      mode_dominates = dense_projector_plateau_gap_audit_drop(1.0E-30_dp, 4.0E-10_dp)
+      direct_dominates = dense_projector_plateau_gap_audit_drop(3.0E-8_dp, 4.0E-10_dp)
+
+      err = ABS(none)
+      err = MAX(err, ABS(mode_dominates - 2.0E-10_dp))
+      err = MAX(err, ABS(direct_dominates - 3.0E-8_dp))
+
+      IF (err > tol .OR. mode_dominates <= none .OR. direct_dominates <= mode_dominates) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/none/mode/direct", err, none, mode_dominates, direct_dominates
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/none/mode/direct", err, none, mode_dominates, direct_dominates
+      END IF
+
+   END SUBROUTINE check_projector_plateau_gap_audit_drop
 
 ! **************************************************************************************************
 !> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
@@ -16310,6 +16344,22 @@ CONTAINS
       response_scale = MIN(MAX(0.0_dp, response_max), response_scale)
 
    END FUNCTION dense_projector_response_character_scale
+
+! **************************************************************************************************
+!> \brief Dense mirror of plateau-gap accepted-drop audit source.
+!> \param direct_metric_drop ...
+!> \param mode_abs_quad ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_plateau_gap_audit_drop(direct_metric_drop, mode_abs_quad) RESULT(audit_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: direct_metric_drop, mode_abs_quad
+      REAL(KIND=dp)                                      :: audit_drop
+
+      audit_drop = MAX(0.0_dp, direct_metric_drop)
+      IF (mode_abs_quad > EPSILON(mode_abs_quad)) &
+         audit_drop = MAX(audit_drop, 0.5_dp*MAX(0.0_dp, mode_abs_quad))
+
+   END FUNCTION dense_projector_plateau_gap_audit_drop
 
 ! **************************************************************************************************
 !> \brief active Fermi-window weight for dense projector-density response fixtures.
