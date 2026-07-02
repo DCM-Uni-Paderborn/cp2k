@@ -16748,6 +16748,35 @@ CONTAINS
                      density_full_global_response_abs_trust_ratio, &
                      density_full_global_trust_quality, density_full_global_direction_scale, &
                      density_full_global_history_scale
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT Schur projector phys direct density model scale drop gdotp ge gr normp ne nr:", &
+                     projector_physical_direct_density_direction_scale, &
+                     projector_physical_direct_density_model_calibrated_drop, &
+                     projector_physical_direct_density_gdotp, projector_physical_direct_density_gdot_energy, &
+                     projector_physical_direct_density_gdot_rotation, projector_physical_direct_density_normp, &
+                     projector_physical_direct_density_norm_energy, projector_physical_direct_density_norm_rotation
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT Schur projector full-density model scale drop gdotp ge gr normp ne nr:", &
+                     density_full_direction_scale, density_full_model_calibrated_drop, &
+                     density_full_gdotp, density_full_gdot_energy, density_full_gdot_rotation, &
+                     density_full_normp, density_full_norm_energy, density_full_norm_rotation
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT Schur projector full-density direct model scale drop gdotp ge gr normp ne nr:", &
+                     density_full_direct_direction_scale, density_full_direct_model_calibrated_drop, &
+                     density_full_direct_gdotp, density_full_direct_gdot_energy, &
+                     density_full_direct_gdot_rotation, density_full_direct_normp, &
+                     density_full_direct_norm_energy, density_full_direct_norm_rotation
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT Schur projector full-density global model scale drop gdotp ge gr normp ne nr:", &
+                     density_full_global_direction_scale, density_full_global_model_calibrated_drop, &
+                     density_full_global_gdotp, density_full_global_gdot_energy, &
+                     density_full_global_gdot_rotation, density_full_global_normp, &
+                     density_full_global_norm_energy, density_full_global_norm_rotation
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT Schur projector density-descent model scale drop gdotp ge gr normp ne nr:", &
+                     density_descent_direction_scale, density_descent_model_calibrated_drop, &
+                     density_descent_gdotp, density_descent_gdot_energy, density_descent_gdot_rotation, &
+                     density_descent_normp, density_descent_norm_energy, density_descent_norm_rotation
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
                      " OT Schur projector phys direct density-gap shadow exp cdrop rratio aratio tq scale:", &
                      density_gap_expected_drop, &
