@@ -6297,7 +6297,7 @@ CONTAINS
 
       INTEGER                                            :: group
       LOGICAL                                            :: added_mos_auto_tail_enabled
-      REAL(KIND=dp) :: added_mos_auto_tail_residual_limit
+      REAL(KIND=dp) :: added_mos_auto_tail_residual_limit, response_raw_delta
 
          group_done(:) = .FALSE.
          IF (.NOT. local_ot_env(1)%settings%do_rotation) RETURN
@@ -6314,6 +6314,8 @@ CONTAINS
                    ot_kp_added_mos_auto_edge_probe_factor*SQRT(eps_scf_channel))
          END IF
          CALL update_kpoint_ot_schur_line_search_quality()
+         response_raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
+         CALL para_env_inter_kp%max(response_raw_delta)
          IF (.NOT. local_ot_env(1)%energy_only .AND. &
              (local_ot_env(1)%line_search_count == 0 .OR. local_ot_env(1)%line_search_might_be_done)) THEN
             local_ot_env(1)%schur_model_pending = .FALSE.
@@ -6445,7 +6447,8 @@ CONTAINS
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group), &
                                                     added_mos_auto_tail_enabled, &
-                                                    added_mos_auto_tail_residual_limit)
+                                                    added_mos_auto_tail_residual_limit, &
+                                                    response_raw_delta)
          END DO
       END SUBROUTINE precondition_kpoint_ot_schur
 
@@ -6455,14 +6458,16 @@ CONTAINS
 !> \param group_done ...
 !> \param added_mos_auto_tail_enabled ...
 !> \param added_mos_auto_tail_residual_limit ...
+!> \param response_raw_delta unprojected residual from the previous accepted OT state
 ! **************************************************************************************************
       SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done, &
                                                     added_mos_auto_tail_enabled, &
-                                                    added_mos_auto_tail_residual_limit)
+                                                    added_mos_auto_tail_residual_limit, &
+                                                    response_raw_delta)
       INTEGER, INTENT(IN)                                :: target_group
       LOGICAL, INTENT(OUT)                               :: group_done
       LOGICAL, INTENT(IN)                                :: added_mos_auto_tail_enabled
-      REAL(KIND=dp), INTENT(IN) :: added_mos_auto_tail_residual_limit
+      REAL(KIND=dp), INTENT(IN) :: added_mos_auto_tail_residual_limit, response_raw_delta
 
       INTEGER, PARAMETER :: max_schur_rot = 800, reject_dgesv = 1, reject_model_gap = 6, &
          reject_model_mismatch = 8, reject_nondescent = 2, reject_norm = 3, &
@@ -10842,7 +10847,8 @@ CONTAINS
                                                                 diag_positive_weight_sum= &
                                                                 projector_mode_response_audit_positive_weight_sum, &
                                                                 diag_negative_weight_sum= &
-                                                                projector_mode_response_audit_negative_weight_sum)
+                                                                projector_mode_response_audit_negative_weight_sum, &
+                                                                raw_residual_delta=response_raw_delta)
                   IF (projector_mode_response_weight > EPSILON(projector_mode_response_weight)) THEN
                      projector_response_z_e(:) = z_e(:) + projector_response_rx_e(:)
                      projector_response_gdot_energy = DOT_PRODUCT(grad_e, projector_response_z_e)
@@ -11033,7 +11039,8 @@ CONTAINS
                                                                 diag_positive_weight_sum= &
                                                                 projector_physical_response_audit_positive_weight_sum, &
                                                                 diag_negative_weight_sum= &
-                                                                projector_physical_response_audit_negative_weight_sum)
+                                                                projector_physical_response_audit_negative_weight_sum, &
+                                                                raw_residual_delta=response_raw_delta)
                   IF (projector_physical_response_weight > EPSILON(projector_physical_response_weight)) THEN
                      projector_physical_z_e(:) = z_e(:) + projector_physical_rx_e(:)
                      projector_physical_gdot_energy = DOT_PRODUCT(grad_e, projector_physical_z_e)
@@ -11162,7 +11169,8 @@ CONTAINS
                                                                 projector_inactive_offdiag_response_negative_drop, &
                                                                 projector_inactive_offdiag_response_cross_drop, &
                                                                 projector_inactive_offdiag_response_positive_coeff, &
-                                                                projector_inactive_offdiag_response_negative_coeff)
+                                                                projector_inactive_offdiag_response_negative_coeff, &
+                                                                raw_residual_delta=response_raw_delta)
                   IF (projector_inactive_offdiag_response_weight > &
                       EPSILON(projector_inactive_offdiag_response_weight)) THEN
                      projector_inactive_offdiag_z_e(:) = &
@@ -11405,7 +11413,8 @@ CONTAINS
                                                                 projector_offdiag_response_negative_drop, &
                                                                 projector_offdiag_response_cross_drop, &
                                                                 projector_offdiag_response_positive_coeff, &
-                                                                projector_offdiag_response_negative_coeff)
+                                                                projector_offdiag_response_negative_coeff, &
+                                                                raw_residual_delta=response_raw_delta)
                   IF (projector_offdiag_response_weight > &
                       EPSILON(projector_offdiag_response_weight)) THEN
                      projector_offdiag_z_e(:) = z_e(:) + projector_offdiag_rx_e(:)
@@ -12348,7 +12357,8 @@ CONTAINS
                                                                          spectral_resp_negative_drop, &
                                                                          spectral_resp_cross_drop, &
                                                                          spectral_resp_positive_coeff, &
-                                                                         spectral_resp_negative_coeff)
+                                                                         spectral_resp_negative_coeff, &
+                                                                         raw_residual_delta=response_raw_delta)
                            IF (spectral_resp_weight > &
                                EPSILON(spectral_resp_weight)) THEN
                               projector_physical_direct_spectral_rx_e(:) = rx_model(:)
@@ -13661,7 +13671,8 @@ CONTAINS
                                                                       projector_physical_direct_response_negative_drop, &
                                                                       projector_physical_direct_response_cross_drop, &
                                                                       projector_physical_direct_response_positive_coeff, &
-                                                                      projector_physical_direct_response_negative_coeff)
+                                                                      projector_physical_direct_response_negative_coeff, &
+                                                                      raw_residual_delta=response_raw_delta)
                         IF (projector_physical_direct_shadow_enabled) &
                            CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                          rot_hessian_projector_physical_diagref, &
@@ -13683,7 +13694,8 @@ CONTAINS
                                                                          projector_physical_direct_diagref_negative_drop, &
                                                                          projector_physical_direct_diagref_cross_drop, &
                                                                          projector_physical_direct_diagref_positive_coeff, &
-                                                                         projector_physical_direct_diagref_negative_coeff)
+                                                                         projector_physical_direct_diagref_negative_coeff, &
+                                                                         raw_residual_delta=response_raw_delta)
                         IF (projector_physical_direct_diagref_weight > &
                             EPSILON(projector_physical_direct_diagref_weight)) THEN
                            CALL project_kpoint_ot_schur_response( &
@@ -13796,7 +13808,8 @@ CONTAINS
                               direct_pg_correction_drop, direct_pg_correction_negative, &
                               direct_pg_raw_negative_fraction, direct_pg_positive_drop, &
                               direct_pg_negative_drop, direct_pg_cross_drop, &
-                              direct_pg_positive_coeff, direct_pg_negative_coeff)
+                              direct_pg_positive_coeff, direct_pg_negative_coeff, &
+                              raw_residual_delta=response_raw_delta)
                            CALL project_kpoint_ot_schur_response(direct_pg_rx_e, occ_curv, &
                                                                  tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                            direct_pg_base_e(:) = direct_pg_rx_e(:) - direct_pg_base_e(:)
@@ -16564,7 +16577,8 @@ CONTAINS
                      residual_delta, ot_kp_schur_projector_coupled_tail_delta, &
                      MERGE(1.0_dp, 0.0_dp, residual_delta > ot_kp_schur_projector_coupled_tail_delta), &
                      dense_projector_coupled_weight, accepted_projector_coupled_weight, &
-                     kpoint_ot_projector_response_residual_weight(residual_delta)
+                     kpoint_ot_projector_response_residual_weight(residual_delta, &
+                                                                  response_raw_delta)
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,10(1X,ES16.8))') &
                      " OT Schur projector modes q neg damp emin emax step rneg rdrop rratio trust:", &
                      projector_mode_quality, projector_mode_negative_fraction, projector_mode_damped_abs_avg, &
@@ -19766,19 +19780,32 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief finite Projector-response residual taper used by modal response audits
-!> \param residual_delta current OT residual
+!> \param residual_delta current effective OT residual
+!> \param raw_residual_delta optional unprojected OT residual
 !> \return response weight in [0,1], with extra damping below the validated floor
 ! **************************************************************************************************
-      FUNCTION kpoint_ot_projector_response_residual_weight(residual_delta) RESULT(residual_weight)
+      FUNCTION kpoint_ot_projector_response_residual_weight(residual_delta, raw_residual_delta) RESULT(residual_weight)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: raw_residual_delta
       REAL(KIND=dp)                                      :: residual_weight
 
-         residual_weight = residual_delta/ &
+      REAL(KIND=dp)                                      :: raw_signal, response_delta
+
+         response_delta = MAX(0.0_dp, residual_delta)
+         IF (PRESENT(raw_residual_delta)) THEN
+            IF (raw_residual_delta > response_delta) THEN
+               raw_signal = MIN(MAX(0.0_dp, raw_residual_delta), &
+                                ot_kp_schur_projector_coupled_tail_delta)
+               response_delta = MAX(response_delta, SQRT(response_delta*raw_signal))
+            END IF
+         END IF
+
+         residual_weight = response_delta/ &
                            MAX(EPSILON(1.0_dp), ot_kp_schur_projector_response_full_delta)
          residual_weight = MAX(0.0_dp, MIN(1.0_dp, residual_weight))
-         IF (residual_delta < ot_kp_schur_projector_response_floor_delta) &
+         IF (response_delta < ot_kp_schur_projector_response_floor_delta) &
             residual_weight = residual_weight* &
-                              SQRT(MAX(0.0_dp, residual_delta/ &
+                              SQRT(MAX(0.0_dp, response_delta/ &
                                        MAX(EPSILON(1.0_dp), &
                                            ot_kp_schur_projector_response_floor_delta)))
 
@@ -19899,6 +19926,7 @@ CONTAINS
 !> \param use_projected_metric use the fixed-N/tether-projected Mermin metric for response norms
 !> \param projector_weight scalar finite Projector-Hessian tail weight
 !> \param residual_delta current OT residual
+!> \param raw_residual_delta optional unprojected OT residual for tail response weighting
 !> \param history_quality accepted Mermin-drop quality of Projector-mode predictions
 !> \param history_trust accepted Projector-mode trust EMA
 !> \param history_response_ratio accepted response-mismatch drop over predicted drop
@@ -19937,7 +19965,7 @@ CONTAINS
                                                           negative_coeff, diag_base_weight, &
                                                           diag_response_total_sum, diag_step_weight_sum, &
                                                           diag_eval_abs_avg, diag_positive_weight_sum, &
-                                                          diag_negative_weight_sum)
+                                                          diag_negative_weight_sum, raw_residual_delta)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_rot
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_raw, response_exact
@@ -19956,6 +19984,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT), OPTIONAL :: diag_base_weight, diag_response_total_sum, &
          diag_step_weight_sum, diag_eval_abs_avg, diag_positive_weight_sum, &
          diag_negative_weight_sum
+      REAL(KIND=dp), INTENT(IN), OPTIONAL :: raw_residual_delta
 
       INTEGER                                            :: imode, nrot_local
       REAL(KIND=dp) :: base_projected_neg, base_projected_pos, base_weight, coeff_det, &
@@ -19994,7 +20023,7 @@ CONTAINS
          IF (SIZE(energy_base) /= SIZE(curv)) RETURN
          IF (SIZE(grad_e) /= SIZE(curv)) RETURN
 
-         residual_weight = kpoint_ot_projector_response_residual_weight(residual_delta)
+         residual_weight = kpoint_ot_projector_response_residual_weight(residual_delta, raw_residual_delta)
          base_weight = ot_kp_schur_projector_response_max_weight*residual_weight* &
                        MIN(1.0_dp, MAX(0.0_dp, projector_weight))* &
                        MIN(1.0_dp, MAX(0.0_dp, history_quality))* &

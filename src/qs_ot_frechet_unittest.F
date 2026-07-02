@@ -226,6 +226,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector response underprediction quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_adverse_fraction( &
       "complex projector response adverse negative fraction", 5.0E-14_dp, nfail)
+   CALL check_projector_response_residual_weight( &
+      "complex projector response raw/effective residual weight", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_selection_quality( &
       "complex projector Direct tail selection quality", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_probe_bootstrap( &
@@ -8854,6 +8856,53 @@ CONTAINS
    END SUBROUTINE check_projector_response_adverse_fraction
 
 ! **************************************************************************************************
+!> \brief Check raw/effective residual weighting for finite Projector-response tails.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_response_residual_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: floor_delta = 3.0E-6_dp, full_delta = 1.2E-5_dp
+
+      REAL(KIND=dp) :: both_tiny, err, no_raw, raw_capped, raw_smaller, raw_tail
+      REAL(KIND=dp) :: expected_both_tiny, expected_raw_capped, expected_raw_smaller, &
+         expected_raw_tail
+
+      no_raw = dense_projector_response_residual_weight(9.0E-6_dp, -1.0_dp)
+      both_tiny = dense_projector_response_residual_weight(1.0E-7_dp, 1.0E-7_dp)
+      raw_tail = dense_projector_response_residual_weight(1.0E-6_dp, 6.4E-5_dp)
+      raw_capped = dense_projector_response_residual_weight(4.0E-6_dp, 1.0E-2_dp)
+      raw_smaller = dense_projector_response_residual_weight(6.0E-6_dp, 2.0E-6_dp)
+
+      expected_both_tiny = (1.0E-7_dp/full_delta)*SQRT(1.0E-7_dp/floor_delta)
+      expected_raw_tail = SQRT(1.0E-6_dp*6.4E-5_dp)/full_delta
+      expected_raw_capped = 1.0_dp
+      expected_raw_smaller = 6.0E-6_dp/full_delta
+
+      err = ABS(no_raw - 0.75_dp)
+      err = MAX(err, ABS(both_tiny - expected_both_tiny))
+      err = MAX(err, ABS(raw_tail - expected_raw_tail))
+      err = MAX(err, ABS(raw_capped - expected_raw_capped))
+      err = MAX(err, ABS(raw_smaller - expected_raw_smaller))
+
+      IF (err > tol .OR. raw_tail <= no_raw*0.8_dp .OR. raw_smaller >= raw_tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed err/no/btiny/rtail/rcap/rsmall", err, no_raw, both_tiny, raw_tail, &
+            raw_capped, raw_smaller
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK err/no/btiny/rtail/rcap/rsmall", err, no_raw, both_tiny, raw_tail, &
+            raw_capped, raw_smaller
+      END IF
+
+   END SUBROUTINE check_projector_response_residual_weight
+
+! **************************************************************************************************
 !> \brief Check that a trust-safe Direct tail candidate can collect selected history.
 !> \param label ...
 !> \param tol ...
@@ -11499,6 +11548,35 @@ CONTAINS
       enabled = normal_quality .OR. aggregate_recovered_quality .OR. underpredicted_quality
 
    END FUNCTION dense_projector_response_candidate_enabled
+
+! **************************************************************************************************
+!> \brief Dense mirror of finite Projector-response residual taper.
+!> \param residual_delta ...
+!> \param raw_residual_delta ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_response_residual_weight(residual_delta, raw_residual_delta) RESULT(residual_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, raw_residual_delta
+      REAL(KIND=dp)                                      :: residual_weight
+
+      REAL(KIND=dp), PARAMETER :: coupled_tail_delta = 1.0E-4_dp, floor_delta = 3.0E-6_dp, &
+         full_delta = 1.2E-5_dp
+
+      REAL(KIND=dp)                                      :: raw_signal, response_delta
+
+      response_delta = MAX(0.0_dp, residual_delta)
+      IF (raw_residual_delta > response_delta) THEN
+         raw_signal = MIN(MAX(0.0_dp, raw_residual_delta), coupled_tail_delta)
+         response_delta = MAX(response_delta, SQRT(response_delta*raw_signal))
+      END IF
+
+      residual_weight = response_delta/MAX(EPSILON(1.0_dp), full_delta)
+      residual_weight = MAX(0.0_dp, MIN(1.0_dp, residual_weight))
+      IF (response_delta < floor_delta) &
+         residual_weight = residual_weight* &
+                           SQRT(MAX(0.0_dp, response_delta/MAX(EPSILON(1.0_dp), floor_delta)))
+
+   END FUNCTION dense_projector_response_residual_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of adverse negative-mode Projector-response history.
