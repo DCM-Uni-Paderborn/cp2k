@@ -6651,6 +6651,7 @@ CONTAINS
          projector_inactive_offdiag_response_weighted_trust_ratio, &
          projector_inactive_offdiag_scale_quality, &
          projector_inactive_offdiag_selected_quality_for_selection, &
+         projector_inactive_offdiag_selected_scale, &
          projector_inactive_offdiag_trust_quality, projector_inactive_offdiag_trust_scale, &
          projector_inactive_offdiag_unit_abs_step, projector_inactive_offdiag_unit_weighted_step, &
          projector_mode_damped_abs_avg, projector_mode_eval_max, projector_mode_eval_min, &
@@ -7540,6 +7541,7 @@ CONTAINS
          projector_inactive_offdiag_history_trust = 0.0_dp
          projector_inactive_offdiag_quality_for_selection = 0.0_dp
          projector_inactive_offdiag_selected_quality_for_selection = 1.0_dp
+         projector_inactive_offdiag_selected_scale = 1.0_dp
          projector_inactive_offdiag_model_calibrated_drop = 0.0_dp
          projector_inactive_offdiag_model_drop = 0.0_dp
          projector_inactive_offdiag_model_gap = 0.0_dp
@@ -9947,6 +9949,8 @@ CONTAINS
                local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_samples, &
                residual_delta)
          END IF
+         projector_inactive_offdiag_selected_scale = &
+            MIN(1.0_dp, MAX(0.0_dp, projector_inactive_offdiag_selected_quality_for_selection))
          split_quality_for_selection = &
             kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
                                             local_ot_env(1)%schur_split_measured_sum, &
@@ -10844,16 +10848,19 @@ CONTAINS
                   ! the rotational metric used for the modal response audit.
                   projector_physical_direct_inactive_offdiag_weight = 0.0_dp
                   IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
-                     IF (projector_inactive_offdiag_quality_for_selection > &
+                     IF (projector_inactive_offdiag_quality_for_selection* &
+                         projector_inactive_offdiag_selected_scale > &
                          EPSILON(projector_inactive_offdiag_quality_for_selection)) THEN
                         projector_physical_direct_inactive_offdiag_balance = &
                            kpoint_ot_projector_negative_step_balance( &
-                           projector_inactive_offdiag_history_quality, &
+                           projector_inactive_offdiag_history_quality* &
+                           projector_inactive_offdiag_selected_scale, &
                            projector_inactive_offdiag_history_trust, &
                            projector_inactive_offdiag_history_response_ratio, &
                            local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema)
                         projector_physical_direct_inactive_offdiag_weight = &
                            projector_coupled_weight* &
+                           projector_inactive_offdiag_selected_scale* &
                            projector_physical_direct_inactive_offdiag_balance
                      ELSE
                         projector_physical_direct_inactive_offdiag_balance = &
@@ -10996,7 +11003,8 @@ CONTAINS
                    exact_physical_response_ready .AND. &
                    projector_physical_direct_shadow_enabled .AND. &
                    projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                   projector_inactive_offdiag_quality_for_selection >= &
+                   projector_inactive_offdiag_quality_for_selection* &
+                   projector_inactive_offdiag_selected_scale >= &
                    ot_kp_schur_projector_response_quality_min_ratio .AND. &
                    projector_inactive_offdiag_history_trust > &
                    EPSILON(projector_inactive_offdiag_history_trust)) THEN
