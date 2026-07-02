@@ -1407,7 +1407,11 @@ CONTAINS
                                 scf_env%iter_delta <= ot_kp_added_mos_auto_fractional_tail_residual_factor* &
                                 edge_grow_limit
       residual_ready = scf_env%iter_delta <= grow_limit
-      residual_tail_limited = residual_ready .AND. (edge_limited .OR. nonedge_residual_probe) .AND. &
+      ! A residual-limited grow must see occupation at the virtual edge.  The
+      ! non-edge probe is only a basis-signal bootstrap; otherwise ordinary
+      ! metallic occupations below the Fermi edge can trigger late, unnecessary
+      ! AUTO growth after the edge itself is already empty.
+      residual_tail_limited = residual_ready .AND. edge_limited .AND. &
                               basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
                               ot_kp_added_mos_auto_basis_signal_min
       residual_spike = scf_env%iter_delta > &

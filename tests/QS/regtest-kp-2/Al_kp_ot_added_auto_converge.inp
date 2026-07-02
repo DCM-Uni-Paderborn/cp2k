@@ -1,12 +1,12 @@
 ! Slow/manual companion to the cheap ADDED_MOS AUTO k-point OT smoke test.
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
-! Local 2026-07 HIGH reference after the floor-density Direct response
-! bootstrap: initial AUTO buffer 4, grow to 8, then final convergence in
-! 76 OT steps.  Total OT lines across AUTO rebuilds: 312.
-! E_total = Mermin = -8.14585274922576 Ha, with no first/last-band warnings
-! and no AUTO-exhausted warning.  The bootstrap remains a fallback; the final
-! tail is driven by selected-history Direct-density response.
+! Local 2026-07 HIGH reference after residual-aware Schur response trust and
+! edge-gated residual AUTO growth: initial AUTO buffer 4, grow to 8 only, then
+! final convergence in 119 OT steps.  Total OT lines across AUTO rebuilds: 284.
+! E_total = Mermin = -8.14585274715756 Ha, with no first/last-band warnings
+! and no AUTO-exhausted warning.  The final tail is no longer solved by growing
+! into an empty virtual edge; remaining slowness is a response/Hessian issue.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto
