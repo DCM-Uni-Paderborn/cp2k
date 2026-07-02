@@ -177,6 +177,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_underpredict_max_ratio = 2.0E1_dp, &
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
+                                        ot_kp_schur_projector_plateau_gap_mix_max_weight = 3.0E-2_dp, &
                                         ot_kp_schur_projector_negative_balance_floor = 1.5E-1_dp, &
                                         ot_kp_schur_projector_negative_balance_max = 5.0E-1_dp, &
                                         ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
@@ -6898,6 +6899,7 @@ CONTAINS
          projector_physical_direct_normcap_response_weighted_step, &
          projector_physical_direct_normcap_scale, projector_physical_direct_normp, &
          projector_physical_direct_offdiag_mix_weight, &
+         projector_physical_direct_plateau_gap_mix_weight, &
          projector_physical_direct_quality_for_selection, &
          projector_physical_direct_response_abs_step
       REAL(KIND=dp) :: projector_physical_direct_response_abs_trust_ratio, &
@@ -7060,7 +7062,8 @@ CONTAINS
          projector_response_trust_quality
       REAL(KIND=dp) :: projector_response_trust_scale, projector_response_unit_abs_step, &
          projector_response_unit_weighted_step, projector_tail_active_delta_diag_avg, &
-         projector_tail_active_delta_weight, projector_tail_delta_diag_avg, rayleigh_edge_gap, residual_delta, &
+         projector_tail_active_delta_weight, projector_tail_delta_diag_avg, &
+         projector_plateau_gap_delta_diag_avg, projector_plateau_gap_delta_weight, rayleigh_edge_gap, residual_delta, &
          residual_reference_quality, response_abs_step, response_abs_trust, &
          response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
          response_penalty_term, response_shift, response_step_max, response_trust, &
@@ -7869,6 +7872,7 @@ CONTAINS
          projector_physical_direct_mixed_consistency_scale = 0.0_dp
          projector_physical_direct_mixed_step_scale = 0.0_dp
          projector_physical_direct_mixed_weight = 0.0_dp
+         projector_physical_direct_plateau_gap_mix_weight = 0.0_dp
          projector_physical_direct_inactive_offdiag_balance = 0.0_dp
          projector_physical_direct_inactive_offdiag_weight = 0.0_dp
          projector_physical_direct_offdiag_mix_weight = 0.0_dp
@@ -10622,6 +10626,8 @@ CONTAINS
             END IF
             projector_tail_active_delta_diag_avg = 0.0_dp
             projector_tail_active_delta_weight = 0.0_dp
+            projector_plateau_gap_delta_diag_avg = 0.0_dp
+            projector_plateau_gap_delta_weight = 0.0_dp
             projector_tail_delta_diag_avg = projector_hessian_delta_diag_avg
             IF (schur_attempt <= 2) THEN
                schur(:, :) = rot_hessian_coupled(:, :) + rot_hessian_projector(:, :) - rot_hessian(:, :)
@@ -10656,6 +10662,32 @@ CONTAINS
                      projector_tail_delta_diag_avg = &
                         (1.0_dp - projector_tail_active_delta_weight)*projector_hessian_delta_diag_avg + &
                         projector_tail_active_delta_weight*projector_tail_active_delta_diag_avg
+                  END IF
+               END IF
+               IF (exact_attempt_response .AND. projector_plateau_gap_model_enabled .AND. &
+                   residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+                  projector_plateau_gap_delta_weight = &
+                     kpoint_ot_projector_plateau_gap_mix_weight( &
+                     residual_delta, projector_plateau_gap_quality_for_selection, &
+                     local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_weight_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_negative_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_step_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_quality_samples)
+                  IF (projector_plateau_gap_delta_weight > &
+                      EPSILON(projector_plateau_gap_delta_weight)) THEN
+                     schur(:, :) = schur(:, :) + projector_plateau_gap_delta_weight* &
+                        (rot_hessian_projector_physical_offdiag_plateau_active(:, :) - &
+                         rot_hessian_projector_physical_offdiag_active(:, :))
+                     projector_plateau_gap_delta_diag_avg = 0.0_dp
+                     DO r = 1, nrot
+                        projector_plateau_gap_delta_diag_avg = &
+                           projector_plateau_gap_delta_diag_avg + &
+                           rot_hessian_projector_physical_offdiag_plateau_active(r, r) - &
+                           rot_hessian_projector_physical_offdiag_active(r, r)
+                     END DO
+                     projector_plateau_gap_delta_diag_avg = &
+                        projector_plateau_gap_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
                   END IF
                END IF
                IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
@@ -10852,6 +10884,12 @@ CONTAINS
                   projector_coupled_weight*projector_tail_active_delta_weight, &
                   projector_hessian_delta_diag_avg, projector_tail_active_delta_diag_avg, &
                   projector_tail_delta_diag_avg
+               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+                   schur_attempt == 3 .AND. exact_attempt_response) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),2(1X,ES16.8))') &
+                  " OT Schur projector plateau-gap coupled-delta mix group att weight diag:", &
+                  target_group, schur_attempt, projector_plateau_gap_delta_weight, &
+                  projector_plateau_gap_delta_diag_avg
                IF (schur_attempt <= 2) THEN
                   IF (exact_energy_model_ready) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
@@ -11779,6 +11817,30 @@ CONTAINS
                         projector_physical_direct_delta(r, r) = &
                            projector_physical_direct_delta(r, r) + diag_shift
                      END DO
+                     projector_physical_direct_delta_diag_avg = 0.0_dp
+                     DO r = 1, nrot
+                        projector_physical_direct_delta_diag_avg = &
+                           projector_physical_direct_delta_diag_avg + &
+                           projector_physical_direct_delta(r, r)
+                     END DO
+                     projector_physical_direct_delta_diag_avg = &
+                        projector_physical_direct_delta_diag_avg/REAL(MAX(1, nrot), KIND=dp)
+                  END IF
+                  IF (projector_plateau_gap_model_enabled) &
+                     projector_physical_direct_plateau_gap_mix_weight = &
+                     kpoint_ot_projector_plateau_gap_mix_weight( &
+                     residual_delta, projector_plateau_gap_quality_for_selection, &
+                     local_ot_env(1)%schur_projector_plateau_gap_quality_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_weight_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_negative_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_step_ema, &
+                     local_ot_env(1)%schur_projector_plateau_gap_quality_samples)
+                  IF (projector_physical_direct_plateau_gap_mix_weight > &
+                      EPSILON(projector_physical_direct_plateau_gap_mix_weight)) THEN
+                     projector_physical_direct_delta(:, :) = projector_physical_direct_delta(:, :) + &
+                        projector_physical_direct_plateau_gap_mix_weight* &
+                        (rot_hessian_projector_physical_offdiag_plateau_active(:, :) - &
+                         rot_hessian_projector_physical_offdiag_active(:, :))
                      projector_physical_direct_delta_diag_avg = 0.0_dp
                      DO r = 1, nrot
                         projector_physical_direct_delta_diag_avg = &
@@ -16700,9 +16762,9 @@ CONTAINS
                      projector_physical_response_audit_eval_abs_avg, &
                      projector_physical_response_audit_positive_weight_sum, &
                      projector_physical_response_audit_negative_weight_sum
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),18(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),19(1X,ES16.8))') &
                      " OT Schur projector phys direct ready selected dgate promoted mixed tail "// &
-                     "spromq exp qsel qsplit qinv pgq dq invt mixq mixw offmix cdrop mgap rratio aratio comp "// &
+                     "spromq exp qsel qsplit qinv pgq pgmix dq invt mixq mixw offmix cdrop mgap rratio aratio comp "// &
                      "applied_shift invgap:", &
                      projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                      projector_physical_direct_shadow_enabled, &
@@ -16714,6 +16776,7 @@ CONTAINS
                      projector_physical_trace_split_quality, &
                      projector_physical_trace_invariant_quality_for_selection, &
                      projector_plateau_gap_quality_for_selection, &
+                     projector_physical_direct_plateau_gap_mix_weight, &
                      projector_physical_direct_density_audit_quality, &
                      projector_physical_direct_trace_invariant_trust_quality, &
                      projector_physical_direct_mixed_quality, &
@@ -19926,6 +19989,59 @@ CONTAINS
             audit_drop = MAX(audit_drop, 0.5_dp*MAX(0.0_dp, mode_abs_quad))
 
       END FUNCTION kpoint_ot_projector_plateau_gap_audit_drop
+
+! **************************************************************************************************
+!> \brief accepted-history weight for mixing plateau-gap Projector curvature into Direct Hessian
+!> \param residual_delta current effective OT residual
+!> \param history_quality accepted-drop quality for plateau-gap Hessian modes
+!> \param history_quality_ema smoothed measured/predicted quality
+!> \param mode_weight_ema smoothed accepted modal quadratic weight
+!> \param mode_negative_ema smoothed negative-mode fraction
+!> \param mode_step_ema smoothed accepted-step fraction in those modes
+!> \param samples number of accepted plateau-gap audit samples
+!> \return small curvature-mix weight in [0,max_weight]
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_plateau_gap_mix_weight(residual_delta, history_quality, &
+                                                          history_quality_ema, mode_weight_ema, &
+                                                          mode_negative_ema, mode_step_ema, samples) &
+         RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
+                                                            history_quality_ema, mode_weight_ema, &
+                                                            mode_negative_ema, mode_step_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: mix_weight
+
+      REAL(KIND=dp)                                      :: maturity, mode_signal, negative_quality, &
+                                                            quality_signal, underprediction_signal
+
+         mix_weight = 0.0_dp
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+
+         quality_signal = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+         IF (quality_signal < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         underprediction_signal = LOG(MAX(1.0_dp, history_quality_ema))/ &
+                                  LOG(ot_kp_schur_projector_response_underpredict_max_ratio)
+         underprediction_signal = MIN(1.0_dp, MAX(0.0_dp, underprediction_signal))
+         IF (underprediction_signal <= EPSILON(underprediction_signal)) RETURN
+
+         mode_signal = MAX(SQRT(MAX(0.0_dp, mode_weight_ema)), &
+                           0.5_dp*SQRT(MAX(0.0_dp, mode_step_ema)))
+         mode_signal = MIN(1.0_dp, MAX(0.0_dp, mode_signal))
+         IF (mode_signal <= EPSILON(mode_signal)) RETURN
+
+         negative_quality = 1.0_dp - 0.5_dp*MIN(1.0_dp, MAX(0.0_dp, mode_negative_ema))
+         maturity = REAL(samples - ot_kp_schur_projector_response_min_samples + 1, KIND=dp)/ &
+                    REAL(ot_kp_schur_projector_response_min_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+         mix_weight = ot_kp_schur_projector_plateau_gap_mix_max_weight*maturity* &
+                      quality_signal*underprediction_signal*mode_signal*negative_quality
+         mix_weight = MIN(ot_kp_schur_projector_plateau_gap_mix_max_weight, &
+                          MAX(0.0_dp, mix_weight))
+
+      END FUNCTION kpoint_ot_projector_plateau_gap_mix_weight
 
 ! **************************************************************************************************
 !> \brief finite Projector-response residual taper used by modal response audits

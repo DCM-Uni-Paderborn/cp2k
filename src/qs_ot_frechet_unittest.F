@@ -162,6 +162,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector response character scale", 5.0E-14_dp, nfail)
    CALL check_projector_plateau_gap_audit_drop( &
       "complex projector plateau-gap audit drop", 5.0E-14_dp, nfail)
+   CALL check_projector_plateau_gap_mix_weight( &
+      "complex projector plateau-gap mix weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_gap_projection( &
       "complex projector density descent-gap projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_active_filter_descent_recovery( &
@@ -6285,6 +6287,50 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_plateau_gap_audit_drop
+
+! **************************************************************************************************
+!> \brief Check that plateau-gap curvature enters Direct Hessian only from mature accepted history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_plateau_gap_mix_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: clean, err, high_residual, immature, &
+                                                            mature, negative, no_underprediction
+
+      immature = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+                                                        4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 4)
+      high_residual = dense_projector_plateau_gap_mix_weight(2.0E-4_dp, 1.0_dp, 20.0_dp, &
+                                                             4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
+      no_underprediction = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 1.0_dp, &
+                                                                  4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
+      mature = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+                                                      4.0E-3_dp, 0.50_dp, 2.0E-2_dp, 20)
+      clean = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+                                                     4.0E-2_dp, 0.0_dp, 1.6E-1_dp, 20)
+      negative = dense_projector_plateau_gap_mix_weight(5.0E-5_dp, 1.0_dp, 20.0_dp, &
+                                                        4.0E-2_dp, 1.0_dp, 1.6E-1_dp, 20)
+
+      err = ABS(immature) + ABS(high_residual) + ABS(no_underprediction)
+      err = MAX(err, ABS(negative - 0.5_dp*clean))
+
+      IF (err > tol .OR. mature <= 0.0_dp .OR. clean <= mature .OR. &
+          negative <= 0.0_dp .OR. negative >= clean) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/immature/highres/nounder/mature/clean/negative", err, &
+            immature, high_residual, no_underprediction, mature, clean, negative
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/immature/highres/nounder/mature/clean/negative", err, &
+            immature, high_residual, no_underprediction, mature, clean, negative
+      END IF
+
+   END SUBROUTINE check_projector_plateau_gap_mix_weight
 
 ! **************************************************************************************************
 !> \brief Check that density-gap response keeps only fixed-N Mermin descent components.
@@ -16360,6 +16406,59 @@ CONTAINS
          audit_drop = MAX(audit_drop, 0.5_dp*MAX(0.0_dp, mode_abs_quad))
 
    END FUNCTION dense_projector_plateau_gap_audit_drop
+
+! **************************************************************************************************
+!> \brief Dense mirror of plateau-gap Direct-Hessian curvature mix weight.
+!> \param residual_delta ...
+!> \param history_quality ...
+!> \param history_quality_ema ...
+!> \param mode_weight_ema ...
+!> \param mode_negative_ema ...
+!> \param mode_step_ema ...
+!> \param samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_plateau_gap_mix_weight(residual_delta, history_quality, &
+                                                   history_quality_ema, mode_weight_ema, &
+                                                   mode_negative_ema, mode_step_ema, samples) &
+      RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
+                                                            history_quality_ema, mode_weight_ema, &
+                                                            mode_negative_ema, mode_step_ema
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp)                                      :: mix_weight
+
+      INTEGER, PARAMETER                                 :: min_samples = 8
+      REAL(KIND=dp), PARAMETER :: max_weight = 3.0E-2_dp, quality_min = 1.0E-1_dp, &
+         tail_delta = 1.0E-4_dp, underpredict_max_ratio = 2.0E1_dp
+      REAL(KIND=dp)                                      :: maturity, mode_signal, negative_quality, &
+                                                            quality_signal, underprediction_signal
+
+      mix_weight = 0.0_dp
+      IF (residual_delta > tail_delta) RETURN
+      IF (samples < min_samples) RETURN
+
+      quality_signal = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+      IF (quality_signal < quality_min) RETURN
+
+      underprediction_signal = LOG(MAX(1.0_dp, history_quality_ema))/LOG(underpredict_max_ratio)
+      underprediction_signal = MIN(1.0_dp, MAX(0.0_dp, underprediction_signal))
+      IF (underprediction_signal <= EPSILON(underprediction_signal)) RETURN
+
+      mode_signal = MAX(SQRT(MAX(0.0_dp, mode_weight_ema)), &
+                        0.5_dp*SQRT(MAX(0.0_dp, mode_step_ema)))
+      mode_signal = MIN(1.0_dp, MAX(0.0_dp, mode_signal))
+      IF (mode_signal <= EPSILON(mode_signal)) RETURN
+
+      negative_quality = 1.0_dp - 0.5_dp*MIN(1.0_dp, MAX(0.0_dp, mode_negative_ema))
+      maturity = REAL(samples - min_samples + 1, KIND=dp)/REAL(min_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+      mix_weight = max_weight*maturity*quality_signal*underprediction_signal* &
+                   mode_signal*negative_quality
+      mix_weight = MIN(max_weight, MAX(0.0_dp, mix_weight))
+
+   END FUNCTION dense_projector_plateau_gap_mix_weight
 
 ! **************************************************************************************************
 !> \brief active Fermi-window weight for dense projector-density response fixtures.
