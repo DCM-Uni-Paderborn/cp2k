@@ -10924,7 +10924,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: above_tail, capped_tail, err, tail
+      REAL(KIND=dp)                                      :: above_tail, capped_tail, err, relative_tail, tail
 
       above_tail = dense_physical_direct_density_mix(0.20_dp, 0.60_dp, 2.0E-4_dp, &
                                                      1.0E-4_dp, 0.95_dp)
@@ -10932,18 +10932,21 @@ CONTAINS
                                                1.0E-4_dp, 0.95_dp)
       capped_tail = dense_physical_direct_density_mix(-0.10_dp, 2.0_dp, 1.0E-6_dp, &
                                                       1.0E-4_dp, 0.95_dp)
+      relative_tail = dense_physical_direct_density_mix(0.02_dp, 0.025_dp, 1.0E-6_dp, &
+                                                        1.0E-4_dp, 0.95_dp, projector_weight=0.05_dp)
 
       err = ABS(above_tail - 0.20_dp)
       err = MAX(err, ABS(tail - 0.60_dp))
       err = MAX(err, ABS(capped_tail - 0.95_dp))
+      err = MAX(err, ABS(relative_tail - 0.50_dp))
 
-      IF (err > tol .OR. tail <= above_tail) THEN
+      IF (err > tol .OR. tail <= above_tail .OR. relative_tail <= tail*0.5_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "failed with above/tail/capped", above_tail, tail, capped_tail
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with above/tail/capped/relative", above_tail, tail, capped_tail, relative_tail
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
-            "OK with above/tail/capped", above_tail, tail, capped_tail
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with above/tail/capped/relative", above_tail, tail, capped_tail, relative_tail
       END IF
 
    END SUBROUTINE check_projector_direct_density_curvature_mix
@@ -11051,18 +11054,26 @@ CONTAINS
 !> \param residual_delta ...
 !> \param tail_delta ...
 !> \param max_weight ...
+!> \param projector_weight ...
 !> \return trace-active curvature mix weight
 ! **************************************************************************************************
    FUNCTION dense_physical_direct_density_mix(active_weight, density_history_weight, residual_delta, &
-                                              tail_delta, max_weight) RESULT(mix_weight)
+                                              tail_delta, max_weight, projector_weight) RESULT(mix_weight)
       REAL(KIND=dp), INTENT(IN)                          :: active_weight, density_history_weight, &
                                                             residual_delta, tail_delta, max_weight
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_weight
       REAL(KIND=dp)                                      :: mix_weight
+
+      REAL(KIND=dp)                                      :: density_weight
 
       mix_weight = MIN(max_weight, MAX(0.0_dp, active_weight))
       IF (residual_delta > tail_delta) RETURN
 
-      mix_weight = MAX(mix_weight, MIN(max_weight, MAX(0.0_dp, density_history_weight)))
+      density_weight = MAX(0.0_dp, density_history_weight)
+      IF (PRESENT(projector_weight)) &
+         density_weight = MAX(density_weight, dense_projector_tail_active_delta_weight(projector_weight, &
+                                                                                      density_history_weight))
+      mix_weight = MAX(mix_weight, MIN(max_weight, density_weight))
 
    END FUNCTION dense_physical_direct_density_mix
 

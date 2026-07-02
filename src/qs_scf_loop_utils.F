@@ -11591,7 +11591,7 @@ CONTAINS
                   projector_physical_direct_trace_active_basis_weight = &
                      kpoint_ot_physical_direct_density_mix( &
                      projector_physical_direct_trace_active_basis_weight, &
-                     projector_density_active_mix_weight, residual_delta)
+                     projector_density_active_mix_weight, residual_delta, projector_coupled_weight)
                   IF (projector_physical_direct_trace_active_basis_weight > &
                       EPSILON(projector_physical_direct_trace_active_basis_weight)) THEN
                      projector_physical_direct_delta(:, :) = &
@@ -18299,20 +18299,28 @@ CONTAINS
 !> \param active_weight current active-window trace weight
 !> \param density_history_weight accepted density-response history weight
 !> \param residual_delta current OT residual
+!> \param projector_weight active finite Projector-Hessian weight in the Schur block
 !> \return trace-active curvature weight for the physical Direct model
 ! **************************************************************************************************
       FUNCTION kpoint_ot_physical_direct_density_mix(active_weight, density_history_weight, &
-                                                     residual_delta) RESULT(mix_weight)
+                                                     residual_delta, projector_weight) RESULT(mix_weight)
       REAL(KIND=dp), INTENT(IN)                          :: active_weight, density_history_weight, &
                                                             residual_delta
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_weight
       REAL(KIND=dp)                                      :: mix_weight
+
+      REAL(KIND=dp)                                      :: density_weight
 
          mix_weight = MIN(ot_kp_schur_projector_trace_active_max_weight, &
                           MAX(0.0_dp, active_weight))
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
 
+         density_weight = MAX(0.0_dp, density_history_weight)
+         IF (PRESENT(projector_weight)) &
+            density_weight = MAX(density_weight, &
+                                 kpoint_ot_projector_tail_active_delta_weight(projector_weight, density_history_weight))
          mix_weight = MAX(mix_weight, MIN(ot_kp_schur_projector_trace_active_max_weight, &
-                                          MAX(0.0_dp, density_history_weight)))
+                                          density_weight))
 
       END FUNCTION kpoint_ot_physical_direct_density_mix
 
