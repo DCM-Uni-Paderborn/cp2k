@@ -6680,7 +6680,7 @@ CONTAINS
          projector_offdiag_model_gap_trust, projector_offdiag_norm_energy, &
          projector_offdiag_norm_ratio, projector_offdiag_norm_rotation, projector_offdiag_normp, &
          projector_offdiag_quality_for_selection, projector_offdiag_reference_drop
-      REAL(KIND=dp) :: projector_offdiag_response_abs_step, &
+      REAL(KIND=dp) :: projector_offdiag_abs_trust, projector_offdiag_response_abs_step, &
          projector_offdiag_response_abs_trust_ratio, projector_offdiag_response_correction_drop, &
          projector_offdiag_response_correction_negative, projector_offdiag_response_cross_drop, &
          projector_offdiag_response_negative_coeff, projector_offdiag_response_negative_drop, &
@@ -7581,6 +7581,7 @@ CONTAINS
          projector_offdiag_quality_for_selection = 0.0_dp
          projector_offdiag_expected_drop_ratio = 0.0_dp
          projector_offdiag_reference_drop = 0.0_dp
+         projector_offdiag_abs_trust = HUGE(1.0_dp)
          projector_offdiag_response_abs_step = 0.0_dp
          projector_offdiag_response_abs_trust_ratio = 0.0_dp
          projector_offdiag_response_weighted_step = 0.0_dp
@@ -10365,6 +10366,7 @@ CONTAINS
                projector_offdiag_norm_rotation = 0.0_dp
                projector_offdiag_normp = 0.0_dp
                projector_offdiag_norm_ratio = 0.0_dp
+               projector_offdiag_abs_trust = HUGE(1.0_dp)
                projector_offdiag_response_abs_step = 0.0_dp
                projector_offdiag_response_abs_trust_ratio = 0.0_dp
                projector_offdiag_response_weighted_step = 0.0_dp
@@ -11280,6 +11282,9 @@ CONTAINS
                         projector_offdiag_unit_weighted_step = &
                            kpoint_ot_weighted_response_step(projector_offdiag_rx_e, curv, &
                                                             curv_projection_sum)
+                        projector_offdiag_abs_trust = &
+                           kpoint_ot_offdiag_tail_abs_trust(response_abs_trust, residual_delta, &
+                                                            sigma, step_gauge_quality)
                         projector_offdiag_trust_scale = 1.0_dp
                         IF (response_trust > EPSILON(response_trust) .AND. &
                             projector_offdiag_unit_weighted_step > &
@@ -11288,12 +11293,12 @@ CONTAINS
                            MIN(projector_offdiag_trust_scale, &
                                0.8_dp*response_trust/ &
                                projector_offdiag_unit_weighted_step)
-                        IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+                        IF (projector_offdiag_abs_trust > EPSILON(projector_offdiag_abs_trust) .AND. &
                             projector_offdiag_unit_abs_step > &
                             EPSILON(projector_offdiag_unit_abs_step)) &
                            projector_offdiag_trust_scale = &
                            MIN(projector_offdiag_trust_scale, &
-                               0.8_dp*response_abs_trust/ &
+                               0.8_dp*projector_offdiag_abs_trust/ &
                                projector_offdiag_unit_abs_step)
                         projector_offdiag_direction_scale = &
                            MIN(1.0_dp, projector_offdiag_trust_scale, &
@@ -11332,9 +11337,9 @@ CONTAINS
                         IF (response_trust > EPSILON(response_trust)) &
                            projector_offdiag_response_weighted_trust_ratio = &
                            projector_offdiag_response_weighted_step/response_trust
-                        IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                        IF (projector_offdiag_abs_trust > EPSILON(projector_offdiag_abs_trust)) &
                            projector_offdiag_response_abs_trust_ratio = &
-                           projector_offdiag_response_abs_step/response_abs_trust
+                           projector_offdiag_response_abs_step/projector_offdiag_abs_trust
                         projector_offdiag_trust_quality = &
                            kpoint_ot_schur_trust_quality( &
                            projector_offdiag_response_weighted_trust_ratio, &
@@ -11353,7 +11358,7 @@ CONTAINS
                            projector_offdiag_model_calibrated_drop > &
                            EPSILON(projector_offdiag_model_drop) .AND. &
                            projector_offdiag_response_weighted_step <= response_trust .AND. &
-                           projector_offdiag_response_abs_step <= response_abs_trust
+                           projector_offdiag_response_abs_step <= projector_offdiag_abs_trust
                      END IF
                   END IF
                END IF
@@ -19079,6 +19084,35 @@ CONTAINS
          quality = MIN(1.0_dp, MAX(MAX(0.25_dp, ot_kp_schur_calibrated_quality_min_ratio), quality))
 
       END FUNCTION kpoint_ot_schur_step_gauge_quality
+
+! **************************************************************************************************
+!> \brief absolute residual-tail trust for gauge-like offdiag projector response
+!> \param response_abs_trust default thermal absolute response trust
+!> \param residual_delta current OT residual delta
+!> \param sigma electronic smearing width
+!> \param step_gauge_quality accepted residual quality of gauge-like tail steps
+!> \return absolute trust for the offdiag projector response
+! **************************************************************************************************
+      FUNCTION kpoint_ot_offdiag_tail_abs_trust(response_abs_trust, residual_delta, sigma, &
+                                                step_gauge_quality) RESULT(abs_trust)
+      REAL(KIND=dp), INTENT(IN)                          :: response_abs_trust, residual_delta, sigma, &
+                                                            step_gauge_quality
+      REAL(KIND=dp)                                      :: abs_trust
+
+      REAL(KIND=dp)                                      :: sigma_eff, tail_cap, tail_floor
+
+         abs_trust = response_abs_trust
+         IF (response_abs_trust <= EPSILON(response_abs_trust)) RETURN
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (step_gauge_quality >= 0.95_dp) RETURN
+
+         sigma_eff = MAX(sigma, EPSILON(1.0_dp))
+         tail_cap = SQRT(MAX(0.0_dp, residual_delta)*sigma_eff)
+         tail_floor = 0.5_dp*SQRT(ot_kp_schur_projector_coupled_tail_delta*sigma_eff)
+         tail_cap = MAX(tail_cap, tail_floor)
+         abs_trust = MIN(response_abs_trust, tail_cap)
+
+      END FUNCTION kpoint_ot_offdiag_tail_abs_trust
 
 ! **************************************************************************************************
 !> \brief residual-tail floor for gauge-like rotations

@@ -278,6 +278,8 @@ PROGRAM qs_ot_frechet_unittest
                                               5.0E-14_dp, nfail)
    CALL check_projector_tail_gauge_quality("complex projector tail gauge quality", &
                                            5.0E-14_dp, nfail)
+   CALL check_projector_offdiag_tail_abs_trust( &
+      "complex projector offdiag tail abs trust", 5.0E-14_dp, nfail)
    CALL check_projector_raw_tail_rotation_floor( &
       "complex projector raw-tail rotation floor", 5.0E-14_dp, nfail)
    CALL check_monotone_occupation_slope_projection("complex occupation monotone slope projection", &
@@ -10393,6 +10395,53 @@ CONTAINS
    END SUBROUTINE check_projector_tail_gauge_quality
 
 ! **************************************************************************************************
+!> \brief Check residual-tail absolute trust for offdiag projector response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_offdiag_tail_abs_trust(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: response_abs_trust = 8.0E-3_dp, &
+                                                            sigma = 1.0E-3_dp, tail_delta = 1.0E-4_dp
+
+      REAL(KIND=dp)                                      :: capped_by_existing, err, good_history, &
+                                                            late_tail, outside_tail, weak_tail
+
+      outside_tail = dense_offdiag_tail_abs_trust(response_abs_trust, 2.0_dp*tail_delta, sigma, &
+                                                  0.70_dp, tail_delta)
+      good_history = dense_offdiag_tail_abs_trust(response_abs_trust, 5.0E-5_dp, sigma, &
+                                                  0.98_dp, tail_delta)
+      weak_tail = dense_offdiag_tail_abs_trust(response_abs_trust, 5.0E-5_dp, sigma, &
+                                               0.70_dp, tail_delta)
+      late_tail = dense_offdiag_tail_abs_trust(response_abs_trust, 1.0E-6_dp, sigma, &
+                                               0.70_dp, tail_delta)
+      capped_by_existing = dense_offdiag_tail_abs_trust(1.0E-5_dp, 5.0E-5_dp, sigma, &
+                                                        0.70_dp, tail_delta)
+
+      err = ABS(outside_tail - response_abs_trust)
+      err = MAX(err, ABS(good_history - response_abs_trust))
+      err = MAX(err, ABS(weak_tail - SQRT(5.0E-8_dp)))
+      err = MAX(err, ABS(late_tail - 0.5_dp*SQRT(1.0E-7_dp)))
+      err = MAX(err, ABS(capped_by_existing - 1.0E-5_dp))
+
+      IF (err > tol .OR. weak_tail >= response_abs_trust .OR. late_tail > weak_tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed err/outside/good/weak/late/capped", err, outside_tail, good_history, &
+            weak_tail, late_tail, capped_by_existing
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK err/outside/good/weak/late/capped", err, outside_tail, good_history, &
+            weak_tail, late_tail, capped_by_existing
+      END IF
+
+   END SUBROUTINE check_projector_offdiag_tail_abs_trust
+
+! **************************************************************************************************
 !> \brief Raw Schur fallback must keep gauge pair floors in the metallic residual tail.
 !> \param label ...
 !> \param tol ...
@@ -10495,6 +10544,36 @@ CONTAINS
       quality = MIN(1.0_dp, MAX(0.25_dp, quality))
 
    END FUNCTION dense_schur_step_gauge_quality
+
+! **************************************************************************************************
+!> \brief Dense copy of absolute residual-tail trust for offdiag projector response.
+!> \param response_abs_trust ...
+!> \param residual_delta ...
+!> \param sigma ...
+!> \param step_gauge_quality ...
+!> \param tail_delta ...
+!> \return absolute offdiag response trust
+! **************************************************************************************************
+   FUNCTION dense_offdiag_tail_abs_trust(response_abs_trust, residual_delta, sigma, &
+                                         step_gauge_quality, tail_delta) RESULT(abs_trust)
+      REAL(KIND=dp), INTENT(IN)                          :: response_abs_trust, residual_delta, sigma, &
+                                                            step_gauge_quality, tail_delta
+      REAL(KIND=dp)                                      :: abs_trust
+
+      REAL(KIND=dp)                                      :: sigma_eff, tail_cap, tail_floor
+
+      abs_trust = response_abs_trust
+      IF (response_abs_trust <= EPSILON(response_abs_trust)) RETURN
+      IF (residual_delta > tail_delta) RETURN
+      IF (step_gauge_quality >= 0.95_dp) RETURN
+
+      sigma_eff = MAX(sigma, EPSILON(1.0_dp))
+      tail_cap = SQRT(MAX(0.0_dp, residual_delta)*sigma_eff)
+      tail_floor = 0.5_dp*SQRT(tail_delta*sigma_eff)
+      tail_cap = MAX(tail_cap, tail_floor)
+      abs_trust = MIN(response_abs_trust, tail_cap)
+
+   END FUNCTION dense_offdiag_tail_abs_trust
 
 ! **************************************************************************************************
 !> \brief Dense copy of the strict residual quality used for gauge-like tail rotations.
