@@ -193,6 +193,9 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_density_fdir_probe_residual_ratio = 8.0E-1_dp, &
                                         ot_kp_schur_physical_env_raw_floor_eps_factor = 3.0_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_ratio = 1.0E-1_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_min_ratio = 2.0E-2_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_quality = 9.9E-1_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_gap = 1.0E-2_dp, &
                                         ot_kp_schur_physical_norm_tail_factor = 1.0_dp, &
                                         ot_kp_schur_physical_tail_eps_factor = 1.0_dp, &
                                         ot_kp_schur_residual_tail_plateau_quality = 2.5E-1_dp, &
@@ -1056,7 +1059,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
 
       INTEGER                                            :: local_channel
-      REAL(KIND=dp)                                      :: env_delta, ot_delta, raw_delta
+      REAL(KIND=dp)                                      :: env_delta, gap_weight, ot_delta, quality_weight, &
+                                                            raw_delta, raw_floor_ratio, tail_weight
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -1076,7 +1080,29 @@ CONTAINS
       CALL para_env_inter_kp%max(raw_delta)
       IF (PRESENT(eps_scf)) THEN
          IF (eps_scf > 0.0_dp .AND. raw_delta > residual_delta) THEN
-            residual_delta = MAX(residual_delta, ot_kp_schur_physical_exit_raw_floor_ratio*raw_delta)
+            raw_floor_ratio = ot_kp_schur_physical_exit_raw_floor_ratio
+            IF (local_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
+                local_ot_env(1)%kpoint_physical_delta <= eps_scf .AND. &
+                local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                ot_kp_schur_calibration_min_samples .AND. &
+                local_ot_env(1)%mermin_ls_accepted_quality_ema >= &
+                ot_kp_schur_physical_exit_raw_floor_quality .AND. &
+                local_ot_env(1)%mermin_ls_accepted_gap_ema <= &
+                ot_kp_schur_physical_exit_raw_floor_gap) THEN
+               quality_weight = (local_ot_env(1)%mermin_ls_accepted_quality_ema - &
+                                 ot_kp_schur_physical_exit_raw_floor_quality)/ &
+                                MAX(EPSILON(1.0_dp), &
+                                    1.0_dp - ot_kp_schur_physical_exit_raw_floor_quality)
+               quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
+               gap_weight = 1.0_dp - local_ot_env(1)%mermin_ls_accepted_gap_ema/ &
+                             MAX(EPSILON(1.0_dp), ot_kp_schur_physical_exit_raw_floor_gap)
+               gap_weight = MIN(1.0_dp, MAX(0.0_dp, gap_weight))
+               tail_weight = SQRT(quality_weight*gap_weight)
+               raw_floor_ratio = (1.0_dp - tail_weight)*ot_kp_schur_physical_exit_raw_floor_ratio + &
+                                 tail_weight*ot_kp_schur_physical_exit_raw_floor_min_ratio
+            END IF
+            CALL para_env_inter_kp%max(raw_floor_ratio)
+            residual_delta = MAX(residual_delta, raw_floor_ratio*raw_delta)
             env_delta = MAX(env_delta, MIN(residual_delta, &
                                            ot_kp_schur_physical_env_raw_floor_eps_factor*eps_scf))
          END IF
