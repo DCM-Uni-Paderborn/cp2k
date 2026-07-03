@@ -55,16 +55,16 @@
 # 110 steps after the rebuild, 276 inner k-point OT calls overall, and
 # E_total = Mermin = -8.14585274623606 Ha.  No first/last-band warning,
 # AUTO-exhausted warning, or "Unsupported content type" signature is printed.
-# Current optional 3-k-point HIGH companion references after the globally
-# supported low-curvature density response update:
-# the Sym3 path grows to 8 and 16, converges in 73 SCF steps, and has
-# E_total = Mermin = -8.15998522857351 Ha.  The full-grid companion follows
-# the same AUTO growth sequence, converges in 75 SCF steps, and has
-# E_total = Mermin = -8.15998356932113 Ha.  The two optional 3-k-point paths
-# agree within 2E-6 Ha.  In both tails the full eigenvalue response stays active
-# while the density source is pair-active filtered, and no first/last-band or
-# AUTO-exhausted warning is printed.  Exact SCF step counts are intentionally
-# not part of these optional 3-k-point companion references.
+# Current optional 3-k-point HIGH companion references after the
+# Mermin-drop-aware raw/physical residual guard:
+# the Sym3 path grows to 8 and 16, applies three raw-gap guards, converges in
+# 291 SCF steps, and has E_total = Mermin = -8.15998707630600 Ha.  The
+# full-grid companion follows the same AUTO growth sequence, applies one
+# raw-gap guard, converges in 119 SCF steps, and has E_total = Mermin =
+# -8.15998660261998 Ha.  The two optional 3-k-point paths agree within 5E-7
+# Ha, and no first/last-band or AUTO-exhausted warning is printed.  Exact SCF
+# step counts are intentionally not part of these optional 3-k-point companion
+# references.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.63303359769477},

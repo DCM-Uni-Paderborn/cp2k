@@ -64,6 +64,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_recovery_tail_min_delta = 1.5E-6_dp, &
                                         ot_cg_kp_mermin_recovery_tail_max_delta = 5.0E-6_dp, &
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
+                                        ot_cg_kp_physical_raw_delta_floor_ratio = 1.0E-2_dp, &
+                                        ot_cg_kp_physical_raw_delta_mermin_floor = 1.0E-8_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
@@ -1199,12 +1201,12 @@ CONTAINS
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
          reset_to_sd, residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
          schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
-         schur_projector_tail_reset, mermin_residual_growth_reset
+         schur_projector_tail_reset, mermin_residual_growth_reset, physical_raw_gap_guard
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
-         residual_spike_quality, residual_trust_quality, residual_trust_scale, sample_accepted_drop, &
-         sample_gap, sample_quality, sample_residual_growth_ratio, test_down, tmp
+         raw_guard_delta, residual_spike_quality, residual_trust_quality, residual_trust_scale, &
+         sample_accepted_drop, sample_gap, sample_quality, sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1443,6 +1445,27 @@ CONTAINS
          sample_quality = 0.0_dp
          IF (qs_ot_env(1)%mermin_ls_best_sample_drop > EPSILON(1.0_dp)) &
             sample_quality = sample_accepted_drop/qs_ot_env(1)%mermin_ls_best_sample_drop
+         physical_raw_gap_guard = complex_kpoint_history .AND. &
+                                  qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+                                  qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta_groups > 0 .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
+                                  qs_ot_env(1)%kpoint_raw_delta > qs_ot_env(1)%delta .AND. &
+                                  sample_accepted_drop > ot_cg_kp_physical_raw_delta_mermin_floor
+         IF (physical_raw_gap_guard) THEN
+            raw_guard_delta = ot_cg_kp_physical_raw_delta_floor_ratio*qs_ot_env(1)%kpoint_raw_delta
+            IF (raw_guard_delta > qs_ot_env(1)%delta) THEN
+               qs_ot_env(1)%delta = raw_guard_delta
+               qs_ot_env(1)%kpoint_physical_delta = MAX(qs_ot_env(1)%kpoint_physical_delta, raw_guard_delta)
+               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+                     " OT CG physical residual raw-gap guard raw floor adrop delta:", &
+                     qs_ot_env(1)%kpoint_raw_delta, raw_guard_delta, sample_accepted_drop, &
+                     qs_ot_env(1)%delta
+               END IF
+            END IF
+         END IF
          sample_residual_growth_ratio = 0.0_dp
          IF (qs_ot_env(1)%schur_model_delta > EPSILON(1.0_dp)) &
             sample_residual_growth_ratio = qs_ot_env(1)%delta/qs_ot_env(1)%schur_model_delta
