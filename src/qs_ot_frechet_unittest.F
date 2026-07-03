@@ -15302,11 +15302,13 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 2
       REAL(KIND=dp), PARAMETER                           :: active_fraction = 0.55_dp, &
+                                                            edge_fraction = 0.50_dp, &
                                                             active_tol = 1.0E-5_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
       INTEGER                                            :: a, b
-      REAL(KIND=dp)                                      :: default_gap, err, unit_active, unit_inert
+      REAL(KIND=dp)                                      :: default_gap, edge_default_gap, edge_err, err, &
+                                                            split_inert_ratio, unit_active, unit_inert
       REAL(KIND=dp), DIMENSION(n)                        :: modal_default, modal_raw, modal_split, occ_curv
 
       unit_active = SQRT(active_fraction)
@@ -15331,16 +15333,39 @@ CONTAINS
 
       err = ABS(modal_split(1) - modal_raw(1))
       default_gap = ABS(modal_default(1) - modal_raw(1))
+      split_inert_ratio = modal_split(2)/MAX(modal_raw(2), EPSILON(modal_raw(2)))
+
+      unit_active = SQRT(edge_fraction)
+      unit_inert = SQRT(1.0_dp - edge_fraction)
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(unit_inert, 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-unit_inert, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(unit_active, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_default)
+      CALL dense_fixed_n_projector_modal_curvature(evec, occ_curv, modal_split, &
+                                                   split_response=.TRUE.)
+      modal_raw(:) = 0.0_dp
+      DO a = 1, n
+         DO b = 1, n
+            modal_raw(a) = modal_raw(a) + ABS(evec(b, a))**2*MAX(0.0_dp, occ_curv(b))
+         END DO
+      END DO
+      edge_err = ABS(modal_split(1) - modal_raw(1))
+      edge_default_gap = ABS(modal_default(1) - modal_raw(1))
 
       IF (err > tol .OR. default_gap < active_tol .OR. &
+          edge_err > tol .OR. edge_default_gap < active_tol .OR. &
           modal_split(1) < modal_default(1) .OR. &
-          modal_split(2) > 0.25_dp*modal_raw(2)) THEN
+          split_inert_ratio > 0.25_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with err/default_gap/raw1/raw2", err, default_gap, modal_raw(1), modal_raw(2)
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with err/default_gap/edge/egap/raw1/raw2/inert", err, default_gap, edge_err, &
+            edge_default_gap, modal_raw(1), modal_raw(2), split_inert_ratio
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with err/default_gap/raw1/raw2", err, default_gap, modal_raw(1), modal_raw(2)
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with err/default_gap/edge/egap/raw1/raw2/inert", err, default_gap, edge_err, &
+            edge_default_gap, modal_raw(1), modal_raw(2), split_inert_ratio
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_split_modal_curvature
@@ -17449,7 +17474,7 @@ CONTAINS
                active_component_fraction = active_component_fraction + component_weight
          END DO
          IF (modal_raw > EPSILON(modal_raw)) THEN
-            IF (use_split_response .AND. active_component_fraction > active_component_transition_min) THEN
+            IF (use_split_response .AND. active_component_fraction >= active_component_transition_min) THEN
                modal_curv(a) = modal_raw
                CYCLE
             END IF

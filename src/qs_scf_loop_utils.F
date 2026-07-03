@@ -22080,7 +22080,7 @@ CONTAINS
                   active_component_fraction = active_component_fraction + component_weight
             END DO
             IF (modal_raw > EPSILON(modal_raw)) THEN
-               IF (use_split_response .AND. active_component_fraction > active_component_transition_min) THEN
+               IF (use_split_response .AND. active_component_fraction >= active_component_transition_min) THEN
                   modal_curv(a) = modal_raw
                   CYCLE
                END IF
