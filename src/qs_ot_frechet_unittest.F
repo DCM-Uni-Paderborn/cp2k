@@ -4944,11 +4944,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp)                                      :: aligned_response, base_response, &
-                                                            damped_response, err, good_response, &
-                                                            global_low_response, global_low_expected, &
-                                                            occ_curv, occ_curv_max, &
-                                                            partial_response
+      REAL(KIND=dp) :: aligned_response, base_response, damped_response, err, global_low_expected, &
+         global_low_response, good_response, occ_curv, occ_curv_max, partial_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-4_dp
@@ -5049,9 +5046,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp)                                      :: centered_response, err, legacy_gap, &
-                                                            occ_curv, occ_curv_max, raw_centered, &
-                                                            raw_response, safe_centered, safe_response
+      REAL(KIND=dp) :: centered_response, err, legacy_gap, occ_curv, occ_curv_max, raw_centered, &
+         raw_response, safe_centered, safe_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = occ_curv_max
@@ -5092,10 +5088,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp)                                      :: aligned_response, blocked_expected, &
-                                                            blocked_response, expected_response, occ_curv, &
-                                                            occ_curv_max, raw_response, &
-                                                            safe_response
+      REAL(KIND=dp) :: aligned_response, blocked_expected, blocked_response, expected_response, &
+         occ_curv, occ_curv_max, raw_response, safe_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 2.0E-2_dp
@@ -5139,9 +5133,10 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp) :: active_fraction, expected_response, geometric_lifted_response, global_response, &
-         local_response, occ_curv, occ_curv_max, old_expected_response, raw_response, response_shape, &
-         safe_blend, safe_response, sqrt_lifted_response
+      REAL(KIND=dp) :: active_fraction, component_response, full_lifted_response, &
+         geometric_lifted_response, geometric_response, global_response, half_lifted_response, &
+         half_response, local_response, occ_curv, occ_curv_max, old_expected_response, &
+         raw_response, response_shape, safe_blend, safe_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5152,34 +5147,44 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       safe_blend = MAX(active_fraction, 0.80_dp*SQRT(response_shape))
-      old_expected_response = response_shape*((1.0_dp - safe_blend)*raw_response + &
-                                              safe_blend*SQRT(response_shape)*safe_response)
-      sqrt_lifted_response = MAX(response_shape, 0.80_dp*SQRT(response_shape))* &
-                             ((1.0_dp - safe_blend)*raw_response + &
-                              safe_blend*SQRT(response_shape)*safe_response)
+      component_response = (1.0_dp - safe_blend)*raw_response + &
+                           safe_blend*SQRT(response_shape)*safe_response
+      old_expected_response = response_shape*component_response
       geometric_lifted_response = &
-         MAX(response_shape, SQRT(response_shape*0.80_dp*SQRT(response_shape)))* &
-         ((1.0_dp - safe_blend)*raw_response + safe_blend*SQRT(response_shape)*safe_response)
-      expected_response = geometric_lifted_response
+         MAX(response_shape, SQRT(response_shape*0.80_dp*SQRT(response_shape)))*component_response
+      full_lifted_response = MAX(response_shape, 0.80_dp*SQRT(response_shape))*component_response
+      half_lifted_response = geometric_lifted_response + &
+                             0.5_dp*(full_lifted_response - geometric_lifted_response)
 
       local_response = dense_physical_density_response(raw_response, safe_response, &
                                                        occ_curv, occ_curv_max, response_ratio_gate)
+      geometric_response = dense_physical_density_response(raw_response, safe_response, &
+                                                           occ_curv, occ_curv_max, response_ratio_gate, &
+                                                           raw_response, safe_response, 0.80_dp)
+      half_response = dense_physical_density_response(raw_response, safe_response, &
+                                                      occ_curv, occ_curv_max, response_ratio_gate, &
+                                                      raw_response, safe_response, 0.80_dp, 0.5_dp)
       global_response = dense_physical_density_response(raw_response, safe_response, &
                                                         occ_curv, occ_curv_max, response_ratio_gate, &
-                                                        raw_response, safe_response, 0.80_dp)
+                                                        raw_response, safe_response, 0.80_dp, 1.0_dp)
 
-      IF (ABS(global_response - expected_response) > tol .OR. &
+      IF (ABS(geometric_response - geometric_lifted_response) > tol .OR. &
+          ABS(half_response - half_lifted_response) > tol .OR. &
+          ABS(global_response - full_lifted_response) > tol .OR. &
           global_response <= 4.0_dp*local_response .OR. &
           global_response <= 1.25_dp*old_expected_response .OR. &
-          global_response >= sqrt_lifted_response) THEN
+          half_response <= geometric_response .OR. &
+          global_response <= half_response) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with global/expected/local/shape/safe/sqrt", global_response, expected_response, &
-            local_response, response_shape, safe_response, sqrt_lifted_response
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with global/full/half/geometric/local/old/shape", global_response, &
+            full_lifted_response, half_response, geometric_response, local_response, old_expected_response, &
+            response_shape
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with global/expected/local/shape/safe/sqrt", global_response, expected_response, &
-            local_response, response_shape, safe_response, sqrt_lifted_response
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with global/full/half/geometric/local/old/shape", global_response, &
+            full_lifted_response, half_response, geometric_response, local_response, old_expected_response, &
+            response_shape
       END IF
 
    END SUBROUTINE check_projector_physical_density_global_low_curv
@@ -5708,12 +5713,9 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 3
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            collapse_tol = 1.0E-6_dp, &
-                                                            fd_step = 1.0E-7_dp, &
-                                                            gauge_gap = 5.0E-5_dp, &
-                                                            projector_weight = 0.55_dp, &
-                                                            response_ratio_gate = 2.0E-2_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, collapse_tol = 1.0E-6_dp, &
+         fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, projector_weight = 0.55_dp, &
+         response_ratio_gate = 2.0E-2_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_safe, work
       INTEGER                                            :: i
@@ -5721,8 +5723,8 @@ CONTAINS
       REAL(KIND=dp)                                      :: alignment, collapse_ratio, err, &
                                                             filtered_err, occ_curv_max, occ_sum, &
                                                             projector_norm, safe_norm
-      REAL(KIND=dp), DIMENSION(n) :: density_projector, density_projector_centered, &
-         density_safe, density_safe_centered, eig_response, filtered_response, occ_curv, occ_scale, &
+      REAL(KIND=dp), DIMENSION(n) :: density_projector, density_projector_centered, density_safe, &
+         density_safe_centered, eig_response, filtered_response, occ_curv, occ_scale, &
          physical_response, projector_evals_m, projector_evals_p
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -5757,9 +5759,9 @@ CONTAINS
       occ_sum = SUM(MAX(0.0_dp, occ_curv(:)))
       IF (occ_sum > EPSILON(occ_sum)) THEN
          density_projector_centered(:) = density_projector_centered(:) - &
-            DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_projector_centered(:))/occ_sum
+                                         DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_projector_centered(:))/occ_sum
          density_safe_centered(:) = density_safe_centered(:) - &
-            DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_safe_centered(:))/occ_sum
+                                    DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_safe_centered(:))/occ_sum
       END IF
 
       projector_norm = MAXVAL(ABS(density_projector_centered(:)))
@@ -5814,22 +5816,19 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 3
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            collapse_tol = 1.0E-6_dp, &
-                                                            fd_step = 1.0E-7_dp, &
-                                                            gauge_gap = 5.0E-5_dp, &
-                                                            projector_weight = 0.55_dp, &
-                                                            response_ratio_gate = 2.0E-2_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, collapse_tol = 1.0E-6_dp, &
+         fd_step = 1.0E-7_dp, gauge_gap = 5.0E-5_dp, projector_weight = 0.55_dp, &
+         response_ratio_gate = 2.0E-2_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, &
-                                                            docc_safe, q, work
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_safe, &
+                                                            q, work
       INTEGER                                            :: i
       LOGICAL                                            :: fd_used
       REAL(KIND=dp)                                      :: alignment, collapse_ratio, err, &
                                                             filtered_err, occ_curv_max, occ_sum, &
                                                             projector_norm, safe_norm, unit
-      REAL(KIND=dp), DIMENSION(n) :: density_projector, density_projector_centered, &
-         density_safe, density_safe_centered, eig_response, filtered_response, occ_curv, occ_scale, &
+      REAL(KIND=dp), DIMENSION(n) :: density_projector, density_projector_centered, density_safe, &
+         density_safe_centered, eig_response, filtered_response, occ_curv, occ_scale, &
          physical_response, projector_evals_m, projector_evals_p
 
       unit = 1.0_dp/SQRT(2.0_dp)
@@ -5871,9 +5870,9 @@ CONTAINS
       occ_sum = SUM(MAX(0.0_dp, occ_curv(:)))
       IF (occ_sum > EPSILON(occ_sum)) THEN
          density_projector_centered(:) = density_projector_centered(:) - &
-            DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_projector_centered(:))/occ_sum
+                                         DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_projector_centered(:))/occ_sum
          density_safe_centered(:) = density_safe_centered(:) - &
-            DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_safe_centered(:))/occ_sum
+                                    DOT_PRODUCT(MAX(0.0_dp, occ_curv(:)), density_safe_centered(:))/occ_sum
       END IF
 
       projector_norm = MAXVAL(ABS(density_projector_centered(:)))
@@ -6191,10 +6190,8 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER                           :: projector_weight = 0.60_dp
 
-      REAL(KIND=dp)                                      :: err, fermi_weight, full_gap, gauge_pair, &
-                                                            half_gap, low_history_gap, no_history, &
-                                                            over_history, response_lifted_pair, &
-                                                            response_lifted_no_history, trusted_gap
+      REAL(KIND=dp) :: err, fermi_weight, full_gap, gauge_pair, half_gap, low_history_gap, &
+         no_history, over_history, response_lifted_no_history, response_lifted_pair, trusted_gap
 
       fermi_weight = 0.02_dp*projector_weight
       trusted_gap = dense_physical_pair_projector_weight(projector_weight, fermi_weight, &
@@ -6254,9 +6251,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: err, max_only_tail, single_scale, &
-                                                            robust_mid, robust_scale, robust_tail, &
-                                                            tiny_scale, tiny_tail, tiny_weight
+      REAL(KIND=dp)                                      :: err, max_only_tail, robust_mid, &
+                                                            robust_scale, robust_tail, &
+                                                            single_scale, tiny_scale, tiny_tail, &
+                                                            tiny_weight
 
       robust_scale = dense_projector_response_character_scale(1.0_dp, 0.60_dp)
       single_scale = dense_projector_response_character_scale(1.0_dp, 1.0_dp)
@@ -6299,23 +6297,24 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: direct_dominates, err, mode_dominates, none
+      REAL(KIND=dp)                                      :: direct_dominates, err, mode_dominates, &
+                                                            NONE
 
-      none = dense_projector_plateau_gap_audit_drop(0.0_dp, 0.0_dp)
+      NONE = dense_projector_plateau_gap_audit_drop(0.0_dp, 0.0_dp)
       mode_dominates = dense_projector_plateau_gap_audit_drop(1.0E-30_dp, 4.0E-10_dp)
       direct_dominates = dense_projector_plateau_gap_audit_drop(3.0E-8_dp, 4.0E-10_dp)
 
-      err = ABS(none)
+      err = ABS(NONE)
       err = MAX(err, ABS(mode_dominates - 2.0E-10_dp))
       err = MAX(err, ABS(direct_dominates - 3.0E-8_dp))
 
-      IF (err > tol .OR. mode_dominates <= none .OR. direct_dominates <= mode_dominates) THEN
+      IF (err > tol .OR. mode_dominates <= NONE .OR. direct_dominates <= mode_dominates) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/none/mode/direct", err, none, mode_dominates, direct_dominates
+            "failed with error/none/mode/direct", err, NONE, mode_dominates, direct_dominates
       ELSE
          WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/none/mode/direct", err, none, mode_dominates, direct_dominates
+            "OK with error/none/mode/direct", err, NONE, mode_dominates, direct_dominates
       END IF
 
    END SUBROUTINE check_projector_plateau_gap_audit_drop
@@ -8087,12 +8086,14 @@ CONTAINS
       INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
       INTEGER, DIMENSION(ne)                             :: ipiv
       LOGICAL                                            :: projected
-      REAL(KIND=dp)                                      :: err, exact_gap, exact_residual, raw_occ_residual, &
-                                                            raw_tether_residual, source_gap, source_residual
+      REAL(KIND=dp)                                      :: err, exact_gap, exact_residual, &
+                                                            raw_occ_residual, raw_tether_residual, &
+                                                            source_gap, source_residual
       REAL(KIND=dp), DIMENSION(ne)                       :: occ_curv, tether_curv
       REAL(KIND=dp), DIMENSION(ne, ne)                   :: h_projected, h_raw
-      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_projected, b_raw, exact_projected, exact_raw, &
-                                                            projected_density, raw_density, zero_tether
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_projected, b_raw, exact_projected, &
+                                                            exact_raw, projected_density, &
+                                                            raw_density, zero_tether
 
       channel_nmo(:) = [3, 3]
       e_offset(:) = [1, 4]
@@ -8381,8 +8382,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: active_weight, bad_recent, err, expected_weight, high_residual, &
-         immature, no_residual, overpredicted
+      REAL(KIND=dp)                                      :: active_weight, bad_recent, err, &
+                                                            expected_weight, high_residual, &
+                                                            immature, no_residual, overpredicted
 
       active_weight = dense_density_full_global_floor_source_weight(5.0E-6_dp, 12.0_dp, &
                                                                     15.0_dp, 0.25_dp, &
@@ -8433,8 +8435,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: active_scale, expected_scale, high_residual, immature, low_mermin, &
-         no_residual, err
+      REAL(KIND=dp)                                      :: active_scale, err, expected_scale, &
+                                                            high_residual, immature, low_mermin, &
+                                                            no_residual
 
       active_scale = dense_density_full_global_selected_response_scale(5.0E-6_dp, 12.0_dp, &
                                                                        15.0_dp, 0.25_dp, &
@@ -8482,7 +8485,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: high_residual, low_drop, ready, selected_ready, tail_without_probe, trust_veto, weak_close_call
+      LOGICAL                                            :: high_residual, low_drop, ready, &
+                                                            selected_ready, tail_without_probe, &
+                                                            trust_veto, weak_close_call
       REAL(KIND=dp)                                      :: err
 
       selected_ready = dense_density_full_global_shadow_history_ready(2.0E-4_dp, .FALSE., .TRUE., &
@@ -8492,9 +8497,9 @@ CONTAINS
                                                              .TRUE., &
                                                              8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, 5.0E-1_dp)
       tail_without_probe = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
-                                                                         .FALSE., &
-                                                                         2.5E-8_dp, 1.0E-7_dp, 2.5E-8_dp, &
-                                                                         5.0E-1_dp)
+                                                                          .FALSE., &
+                                                                          2.5E-8_dp, 1.0E-7_dp, 2.5E-8_dp, &
+                                                                          5.0E-1_dp)
       weak_close_call = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
                                                                        .TRUE., &
                                                                        7.9E-8_dp, 1.0E-7_dp, 7.9E-8_dp, &
@@ -8935,32 +8940,30 @@ CONTAINS
                                                             max_quality = 1.25_dp, &
                                                             tail_delta = 1.0E-4_dp
 
-      REAL(KIND=dp)                                      :: al_tail_quality, err, expected_al_tail, &
-                                                            good_tail_quality, immature_quality, &
-                                                            outside_tail_quality, weak_tail_quality, &
-                                                            zero_tail_quality
+      REAL(KIND=dp) :: al_tail_quality, err, expected_al_tail, good_tail_quality, &
+         immature_quality, outside_tail_quality, weak_tail_quality, zero_tail_quality
 
       immature_quality = dense_inactive_offdiag_selected_tail_quality( &
-         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 4, 4, &
-         tail_delta, tail_delta, cal_quality, max_quality)
+                         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 4, 4, &
+                         tail_delta, tail_delta, cal_quality, max_quality)
       outside_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
-         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 16, 4, &
-         2.0_dp*tail_delta, tail_delta, cal_quality, max_quality)
+                             0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 16, 4, &
+                             2.0_dp*tail_delta, tail_delta, cal_quality, max_quality)
       good_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
-         0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.50_dp, 0.50_dp, 0.25_dp, 16, 4, &
-         tail_delta, tail_delta, cal_quality, max_quality)
+                          0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.50_dp, 0.50_dp, 0.25_dp, 16, 4, &
+                          tail_delta, tail_delta, cal_quality, max_quality)
       al_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
-         0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
-         0.276863603_dp, 0.169491253_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, &
-         cal_quality, max_quality)
+                        0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
+                        0.276863603_dp, 0.169491253_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, &
+                        cal_quality, max_quality)
       weak_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
-         0.10_dp, 0.064148488_dp, 2.11544262E-4_dp, 2.03786650E-5_dp, &
-         0.240690437_dp, 0.274936610_dp, 0.10_dp, 21, 4, tail_delta, tail_delta, &
-         cal_quality, max_quality)
+                          0.10_dp, 0.064148488_dp, 2.11544262E-4_dp, 2.03786650E-5_dp, &
+                          0.240690437_dp, 0.274936610_dp, 0.10_dp, 21, 4, tail_delta, tail_delta, &
+                          cal_quality, max_quality)
       zero_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
-         0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
-         0.0_dp, 0.0_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, cal_quality, &
-         max_quality)
+                          0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
+                          0.0_dp, 0.0_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, cal_quality, &
+                          max_quality)
 
       expected_al_tail = 0.120821737_dp*SQRT((2.84589460E-5_dp/2.38717371E-4_dp)/ &
                                              cal_quality)* &
@@ -9003,28 +9006,26 @@ CONTAINS
                                                             max_quality = 1.25_dp, &
                                                             tail_delta = 1.0E-4_dp
 
-      REAL(KIND=dp)                                      :: err, expected_moderate, expected_near, &
-                                                            expected_weak, good_quality, immature_quality, &
-                                                            near_gate_quality, &
-                                                            moderate_quality, outside_tail_quality, &
-                                                            weak_quality, zero_quality
+      REAL(KIND=dp) :: err, expected_moderate, expected_near, expected_weak, good_quality, &
+         immature_quality, moderate_quality, near_gate_quality, outside_tail_quality, &
+         weak_quality, zero_quality
 
       immature_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.0_dp, 0.0_dp, 4, tail_delta, tail_delta, cal_quality, max_quality)
+                         1.25_dp, 0.0_dp, 0.0_dp, 4, tail_delta, tail_delta, cal_quality, max_quality)
       outside_tail_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.0_dp, 0.0_dp, 16, 2.0_dp*tail_delta, tail_delta, cal_quality, max_quality)
+                             1.25_dp, 0.0_dp, 0.0_dp, 16, 2.0_dp*tail_delta, tail_delta, cal_quality, max_quality)
       good_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.50_dp, 0.50_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
+                     1.25_dp, 0.50_dp, 0.50_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
       moderate_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.04_dp, 0.05_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
+                         1.25_dp, 0.04_dp, 0.05_dp, 16, tail_delta, tail_delta, cal_quality, max_quality)
       near_gate_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.018_dp, 0.020_dp, 104, tail_delta, tail_delta, cal_quality, &
-         max_quality)
+                          1.25_dp, 0.018_dp, 0.020_dp, 104, tail_delta, tail_delta, cal_quality, &
+                          max_quality)
       weak_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.00536993433_dp, 0.00883931517_dp, 104, tail_delta, tail_delta, &
-         cal_quality, max_quality)
+                     1.25_dp, 0.00536993433_dp, 0.00883931517_dp, 104, tail_delta, tail_delta, &
+                     cal_quality, max_quality)
       zero_quality = dense_offdiag_tail_residual_quality( &
-         1.25_dp, 0.0_dp, 0.0_dp, 104, tail_delta, tail_delta, cal_quality, max_quality)
+                     1.25_dp, 0.0_dp, 0.0_dp, 104, tail_delta, tail_delta, cal_quality, max_quality)
 
       expected_moderate = max_quality*(0.5_dp*(0.05_dp + 0.04_dp)/cal_quality)
       expected_near = max_quality*(0.5_dp*(0.020_dp + 0.018_dp)/cal_quality)
@@ -9182,11 +9183,11 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER :: floor_delta = 3.0E-6_dp, full_delta = 1.2E-5_dp
+      REAL(KIND=dp), PARAMETER                           :: floor_delta = 3.0E-6_dp, &
+                                                            full_delta = 1.2E-5_dp
 
-      REAL(KIND=dp) :: both_tiny, err, no_raw, raw_capped, raw_smaller, raw_tail
-      REAL(KIND=dp) :: expected_both_tiny, expected_raw_capped, expected_raw_smaller, &
-         expected_raw_tail
+      REAL(KIND=dp) :: both_tiny, err, expected_both_tiny, expected_raw_capped, &
+         expected_raw_smaller, expected_raw_tail, no_raw, raw_capped, raw_smaller, raw_tail
 
       no_raw = dense_projector_response_residual_weight(9.0E-6_dp, -1.0_dp)
       both_tiny = dense_projector_response_residual_weight(1.0E-7_dp, 1.0E-7_dp)
@@ -9534,7 +9535,8 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp) :: early_expected, early_weight, err, good_mix_quality, good_strict_quality, &
-         mature_weight, strict_zero_quality, tail_veto, weak_quality, young_history, zero_mix_quality
+         mature_weight, strict_zero_quality, tail_veto, weak_quality, young_history, &
+         zero_mix_quality
 
       strict_zero_quality = dense_selected_tail_residual_quality(0.0_dp, 0.1188258236_dp)
       zero_mix_quality = dense_selected_tail_mix_residual_quality(0.0_dp, 0.1188258236_dp)
@@ -9641,9 +9643,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: err, gap_pair, gauge_pair, good_history, &
-                                                            mixed_pair, plateau_expected, plateau_pair, &
-                                                            strict_expected, strict_pair
+      REAL(KIND=dp) :: err, gap_pair, gauge_pair, good_history, mixed_pair, plateau_expected, &
+         plateau_pair, strict_expected, strict_pair
 
       good_history = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 1.0_dp)
       gap_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 1.0_dp, 0.25_dp)
@@ -9749,13 +9750,10 @@ CONTAINS
                                                             history_quality = 4.7E-2_dp, &
                                                             raw_trace = -1.0_dp
 
-      REAL(KIND=dp)                                      :: al_like_weight, ema_expected_weight, &
-                                                            ema_residual_weight, ema_trace_quality, &
-                                                            ema_weight, err, matched_weight, &
-                                                            no_raw_weight, poor_weight, &
-                                                            saturated_weight, selected_residual_weight, &
-                                                            selected_trace_quality, selected_veto_weight, &
-                                                            selected_weight, young_weight
+      REAL(KIND=dp) :: al_like_weight, ema_expected_weight, ema_residual_weight, &
+         ema_trace_quality, ema_weight, err, matched_weight, no_raw_weight, poor_weight, &
+         saturated_weight, selected_residual_weight, selected_trace_quality, selected_veto_weight, &
+         selected_weight, young_weight
 
       young_weight = dense_trace_active_basis_weight(raw_trace, active_trace, history_quality, 4)
       poor_weight = dense_trace_active_basis_weight(raw_trace, active_trace, 2.0E-2_dp, 16)
@@ -9772,7 +9770,7 @@ CONTAINS
       ema_trace_quality = 2.48926407E-1_dp*ema_residual_weight
       ema_weight = dense_trace_active_basis_weight(raw_trace, active_trace, ema_trace_quality, 11)
       ema_expected_weight = MIN(0.25_dp, (1.0_dp - ABS(active_trace/raw_trace))* &
-                                        SQRT(ema_trace_quality))
+                                SQRT(ema_trace_quality))
       selected_veto_weight = dense_trace_active_basis_weight(raw_trace, active_trace, 2.0E-2_dp, 11)
       saturated_weight = dense_trace_active_basis_weight(raw_trace, 0.0_dp, 1.0_dp, 16)
 
@@ -10017,12 +10015,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: err, expected_shadow, expected_stale, &
-                                                            no_history, product_collapse, shadow_floor, &
-                                                            residual_cap_quality, residual_floor_quality, &
-                                                            residual_no_history_quality, residual_veto_quality, &
-                                                            shadow_quality, stale_floor, &
-                                                            stale_selected_quality, trace_quality
+      REAL(KIND=dp) :: err, expected_shadow, expected_stale, no_history, product_collapse, &
+         residual_cap_quality, residual_floor_quality, residual_no_history_quality, &
+         residual_veto_quality, shadow_floor, shadow_quality, stale_floor, stale_selected_quality, &
+         trace_quality
 
       trace_quality = 7.55E-2_dp
       shadow_quality = 7.53E-2_dp
@@ -10195,20 +10191,20 @@ CONTAINS
       REAL(KIND=dp)                                      :: err
 
       early_promotes = dense_spectral_selected_history_promotion( &
-         1, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
-         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+                       1, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+                       16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
       no_selected_veto = dense_spectral_selected_history_promotion( &
-         0, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
-         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+                         0, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+                         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
       recent_veto = dense_spectral_selected_history_promotion( &
-         1, 0, 0.67_dp, 0.020_dp, 0.076_dp, 0.020_dp, 2.0E-6_dp, 1.2E-7_dp, &
-         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+                    1, 0, 0.67_dp, 0.020_dp, 0.076_dp, 0.020_dp, 2.0E-6_dp, 1.2E-7_dp, &
+                    16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
       shadow_veto = dense_spectral_selected_history_promotion( &
-         1, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
-         7, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+                    1, 0, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+                    7, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
       failure_veto = dense_spectral_selected_history_promotion( &
-         1, 2, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
-         16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
+                     1, 2, 0.67_dp, 0.076_dp, 0.076_dp, 0.076_dp, 2.0E-6_dp, 1.2E-7_dp, &
+                     16, 2.0E-6_dp, 1.2E-7_dp, 0.31_dp, 0.12_dp, 3.2E-4_dp, 1.0_dp, 1.0_dp)
 
       err = 0.0_dp
       IF (.NOT. early_promotes .OR. no_selected_veto .OR. recent_veto .OR. shadow_veto .OR. &
@@ -10424,8 +10420,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: err, full_blend, no_density, no_projector, &
-                                                            partial_blend, saturated_blend
+      REAL(KIND=dp)                                      :: err, full_blend, no_density, &
+                                                            no_projector, partial_blend, &
+                                                            saturated_blend
 
       no_projector = dense_projector_tail_active_delta_weight(0.0_dp, 0.05_dp)
       no_density = dense_projector_tail_active_delta_weight(0.10_dp, 0.0_dp)
@@ -11288,7 +11285,8 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp), PARAMETER                           :: response_abs_trust = 8.0E-3_dp, &
-                                                            sigma = 1.0E-3_dp, tail_delta = 1.0E-4_dp
+                                                            sigma = 1.0E-3_dp, &
+                                                            tail_delta = 1.0E-4_dp
 
       REAL(KIND=dp)                                      :: capped_by_existing, err, good_history, &
                                                             late_tail, outside_tail, weak_tail
@@ -11371,7 +11369,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: above_tail, capped_tail, err, relative_tail, tail
+      REAL(KIND=dp)                                      :: above_tail, capped_tail, err, &
+                                                            relative_tail, tail
 
       above_tail = dense_physical_direct_density_mix(0.20_dp, 0.60_dp, 2.0E-4_dp, &
                                                      1.0E-4_dp, 0.95_dp)
@@ -11441,8 +11440,8 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION dense_offdiag_tail_abs_trust(response_abs_trust, residual_delta, sigma, &
                                          step_gauge_quality, tail_delta) RESULT(abs_trust)
-      REAL(KIND=dp), INTENT(IN)                          :: response_abs_trust, residual_delta, sigma, &
-                                                            step_gauge_quality, tail_delta
+      REAL(KIND=dp), INTENT(IN)                          :: response_abs_trust, residual_delta, &
+                                                            sigma, step_gauge_quality, tail_delta
       REAL(KIND=dp)                                      :: abs_trust
 
       REAL(KIND=dp)                                      :: sigma_eff, tail_cap, tail_floor
@@ -11519,7 +11518,7 @@ CONTAINS
       density_weight = MAX(0.0_dp, density_history_weight)
       IF (PRESENT(projector_weight)) &
          density_weight = MAX(density_weight, dense_projector_tail_active_delta_weight(projector_weight, &
-                                                                                      density_history_weight))
+                                                                                       density_history_weight))
       mix_weight = MAX(mix_weight, MIN(max_weight, density_weight))
 
    END FUNCTION dense_physical_direct_density_mix
@@ -11903,25 +11902,25 @@ CONTAINS
 !> \return selected inactive-offdiag quality for candidate selection
 ! **************************************************************************************************
    FUNCTION dense_inactive_offdiag_selected_tail_quality(base_quality, selected_mermin_quality_ema, &
-                                                        selected_predicted_sum, selected_measured_sum, &
-                                                        selected_residual_quality, &
-                                                        selected_residual_quality_ema, &
-                                                        residual_reference_quality, &
-                                                        selected_quality_samples, min_samples, &
-                                                        residual_delta, tail_delta, &
-                                                        calibrated_min_quality, max_quality) &
+                                                         selected_predicted_sum, selected_measured_sum, &
+                                                         selected_residual_quality, &
+                                                         selected_residual_quality_ema, &
+                                                         residual_reference_quality, &
+                                                         selected_quality_samples, min_samples, &
+                                                         residual_delta, tail_delta, &
+                                                         calibrated_min_quality, max_quality) &
       RESULT(quality)
-      REAL(KIND=dp), INTENT(IN)                          :: base_quality, selected_mermin_quality_ema, &
-                                                            selected_predicted_sum, selected_measured_sum, &
-                                                            selected_residual_quality, &
-                                                            selected_residual_quality_ema, &
-                                                            residual_reference_quality, residual_delta, &
-                                                            tail_delta, calibrated_min_quality, max_quality
-      INTEGER, INTENT(IN)                                :: min_samples, selected_quality_samples
+      REAL(KIND=dp), INTENT(IN) :: base_quality, selected_mermin_quality_ema, &
+         selected_predicted_sum, selected_measured_sum, selected_residual_quality, &
+         selected_residual_quality_ema, residual_reference_quality
+      INTEGER, INTENT(IN)                                :: selected_quality_samples, min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, tail_delta, &
+                                                            calibrated_min_quality, max_quality
       REAL(KIND=dp)                                      :: quality
 
-      REAL(KIND=dp)                                      :: mermin_factor, mermin_quality, residual_factor, &
-                                                            residual_ref, residual_quality
+      REAL(KIND=dp)                                      :: mermin_factor, mermin_quality, &
+                                                            residual_factor, residual_quality, &
+                                                            residual_ref
 
       quality = MAX(0.0_dp, MIN(max_quality, base_quality))
       IF (residual_delta > tail_delta) RETURN
@@ -11970,13 +11969,14 @@ CONTAINS
                                                 residual_samples, residual_delta, tail_delta, &
                                                 calibrated_min_quality, max_quality) RESULT(quality)
       REAL(KIND=dp), INTENT(IN)                          :: base_quality, residual_quality, &
-                                                            residual_quality_ema, residual_delta, &
-                                                            tail_delta, calibrated_min_quality, &
-                                                            max_quality
+                                                            residual_quality_ema
       INTEGER, INTENT(IN)                                :: residual_samples
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, tail_delta, &
+                                                            calibrated_min_quality, max_quality
       REAL(KIND=dp)                                      :: quality
 
-      REAL(KIND=dp)                                      :: residual_cap, residual_ref, residual_signal
+      REAL(KIND=dp)                                      :: residual_cap, residual_ref, &
+                                                            residual_signal
 
       quality = MAX(0.0_dp, MIN(max_quality, base_quality))
       IF (residual_delta > tail_delta) RETURN
@@ -12059,8 +12059,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, raw_residual_delta
       REAL(KIND=dp)                                      :: residual_weight
 
-      REAL(KIND=dp), PARAMETER :: coupled_tail_delta = 1.0E-4_dp, floor_delta = 3.0E-6_dp, &
-         full_delta = 1.2E-5_dp
+      REAL(KIND=dp), PARAMETER                           :: coupled_tail_delta = 1.0E-4_dp, &
+                                                            floor_delta = 3.0E-6_dp, &
+                                                            full_delta = 1.2E-5_dp
 
       REAL(KIND=dp)                                      :: raw_signal, response_delta
 
@@ -12260,18 +12261,18 @@ CONTAINS
                                                         mermin_samples, floor_abs_avg, &
                                                         floor_exact_abs_avg, floor_low_curv_fraction, &
                                                         projected_abs_avg) RESULT(weight)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, mermin_quality_ema, &
-                                                            floor_abs_avg, floor_exact_abs_avg, &
-                                                            floor_low_curv_fraction, projected_abs_avg
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, mermin_quality_ema
       INTEGER, INTENT(IN)                                :: mermin_samples
+      REAL(KIND=dp), INTENT(IN)                          :: floor_abs_avg, floor_exact_abs_avg, &
+                                                            floor_low_curv_fraction, &
+                                                            projected_abs_avg
       REAL(KIND=dp)                                      :: weight
 
-      REAL(KIND=dp), PARAMETER                           :: bootstrap_weight = 2.5E-2_dp, &
-                                                            lowcurv_max = 2.5E-1_dp, &
-                                                            mermin_min = 8.0E-1_dp, &
-                                                            response_full_delta = 1.2E-5_dp, &
-                                                            trace_active_max_weight = 9.5E-1_dp
       INTEGER, PARAMETER                                 :: calibration_min_samples = 4
+      REAL(KIND=dp), PARAMETER :: bootstrap_weight = 2.5E-2_dp, lowcurv_max = 2.5E-1_dp, &
+         mermin_min = 8.0E-1_dp, response_full_delta = 1.2E-5_dp, &
+         trace_active_max_weight = 9.5E-1_dp
+
       REAL(KIND=dp)                                      :: low_curv_quality, source_limit
 
       weight = 0.0_dp
@@ -12372,7 +12373,8 @@ CONTAINS
                                          weighted_trust_ratio, abs_trust_ratio, model_gap_ratio, &
                                          dense_residual_quality) RESULT(do_probe)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
-                                                            reference_expected_drop, quality_for_selection
+                                                            reference_expected_drop, &
+                                                            quality_for_selection
       LOGICAL, INTENT(IN)                                :: promoted, mixed_enabled, tail_probe_ready
       REAL(KIND=dp), INTENT(IN)                          :: weighted_trust_ratio, abs_trust_ratio, &
                                                             model_gap_ratio, dense_residual_quality
@@ -12427,16 +12429,13 @@ CONTAINS
                                                       shadow_quality_ema, shadow_quality, &
                                                       shadow_floor_ema, shadow_dot_ema, &
                                                       shadow_norm_ema) RESULT(enabled)
-      INTEGER, INTENT(IN)                                :: selected_failures, selected_samples, &
-                                                            shadow_samples
-      REAL(KIND=dp), INTENT(IN)                          :: selected_drop_sum, selected_measured_sum, &
-                                                            selected_quality, selected_quality_ema, &
-                                                            selected_residual_quality, &
-                                                            selected_residual_quality_ema, &
-                                                            shadow_dot_ema, shadow_drop_sum, &
-                                                            shadow_floor_ema, shadow_measured_sum, &
-                                                            shadow_norm_ema, shadow_quality, &
-                                                            shadow_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples, selected_failures
+      REAL(KIND=dp), INTENT(IN) :: selected_quality_ema, selected_quality, &
+         selected_residual_quality_ema, selected_residual_quality, selected_drop_sum, &
+         selected_measured_sum
+      INTEGER, INTENT(IN)                                :: shadow_samples
+      REAL(KIND=dp), INTENT(IN) :: shadow_drop_sum, shadow_measured_sum, shadow_quality_ema, &
+         shadow_quality, shadow_floor_ema, shadow_dot_ema, shadow_norm_ema
       LOGICAL                                            :: enabled
 
       LOGICAL                                            :: ema_ok, recent_ok, selected_sums_ok, &
@@ -12563,14 +12562,14 @@ CONTAINS
                                              dense_residual_quality, bootstrap_quality, &
                                              history_samples, support_quality, support_quality_ema) &
       RESULT(do_probe)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
-                                                            reference_expected_drop, quality_for_selection, &
-                                                            gap_recoverable_fraction, weighted_trust_ratio, &
-                                                            abs_trust_ratio, selected_residual_quality, &
-                                                            selected_residual_quality_ema
-      INTEGER, INTENT(IN)                                :: selected_samples, history_samples
-      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, bootstrap_quality, &
-                                                            support_quality, support_quality_ema
+      REAL(KIND=dp), INTENT(IN) :: residual_delta, candidate_expected_drop, &
+         reference_expected_drop, quality_for_selection, gap_recoverable_fraction, &
+         weighted_trust_ratio, abs_trust_ratio, selected_residual_quality, &
+         selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, bootstrap_quality
+      INTEGER, INTENT(IN)                                :: history_samples
+      REAL(KIND=dp), INTENT(IN)                          :: support_quality, support_quality_ema
       LOGICAL                                            :: do_probe
 
       LOGICAL                                            :: stale_residual_probe
@@ -12691,15 +12690,15 @@ CONTAINS
                                                           selected_quality_ema, selected_residual_quality, &
                                                           selected_residual_quality_ema, selected_samples) &
       RESULT(weight)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_quality, &
-                                                            selected_quality_ema, selected_residual_quality, &
-                                                            selected_residual_quality_ema
+      REAL(KIND=dp), INTENT(IN) :: residual_delta, selected_quality, selected_quality_ema, &
+         selected_residual_quality, selected_residual_quality_ema
       INTEGER, INTENT(IN)                                :: selected_samples
       REAL(KIND=dp)                                      :: weight
 
       INTEGER                                            :: maturity_samples
-      REAL(KIND=dp)                                      :: mermin_ref, maturity, recent_quality, &
-                                                            residual_support, underprediction_weight
+      REAL(KIND=dp)                                      :: maturity, mermin_ref, recent_quality, &
+                                                            residual_support, &
+                                                            underprediction_weight
 
       weight = 0.0_dp
       IF (residual_delta > 1.0E-4_dp) RETURN
@@ -12746,9 +12745,8 @@ CONTAINS
                                                               selected_quality_ema, selected_residual_quality, &
                                                               selected_residual_quality_ema, selected_samples) &
       RESULT(scale)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_quality, &
-                                                            selected_quality_ema, selected_residual_quality, &
-                                                            selected_residual_quality_ema
+      REAL(KIND=dp), INTENT(IN) :: residual_delta, selected_quality, selected_quality_ema, &
+         selected_residual_quality, selected_residual_quality_ema
       INTEGER, INTENT(IN)                                :: selected_samples
       REAL(KIND=dp)                                      :: scale
 
@@ -12786,10 +12784,13 @@ CONTAINS
                                                            candidate_expected_drop, reference_expected_drop, &
                                                            model_calibrated_drop, weighted_trust_ratio) &
       RESULT(history_ready)
-      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+      LOGICAL, INTENT(IN)                                :: candidate_ready, candidate_selected, &
+                                                            probe_ready
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
                                                             reference_expected_drop, &
-                                                            model_calibrated_drop, weighted_trust_ratio
-      LOGICAL, INTENT(IN)                                :: candidate_ready, candidate_selected, probe_ready
+                                                            model_calibrated_drop, &
+                                                            weighted_trust_ratio
       LOGICAL                                            :: history_ready
 
       REAL(KIND=dp)                                      :: close_call_ratio
@@ -12889,6 +12890,13 @@ CONTAINS
 !> \param gauge_floor ...
 !> \param occ_gap_weight ...
 !> \param step_gauge_quality ...
+!> \param residual_delta ...
+!> \param tail_delta ...
+!> \param accepted_quality ...
+!> \param accepted_gap ...
+!> \param accepted_samples ...
+!> \param min_samples ...
+!> \param eps_scf ...
 !> \return ...
 ! **************************************************************************************************
    FUNCTION residual_gauge_rotation_floor(base_floor, gauge_floor, occ_gap_weight, &
@@ -12898,16 +12906,16 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: base_floor, gauge_floor, occ_gap_weight, &
                                                             step_gauge_quality
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: residual_delta, tail_delta, &
-                                                            accepted_quality, accepted_gap, eps_scf
+                                                            accepted_quality, accepted_gap
       INTEGER, INTENT(IN), OPTIONAL                      :: accepted_samples, min_samples
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
       REAL(KIND=dp)                                      :: rotation_floor
 
-      REAL(KIND=dp), PARAMETER                           :: plateau_gap = 1.0E-2_dp, &
-                                                            plateau_eps_factor = 1.0E1_dp, &
-                                                            plateau_min_scale = 5.0E-2_dp, &
-                                                            plateau_quality = 9.9E-1_dp
-      REAL(KIND=dp)                                      :: gap_fraction, plateau_scale, plateau_tail_delta, &
-                                                            residual_weight
+      REAL(KIND=dp), PARAMETER :: plateau_eps_factor = 1.0E1_dp, plateau_gap = 1.0E-2_dp, &
+         plateau_min_scale = 5.0E-2_dp, plateau_quality = 9.9E-1_dp
+
+      REAL(KIND=dp)                                      :: gap_fraction, plateau_scale, &
+                                                            plateau_tail_delta, residual_weight
 
       rotation_floor = MAX(0.0_dp, base_floor)
       IF (gauge_floor <= rotation_floor) RETURN
@@ -13248,14 +13256,13 @@ CONTAINS
                                                          selected_residual_quality, &
                                                          selected_residual_quality_ema, samples, &
                                                          min_samples) RESULT(quality)
-      REAL(KIND=dp), INTENT(IN)                          :: current_quality, trace_quality, &
-                                                            selected_quality, selected_quality_ema, &
-                                                            selected_residual_quality, &
-                                                            selected_residual_quality_ema
+      REAL(KIND=dp), INTENT(IN) :: current_quality, trace_quality, selected_quality, &
+         selected_quality_ema, selected_residual_quality, selected_residual_quality_ema
       INTEGER, INTENT(IN)                                :: samples, min_samples
       REAL(KIND=dp)                                      :: quality
 
-      REAL(KIND=dp)                                      :: mermin_signal, residual_support, trace_cap
+      REAL(KIND=dp)                                      :: mermin_signal, residual_support, &
+                                                            trace_cap
 
       quality = MAX(0.0_dp, MIN(1.0_dp, current_quality))
       IF (samples < min_samples) RETURN
@@ -13360,7 +13367,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: min_quality
       LOGICAL                                            :: promoted
 
-      INTEGER                                            :: promotion_samples, selected_promotion_samples, &
+      INTEGER                                            :: promotion_samples, &
+                                                            selected_promotion_samples, &
                                                             shadow_promotion_samples
       LOGICAL                                            :: selected_promoted, shadow_promoted
 
@@ -14951,8 +14959,8 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 3
-      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, &
-         gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, gauge_gap = 5.0E-5_dp, &
+         projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, occ_expected, occ_raw, occ_safe
       INTEGER                                            :: i
@@ -15012,18 +15020,17 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 3
-      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, &
-         gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, gauge_gap = 5.0E-5_dp, &
+         projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_expected, &
-                                                            expected_kernel, &
-                                                            docc_raw, docc_safe
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_expected, docc_raw, &
+                                                            docc_safe, expected_kernel
       INTEGER                                            :: i
       LOGICAL                                            :: fd_used
       REAL(KIND=dp)                                      :: active, err, gap, occ_tol, pair_gap, &
                                                             raw_gap
-      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_raw, &
-                                                            occ_scale, occ_window
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_raw, occ_scale, &
+                                                            occ_window
 
       evals(:) = [-0.010000_dp, -0.004000_dp, 0.31_dp]
       occ_scale(:) = [1.20_dp, 0.20_dp, 0.06_dp]
@@ -15708,14 +15715,16 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 2
       REAL(KIND=dp), PARAMETER                           :: active_fraction = 0.55_dp, &
-                                                            edge_fraction = 0.50_dp, &
-                                                            active_tol = 1.0E-5_dp
+                                                            active_tol = 1.0E-5_dp, &
+                                                            edge_fraction = 0.50_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: evec
       INTEGER                                            :: a, b
-      REAL(KIND=dp)                                      :: default_gap, edge_default_gap, edge_err, err, &
-                                                            split_inert_ratio, unit_active, unit_inert
-      REAL(KIND=dp), DIMENSION(n)                        :: modal_default, modal_raw, modal_split, occ_curv
+      REAL(KIND=dp)                                      :: default_gap, edge_default_gap, edge_err, &
+                                                            err, split_inert_ratio, unit_active, &
+                                                            unit_inert
+      REAL(KIND=dp), DIMENSION(n)                        :: modal_default, modal_raw, modal_split, &
+                                                            occ_curv
 
       unit_active = SQRT(active_fraction)
       unit_inert = SQRT(1.0_dp - active_fraction)
@@ -16212,7 +16221,7 @@ CONTAINS
          END IF
          coeff = MIN(0.0_dp, coeff)
          slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(3), &
-                                                     MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                                                    MAXVAL(MAX(0.0_dp, occ_curv(:))))
          coeff = MAX(coeff, -slope_cap)
          modal_col(a) = coeff*modal_col(a)
       END DO
@@ -16259,14 +16268,15 @@ CONTAINS
                                                             gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
-      COMPLEX(KIND=dp), DIMENSION(2)                     :: cluster_col, expected_col, expected_modal_col, &
-                                                            legacy_col, legacy_modal_col
+      COMPLEX(KIND=dp), DIMENSION(2)                     :: cluster_col, expected_col, &
+                                                            expected_modal_col, legacy_col, &
+                                                            legacy_modal_col
       COMPLEX(KIND=dp), DIMENSION(2, 2)                  :: cluster_evec, cluster_work
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
       INTEGER                                            :: a, b, i, iact
       REAL(KIND=dp)                                      :: cap_near, cap_old, cap_ratio, coeff, &
-                                                            component_weight, denom, err, herm_err, raw_gap, &
-                                                            slope_cap
+                                                            component_weight, denom, err, &
+                                                            herm_err, raw_gap, slope_cap
       REAL(KIND=dp), DIMENSION(2)                        :: cluster_eval, modal_curv, modal_energy, &
                                                             modal_occ
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
@@ -16316,7 +16326,7 @@ CONTAINS
          END IF
          coeff = MIN(0.0_dp, coeff)
          slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(3), &
-                                                     MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                                                    MAXVAL(MAX(0.0_dp, occ_curv(:))))
          expected_modal_col(a) = MAX(coeff, -slope_cap)*expected_modal_col(a)
          slope_cap = 2.0_dp*MAX(0.0_dp, MAX(modal_curv(a), occ_curv(3)))
          legacy_modal_col(a) = MAX(coeff, -slope_cap)*legacy_modal_col(a)
@@ -16433,7 +16443,7 @@ CONTAINS
             END IF
             coeff = MIN(0.0_dp, coeff)
             slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv_a(a), modal_curv_b(b), &
-                                                        MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                                                       MAXVAL(MAX(0.0_dp, occ_curv(:))))
             coeff = MAX(coeff, -slope_cap)
             modal_block(a, b) = coeff*modal_block(a, b)
          END DO
@@ -16495,11 +16505,11 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(3, 3)                  :: cluster_evec, cluster_work
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
       INTEGER                                            :: a, b, i
-      REAL(KIND=dp)                                      :: charge_err, coeff_new, coeff_old, &
-                                                            component_weight, curv_sum, denom, err, &
-                                                            herm_err, mu_response, raw_gap, shape_err, slope_cap
+      REAL(KIND=dp) :: charge_err, coeff_new, coeff_old, component_weight, curv_sum, denom, err, &
+         herm_err, mu_response, raw_gap, shape_err, slope_cap
       REAL(KIND=dp), DIMENSION(3)                        :: cluster_eval, modal_curv, modal_energy, &
-                                                            modal_occ_expected, modal_occ_new, modal_occ_old
+                                                            modal_occ_expected, modal_occ_new, &
+                                                            modal_occ_old
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
 
       evals(:) = [-0.010000_dp, -0.009990_dp, -0.009980_dp, 1.23_dp]
@@ -16561,7 +16571,7 @@ CONTAINS
          coeff_new = MIN(0.0_dp, coeff_new)
          coeff_old = MIN(0.0_dp, coeff_old)
          slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, modal_curv(a), occ_curv(4), &
-                                                     MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                                                    MAXVAL(MAX(0.0_dp, occ_curv(:))))
          coeff_new = MAX(coeff_new, -slope_cap)
          coeff_old = MAX(coeff_old, -slope_cap)
          response_col_new(a) = coeff_new*response_col_new(a)
@@ -16603,14 +16613,15 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-5_dp, gauge_gap = 5.0E-5_dp, &
          projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
 
+      COMPLEX(KIND=dp)                                   :: phase1, phase2, sentinel
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, kernel_back, kernel_q, &
                                                             kernel_shift, kernel_split, q, work, &
                                                             work_q, work_shift, work_split
-      COMPLEX(KIND=dp)                                   :: phase1, phase2, sentinel
       INTEGER                                            :: i
       REAL(KIND=dp)                                      :: active, c1, c2, cov_err, expected_split, &
-                                                            herm_err, s1, s2, shift_err, split_active, &
-                                                            split_err, split_trace, trace_leak
+                                                            herm_err, s1, s2, shift_err, &
+                                                            split_active, split_err, split_trace, &
+                                                            trace_leak
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
 
       evals(:) = [-0.010000_dp, -0.010000_dp, 0.105000_dp, 0.105000_dp, 0.42_dp]
@@ -16857,8 +16868,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: projector_weight
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: occ_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
-      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
-      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap, projector_window_gap
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, weighted_evec
       INTEGER                                            :: i, n
@@ -16957,8 +16967,8 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv_i, occ_curv_j, occ_curv_max, &
                                            projector_window_gap) RESULT(slope_cap)
-      REAL(KIND=dp), INTENT(IN)                          :: denom, gauge_gap, occ_curv_i, occ_curv_j, &
-                                                            occ_curv_max
+      REAL(KIND=dp), INTENT(IN)                          :: denom, gauge_gap, occ_curv_i, &
+                                                            occ_curv_j, occ_curv_max
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
       REAL(KIND=dp)                                      :: slope_cap
 
@@ -17109,6 +17119,7 @@ CONTAINS
       INTEGER, PARAMETER                                 :: min_samples = 8
       REAL(KIND=dp), PARAMETER :: max_weight = 3.0E-2_dp, quality_min = 1.0E-1_dp, &
          tail_delta = 1.0E-4_dp, underpredict_max_ratio = 2.0E1_dp
+
       REAL(KIND=dp)                                      :: maturity, mode_signal, negative_quality, &
                                                             quality_signal, underprediction_signal
 
@@ -17194,25 +17205,28 @@ CONTAINS
 !> \param density_projector_centered_response ...
 !> \param density_safe_centered_response ...
 !> \param density_response_alignment ...
+!> \param density_global_lift_weight ...
 !> \return ...
 ! **************************************************************************************************
    FUNCTION dense_physical_density_response(density_projector_response, density_safe_response, occ_curv, &
                                             occ_curv_max, response_ratio_gate, &
                                             density_projector_centered_response, &
                                             density_safe_centered_response, &
-                                            density_response_alignment) RESULT(density_response)
+                                            density_response_alignment, &
+                                            density_global_lift_weight) RESULT(density_response)
       REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, &
                                                             density_safe_response, occ_curv, &
                                                             occ_curv_max, response_ratio_gate
       REAL(KIND=dp), INTENT(IN), OPTIONAL :: density_projector_centered_response, &
-         density_safe_centered_response, density_response_alignment
+         density_safe_centered_response, density_response_alignment, density_global_lift_weight
       REAL(KIND=dp)                                      :: density_response
 
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, density_shape, projector_abs, projector_component, &
-         response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
+      REAL(KIND=dp) :: active_fraction, alignment, density_shape, density_shape_full, &
+         density_shape_geometric, lift_weight, projector_abs, projector_component, response_shape, &
+         safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
          sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
@@ -17223,6 +17237,9 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       density_shape = response_shape
+      lift_weight = 0.0_dp
+      IF (PRESENT(density_global_lift_weight)) &
+         lift_weight = MIN(1.0_dp, MAX(0.0_dp, density_global_lift_weight))
       projector_component = density_projector_response
       sign_projector_response = density_projector_response
       sign_safe_response = density_safe_response
@@ -17261,7 +17278,10 @@ CONTAINS
          IF (globally_aligned_safe_response) THEN
             safe_blend_floor = MIN(1.0_dp, alignment)*SQRT(response_shape)
             safe_blend = MAX(safe_blend, safe_blend_floor)
-            density_shape = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
+            density_shape_geometric = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
+            density_shape_full = MAX(density_shape, safe_blend_floor)
+            density_shape = density_shape_geometric + &
+                            lift_weight*(density_shape_full - density_shape_geometric)
          END IF
          safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*safe_component
@@ -17319,8 +17339,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
-      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
-      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap, projector_window_gap
       LOGICAL, INTENT(IN), OPTIONAL                      :: cluster_projector_response
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
@@ -17387,11 +17406,11 @@ CONTAINS
                IF (PRESENT(gauge_gap)) THEN
                   IF (PRESENT(projector_window_gap)) THEN
                      slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv(i), occ_curv(j), &
-                                                                 MAXVAL(MAX(0.0_dp, occ_curv(:))), &
-                                                                 projector_window_gap)
+                                                                MAXVAL(MAX(0.0_dp, occ_curv(:))), &
+                                                                projector_window_gap)
                   ELSE
                      slope_cap = dense_projector_pair_slope_cap(denom, gauge_gap, occ_curv(i), occ_curv(j), &
-                                                                 MAXVAL(MAX(0.0_dp, occ_curv(:))))
+                                                                MAXVAL(MAX(0.0_dp, occ_curv(:))))
                   END IF
                ELSE
                   slope_cap = 2.0_dp*MAX(0.0_dp, MAX(occ_curv(i), occ_curv(j)))
@@ -17543,9 +17562,9 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: modal_curv
 
       INTEGER                                            :: i, m
-      REAL(KIND=dp)                                      :: curv, curv_sum, delta_e, eval_center, fit_den, &
-                                                            fit_num, mu_shift, occ_mean, physical_slope, &
-                                                            slope_cap
+      REAL(KIND=dp)                                      :: curv, curv_sum, delta_e, eval_center, &
+                                                            fit_den, fit_num, mu_shift, occ_mean, &
+                                                            physical_slope, slope_cap
 
       m = SIZE(evals)
       modal_occ(:) = 0.0_dp
