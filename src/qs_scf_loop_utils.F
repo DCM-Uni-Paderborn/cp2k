@@ -189,7 +189,9 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_density_fdir_probe_ratio = 8.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_refresh_ratio = 2.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_residual_ratio = 8.0E-1_dp, &
-                                        ot_kp_schur_physical_exit_raw_floor_ratio = 1.0E-2_dp, &
+                                        ot_kp_schur_physical_env_raw_floor_eps_factor = 3.0_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_ratio = 1.0E-1_dp, &
+                                        ot_kp_schur_physical_norm_tail_factor = 1.0_dp, &
                                         ot_kp_schur_physical_tail_eps_factor = 1.0_dp, &
                                         ot_kp_schur_residual_tail_plateau_quality = 2.5E-1_dp, &
                                         ot_kp_schur_residual_tail_plateau_slack = 5.0E-2_dp, &
@@ -907,7 +909,8 @@ CONTAINS
                ref_guard_attempt, ref_guard_scale, ref_guard_min, ref_guard_max
          END IF
       END IF
-      CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta)
+      CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta, &
+                                               scf_control%eps_scf)
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -1040,15 +1043,18 @@ CONTAINS
 !> \param local_ot_env ...
 !> \param para_env_inter_kp ...
 !> \param residual_delta ...
+!> \param eps_scf apply the raw-residual exit floor when synchronizing the outer SCF residual;
+!>        omit it for internal minimizer/model feedback, where the capped local delta is wanted
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_delta)
+   SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_delta, eps_scf)
 
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       REAL(KIND=dp), INTENT(OUT)                         :: residual_delta
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
 
       INTEGER                                            :: local_channel
-      REAL(KIND=dp)                                      :: raw_delta
+      REAL(KIND=dp)                                      :: env_delta, ot_delta, raw_delta
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -1056,18 +1062,25 @@ CONTAINS
       ! spin/k-point set in channel 1.  The other channel slots only mirror this
       ! value for restart and model diagnostics, and may still contain older
       ! values before this synchronization point.
-      residual_delta = local_ot_env(1)%delta
-      CALL para_env_inter_kp%max(residual_delta)
+      ot_delta = local_ot_env(1)%delta
+      CALL para_env_inter_kp%max(ot_delta)
+      residual_delta = ot_delta
+      env_delta = ot_delta
       raw_delta = 0.0_dp
       IF (local_ot_env(1)%kpoint_physical_delta_ready .AND. &
           local_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
           local_ot_env(1)%kpoint_raw_delta > 0.0_dp) &
          raw_delta = local_ot_env(1)%kpoint_raw_delta
       CALL para_env_inter_kp%max(raw_delta)
-      IF (raw_delta > residual_delta) &
-         residual_delta = MAX(residual_delta, ot_kp_schur_physical_exit_raw_floor_ratio*raw_delta)
+      IF (PRESENT(eps_scf)) THEN
+         IF (eps_scf > 0.0_dp .AND. raw_delta > residual_delta) THEN
+            residual_delta = MAX(residual_delta, ot_kp_schur_physical_exit_raw_floor_ratio*raw_delta)
+            env_delta = MAX(env_delta, MIN(residual_delta, &
+                                           ot_kp_schur_physical_env_raw_floor_eps_factor*eps_scf))
+         END IF
+      END IF
       DO local_channel = 1, SIZE(local_ot_env)
-         local_ot_env(local_channel)%delta = residual_delta
+         local_ot_env(local_channel)%delta = env_delta
       END DO
 
    END SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta
@@ -6631,14 +6644,16 @@ CONTAINS
          density_full_candidate_ready, density_full_candidate_selected, density_full_direct_candidate_ready, &
          density_full_direct_candidate_selected, density_full_direct_tail_probe_ready, &
          density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
-         density_full_global_candidate_selected, density_full_global_tail_probe_ready
+         density_full_global_candidate_selected, density_full_global_tail_prefer, &
+         density_full_global_tail_probe_ready
       LOGICAL :: density_full_tail_probe_ready, exact_attempt_response, &
          exact_density_direct_response_ready, exact_density_floor_audit_ready, &
          exact_density_full_audit_ready, exact_density_full_response_ready, &
          exact_density_plateau_response_ready, exact_density_response_ready, &
          exact_energy_model_ready, exact_physical_response_ready, failed, metric_attempt_response, &
          metric_attempt_selectable, metric_attempt_tail_bridge, new_search_point, &
-         physical_delta_group_ready, physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
+         physical_delta_group_ready, physical_delta_norm_ready, physical_delta_plateau_ready, &
+         physical_delta_raw_tail_ready, &
          projector_density_full_audit_enabled, &
          projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready
       LOGICAL :: projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
@@ -6813,6 +6828,7 @@ CONTAINS
          occ_curv_projection_sum, occ_projected_term, occ_response_diag_sum, occ_tail_i, &
          occ_tail_j, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, pair_occ_gap, pair_projector_weight, &
+         physical_delta_norm, physical_delta_norm_limit, &
          physical_response_gap_avg, physical_response_gap_max, physical_response_gap_norm, &
          plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, plateau_gap_mode_eval_min
       REAL(KIND=dp) :: plateau_gap_mode_negative_fraction, plateau_gap_mode_negative_quad, &
@@ -8333,6 +8349,7 @@ CONTAINS
          density_full_global_bootstrap_ready = .FALSE.
          density_full_global_candidate_ready = .FALSE.
          density_full_global_candidate_selected = .FALSE.
+         density_full_global_tail_prefer = .FALSE.
          density_full_global_tail_probe_ready = .FALSE.
          density_full_tail_probe_ready = .FALSE.
          density_descent_candidate_ready = .FALSE.
@@ -8589,7 +8606,22 @@ CONTAINS
                                          response_raw_delta > 0.0_dp .AND. &
                                          response_raw_delta <= &
                                          ot_kp_schur_physical_tail_eps_factor*eps_scf_channel
+         physical_delta_norm = 0.0_dp
+         IF (nrot + ne > 0) &
+            physical_delta_norm = SQRT(MAX(0.0_dp, rot_grad_total_physical_norm)/ &
+                                       REAL(nrot + ne, KIND=dp))
+         physical_delta_norm_limit = &
+            ot_kp_schur_physical_norm_tail_factor*ot_kp_schur_physical_tail_eps_factor* &
+            eps_scf_channel
+         physical_delta_norm_ready = eps_scf_channel > 0.0_dp .AND. &
+                                     physical_delta_norm <= physical_delta_norm_limit .AND. &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                     ot_kp_schur_calibration_min_samples .AND. &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp .AND. &
+                                     local_ot_env(1)%mermin_ls_accepted_gap_ema <= &
+                                     ot_kp_schur_residual_tail_plateau_slack
          physical_delta_plateau_ready = residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                        physical_delta_norm <= physical_delta_norm_limit .AND. &
                                         rot_grad_total_physical_norm <= &
                                         MAX(rot_grad_gauge_norm, residual_delta*residual_delta) .AND. &
                                         local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
@@ -8601,6 +8633,7 @@ CONTAINS
                                       (.NOT. schur_active_subspace .OR. &
                                        rot_grad_gauge_norm > &
                                        MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp)) .OR. &
+                                       physical_delta_norm_ready .OR. &
                                        physical_delta_plateau_ready)
          local_ot_env(1)%kpoint_physical_delta_groups = &
             local_ot_env(1)%kpoint_physical_delta_groups + 1
@@ -8632,13 +8665,15 @@ CONTAINS
             target_group, physical_delta_group_ready, rot_grad_energy_norm, rot_grad_physical_norm, &
             rot_grad_gauge_norm, rot_grad_total_physical_norm, residual_delta
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),6(1X,ES16.8),1X,I6)') &
-            " OT Schur physical residual plateau audit group ready plateau rawtail qema gema phys raw resp eps samples:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),8(1X,ES16.8),1X,I6)') &
+            " OT Schur physical residual plateau audit group ready plateau norm rawtail qema gema "// &
+            "phys pdelta raw resp neps eps samples:", &
             target_group, physical_delta_group_ready, physical_delta_plateau_ready, &
-            physical_delta_raw_tail_ready, &
+            physical_delta_norm_ready, physical_delta_raw_tail_ready, &
             local_ot_env(1)%mermin_ls_accepted_quality_ema, &
             local_ot_env(1)%mermin_ls_accepted_gap_ema, &
-            rot_grad_total_physical_norm, residual_delta, response_raw_delta, &
+            rot_grad_total_physical_norm, physical_delta_norm, residual_delta, response_raw_delta, &
+            physical_delta_norm_limit, &
             ot_kp_schur_physical_tail_eps_factor*eps_scf_channel, &
             local_ot_env(1)%mermin_ls_accepted_quality_samples
          IF (failed) THEN
@@ -15218,6 +15253,25 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_global_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
+               density_full_global_tail_prefer = &
+                  kpoint_ot_density_full_global_tail_prefer( &
+                  residual_delta, density_full_global_bootstrap_ready, &
+                  density_full_global_tail_probe_ready, density_full_global_expected_drop, &
+                  dense_expected_drop, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples, &
+                  projector_physical_direct_density_candidate_selected, &
+                  projector_physical_direct_density_residual_bad, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+                  dense_residual_quality)
                IF (density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
@@ -15232,7 +15286,8 @@ CONTAINS
                      local_ot_env(1)%schur_projector_density_full_global_quality, &
                      local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
                      local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
-                     dense_residual_quality)))) THEN
+                     dense_residual_quality)) .OR. &
+                    density_full_global_tail_prefer)) THEN
                   attempt_failed = .FALSE.
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
@@ -15332,6 +15387,11 @@ CONTAINS
                       projector_physical_direct_tail_probe_ready))) .AND. &
                    projector_physical_candidate_ready .AND. &
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
+                   (.NOT. (density_full_global_candidate_selected .AND. &
+                            density_full_global_tail_prefer) .OR. &
+                    projector_physical_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio* &
+                    MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
                    (projector_physical_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
@@ -15384,6 +15444,11 @@ CONTAINS
                IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
+                   (.NOT. (density_full_global_candidate_selected .AND. &
+                            density_full_global_tail_prefer) .OR. &
+                    projector_physical_direct_spectral_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio* &
+                    MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
                    ((local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
                      projector_physical_direct_spectral_expected_drop >= &
                      ot_kp_schur_projector_response_advantage_ratio* &
@@ -15775,6 +15840,25 @@ CONTAINS
                dense_branch_expected_drop = kpoint_ot_branch_loss_density_drop( &
                                             density_full_global_expected_drop, &
                                             dense_expected_drop, mermin_branch_loss_weight)
+               density_full_global_tail_prefer = &
+                  kpoint_ot_density_full_global_tail_prefer( &
+                  residual_delta, density_full_global_bootstrap_ready, &
+                  density_full_global_tail_probe_ready, density_full_global_expected_drop, &
+                  dense_expected_drop, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples, &
+                  projector_physical_direct_density_candidate_selected, &
+                  projector_physical_direct_density_residual_bad, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+                  dense_residual_quality)
                IF (density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
@@ -15789,7 +15873,8 @@ CONTAINS
                      local_ot_env(1)%schur_projector_density_full_global_quality, &
                      local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
                      local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
-                     dense_residual_quality)))) THEN
+                     dense_residual_quality)) .OR. &
+                    density_full_global_tail_prefer)) THEN
                   attempt_failed = .FALSE.
                   density_full_global_candidate_selected = .TRUE.
                   density_full_candidate_selected = .FALSE.
@@ -15889,6 +15974,11 @@ CONTAINS
                       projector_physical_direct_tail_probe_ready))) .AND. &
                    projector_physical_candidate_ready .AND. &
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
+                   (.NOT. (density_full_global_candidate_selected .AND. &
+                            density_full_global_tail_prefer) .OR. &
+                    projector_physical_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio* &
+                    MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
                    (projector_physical_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
@@ -15941,6 +16031,11 @@ CONTAINS
                IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
+                   (.NOT. (density_full_global_candidate_selected .AND. &
+                            density_full_global_tail_prefer) .OR. &
+                    projector_physical_direct_spectral_expected_drop >= &
+                    ot_kp_schur_projector_response_advantage_ratio* &
+                    MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
                    ((local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
                      projector_physical_direct_spectral_expected_drop >= &
                      ot_kp_schur_projector_response_advantage_ratio* &
@@ -17139,11 +17234,11 @@ CONTAINS
                      density_full_direct_response_abs_trust_ratio, &
                      density_full_direct_trust_quality, density_full_direct_direction_scale, &
                      density_full_direct_history_scale
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),8(1X,ES16.8))') &
-                     " OT Schur projector full-density global candidate ready selected boot "// &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),8(1X,ES16.8))') &
+                     " OT Schur projector full-density global candidate ready selected boot prefer "// &
                      "exp qsel cdrop rratio aratio tq scale hscale:", &
                      density_full_global_candidate_ready, density_full_global_candidate_selected, &
-                     density_full_global_bootstrap_ready, &
+                     density_full_global_bootstrap_ready, density_full_global_tail_prefer, &
                      density_full_global_expected_drop, density_full_global_quality_for_selection, &
                      density_full_global_model_calibrated_drop, &
                      density_full_global_response_weighted_trust_ratio, &
@@ -19336,6 +19431,106 @@ CONTAINS
          do_probe = .TRUE.
 
       END FUNCTION kpoint_ot_density_full_tail_selection_probe
+
+! **************************************************************************************************
+!> \brief residual-tail preference for global full-density response probes
+!> \param residual_delta current OT residual
+!> \param bootstrap_ready new-search bootstrap from the accepted Mermin model
+!> \param probe_ready mature shadow-history probe gate
+!> \param candidate_expected_drop calibrated global full-density Mermin drop
+!> \param reference_expected_drop currently selected reference Mermin drop
+!> \param history_quality latest global shadow Mermin quality
+!> \param history_quality_ema global shadow Mermin quality EMA
+!> \param history_samples number of global shadow samples
+!> \param selected_quality latest selected global Mermin quality
+!> \param selected_quality_ema selected global Mermin quality EMA
+!> \param selected_residual_quality latest selected global residual quality
+!> \param selected_residual_quality_ema selected global residual quality EMA
+!> \param selected_samples number of selected global samples
+!> \param direct_selected whether Direct-density already owns this attempt
+!> \param direct_residual_bad precomputed Direct-density residual weakness
+!> \param direct_residual_quality latest Direct-density selected residual quality
+!> \param direct_residual_quality_ema Direct-density selected residual quality EMA
+!> \param direct_samples number of selected Direct-density samples
+!> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \return true if a global full-density probe should break the Direct-density tail deadlock
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_global_tail_prefer(residual_delta, bootstrap_ready, probe_ready, &
+                                                         candidate_expected_drop, reference_expected_drop, &
+                                                         history_quality, history_quality_ema, history_samples, &
+                                                         selected_quality, selected_quality_ema, &
+                                                         selected_residual_quality, &
+                                                         selected_residual_quality_ema, selected_samples, &
+                                                         direct_selected, direct_residual_bad, &
+                                                         direct_residual_quality, &
+                                                         direct_residual_quality_ema, direct_samples, &
+                                                         dense_residual_quality) RESULT(prefer)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, history_quality, &
+                                                            history_quality_ema, selected_quality, &
+                                                            selected_quality_ema, selected_residual_quality, &
+                                                            selected_residual_quality_ema, &
+                                                            direct_residual_quality, &
+                                                            direct_residual_quality_ema, dense_residual_quality
+      INTEGER, INTENT(IN)                                :: history_samples, selected_samples, direct_samples
+      LOGICAL, INTENT(IN)                                :: bootstrap_ready, probe_ready, direct_selected, &
+                                                            direct_residual_bad
+      LOGICAL                                            :: prefer
+
+      LOGICAL                                            :: direct_weak, global_mature, global_selected_mature
+      REAL(KIND=dp)                                      :: drop_ratio, residual_reference
+
+         prefer = .FALSE.
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+
+         global_mature = probe_ready .OR. bootstrap_ready
+         IF (history_samples > 0) &
+            global_mature = global_mature .OR. &
+                            (history_quality_ema >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                             history_quality >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio)
+         global_selected_mature = selected_samples > 0 .AND. &
+                                  selected_quality_ema >= &
+                                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                  selected_quality >= &
+                                  0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+         global_mature = global_mature .OR. global_selected_mature
+         IF (.NOT. global_mature) RETURN
+
+         drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+         IF (history_samples < ot_kp_schur_projector_response_min_samples .OR. &
+             selected_samples < ot_kp_schur_calibration_min_samples) &
+            drop_ratio = ot_kp_schur_projector_density_fdir_refresh_ratio
+         IF (candidate_expected_drop < drop_ratio* &
+             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         residual_reference = MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)
+         IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
+            IF (selected_residual_quality_ema < &
+                0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference) RETURN
+            IF (selected_residual_quality < &
+                0.25_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference) RETURN
+         END IF
+
+         direct_weak = .TRUE.
+         IF (direct_selected) THEN
+            direct_weak = direct_residual_bad .OR. &
+                          direct_samples < ot_kp_schur_calibration_min_samples
+            IF (direct_samples >= ot_kp_schur_calibration_min_samples) THEN
+               direct_weak = direct_weak .OR. &
+                             direct_residual_quality_ema < &
+                             ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                             residual_reference .OR. &
+                             direct_residual_quality < &
+                             0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                             residual_reference
+            END IF
+         END IF
+         IF (.NOT. direct_weak) RETURN
+
+         prefer = .TRUE.
+
+      END FUNCTION kpoint_ot_density_full_global_tail_prefer
 
 ! **************************************************************************************************
 !> \brief periodic refresh probe for stale full-density selected residual history
