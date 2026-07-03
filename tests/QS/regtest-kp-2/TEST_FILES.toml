@@ -49,21 +49,21 @@
 # Al_kp_ot_added_auto_converge.inp and Al_kp_ot_added_auto_sym3_converge.inp
 # by hand. They are intentionally not listed here, so the default regtest stays
 # cheap while the adaptive AUTO grow path can still be checked against the
-# 1E-6 Mermin path. Expected final checks for the cheaper companion:
-# E_total = Mermin = -8.14585274922576 Ha, ADDED_MOS_AUTO = 4,
-# ADDED_MOS_AUTO_GROW_SEQUENCE = "8", and no first/last-band or AUTO-exhausted
-# warning is printed.  The Direct-density bootstrap is available as a fallback;
-# the final tail is driven by selected-history Direct-density response.
-# Current HIGH companion references after preserving the physical Direct/Trace
-# calibration across AUTO rebuilds:
-# after the active-window density-response correction, the Sym3 path grows to
-# 8 and 16 and has E_total = Mermin = -8.15998668193697 Ha.  The full-grid
-# companion follows the same AUTO growth
-# sequence and has E_total = Mermin = -8.15998707551141 Ha.  The two optional
-# paths agree within 4E-7 Ha.  In both tails the full eigenvalue response stays
-# active while the density source is pair-active filtered, and no first/last-band
-# or AUTO-exhausted warning is printed.  Exact SCF step counts are intentionally
-# not part of these optional companion references.
+# 1E-6 Mermin path. Latest isolated HIGH gamma companion after the analytic
+# fixed-N cluster response and half-active split-curvature updates:
+# initial AUTO buffer 4, ADDED_MOS_AUTO_GROW_SEQUENCE = "8", convergence in
+# 110 steps after the rebuild, 276 inner k-point OT calls overall, and
+# E_total = Mermin = -8.14585274623606 Ha.  No first/last-band warning,
+# AUTO-exhausted warning, or "Unsupported content type" signature is printed.
+# Current optional 3-k-point HIGH companion references remain:
+# the Sym3 path grows to 8 and 16 and has
+# E_total = Mermin = -8.15998668193697 Ha.  The full-grid companion follows
+# the same AUTO growth sequence and has
+# E_total = Mermin = -8.15998707551141 Ha.  The two optional 3-k-point paths
+# agree within 4E-7 Ha.  In both tails the full eigenvalue response stays active
+# while the density source is pair-active filtered, and no first/last-band or
+# AUTO-exhausted warning is printed.  Exact SCF step counts are intentionally
+# not part of these optional 3-k-point companion references.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.63303359769477},
