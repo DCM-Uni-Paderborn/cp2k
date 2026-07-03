@@ -9406,55 +9406,73 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL :: low_drop, low_quality, low_recovery, ready, selected_bad, selected_ok, &
-         selected_recent_bad, tail_veto, trust_veto, weak_drop
+         selected_recent_bad, stale_no_history, stale_refresh, tail_veto, trust_veto, weak_drop
       REAL(KIND=dp)                                      :: err
 
       ready = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                               0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                               0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                               0.10_dp, 8, 1.0_dp, 1.0_dp)
       tail_veto = dense_density_descent_tail_probe(2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                    0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                   0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                   0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                                   0.10_dp, 8, 1.0_dp, 1.0_dp)
       low_quality = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                      0.04_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                     0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                     0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                                     0.10_dp, 8, 1.0_dp, 1.0_dp)
       low_recovery = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                       0.06_dp, 0.49_dp, 1.0_dp, 1.0_dp, &
-                                                      0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                      0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                                      0.10_dp, 8, 1.0_dp, 1.0_dp)
       low_drop = dense_density_descent_tail_probe(5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, &
                                                   0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                  0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                  0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                                  0.10_dp, 8, 1.0_dp, 1.0_dp)
       weak_drop = dense_density_descent_tail_probe(5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, &
                                                    0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                   0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                   0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                                   0.10_dp, 8, 1.0_dp, 1.0_dp)
       trust_veto = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                     0.06_dp, 0.80_dp, 1.01_dp, 1.0_dp, &
-                                                    0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                    0.0_dp, 0.0_dp, 0, 0.40_dp, &
+                                                    0.10_dp, 8, 1.0_dp, 1.0_dp)
       selected_ok = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                      0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                     0.40_dp, 0.40_dp, 4, 0.40_dp)
+                                                     0.40_dp, 0.40_dp, 4, 0.40_dp, &
+                                                     0.10_dp, 8, 1.0_dp, 1.0_dp)
       selected_bad = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                       0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                      0.40_dp, 0.20_dp, 4, 0.40_dp)
+                                                      0.40_dp, 0.20_dp, 4, 0.40_dp, &
+                                                      0.0_dp, 0, 0.0_dp, 0.0_dp)
       selected_recent_bad = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                              0.06_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
-                                                             0.05_dp, 0.40_dp, 4, 0.40_dp)
+                                                             0.05_dp, 0.40_dp, 4, 0.40_dp, &
+                                                             0.0_dp, 0, 0.0_dp, 0.0_dp)
+      stale_refresh = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                       1.0E-8_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                       0.0_dp, 1.0E-8_dp, 4, 0.40_dp, &
+                                                       0.10_dp, 8, 1.0_dp, 1.0_dp)
+      stale_no_history = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
+                                                          1.0E-8_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
+                                                          0.0_dp, 1.0E-8_dp, 4, 0.40_dp, &
+                                                          0.10_dp, 7, 1.0_dp, 1.0_dp)
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_quality .OR. low_recovery .OR. low_drop .OR. &
           weak_drop .OR. trust_veto .OR. .NOT. selected_ok .OR. selected_bad .OR. &
-          selected_recent_bad) err = 1.0_dp
+          selected_recent_bad .OR. .NOT. stale_refresh .OR. stale_no_history) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
-            "failed with ready/tail/quality/recovery/drop/weak/trust/sel/bad/recent", ready, tail_veto, &
+         WRITE (*, '(A,1X,A,12(1X,L1))') TRIM(label), &
+            "failed with ready/tail/quality/recovery/drop/weak/trust/sel/bad/recent/stale/young", ready, tail_veto, &
             low_quality, low_recovery, low_drop, weak_drop, trust_veto, selected_ok, selected_bad, &
-            selected_recent_bad
+            selected_recent_bad, stale_refresh, stale_no_history
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
-            "OK with ready/tail/quality/recovery/drop/weak/trust/sel/bad/recent", ready, tail_veto, &
+         WRITE (*, '(A,1X,A,12(1X,L1))') TRIM(label), &
+            "OK with ready/tail/quality/recovery/drop/weak/trust/sel/bad/recent/stale/young", ready, tail_veto, &
             low_quality, low_recovery, low_drop, weak_drop, trust_veto, selected_ok, selected_bad, &
-            selected_recent_bad
+            selected_recent_bad, stale_refresh, stale_no_history
       END IF
 
    END SUBROUTINE check_projector_density_descent_tail_probe
@@ -12531,6 +12549,10 @@ CONTAINS
 !> \param selected_residual_quality_ema ...
 !> \param selected_samples ...
 !> \param dense_residual_quality ...
+!> \param bootstrap_quality ...
+!> \param history_samples ...
+!> \param support_quality ...
+!> \param support_quality_ema ...
 !> \return true if the density-descent candidate is a trust-safe residual-tail close call
 ! **************************************************************************************************
    FUNCTION dense_density_descent_tail_probe(residual_delta, candidate_expected_drop, &
@@ -12538,31 +12560,45 @@ CONTAINS
                                              gap_recoverable_fraction, weighted_trust_ratio, &
                                              abs_trust_ratio, selected_residual_quality, &
                                              selected_residual_quality_ema, selected_samples, &
-                                             dense_residual_quality) RESULT(do_probe)
+                                             dense_residual_quality, bootstrap_quality, &
+                                             history_samples, support_quality, support_quality_ema) &
+      RESULT(do_probe)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
                                                             reference_expected_drop, quality_for_selection, &
                                                             gap_recoverable_fraction, weighted_trust_ratio, &
                                                             abs_trust_ratio, selected_residual_quality, &
                                                             selected_residual_quality_ema
-      INTEGER, INTENT(IN)                                :: selected_samples
-      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      INTEGER, INTENT(IN)                                :: selected_samples, history_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, bootstrap_quality, &
+                                                            support_quality, support_quality_ema
       LOGICAL                                            :: do_probe
 
-      REAL(KIND=dp)                                      :: residual_reference
+      LOGICAL                                            :: stale_residual_probe
+      REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
 
       do_probe = .FALSE.
       IF (residual_delta > 1.0E-4_dp) RETURN
-      IF (quality_for_selection < 5.0E-2_dp) RETURN
+      residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
+      stale_residual_probe = selected_samples >= 4 .AND. history_samples >= 8 .AND. &
+                             bootstrap_quality >= 1.0E-1_dp .AND. &
+                             support_quality_ema >= 1.0E-1_dp .AND. &
+                             support_quality >= 5.0E-2_dp .AND. &
+                             (selected_residual_quality_ema < 8.0E-1_dp*residual_reference .OR. &
+                              selected_residual_quality < 4.0E-1_dp*residual_reference)
+      IF (quality_for_selection < 5.0E-2_dp .AND. .NOT. stale_residual_probe) RETURN
       IF (gap_recoverable_fraction < 5.0E-1_dp) RETURN
       IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
-      IF (candidate_expected_drop < 8.0E-1_dp*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+      required_drop_ratio = 8.0E-1_dp
+      IF (stale_residual_probe) required_drop_ratio = MIN(required_drop_ratio, 2.0E-1_dp)
+      IF (candidate_expected_drop < required_drop_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
       IF (weighted_trust_ratio > 1.0_dp) RETURN
       IF (abs_trust_ratio > 1.0_dp) RETURN
 
       IF (selected_samples >= 4) THEN
-         residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
-         IF (selected_residual_quality_ema < 8.0E-1_dp*residual_reference) RETURN
-         IF (selected_residual_quality < 4.0E-1_dp*residual_reference) RETURN
+         IF (.NOT. stale_residual_probe) THEN
+            IF (selected_residual_quality_ema < 8.0E-1_dp*residual_reference) RETURN
+            IF (selected_residual_quality < 4.0E-1_dp*residual_reference) RETURN
+         END IF
       END IF
 
       do_probe = .TRUE.

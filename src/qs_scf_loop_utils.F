@@ -6819,7 +6819,8 @@ CONTAINS
          dense_quality_for_selection, dense_residual_quality, dense_residual_quality_strict, &
          dense_scale_quality, dense_term, dense_trust_quality, density_descent_bootstrap_maturity, &
          density_descent_bootstrap_quality, density_descent_direction_scale, &
-         density_descent_expected_drop, density_descent_gap_coeff, density_descent_gap_denom
+         density_descent_expected_drop, density_descent_gap_coeff, density_descent_gap_denom, &
+         density_descent_probe_expected_drop
       REAL(KIND=dp) :: density_descent_gap_projected_abs, density_descent_gap_projected_weighted, &
          density_descent_gap_recoverable_fraction, density_descent_gdot_energy, &
          density_descent_gdot_rotation, density_descent_gdotp, density_descent_growth_scale, &
@@ -10794,6 +10795,7 @@ CONTAINS
                density_descent_norm_energy = 0.0_dp
                density_descent_norm_rotation = 0.0_dp
                density_descent_normp = 0.0_dp
+               density_descent_probe_expected_drop = 0.0_dp
                density_descent_response_abs_step = 0.0_dp
                density_descent_response_abs_trust_ratio = 0.0_dp
                density_descent_response_weighted_step = 0.0_dp
@@ -14091,6 +14093,16 @@ CONTAINS
                               density_descent_model_calibrated_drop, &
                               density_descent_quality_for_selection, &
                               density_descent_trust_quality)
+                           density_descent_probe_expected_drop = &
+                              kpoint_ot_density_descent_tail_probe_drop( &
+                              residual_delta, density_descent_expected_drop, &
+                              density_descent_model_calibrated_drop, &
+                              density_descent_bootstrap_quality, &
+                              local_ot_env(1)%schur_projector_density_descent_quality_samples, &
+                              local_ot_env(1)%schur_projector_density_descent_support, &
+                              local_ot_env(1)%schur_projector_density_descent_support_ema, &
+                              density_descent_response_weighted_trust_ratio, &
+                              density_descent_response_abs_trust_ratio)
                            density_descent_candidate_ready = &
                               ((local_ot_env(1)%schur_projector_density_descent_quality_samples >= &
                                 ot_kp_schur_projector_response_min_samples .AND. &
@@ -15316,15 +15328,19 @@ CONTAINS
                                             dense_expected_drop, mermin_branch_loss_weight)
                density_descent_tail_probe_ready = &
                   kpoint_ot_density_descent_tail_probe( &
-                  residual_delta, density_descent_expected_drop, dense_expected_drop, &
+                  residual_delta, density_descent_probe_expected_drop, dense_expected_drop, &
                   density_descent_quality_for_selection, density_descent_gap_recoverable_fraction, &
                   density_descent_response_weighted_trust_ratio, &
                   density_descent_response_abs_trust_ratio, &
                   local_ot_env(1)%schur_projector_density_descent_selected_residual_quality, &
                   local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema, &
                   local_ot_env(1)%schur_projector_density_descent_selected_quality_samples, &
-                  dense_residual_quality)
-               IF (density_descent_expected_drop > EPSILON(density_descent_expected_drop) .AND. &
+                  dense_residual_quality, density_descent_bootstrap_quality, &
+                  local_ot_env(1)%schur_projector_density_descent_quality_samples, &
+                  local_ot_env(1)%schur_projector_density_descent_support, &
+                  local_ot_env(1)%schur_projector_density_descent_support_ema)
+               IF (MAX(density_descent_expected_drop, density_descent_probe_expected_drop) > &
+                   EPSILON(density_descent_expected_drop) .AND. &
                    ((density_descent_candidate_ready .AND. &
                      dense_branch_expected_drop >= &
                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -15906,15 +15922,19 @@ CONTAINS
                                             dense_expected_drop, mermin_branch_loss_weight)
                density_descent_tail_probe_ready = &
                   kpoint_ot_density_descent_tail_probe( &
-                  residual_delta, density_descent_expected_drop, dense_expected_drop, &
+                  residual_delta, density_descent_probe_expected_drop, dense_expected_drop, &
                   density_descent_quality_for_selection, density_descent_gap_recoverable_fraction, &
                   density_descent_response_weighted_trust_ratio, &
                   density_descent_response_abs_trust_ratio, &
                   local_ot_env(1)%schur_projector_density_descent_selected_residual_quality, &
                   local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema, &
                   local_ot_env(1)%schur_projector_density_descent_selected_quality_samples, &
-                  dense_residual_quality)
-               IF (density_descent_expected_drop > EPSILON(density_descent_expected_drop) .AND. &
+                  dense_residual_quality, density_descent_bootstrap_quality, &
+                  local_ot_env(1)%schur_projector_density_descent_quality_samples, &
+                  local_ot_env(1)%schur_projector_density_descent_support, &
+                  local_ot_env(1)%schur_projector_density_descent_support_ema)
+               IF (MAX(density_descent_expected_drop, density_descent_probe_expected_drop) > &
+                   EPSILON(density_descent_expected_drop) .AND. &
                    ((density_descent_candidate_ready .AND. &
                      dense_branch_expected_drop >= &
                      ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
@@ -19934,6 +19954,45 @@ CONTAINS
       END FUNCTION kpoint_ot_density_full_direct_probe_drop
 
 ! **************************************************************************************************
+!> \brief trust-safe density-descent drop visible only to residual-tail refresh probes
+!> \param residual_delta current OT residual
+!> \param candidate_expected_drop ordinary quality-capped candidate Mermin drop
+!> \param model_calibrated_drop raw accepted-history-calibrated density-descent model drop
+!> \param bootstrap_quality accepted shadow-history quality before selected-residual capping
+!> \param history_samples number of accepted density-descent shadow samples
+!> \param support_quality latest bounded density-descent support quality
+!> \param support_quality_ema EMA of bounded density-descent support quality
+!> \param weighted_trust_ratio curvature-weighted response trust ratio
+!> \param abs_trust_ratio absolute response trust ratio
+!> \return probe-only drop for stale selected-residual history refresh
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_descent_tail_probe_drop(residual_delta, candidate_expected_drop, &
+                                                         model_calibrated_drop, bootstrap_quality, &
+                                                         history_samples, support_quality, &
+                                                         support_quality_ema, weighted_trust_ratio, &
+                                                         abs_trust_ratio) RESULT(probe_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            model_calibrated_drop, bootstrap_quality, &
+                                                            support_quality, support_quality_ema, &
+                                                            weighted_trust_ratio, abs_trust_ratio
+      INTEGER, INTENT(IN)                                :: history_samples
+      REAL(KIND=dp)                                      :: probe_drop
+
+         probe_drop = MAX(0.0_dp, candidate_expected_drop)
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (model_calibrated_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (history_samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (bootstrap_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (support_quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (support_quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (weighted_trust_ratio > 1.0_dp) RETURN
+         IF (abs_trust_ratio > 1.0_dp) RETURN
+
+         probe_drop = MAX(probe_drop, model_calibrated_drop)
+
+      END FUNCTION kpoint_ot_density_descent_tail_probe_drop
+
+! **************************************************************************************************
 !> \brief whether a full-density Direct candidate may collect tail line-search history
 !> \param residual_delta current OT residual
 !> \param candidate_expected_drop calibrated candidate Mermin drop
@@ -20014,6 +20073,10 @@ CONTAINS
 !> \param selected_residual_quality_ema residual-quality EMA of already selected probes
 !> \param selected_samples number of already selected density-descent probes
 !> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \param bootstrap_quality accepted shadow-history quality before selected-residual capping
+!> \param history_samples number of accepted density-descent shadow samples
+!> \param support_quality latest bounded density-descent support quality
+!> \param support_quality_ema EMA of bounded density-descent support quality
 !> \return true if the physical density-gap response is a trust-safe residual-tail close call
 ! **************************************************************************************************
       FUNCTION kpoint_ot_density_descent_tail_probe(residual_delta, candidate_expected_drop, &
@@ -20021,35 +20084,62 @@ CONTAINS
                                                     gap_recoverable_fraction, weighted_trust_ratio, &
                                                     abs_trust_ratio, selected_residual_quality, &
                                                     selected_residual_quality_ema, selected_samples, &
-                                                    dense_residual_quality) RESULT(do_probe)
+                                                    dense_residual_quality, bootstrap_quality, &
+                                                    history_samples, support_quality, &
+                                                    support_quality_ema) RESULT(do_probe)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
                                                             reference_expected_drop, quality_for_selection, &
                                                             gap_recoverable_fraction, weighted_trust_ratio, &
                                                             abs_trust_ratio, selected_residual_quality, &
                                                             selected_residual_quality_ema
-      INTEGER, INTENT(IN)                                :: selected_samples
-      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      INTEGER, INTENT(IN)                                :: selected_samples, history_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, bootstrap_quality, &
+                                                            support_quality, support_quality_ema
       LOGICAL                                            :: do_probe
 
-      REAL(KIND=dp)                                      :: residual_reference
+      LOGICAL                                            :: stale_residual_probe
+      REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
 
          do_probe = .FALSE.
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
-         IF (quality_for_selection < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         residual_reference = MAX(dense_residual_quality, &
+                                  ot_kp_schur_calibrated_quality_min_ratio)
+         stale_residual_probe = selected_samples >= ot_kp_schur_calibration_min_samples .AND. &
+                                history_samples >= ot_kp_schur_projector_response_min_samples .AND. &
+                                bootstrap_quality >= &
+                                ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                support_quality_ema >= &
+                                ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                support_quality >= &
+                                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                                (selected_residual_quality_ema < &
+                                 ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                                 residual_reference .OR. &
+                                 selected_residual_quality < &
+                                 0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                                 residual_reference)
+         IF (quality_for_selection < &
+             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+             .NOT. stale_residual_probe) RETURN
          IF (gap_recoverable_fraction < 0.5_dp) RETURN
          IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
-         IF (candidate_expected_drop < ot_kp_schur_projector_density_fdir_probe_ratio* &
+         required_drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+         IF (stale_residual_probe) &
+            required_drop_ratio = MIN(required_drop_ratio, &
+                                      ot_kp_schur_projector_density_fdir_refresh_ratio)
+         IF (candidate_expected_drop < required_drop_ratio* &
              MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
          IF (weighted_trust_ratio > 1.0_dp) RETURN
          IF (abs_trust_ratio > 1.0_dp) RETURN
 
          IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
-            residual_reference = MAX(dense_residual_quality, &
-                                     ot_kp_schur_calibrated_quality_min_ratio)
-            IF (selected_residual_quality_ema < &
-                ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference) RETURN
-            IF (selected_residual_quality < &
-                0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference) RETURN
+            IF (.NOT. stale_residual_probe) THEN
+               IF (selected_residual_quality_ema < &
+                   ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference) RETURN
+               IF (selected_residual_quality < &
+                   0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                   residual_reference) RETURN
+            END IF
          END IF
 
          do_probe = .TRUE.
