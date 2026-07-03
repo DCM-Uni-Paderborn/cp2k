@@ -212,6 +212,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density direct floor response", 5.0E-14_dp, nfail)
    CALL check_projector_density_floor_bootstrap_weight( &
       "complex projector density floor bootstrap weight", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_floor_source_weight( &
+      "complex projector density global floor-source weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_density_audit_trust_quality( &
@@ -8361,6 +8363,58 @@ CONTAINS
    END SUBROUTINE check_projector_density_floor_bootstrap_weight
 
 ! **************************************************************************************************
+!> \brief Check accepted-history calibrated global floor-source response mix.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_floor_source_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: active_weight, bad_recent, err, expected_weight, high_residual, &
+         immature, no_residual, overpredicted
+
+      active_weight = dense_density_full_global_floor_source_weight(5.0E-6_dp, 12.0_dp, &
+                                                                    15.0_dp, 0.25_dp, &
+                                                                    0.16_dp, 16)
+      bad_recent = dense_density_full_global_floor_source_weight(5.0E-6_dp, 0.25_dp, &
+                                                                 15.0_dp, 0.25_dp, &
+                                                                 0.16_dp, 16)
+      overpredicted = dense_density_full_global_floor_source_weight(5.0E-6_dp, 0.80_dp, &
+                                                                    0.95_dp, 0.25_dp, &
+                                                                    0.16_dp, 16)
+      high_residual = dense_density_full_global_floor_source_weight(2.0E-4_dp, 12.0_dp, &
+                                                                    15.0_dp, 0.25_dp, &
+                                                                    0.16_dp, 16)
+      immature = dense_density_full_global_floor_source_weight(5.0E-6_dp, 12.0_dp, &
+                                                               15.0_dp, 0.25_dp, &
+                                                               0.16_dp, 3)
+      no_residual = dense_density_full_global_floor_source_weight(5.0E-6_dp, 12.0_dp, &
+                                                                  15.0_dp, 0.0_dp, &
+                                                                  0.0_dp, 16)
+
+      expected_weight = 1.0E-2_dp*SQRT(dense_selected_tail_mix_residual_quality(0.25_dp, &
+                                                                                0.16_dp))
+      err = ABS(active_weight - expected_weight)
+
+      IF (err > tol .OR. active_weight <= 0.0_dp .OR. active_weight >= 1.0E-2_dp .OR. &
+          bad_recent > tol .OR. overpredicted > tol .OR. high_residual > tol .OR. &
+          immature > tol .OR. no_residual > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/br/op/hr/im/nr", err, active_weight, bad_recent, &
+            overpredicted, high_residual, immature, no_residual
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/br/op/hr/im/nr", err, active_weight, bad_recent, &
+            overpredicted, high_residual, immature, no_residual
+      END IF
+
+   END SUBROUTINE check_projector_density_global_floor_source_weight
+
+! **************************************************************************************************
 !> \brief Check that global fixed-N density-response trust follows the Mermin metric.
 !> \param label ...
 !> \param tol ...
@@ -12457,6 +12511,61 @@ CONTAINS
       quality = MAX(0.0_dp, MIN(1.0_dp, quality))
 
    END FUNCTION dense_selected_tail_mix_residual_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of global full-density floor-source response mix.
+!> \param residual_delta ...
+!> \param selected_quality ...
+!> \param selected_quality_ema ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_full_global_floor_source_weight(residual_delta, selected_quality, &
+                                                          selected_quality_ema, selected_residual_quality, &
+                                                          selected_residual_quality_ema, selected_samples) &
+      RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_quality, &
+                                                            selected_quality_ema, selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: weight
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: mermin_ref, maturity, recent_quality, &
+                                                            residual_support, underprediction_weight
+
+      weight = 0.0_dp
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (selected_samples < 4) RETURN
+      IF (selected_quality_ema <= 1.0_dp) RETURN
+
+      mermin_ref = MAX(0.0_dp, MIN(1.25_dp, selected_quality_ema))
+      IF (selected_quality > EPSILON(selected_quality)) THEN
+         recent_quality = MAX(0.0_dp, MIN(1.25_dp, selected_quality))
+         IF (recent_quality < 1.0_dp) THEN
+            mermin_ref = MIN(mermin_ref, SQRT(recent_quality))
+         ELSE
+            mermin_ref = MIN(mermin_ref, recent_quality)
+         END IF
+      END IF
+      IF (mermin_ref <= 1.0_dp) RETURN
+
+      residual_support = dense_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                                  selected_residual_quality_ema)
+      IF (residual_support <= EPSILON(residual_support)) RETURN
+
+      maturity_samples = 13
+      maturity = REAL(MAX(0, selected_samples - 4 + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+      underprediction_weight = (mermin_ref - 1.0_dp)/MAX(1.25_dp - 1.0_dp, EPSILON(1.0_dp))
+      underprediction_weight = MAX(0.0_dp, MIN(1.0_dp, underprediction_weight))
+      weight = 1.0E-2_dp*maturity*underprediction_weight* &
+               SQRT(MAX(0.0_dp, MIN(1.0_dp, residual_support)))
+      weight = MAX(0.0_dp, MIN(1.0E-2_dp, weight))
+
+   END FUNCTION dense_density_full_global_floor_source_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected Direct-density active-Hessian tail mix weight.

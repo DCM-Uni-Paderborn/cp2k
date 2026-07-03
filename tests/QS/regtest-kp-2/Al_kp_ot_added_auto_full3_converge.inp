@@ -3,12 +3,12 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It checks the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-07 HIGH reference after the Mermin-drop-aware raw/physical
-! residual guard: AUTO grows to 8 and 16, then converges on the 1E-6 Mermin
-! path in 119 SCF steps. E_total = Mermin = -8.15998660261998 Ha, with no
-! first/last-band warnings and no AUTO-exhausted warning. One raw-gap guard
-! delays the old early exit while the accepted Mermin drop is still finite,
-! matching the symmetry-reduced companion within 5E-7 Ha.
+! Local 2026-07 HIGH reference after the selected-history calibrated
+! floor-source response mix: AUTO grows to 8 and 16, then converges on the
+! 1E-6 Mermin path in 109 SCF steps. E_total = Mermin =
+! -8.15998665044109 Ha, with no first/last-band warnings and no
+! AUTO-exhausted warning, matching the symmetry-reduced companion within
+! 5E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge

@@ -182,6 +182,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_negative_balance_max = 5.0E-1_dp, &
                                         ot_kp_schur_projector_response_ratio_gate = 2.0E-2_dp, &
                                         ot_kp_schur_projector_density_floor_bootstrap_weight = 2.5E-2_dp, &
+                                        ot_kp_schur_projector_density_global_floor_max_weight = 1.0E-2_dp, &
                                         ot_kp_schur_projector_density_floor_bootstrap_lowcurv_max = 2.5E-1_dp, &
                                         ot_kp_schur_projector_density_floor_bootstrap_mermin_min = 8.0E-1_dp, &
                                         ot_kp_schur_projector_trace_active_max_weight = 9.5E-1_dp, &
@@ -6855,6 +6856,7 @@ CONTAINS
          projector_density_floor_audit_low_curv_fraction, &
          projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg
       REAL(KIND=dp) :: projector_density_active_mix_weight, projector_density_full_global_abs_avg, &
+         projector_density_full_global_floor_mix_weight, &
          projector_density_history_quality, projector_density_history_weight, &
          projector_density_selected_history_weight, projector_diag_compensation, &
          projector_diagref_quality_for_selection, projector_diagref_weight, &
@@ -7697,6 +7699,7 @@ CONTAINS
          projector_physical_density_full_abs_avg = 0.0_dp
          projector_density_full_audit_abs_avg = 0.0_dp
          projector_density_full_global_abs_avg = 0.0_dp
+         projector_density_full_global_floor_mix_weight = 0.0_dp
          projector_physical_density_gap_abs_avg = 0.0_dp
          projector_physical_density_gap_abs_max = 0.0_dp
          projector_physical_density_diag_avg = 0.0_dp
@@ -8875,11 +8878,38 @@ CONTAINS
             SUM(ABS(response_density_floor_audit(:, :) - response_density_physical(:, :)))
          projector_physical_density_full_abs_avg = SUM(ABS(response_density_full(:, :)))
          projector_density_full_audit_abs_avg = SUM(ABS(response_density_full_audit(:, :)))
-         ! Use the active-window, gauge-safe physical density response for
-         ! the global fixed-N candidate.  The floor-limited eigenvalue
-         ! response remains an audit channel, but by itself it misses the
-         ! finite occupation response that dominates the metallic tail.
+         IF (local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples >= &
+             ot_kp_schur_calibration_min_samples) THEN
+            IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+               density_full_global_selected_residual_quality = &
+                  kpoint_ot_selected_tail_residual_quality( &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema)
+               density_full_global_selected_mix_residual_quality = &
+                  kpoint_ot_selected_tail_mix_residual_quality( &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema)
+               density_full_global_selected_response_scale = 0.25_dp + 0.75_dp* &
+                  SQRT(MAX(0.0_dp, MIN(1.0_dp, density_full_global_selected_mix_residual_quality)))
+            END IF
+         END IF
+         projector_density_full_global_floor_mix_weight = &
+            kpoint_ot_density_full_global_floor_source_weight( &
+            residual_delta, local_ot_env(1)%schur_projector_density_full_global_sel_quality, &
+            local_ot_env(1)%schur_projector_density_full_global_sel_quality_ema, &
+            local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+            local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+            local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples)
+         ! Use the active-window, gauge-safe physical density response for the
+         ! global fixed-N candidate.  Once selected global-history repeatedly
+         ! underpredicts accepted Mermin drops, admit a tiny piece of the
+         ! floor-limited finite-projector source before the fixed-N projection.
          response_density_full_global(:, :) = response_density_physical(:, :)
+         IF (projector_density_full_global_floor_mix_weight > &
+             EPSILON(projector_density_full_global_floor_mix_weight)) &
+            response_density_full_global(:, :) = &
+            response_density_full_global(:, :) + projector_density_full_global_floor_mix_weight* &
+            (response_density_floor_audit(:, :) - response_density_physical(:, :))
          DO s = 1, nrot
             CALL project_kpoint_ot_schur_response(response_density_full_global(:, s), occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
@@ -17251,9 +17281,9 @@ CONTAINS
                      density_full_direct_response_abs_trust_ratio, &
                      density_full_direct_trust_quality, density_full_direct_direction_scale, &
                      density_full_direct_history_scale
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),8(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),9(1X,ES16.8))') &
                      " OT Schur projector full-density global candidate ready selected boot prefer "// &
-                     "exp qsel cdrop rratio aratio tq scale hscale:", &
+                     "exp qsel cdrop rratio aratio tq scale hscale srcw:", &
                      density_full_global_candidate_ready, density_full_global_candidate_selected, &
                      density_full_global_bootstrap_ready, density_full_global_tail_prefer, &
                      density_full_global_expected_drop, density_full_global_quality_for_selection, &
@@ -17261,7 +17291,7 @@ CONTAINS
                      density_full_global_response_weighted_trust_ratio, &
                      density_full_global_response_abs_trust_ratio, &
                      density_full_global_trust_quality, density_full_global_direction_scale, &
-                     density_full_global_history_scale
+                     density_full_global_history_scale, projector_density_full_global_floor_mix_weight
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                      " OT Schur projector phys direct density model scale drop gdotp ge gr normp ne nr:", &
                      projector_physical_direct_density_direction_scale, &
@@ -19331,6 +19361,69 @@ CONTAINS
          quality = MAX(0.0_dp, MIN(1.0_dp, quality))
 
       END FUNCTION kpoint_ot_selected_tail_mix_residual_quality
+
+! **************************************************************************************************
+!> \brief accepted-history calibrated floor-source mix for global full-density response
+!> \param residual_delta current OT residual
+!> \param selected_quality latest selected global Mermin measured/predicted quality
+!> \param selected_quality_ema EMA of selected global Mermin measured/predicted quality
+!> \param selected_residual_quality latest selected global residual quality
+!> \param selected_residual_quality_ema EMA of selected global residual quality
+!> \param selected_samples number of accepted selected global samples
+!> \return tiny source weight for the floor-limited finite-projector density response
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_global_floor_source_weight(residual_delta, selected_quality, &
+                                                                 selected_quality_ema, &
+                                                                 selected_residual_quality, &
+                                                                 selected_residual_quality_ema, &
+                                                                 selected_samples) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_quality, &
+                                                            selected_quality_ema, selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: weight
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: mermin_ref, maturity, recent_quality, &
+                                                            residual_support, underprediction_weight
+
+         weight = 0.0_dp
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (selected_samples < ot_kp_schur_calibration_min_samples) RETURN
+         IF (selected_quality_ema <= 1.0_dp) RETURN
+
+         mermin_ref = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                      selected_quality_ema))
+         IF (selected_quality > EPSILON(selected_quality)) THEN
+            recent_quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                             selected_quality))
+            IF (recent_quality < 1.0_dp) THEN
+               mermin_ref = MIN(mermin_ref, SQRT(recent_quality))
+            ELSE
+               mermin_ref = MIN(mermin_ref, recent_quality)
+            END IF
+         END IF
+         IF (mermin_ref <= 1.0_dp) RETURN
+
+         residual_support = kpoint_ot_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                                         selected_residual_quality_ema)
+         IF (residual_support <= EPSILON(residual_support)) RETURN
+
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - &
+                                   ot_kp_schur_calibration_min_samples + 1)
+         maturity = REAL(MAX(0, selected_samples - ot_kp_schur_calibration_min_samples + 1), KIND=dp)/ &
+                    REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+         underprediction_weight = (mermin_ref - 1.0_dp)/ &
+                                  MAX(ot_kp_schur_projector_response_quality_max_ratio - 1.0_dp, &
+                                      EPSILON(1.0_dp))
+         underprediction_weight = MAX(0.0_dp, MIN(1.0_dp, underprediction_weight))
+
+         weight = ot_kp_schur_projector_density_global_floor_max_weight* &
+                  maturity*underprediction_weight*SQRT(MAX(0.0_dp, MIN(1.0_dp, residual_support)))
+         weight = MAX(0.0_dp, MIN(ot_kp_schur_projector_density_global_floor_max_weight, weight))
+
+      END FUNCTION kpoint_ot_density_full_global_floor_source_weight
 
 ! **************************************************************************************************
 !> \brief residual-aware active-Hessian mix from accepted Direct-density tail history
