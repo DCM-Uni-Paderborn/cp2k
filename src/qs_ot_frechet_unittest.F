@@ -9624,24 +9624,37 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp)                                      :: err, gap_pair, gauge_pair, good_history, &
-                                                            mixed_pair
+                                                            mixed_pair, plateau_expected, plateau_pair, &
+                                                            strict_expected, strict_pair
 
       good_history = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 1.0_dp)
       gap_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 1.0_dp, 0.25_dp)
       gauge_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 0.25_dp)
       mixed_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.4_dp, 0.5_dp)
+      plateau_expected = 0.5_dp + 0.75_dp*SQRT(3.0E-7_dp/1.0E-4_dp)
+      plateau_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 0.25_dp, &
+                                                   3.0E-7_dp, 1.0E-4_dp, 0.999_dp, &
+                                                   1.0E-4_dp, 4, 3)
+      strict_expected = 0.5_dp + 0.75_dp*SQRT(3.0E-7_dp/1.0E-6_dp)
+      strict_pair = residual_gauge_rotation_floor(0.5_dp, 1.5_dp, 0.0_dp, 0.25_dp, &
+                                                  3.0E-7_dp, 1.0E-4_dp, 0.999_dp, &
+                                                  1.0E-4_dp, 4, 3, 1.0E-7_dp)
 
       err = MAX(ABS(good_history - 0.5_dp), ABS(gap_pair - 0.5_dp))
       err = MAX(err, ABS(gauge_pair - 1.25_dp))
       err = MAX(err, ABS(mixed_pair - 0.8_dp))
+      err = MAX(err, ABS(plateau_pair - plateau_expected))
+      err = MAX(err, ABS(strict_pair - strict_expected))
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/good/gap/gauge/mixed", err, good_history, gap_pair, gauge_pair, mixed_pair
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/good/gap/gauge/mixed/plateau/strict", err, good_history, gap_pair, &
+            gauge_pair, mixed_pair, plateau_pair, strict_pair
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/good/gap/gauge/mixed", err, good_history, gap_pair, gauge_pair, mixed_pair
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/good/gap/gauge/mixed/plateau/strict", err, good_history, gap_pair, &
+            gauge_pair, mixed_pair, plateau_pair, strict_pair
       END IF
 
    END SUBROUTINE check_projector_residual_gauge_floor
@@ -12843,12 +12856,22 @@ CONTAINS
 !> \return ...
 ! **************************************************************************************************
    FUNCTION residual_gauge_rotation_floor(base_floor, gauge_floor, occ_gap_weight, &
-                                          step_gauge_quality) RESULT(rotation_floor)
+                                          step_gauge_quality, residual_delta, tail_delta, &
+                                          accepted_quality, accepted_gap, accepted_samples, &
+                                          min_samples, eps_scf) RESULT(rotation_floor)
       REAL(KIND=dp), INTENT(IN)                          :: base_floor, gauge_floor, occ_gap_weight, &
                                                             step_gauge_quality
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: residual_delta, tail_delta, &
+                                                            accepted_quality, accepted_gap, eps_scf
+      INTEGER, INTENT(IN), OPTIONAL                      :: accepted_samples, min_samples
       REAL(KIND=dp)                                      :: rotation_floor
 
-      REAL(KIND=dp)                                      :: gap_fraction, residual_weight
+      REAL(KIND=dp), PARAMETER                           :: plateau_gap = 1.0E-2_dp, &
+                                                            plateau_eps_factor = 1.0E1_dp, &
+                                                            plateau_min_scale = 5.0E-2_dp, &
+                                                            plateau_quality = 9.9E-1_dp
+      REAL(KIND=dp)                                      :: gap_fraction, plateau_scale, plateau_tail_delta, &
+                                                            residual_weight
 
       rotation_floor = MAX(0.0_dp, base_floor)
       IF (gauge_floor <= rotation_floor) RETURN
@@ -12857,6 +12880,22 @@ CONTAINS
       residual_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, step_gauge_quality))
       IF (gap_fraction <= EPSILON(gap_fraction) .OR. &
           residual_weight <= EPSILON(residual_weight)) RETURN
+
+      IF (PRESENT(residual_delta) .AND. PRESENT(tail_delta) .AND. &
+          PRESENT(accepted_quality) .AND. PRESENT(accepted_gap) .AND. &
+          PRESENT(accepted_samples) .AND. PRESENT(min_samples)) THEN
+         plateau_tail_delta = tail_delta
+         IF (PRESENT(eps_scf)) THEN
+            IF (eps_scf > 0.0_dp) &
+               plateau_tail_delta = MIN(plateau_tail_delta, plateau_eps_factor*eps_scf)
+         END IF
+         IF (residual_delta <= plateau_tail_delta .AND. accepted_samples >= min_samples .AND. &
+             accepted_quality >= plateau_quality .AND. accepted_gap <= plateau_gap) THEN
+            plateau_scale = SQRT(MAX(0.0_dp, residual_delta)/MAX(EPSILON(1.0_dp), plateau_tail_delta))
+            plateau_scale = MAX(plateau_min_scale, MIN(1.0_dp, plateau_scale))
+            residual_weight = residual_weight*plateau_scale
+         END IF
+      END IF
 
       rotation_floor = rotation_floor + gap_fraction*residual_weight*(gauge_floor - rotation_floor)
 

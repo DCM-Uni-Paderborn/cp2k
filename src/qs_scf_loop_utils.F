@@ -196,6 +196,10 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_physical_exit_raw_floor_min_ratio = 2.0E-2_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_quality = 9.9E-1_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_gap = 1.0E-2_dp, &
+                                        ot_kp_schur_gauge_floor_plateau_eps_factor = 1.0E1_dp, &
+                                        ot_kp_schur_gauge_floor_plateau_quality = 9.9E-1_dp, &
+                                        ot_kp_schur_gauge_floor_plateau_gap = 1.0E-2_dp, &
+                                        ot_kp_schur_gauge_floor_plateau_min_scale = 5.0E-2_dp, &
                                         ot_kp_schur_physical_norm_tail_factor = 1.0_dp, &
                                         ot_kp_schur_physical_tail_eps_factor = 1.0_dp, &
                                         ot_kp_schur_residual_tail_plateau_quality = 2.5E-1_dp, &
@@ -11180,7 +11184,10 @@ CONTAINS
                      END IF
                      row_floor = kpoint_ot_residual_gauge_rotation_floor( &
                                  row_floor, schur_gauge_curvature_floor, &
-                                 var_occ_gap_weight(r), step_gauge_quality)
+                                 var_occ_gap_weight(r), step_gauge_quality, residual_delta, &
+                                 local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                                 local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+                                 local_ot_env(1)%mermin_ls_accepted_quality_samples, eps_scf_channel)
                   END IF
                ELSE
                   row_floor = kpoint_ot_raw_tail_rotation_floor(row_floor, rot_floor(r), residual_delta)
@@ -20402,12 +20409,18 @@ CONTAINS
 !> \return floor raised only for gauge-like rotations with poor residual history
 ! **************************************************************************************************
       FUNCTION kpoint_ot_residual_gauge_rotation_floor(base_floor, gauge_floor, occ_gap_weight, &
-                                                       step_gauge_quality) RESULT(rotation_floor)
+                                                       step_gauge_quality, residual_delta, &
+                                                       accepted_quality, accepted_gap, &
+                                                       accepted_samples, eps_scf) RESULT(rotation_floor)
       REAL(KIND=dp), INTENT(IN)                          :: base_floor, gauge_floor, occ_gap_weight, &
                                                             step_gauge_quality
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: residual_delta, accepted_quality, &
+                                                            accepted_gap, eps_scf
+      INTEGER, INTENT(IN), OPTIONAL                      :: accepted_samples
       REAL(KIND=dp)                                      :: rotation_floor
 
-      REAL(KIND=dp)                                      :: gap_fraction, residual_weight
+      REAL(KIND=dp)                                      :: gap_fraction, plateau_scale, plateau_tail_delta, &
+                                                            residual_weight
 
          rotation_floor = MAX(0.0_dp, base_floor)
          IF (gauge_floor <= rotation_floor) RETURN
@@ -20416,6 +20429,26 @@ CONTAINS
          residual_weight = 1.0_dp - MIN(1.0_dp, MAX(0.0_dp, step_gauge_quality))
          IF (gap_fraction <= EPSILON(gap_fraction) .OR. &
              residual_weight <= EPSILON(residual_weight)) RETURN
+
+         IF (PRESENT(residual_delta) .AND. PRESENT(accepted_quality) .AND. &
+             PRESENT(accepted_gap) .AND. PRESENT(accepted_samples)) THEN
+            plateau_tail_delta = ot_kp_schur_projector_coupled_tail_delta
+            IF (PRESENT(eps_scf)) THEN
+               IF (eps_scf > 0.0_dp) &
+                  plateau_tail_delta = MIN(plateau_tail_delta, &
+                                           ot_kp_schur_gauge_floor_plateau_eps_factor*eps_scf)
+            END IF
+            IF (residual_delta <= plateau_tail_delta .AND. &
+                accepted_samples >= ot_kp_schur_quality_min_samples .AND. &
+                accepted_quality >= ot_kp_schur_gauge_floor_plateau_quality .AND. &
+                accepted_gap <= ot_kp_schur_gauge_floor_plateau_gap) THEN
+               plateau_scale = SQRT(MAX(0.0_dp, residual_delta)/ &
+                                    MAX(EPSILON(1.0_dp), plateau_tail_delta))
+               plateau_scale = MAX(ot_kp_schur_gauge_floor_plateau_min_scale, &
+                                   MIN(1.0_dp, plateau_scale))
+               residual_weight = residual_weight*plateau_scale
+            END IF
+         END IF
 
          rotation_floor = rotation_floor + &
                           gap_fraction*residual_weight*(gauge_floor - rotation_floor)
