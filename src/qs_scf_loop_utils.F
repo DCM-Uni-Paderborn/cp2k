@@ -2003,8 +2003,8 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, &
-         response_shape, safe_abs, safe_blend, safe_cap, safe_component, sign_projector_response, &
-         sign_safe_response
+         response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
+         sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2048,6 +2048,10 @@ CONTAINS
          END IF
          safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
          safe_blend = active_fraction
+         IF (globally_aligned_safe_response) THEN
+            safe_blend_floor = MIN(1.0_dp, alignment)*SQRT(response_shape)
+            safe_blend = MAX(safe_blend, safe_blend_floor)
+         END IF
          safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*safe_component
       ELSE IF (anti_aligned_safe_response) THEN
