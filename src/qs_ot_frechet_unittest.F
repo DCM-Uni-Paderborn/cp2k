@@ -5134,7 +5134,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
       REAL(KIND=dp) :: active_fraction, expected_response, global_response, local_response, &
-         occ_curv, occ_curv_max, raw_response, response_shape, safe_blend, safe_response
+         occ_curv, occ_curv_max, raw_response, response_shape, safe_blend, safe_response, &
+         sqrt_lifted_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5147,6 +5148,9 @@ CONTAINS
       safe_blend = MAX(active_fraction, 0.80_dp*SQRT(response_shape))
       expected_response = response_shape*((1.0_dp - safe_blend)*raw_response + &
                                           safe_blend*SQRT(response_shape)*safe_response)
+      sqrt_lifted_response = MAX(response_shape, 0.80_dp*SQRT(response_shape))* &
+                             ((1.0_dp - safe_blend)*raw_response + &
+                              safe_blend*SQRT(response_shape)*safe_response)
 
       local_response = dense_physical_density_response(raw_response, safe_response, &
                                                        occ_curv, occ_curv_max, response_ratio_gate)
@@ -5156,15 +5160,16 @@ CONTAINS
 
       IF (ABS(global_response - expected_response) > tol .OR. &
           global_response <= 4.0_dp*local_response .OR. &
+          global_response >= 0.75_dp*sqrt_lifted_response .OR. &
           global_response >= response_shape*safe_response) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with global/expected/local/shape/safe", global_response, expected_response, &
-            local_response, response_shape, safe_response
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with global/expected/local/shape/safe/sqrt", global_response, expected_response, &
+            local_response, response_shape, safe_response, sqrt_lifted_response
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with global/expected/local/shape/safe", global_response, expected_response, &
-            local_response, response_shape, safe_response
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with global/expected/local/shape/safe/sqrt", global_response, expected_response, &
+            local_response, response_shape, safe_response, sqrt_lifted_response
       END IF
 
    END SUBROUTINE check_projector_physical_density_global_low_curv
