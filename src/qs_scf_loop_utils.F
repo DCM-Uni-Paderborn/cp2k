@@ -6838,7 +6838,10 @@ CONTAINS
          density_descent_expected_drop
       REAL(KIND=dp) :: density_descent_gap_coeff, density_descent_gap_denom, &
          density_descent_gap_projected_abs, density_descent_gap_projected_weighted, &
-         density_descent_gap_recoverable_fraction, density_descent_gdot_energy, &
+         density_descent_gap_recoverable_fraction, density_descent_gap_trial_abs, &
+         density_descent_gap_trial_coeff, density_descent_gap_trial_denom, &
+         density_descent_gap_trial_gdot, density_descent_gap_trial_recoverable, &
+         density_descent_gap_trial_weighted, density_descent_gdot_energy, &
          density_descent_gdot_rotation, density_descent_gdotp, density_descent_growth_scale, &
          density_descent_history_scale, density_descent_model_calibrated_drop, &
          density_descent_model_drop, density_descent_norm_energy, density_descent_norm_rotation, &
@@ -7343,7 +7346,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, constrained_sol, &
          constrained_z_e, curv, density_descent_rx_e, density_descent_z_e, &
          density_full_global_rx_e, density_full_global_sol, density_full_rx_e, density_full_sol, &
-         density_full_z_e, density_gap_projected_e, density_gap_rx_e, density_plateau_rx_e, &
+         density_full_z_e, density_gap_projected_e, density_gap_rx_e, &
+         density_gap_trial_basis_e, density_gap_trial_projected_e, density_plateau_rx_e, &
          density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, grad_e, grad_rot, occ_curv, &
          projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
          projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
@@ -7545,6 +7549,8 @@ CONTAINS
                    density_full_z_e(ne), &
                    density_gap_projected_e(ne), &
                    density_gap_rx_e(ne), &
+                   density_gap_trial_basis_e(ne), &
+                   density_gap_trial_projected_e(ne), &
                    density_plateau_rx_e(ne), density_plateau_z_e(ne), &
                    projector_physical_direct_rx_e(ne), projector_physical_direct_schur_eval(nrot), &
                    projector_physical_direct_spectral_model_e(ne), &
@@ -7637,6 +7643,8 @@ CONTAINS
          density_full_z_e(:) = 0.0_dp
          density_gap_projected_e(:) = 0.0_dp
          density_gap_rx_e(:) = 0.0_dp
+         density_gap_trial_basis_e(:) = 0.0_dp
+         density_gap_trial_projected_e(:) = 0.0_dp
          density_plateau_rx_e(:) = 0.0_dp
          density_plateau_z_e(:) = 0.0_dp
          projector_physical_direct_rx_e(:) = 0.0_dp
@@ -8797,6 +8805,8 @@ CONTAINS
                         density_full_z_e, &
                         density_gap_projected_e, &
                         density_gap_rx_e, &
+                        density_gap_trial_basis_e, &
+                        density_gap_trial_projected_e, &
                         density_plateau_rx_e, density_plateau_z_e, &
                         projector_physical_direct_rx_e, &
                         projector_physical_direct_schur_eval, &
@@ -10797,6 +10807,12 @@ CONTAINS
                density_descent_gap_projected_abs = 0.0_dp
                density_descent_gap_projected_weighted = 0.0_dp
                density_descent_gap_recoverable_fraction = 0.0_dp
+               density_descent_gap_trial_abs = 0.0_dp
+               density_descent_gap_trial_coeff = 0.0_dp
+               density_descent_gap_trial_denom = 0.0_dp
+               density_descent_gap_trial_gdot = 0.0_dp
+               density_descent_gap_trial_recoverable = 0.0_dp
+               density_descent_gap_trial_weighted = 0.0_dp
                density_descent_gdot_energy = 0.0_dp
                density_descent_gdot_rotation = 0.0_dp
                density_descent_gdotp = 0.0_dp
@@ -13996,19 +14012,64 @@ CONTAINS
                             density_descent_gap_recoverable_fraction < &
                             ot_kp_schur_projector_response_ratio_gate) THEN
                            CALL project_kpoint_ot_descent_response( &
-                              density_gap_rx_e, z_trial, grad_e, &
-                              density_gap_projected_e, density_descent_gap_coeff, &
-                              density_gap_gdot, density_descent_gap_denom, .TRUE., &
+                              density_gap_rx_e, z_trial, grad_e, density_gap_trial_projected_e, &
+                              density_descent_gap_trial_coeff, density_descent_gap_trial_gdot, &
+                              density_descent_gap_trial_denom, .TRUE., &
                               occ_curv, tether_curv, occ_curv_projection_sum, &
                               channel_nmo, e_offset)
-                           density_descent_gap_projected_abs = &
-                              MAXVAL(ABS(density_gap_projected_e))
-                           CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
-                           density_descent_gap_projected_weighted = &
-                              kpoint_ot_weighted_response_step(density_gap_projected_e, curv, &
+                           density_descent_gap_trial_abs = MAXVAL(ABS(density_gap_trial_projected_e))
+                           CALL para_env_inter_kp%max(density_descent_gap_trial_abs)
+                           density_descent_gap_trial_weighted = &
+                              kpoint_ot_weighted_response_step(density_gap_trial_projected_e, curv, &
                                                                curv_projection_sum)
-                           density_descent_gap_recoverable_fraction = &
-                              density_descent_gap_projected_weighted/density_gap_raw_weighted
+                           density_descent_gap_trial_recoverable = &
+                              density_descent_gap_trial_weighted/density_gap_raw_weighted
+                           IF (density_descent_gap_trial_recoverable > &
+                               density_descent_gap_recoverable_fraction) THEN
+                              density_gap_projected_e(:) = density_gap_trial_projected_e(:)
+                              density_descent_gap_projected_abs = density_descent_gap_trial_abs
+                              density_descent_gap_projected_weighted = &
+                                 density_descent_gap_trial_weighted
+                              density_descent_gap_recoverable_fraction = &
+                                 density_descent_gap_trial_recoverable
+                              density_descent_gap_coeff = density_descent_gap_trial_coeff
+                              density_gap_gdot = density_descent_gap_trial_gdot
+                              density_descent_gap_denom = density_descent_gap_trial_denom
+                           END IF
+                        END IF
+                        IF (density_gap_raw_weighted > EPSILON(density_gap_raw_weighted) .AND. &
+                            density_descent_gap_recoverable_fraction < &
+                            ot_kp_schur_projector_response_ratio_gate) THEN
+                           density_gap_trial_basis_e(:) = grad_e(:)
+                           CALL project_kpoint_ot_schur_response( &
+                              density_gap_trial_basis_e, occ_curv, tether_curv, occ_curv_projection_sum, &
+                              channel_nmo, e_offset)
+                           CALL project_kpoint_ot_descent_response( &
+                              density_gap_rx_e, density_gap_trial_basis_e, grad_e, &
+                              density_gap_trial_projected_e, &
+                              density_descent_gap_trial_coeff, density_descent_gap_trial_gdot, &
+                              density_descent_gap_trial_denom, .TRUE., &
+                              occ_curv, tether_curv, occ_curv_projection_sum, &
+                              channel_nmo, e_offset)
+                           density_descent_gap_trial_abs = MAXVAL(ABS(density_gap_trial_projected_e))
+                           CALL para_env_inter_kp%max(density_descent_gap_trial_abs)
+                           density_descent_gap_trial_weighted = &
+                              kpoint_ot_weighted_response_step(density_gap_trial_projected_e, curv, &
+                                                               curv_projection_sum)
+                           density_descent_gap_trial_recoverable = &
+                              density_descent_gap_trial_weighted/density_gap_raw_weighted
+                           IF (density_descent_gap_trial_recoverable > &
+                               density_descent_gap_recoverable_fraction) THEN
+                              density_gap_projected_e(:) = density_gap_trial_projected_e(:)
+                              density_descent_gap_projected_abs = density_descent_gap_trial_abs
+                              density_descent_gap_projected_weighted = &
+                                 density_descent_gap_trial_weighted
+                              density_descent_gap_recoverable_fraction = &
+                                 density_descent_gap_trial_recoverable
+                              density_descent_gap_coeff = density_descent_gap_trial_coeff
+                              density_gap_gdot = density_descent_gap_trial_gdot
+                              density_descent_gap_denom = density_descent_gap_trial_denom
+                           END IF
                         END IF
                         density_descent_rx_e(:) = projector_physical_direct_density_rx_e(:) + &
                                                   density_gap_projected_e(:)
@@ -18347,6 +18408,8 @@ CONTAINS
                      density_full_z_e, &
                      density_gap_projected_e, &
                      density_gap_rx_e, &
+                     density_gap_trial_basis_e, &
+                     density_gap_trial_projected_e, &
                      density_plateau_rx_e, density_plateau_z_e, &
                      projector_physical_direct_rx_e, &
                      projector_physical_direct_schur_eval, &
