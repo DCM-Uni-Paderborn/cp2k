@@ -10077,8 +10077,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: min_quality = 0.10_dp
 
       LOGICAL :: aggregate_promoted, ema_low_blocked, first_window_blocked, long_shadow_promoted, &
-         low_blocked, selected_young_blocked, tail_selected_blocked, tail_shadow_blocked, &
-         young_blocked
+         low_blocked, selected_supported_promoted, selected_young_blocked, tail_selected_blocked, &
+         tail_shadow_blocked, young_blocked
       REAL(KIND=dp)                                      :: promoted_value
 
       aggregate_promoted = dense_mixed_direct_promoted(42, min_samples, 0.102135336_dp, &
@@ -10086,6 +10086,8 @@ CONTAINS
                                                        min_samples, min_quality)
       long_shadow_promoted = dense_mixed_direct_promoted(80, min_samples, 0.055_dp, 0.055_dp, &
                                                          0.055_dp, 0.0_dp, 0, min_quality)
+      selected_supported_promoted = dense_mixed_direct_promoted(30, min_samples, 0.342_dp, 0.342_dp, &
+                                                                0.54_dp, 0.58_dp, 11, min_quality)
       tail_selected_blocked = dense_mixed_direct_promoted(16, min_samples, 0.5_dp, 0.5_dp, &
                                                           0.5_dp, 0.5_dp, min_samples, min_quality)
       tail_shadow_blocked = dense_mixed_direct_promoted(16, min_samples, 0.5_dp, 0.5_dp, &
@@ -10102,21 +10104,22 @@ CONTAINS
                                                     0.049_dp, 0.2_dp, min_samples, min_quality)
       promoted_value = MERGE(1.0_dp, 0.0_dp, aggregate_promoted)
 
-      IF (.NOT. aggregate_promoted .OR. .NOT. long_shadow_promoted .OR. tail_selected_blocked .OR. &
+      IF (.NOT. aggregate_promoted .OR. .NOT. long_shadow_promoted .OR. &
+          .NOT. selected_supported_promoted .OR. tail_selected_blocked .OR. &
           tail_shadow_blocked .OR. young_blocked .OR. first_window_blocked .OR. &
           selected_young_blocked .OR. low_blocked .OR. ema_low_blocked .OR. &
           ABS(promoted_value - 1.0_dp) > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,L1),1(1X,ES12.5))') TRIM(label), &
-            "failed with aggregate/long_shadow/tail/shot/young/window/selyoung/low/ema/value", &
-            aggregate_promoted, long_shadow_promoted, tail_selected_blocked, tail_shadow_blocked, young_blocked, &
-            first_window_blocked, &
+         WRITE (*, '(A,1X,A,10(1X,L1),1(1X,ES12.5))') TRIM(label), &
+            "failed with aggregate/long_shadow/selsup/tail/shot/young/window/selyoung/low/ema/value", &
+            aggregate_promoted, long_shadow_promoted, selected_supported_promoted, &
+            tail_selected_blocked, tail_shadow_blocked, young_blocked, first_window_blocked, &
             selected_young_blocked, low_blocked, ema_low_blocked, promoted_value
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,L1),1(1X,ES12.5))') TRIM(label), &
-            "OK with aggregate/long_shadow/tail/shot/young/window/selyoung/low/ema/value", &
-            aggregate_promoted, long_shadow_promoted, tail_selected_blocked, tail_shadow_blocked, young_blocked, &
-            first_window_blocked, &
+         WRITE (*, '(A,1X,A,10(1X,L1),1(1X,ES12.5))') TRIM(label), &
+            "OK with aggregate/long_shadow/selsup/tail/shot/young/window/selyoung/low/ema/value", &
+            aggregate_promoted, long_shadow_promoted, selected_supported_promoted, &
+            tail_selected_blocked, tail_shadow_blocked, young_blocked, first_window_blocked, &
             selected_young_blocked, low_blocked, ema_low_blocked, promoted_value
       END IF
 
@@ -12951,13 +12954,14 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: min_quality
       LOGICAL                                            :: promoted
 
-      INTEGER                                            :: promotion_samples, &
+      INTEGER                                            :: promotion_samples, selected_promotion_samples, &
                                                             shadow_promotion_samples
       LOGICAL                                            :: selected_promoted, shadow_promoted
 
       promotion_samples = MAX(min_samples, 5*min_samples)
+      selected_promotion_samples = MAX(min_samples, 3*min_samples)
       shadow_promotion_samples = MAX(promotion_samples, 10*min_samples)
-      selected_promoted = samples >= promotion_samples .AND. &
+      selected_promoted = samples >= selected_promotion_samples .AND. &
                           drop_ratio >= min_quality .AND. &
                           history_quality >= min_quality .AND. &
                           ema_quality >= 0.9_dp*min_quality .AND. &

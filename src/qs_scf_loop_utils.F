@@ -19540,13 +19540,14 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: selected_samples
       LOGICAL                                            :: promoted
 
-      INTEGER                                            :: promotion_samples, &
+      INTEGER                                            :: promotion_samples, selected_promotion_samples, &
                                                             shadow_promotion_samples
       LOGICAL                                            :: selected_promoted, shadow_promoted
 
          promotion_samples = MAX(min_samples, 5*min_samples)
+         selected_promotion_samples = MAX(min_samples, 3*min_samples)
          shadow_promotion_samples = MAX(promotion_samples, 10*min_samples)
-         selected_promoted = samples >= promotion_samples .AND. &
+         selected_promoted = samples >= selected_promotion_samples .AND. &
                              drop_ratio >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
                              history_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
                              ema_quality >= 0.9_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
