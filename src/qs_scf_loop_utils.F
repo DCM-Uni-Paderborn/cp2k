@@ -1338,14 +1338,16 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: nspin_ot
       LOGICAL                                            :: grow
 
-      INTEGER :: base_nmo, current_added, edge_start, edge_width, ikpoint, imo, ispin, &
-         local_kpoint, nmo, nonedge_probe_limit, trigger_step
-      LOGICAL :: active_tail, basis_limited, basis_probe_limited, edge_limited, expandable, &
-         fractional_tail_limited, nonedge_residual_probe, residual_ready, residual_spike, &
+      INTEGER :: accepted_response_support_i, base_nmo, current_added, edge_start, edge_width, &
+         ikpoint, imo, ispin, local_kpoint, nmo, nonedge_probe_limit, trigger_step
+      LOGICAL :: accepted_response_tail_support, active_tail, basis_limited, basis_probe_limited, &
+         edge_limited, expandable, fractional_tail_limited, nonedge_bootstrap_probe, &
+         nonedge_residual_probe, nonedge_tail_supported, residual_ready, residual_spike, &
          residual_tail_limited, strong_tail_limited
-      REAL(KIND=dp) :: basis_signal, edge_fractional_weight, edge_grow_limit, edge_tail_occ_min, &
-         fractional_weight, grow_limit, max_edge_fractional, max_fractional, maxocc, occ_tail, &
-         residual_model_delta, tail_occ_min, weight
+      REAL(KIND=dp) :: accepted_response_quality, accepted_response_residual_gap, basis_signal, &
+         edge_fractional_weight, edge_grow_limit, edge_tail_occ_min, fractional_weight, grow_limit, &
+         max_edge_fractional, max_fractional, maxocc, occ_tail, residual_model_delta, &
+         response_quality, response_residual_gap, tail_occ_min, weight
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers, wkp
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -1371,12 +1373,31 @@ CONTAINS
          residual_model_delta = kpoint_ot_canonical_density_projector_delta(scf_env%qs_ot_env(1), scf_env%iter_delta)
       CALL para_env_inter_kp%max(residual_model_delta)
       basis_signal = 0.0_dp
+      accepted_response_quality = 0.0_dp
+      accepted_response_residual_gap = 0.0_dp
+      accepted_response_support_i = 0
       IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
          DO ispin = 1, SIZE(scf_env%qs_ot_env)
             basis_signal = MAX(basis_signal, scf_env%qs_ot_env(ispin)%added_mos_auto_basis_signal)
+            IF (scf_env%qs_ot_env(ispin)%schur_model_quality_samples >= &
+                ot_kp_schur_calibration_min_samples) THEN
+               response_quality = MAX(0.0_dp, scf_env%qs_ot_env(ispin)%schur_model_quality_ema)
+               response_residual_gap = MAX(0.0_dp, &
+                  1.0_dp - scf_env%qs_ot_env(ispin)%schur_step_gauge_residual_quality_ema)
+               accepted_response_quality = MAX(accepted_response_quality, response_quality)
+               accepted_response_residual_gap = MAX(accepted_response_residual_gap, &
+                                                    response_residual_gap)
+               IF (response_quality >= ot_kp_schur_quality_min_ratio .AND. &
+                   scf_env%qs_ot_env(ispin)%schur_step_gauge_residual_quality_ema <= &
+                   ot_kp_schur_residual_tail_plateau_quality) accepted_response_support_i = 1
+            END IF
          END DO
       END IF
       CALL para_env_inter_kp%max(basis_signal)
+      CALL para_env_inter_kp%max(accepted_response_quality)
+      CALL para_env_inter_kp%max(accepted_response_residual_gap)
+      CALL para_env_inter_kp%max(accepted_response_support_i)
+      accepted_response_tail_support = accepted_response_support_i > 0
       basis_limited = basis_signal >= ot_kp_added_mos_auto_basis_signal_min
 
       expandable = .FALSE.
@@ -1384,6 +1405,7 @@ CONTAINS
       fractional_weight = 0.0_dp
       max_edge_fractional = 0.0_dp
       max_fractional = 0.0_dp
+      nonedge_bootstrap_probe = .FALSE.
       nonedge_residual_probe = .FALSE.
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -1397,6 +1419,8 @@ CONTAINS
             base_nmo = MAX(0, nmo - current_added)
             nonedge_probe_limit = MAX(8, (base_nmo + 3)/4)
             IF (current_added <= nonedge_probe_limit) nonedge_residual_probe = .TRUE.
+            IF (current_added <= ot_kp_added_mos_auto_direct_veto_max_added) &
+               nonedge_bootstrap_probe = .TRUE.
             IF (.NOT. ASSOCIATED(occupation_numbers)) CYCLE
             IF (ikpoint < 1 .OR. ikpoint > SIZE(wkp)) CYCLE
             weight = ABS(wkp(ikpoint))
@@ -1425,7 +1449,11 @@ CONTAINS
                      max_edge_fractional > edge_tail_occ_min
       basis_probe_limited = basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
+      nonedge_tail_supported = nonedge_bootstrap_probe .OR. accepted_response_tail_support .OR. &
+                               basis_signal >= ot_kp_added_mos_auto_strong_tail_basis_frac* &
+                               ot_kp_added_mos_auto_basis_signal_min
       fractional_tail_limited = nonedge_residual_probe .AND. &
+                                nonedge_tail_supported .AND. &
                                 max_fractional >= ot_kp_fermi_window_tail_fraction .AND. &
                                 max_fractional >= ot_kp_added_mos_auto_fractional_tail_peak_frac .AND. &
                                 basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
@@ -1456,12 +1484,14 @@ CONTAINS
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES20.10E3),8(1X,L1))') &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,11(1X,ES20.10E3),11(1X,L1))') &
             " OT k-point ADDED_MOS AUTO tail:", &
             scf_env%iter_count, scf_env%iter_delta, residual_model_delta, grow_limit, edge_grow_limit, basis_signal, &
-            fractional_weight, edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, &
-            edge_limited, basis_probe_limited, basis_limited, fractional_tail_limited, residual_spike, &
-            nonedge_residual_probe, expandable
+            accepted_response_quality, accepted_response_residual_gap, fractional_weight, &
+            edge_fractional_weight, max_fractional, max_edge_fractional, active_tail, edge_limited, &
+            basis_probe_limited, basis_limited, fractional_tail_limited, residual_spike, &
+            nonedge_residual_probe, nonedge_bootstrap_probe, accepted_response_tail_support, &
+            nonedge_tail_supported, expandable
       END IF
 
       IF (.NOT. expandable) RETURN
