@@ -214,6 +214,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density floor bootstrap weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_floor_source_weight( &
       "complex projector density global floor-source weight", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_selected_response_scale( &
+      "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
       "complex projector density global shadow-history gate", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
@@ -8417,6 +8419,55 @@ CONTAINS
    END SUBROUTINE check_projector_density_global_floor_source_weight
 
 ! **************************************************************************************************
+!> \brief Check accepted-history selected global response step scaling.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_selected_response_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: active_scale, expected_scale, high_residual, immature, low_mermin, &
+         no_residual, err
+
+      active_scale = dense_density_full_global_selected_response_scale(5.0E-6_dp, 12.0_dp, &
+                                                                       15.0_dp, 0.25_dp, &
+                                                                       0.16_dp, 16)
+      low_mermin = dense_density_full_global_selected_response_scale(5.0E-6_dp, 0.25_dp, &
+                                                                     15.0_dp, 0.25_dp, &
+                                                                     0.16_dp, 16)
+      high_residual = dense_density_full_global_selected_response_scale(2.0E-4_dp, 12.0_dp, &
+                                                                        15.0_dp, 0.25_dp, &
+                                                                        0.16_dp, 16)
+      immature = dense_density_full_global_selected_response_scale(5.0E-6_dp, 12.0_dp, &
+                                                                   15.0_dp, 0.25_dp, &
+                                                                   0.16_dp, 3)
+      no_residual = dense_density_full_global_selected_response_scale(5.0E-6_dp, 12.0_dp, &
+                                                                      15.0_dp, 0.0_dp, &
+                                                                      0.0_dp, 16)
+
+      expected_scale = 0.25_dp + 0.75_dp* &
+                       SQRT(dense_selected_tail_mix_residual_quality(0.25_dp, 0.16_dp))
+      err = ABS(active_scale - expected_scale)
+
+      IF (err > tol .OR. active_scale <= low_mermin .OR. active_scale >= 1.0_dp .OR. &
+          low_mermin <= no_residual .OR. high_residual /= 1.0_dp .OR. &
+          immature /= 1.0_dp .OR. ABS(no_residual - 0.25_dp) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/lowm/highr/imm/nores", err, active_scale, low_mermin, &
+            high_residual, immature, no_residual
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/lowm/highr/imm/nores", err, active_scale, low_mermin, &
+            high_residual, immature, no_residual
+      END IF
+
+   END SUBROUTINE check_projector_density_global_selected_response_scale
+
+! **************************************************************************************************
 !> \brief Check that global full-density shadow history needs selected or mature probes.
 !> \param label ...
 !> \param tol ...
@@ -12627,6 +12678,43 @@ CONTAINS
       weight = MAX(0.0_dp, MIN(1.0E-2_dp, weight))
 
    END FUNCTION dense_density_full_global_floor_source_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of selected global full-density response step scaling.
+!> \param residual_delta ...
+!> \param selected_quality ...
+!> \param selected_quality_ema ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_full_global_selected_response_scale(residual_delta, selected_quality, &
+                                                              selected_quality_ema, selected_residual_quality, &
+                                                              selected_residual_quality_ema, selected_samples) &
+      RESULT(scale)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_quality, &
+                                                            selected_quality_ema, selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: scale
+
+      REAL(KIND=dp)                                      :: mermin_support, residual_support
+
+      scale = 1.0_dp
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (selected_samples < 4) RETURN
+
+      residual_support = dense_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                                  selected_residual_quality_ema)
+      mermin_support = MAX(0.0_dp, MIN(1.0_dp, selected_quality_ema))
+      IF (selected_quality > EPSILON(selected_quality)) &
+         mermin_support = MIN(mermin_support, MAX(0.0_dp, MIN(1.0_dp, selected_quality)))
+
+      scale = 0.25_dp + 0.75_dp*SQRT(MAX(0.0_dp, MIN(1.0_dp, residual_support*mermin_support)))
+      scale = MAX(0.25_dp, MIN(1.0_dp, scale))
+
+   END FUNCTION dense_density_full_global_selected_response_scale
 
 ! **************************************************************************************************
 !> \brief Dense mirror of global full-density shadow-history gate.

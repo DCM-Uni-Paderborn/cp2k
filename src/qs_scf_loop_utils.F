@@ -8891,9 +8891,14 @@ CONTAINS
                   kpoint_ot_selected_tail_mix_residual_quality( &
                   local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
                   local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema)
-               density_full_global_selected_response_scale = 0.25_dp + 0.75_dp* &
-                  SQRT(MAX(0.0_dp, MIN(1.0_dp, density_full_global_selected_mix_residual_quality)))
             END IF
+            density_full_global_selected_response_scale = &
+               kpoint_ot_density_full_global_selected_response_scale( &
+               residual_delta, local_ot_env(1)%schur_projector_density_full_global_sel_quality, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_quality_ema, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples)
          END IF
          projector_density_full_global_floor_mix_weight = &
             kpoint_ot_density_full_global_floor_source_weight( &
@@ -9133,9 +9138,14 @@ CONTAINS
                   kpoint_ot_selected_tail_mix_residual_quality( &
                   local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
                   local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema)
-               density_full_global_selected_response_scale = 0.25_dp + 0.75_dp* &
-                  SQRT(MAX(0.0_dp, MIN(1.0_dp, density_full_global_selected_mix_residual_quality)))
             END IF
+            density_full_global_selected_response_scale = &
+               kpoint_ot_density_full_global_selected_response_scale( &
+               residual_delta, local_ot_env(1)%schur_projector_density_full_global_sel_quality, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_quality_ema, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+               local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples)
          END IF
          exact_density_direct_response_ready = exact_density_response_ready
          energy_cross_density_direct(:, :) = energy_cross_density(:, :)
@@ -10672,6 +10682,13 @@ CONTAINS
                density_full_global_selected_mix_residual_quality = 0.0_dp
                density_full_global_selected_residual_quality = 0.0_dp
                density_full_global_selected_response_scale = 1.0_dp
+               density_full_global_selected_response_scale = &
+                  kpoint_ot_density_full_global_selected_response_scale( &
+                  residual_delta, local_ot_env(1)%schur_projector_density_full_global_sel_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+                  local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples)
                density_full_global_trust_quality = 1.0_dp
                density_full_history_abs_step = 0.0_dp
                density_full_history_abs_trust_ratio = 0.0_dp
@@ -13773,6 +13790,41 @@ CONTAINS
                                  density_full_global_response_abs_step*density_full_global_history_scale
                               density_full_global_response_weighted_step = &
                                  density_full_global_response_weighted_step*density_full_global_history_scale
+                              density_full_global_scale_quality = &
+                                 kpoint_ot_schur_scale_quality( &
+                                 density_full_global_direction_scale, &
+                                 schur_min_coupled_scale)
+                              density_full_global_model_drop = &
+                                 density_full_global_direction_scale*density_full_global_gdotp - &
+                                 0.5_dp*density_full_global_direction_scale* &
+                                 density_full_global_direction_scale*density_full_global_normp
+                              density_full_global_model_drop = &
+                                 MAX(0.0_dp, density_full_global_model_drop)
+                              density_full_global_model_calibrated_drop = &
+                                 density_full_global_model_drop
+                              IF (density_full_global_direction_scale < &
+                                  schur_min_coupled_scale) &
+                                 density_full_global_model_calibrated_drop = &
+                                 density_full_global_scale_quality* &
+                                 density_full_global_model_calibrated_drop
+                              IF (response_trust > EPSILON(response_trust)) &
+                                 density_full_global_response_weighted_trust_ratio = &
+                                 density_full_global_response_weighted_step/response_trust
+                              IF (response_abs_trust > EPSILON(response_abs_trust)) &
+                                 density_full_global_response_abs_trust_ratio = &
+                                 density_full_global_response_abs_step/response_abs_trust
+                              density_full_global_trust_quality = &
+                                 kpoint_ot_schur_metric_trust_quality( &
+                                 density_full_global_response_weighted_trust_ratio, 0.0_dp)
+                           END IF
+                           IF (density_full_global_selected_response_scale < 1.0_dp) THEN
+                              density_full_global_direction_scale = &
+                                 density_full_global_direction_scale*density_full_global_selected_response_scale
+                              density_full_global_response_abs_step = &
+                                 density_full_global_response_abs_step*density_full_global_selected_response_scale
+                              density_full_global_response_weighted_step = &
+                                 density_full_global_response_weighted_step* &
+                                 density_full_global_selected_response_scale
                               density_full_global_scale_quality = &
                                  kpoint_ot_schur_scale_quality( &
                                  density_full_global_direction_scale, &
@@ -17291,9 +17343,9 @@ CONTAINS
                      density_full_direct_response_abs_trust_ratio, &
                      density_full_direct_trust_quality, density_full_direct_direction_scale, &
                      density_full_direct_history_scale
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),9(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),10(1X,ES16.8))') &
                      " OT Schur projector full-density global candidate ready selected boot prefer "// &
-                     "exp qsel cdrop rratio aratio tq scale hscale srcw:", &
+                     "exp qsel cdrop rratio aratio tq scale hscale selscale srcw:", &
                      density_full_global_candidate_ready, density_full_global_candidate_selected, &
                      density_full_global_bootstrap_ready, density_full_global_tail_prefer, &
                      density_full_global_expected_drop, density_full_global_quality_for_selection, &
@@ -17301,7 +17353,8 @@ CONTAINS
                      density_full_global_response_weighted_trust_ratio, &
                      density_full_global_response_abs_trust_ratio, &
                      density_full_global_trust_quality, density_full_global_direction_scale, &
-                     density_full_global_history_scale, projector_density_full_global_floor_mix_weight
+                     density_full_global_history_scale, density_full_global_selected_response_scale, &
+                     projector_density_full_global_floor_mix_weight
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                      " OT Schur projector phys direct density model scale drop gdotp ge gr normp ne nr:", &
                      projector_physical_direct_density_direction_scale, &
@@ -19371,6 +19424,45 @@ CONTAINS
          quality = MAX(0.0_dp, MIN(1.0_dp, quality))
 
       END FUNCTION kpoint_ot_selected_tail_mix_residual_quality
+
+! **************************************************************************************************
+!> \brief accepted-history step scale for selected global full-density response
+!> \param residual_delta current OT residual
+!> \param selected_quality latest selected global Mermin measured/predicted quality
+!> \param selected_quality_ema EMA of selected global Mermin measured/predicted quality
+!> \param selected_residual_quality latest selected global residual quality
+!> \param selected_residual_quality_ema EMA of selected global residual quality
+!> \param selected_samples number of accepted selected global samples
+!> \return residual- and Mermin-consistent scale for the global response candidate
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_global_selected_response_scale(residual_delta, selected_quality, &
+                                                                     selected_quality_ema, &
+                                                                     selected_residual_quality, &
+                                                                     selected_residual_quality_ema, &
+                                                                     selected_samples) RESULT(scale)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, selected_quality, &
+                                                            selected_quality_ema, selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp)                                      :: scale
+
+      REAL(KIND=dp)                                      :: mermin_support, residual_support
+
+         scale = 1.0_dp
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (selected_samples < ot_kp_schur_calibration_min_samples) RETURN
+
+         residual_support = kpoint_ot_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                                         selected_residual_quality_ema)
+         mermin_support = MAX(0.0_dp, MIN(1.0_dp, selected_quality_ema))
+         IF (selected_quality > EPSILON(selected_quality)) &
+            mermin_support = MIN(mermin_support, MAX(0.0_dp, MIN(1.0_dp, selected_quality)))
+
+         scale = 0.25_dp + 0.75_dp* &
+                 SQRT(MAX(0.0_dp, MIN(1.0_dp, residual_support*mermin_support)))
+         scale = MAX(0.25_dp, MIN(1.0_dp, scale))
+
+      END FUNCTION kpoint_ot_density_full_global_selected_response_scale
 
 ! **************************************************************************************************
 !> \brief accepted-history calibrated floor-source mix for global full-density response
