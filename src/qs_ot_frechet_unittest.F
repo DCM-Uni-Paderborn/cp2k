@@ -5139,9 +5139,9 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp) :: active_fraction, expected_response, global_response, local_response, &
-         occ_curv, occ_curv_max, raw_response, response_shape, safe_blend, safe_response, &
-         sqrt_lifted_response
+      REAL(KIND=dp) :: active_fraction, expected_response, geometric_lifted_response, global_response, &
+         local_response, occ_curv, occ_curv_max, old_expected_response, raw_response, response_shape, &
+         safe_blend, safe_response, sqrt_lifted_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5152,11 +5152,15 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       safe_blend = MAX(active_fraction, 0.80_dp*SQRT(response_shape))
-      expected_response = response_shape*((1.0_dp - safe_blend)*raw_response + &
-                                          safe_blend*SQRT(response_shape)*safe_response)
+      old_expected_response = response_shape*((1.0_dp - safe_blend)*raw_response + &
+                                              safe_blend*SQRT(response_shape)*safe_response)
       sqrt_lifted_response = MAX(response_shape, 0.80_dp*SQRT(response_shape))* &
                              ((1.0_dp - safe_blend)*raw_response + &
                               safe_blend*SQRT(response_shape)*safe_response)
+      geometric_lifted_response = &
+         MAX(response_shape, SQRT(response_shape*0.80_dp*SQRT(response_shape)))* &
+         ((1.0_dp - safe_blend)*raw_response + safe_blend*SQRT(response_shape)*safe_response)
+      expected_response = geometric_lifted_response
 
       local_response = dense_physical_density_response(raw_response, safe_response, &
                                                        occ_curv, occ_curv_max, response_ratio_gate)
@@ -5166,8 +5170,8 @@ CONTAINS
 
       IF (ABS(global_response - expected_response) > tol .OR. &
           global_response <= 4.0_dp*local_response .OR. &
-          global_response >= 0.75_dp*sqrt_lifted_response .OR. &
-          global_response >= response_shape*safe_response) THEN
+          global_response <= 1.25_dp*old_expected_response .OR. &
+          global_response >= sqrt_lifted_response) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
             "failed with global/expected/local/shape/safe/sqrt", global_response, expected_response, &
@@ -17132,7 +17136,7 @@ CONTAINS
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, &
+      REAL(KIND=dp) :: active_fraction, alignment, density_shape, projector_abs, projector_component, &
          response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
          sign_projector_response, sign_safe_response
 
@@ -17143,6 +17147,7 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      density_shape = response_shape
       projector_component = density_projector_response
       sign_projector_response = density_projector_response
       sign_safe_response = density_safe_response
@@ -17181,13 +17186,14 @@ CONTAINS
          IF (globally_aligned_safe_response) THEN
             safe_blend_floor = MIN(1.0_dp, alignment)*SQRT(response_shape)
             safe_blend = MAX(safe_blend, safe_blend_floor)
+            density_shape = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
          END IF
          safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*safe_component
       ELSE IF (anti_aligned_safe_response) THEN
          safe_component = SIGN(MIN(projector_abs, safe_abs), sign_safe_response)
       END IF
-      density_response = response_shape*safe_component
+      density_response = density_shape*safe_component
 
    END FUNCTION dense_physical_density_response
 

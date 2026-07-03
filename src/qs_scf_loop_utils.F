@@ -2042,7 +2042,7 @@ CONTAINS
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, &
+      REAL(KIND=dp) :: active_fraction, alignment, density_shape, projector_abs, projector_component, &
          response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
          sign_projector_response, sign_safe_response
 
@@ -2054,6 +2054,7 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      density_shape = response_shape
       projector_component = density_projector_response
       sign_projector_response = density_projector_response
       sign_safe_response = density_safe_response
@@ -2092,6 +2093,7 @@ CONTAINS
          IF (globally_aligned_safe_response) THEN
             safe_blend_floor = MIN(1.0_dp, alignment)*SQRT(response_shape)
             safe_blend = MAX(safe_blend, safe_blend_floor)
+            density_shape = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
          END IF
          safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*safe_component
@@ -2103,7 +2105,7 @@ CONTAINS
       ! magnitude.  This keeps channel-uniform dP gauge shifts out of the
       ! physical Schur curvature while the raw full-density columns remain
       ! available for audit/Direct models.
-      density_response = response_shape*safe_component
+      density_response = density_shape*safe_component
 
    END FUNCTION kpoint_ot_physical_density_response
 
