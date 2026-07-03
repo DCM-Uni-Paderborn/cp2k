@@ -16197,12 +16197,14 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-5_dp, gauge_gap = 5.0E-5_dp, &
          projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, kernel_back, kernel_q, q, work, &
-                                                            work_q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, kernel_back, kernel_q, &
+                                                            kernel_shift, kernel_split, q, work, &
+                                                            work_q, work_shift, work_split
       COMPLEX(KIND=dp)                                   :: phase1, phase2, sentinel
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active, c1, c2, cov_err, herm_err, s1, s2, &
-                                                            trace_leak
+      REAL(KIND=dp)                                      :: active, c1, c2, cov_err, expected_split, &
+                                                            herm_err, s1, s2, shift_err, split_active, &
+                                                            split_err, split_trace, trace_leak
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
 
       evals(:) = [-0.010000_dp, -0.010000_dp, 0.105000_dp, 0.105000_dp, 0.42_dp]
@@ -16264,13 +16266,42 @@ CONTAINS
       kernel_back(:, :) = MATMUL(q, MATMUL(kernel_q, CONJG(TRANSPOSE(q))))
       cov_err = MAXVAL(ABS(kernel_back(:, :) - kernel(:, :)))
 
-      IF (trace_leak > tol .OR. herm_err > tol .OR. cov_err > tol .OR. active < active_tol) THEN
+      work_shift(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         work_shift(i, i) = CMPLX(0.07_dp, 0.0_dp, KIND=dp)
+      END DO
+      kernel_shift(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work_shift, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel_shift, projector_window_gap)
+      shift_err = MAXVAL(ABS(kernel_shift(:, :)))
+
+      work_split(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work_split(1, 1) = CMPLX(0.08_dp, 0.0_dp, KIND=dp)
+      work_split(2, 2) = CMPLX(-0.08_dp, 0.0_dp, KIND=dp)
+      kernel_split(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work_split, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel_split, projector_window_gap)
+      expected_split = -2.0_dp*projector_weight*occ_curv(1)*REAL(work_split(1, 1), KIND=dp)
+      split_err = MAX(ABS(kernel_split(1, 1) - CMPLX(expected_split, 0.0_dp, KIND=dp)), &
+                      ABS(kernel_split(2, 2) + CMPLX(expected_split, 0.0_dp, KIND=dp)))
+      split_trace = 0.0_dp
+      DO i = 1, n
+         split_trace = split_trace + REAL(kernel_split(i, i), KIND=dp)
+      END DO
+      split_trace = ABS(split_trace)
+      split_active = MAXVAL(ABS(kernel_split(:, :)))
+
+      IF (trace_leak > tol .OR. herm_err > tol .OR. cov_err > tol .OR. shift_err > tol .OR. &
+          split_err > tol .OR. split_trace > tol .OR. active < active_tol .OR. &
+          split_active < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with trace/herm/cov/active", trace_leak, herm_err, cov_err, active
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with trace/herm/cov/shift/split/strace/active/sact", trace_leak, herm_err, &
+            cov_err, shift_err, split_err, split_trace, active, split_active
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with trace/herm/cov/active", trace_leak, herm_err, cov_err, active
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with trace/herm/cov/shift/split/strace/active/sact", trace_leak, herm_err, &
+            cov_err, shift_err, split_err, split_trace, active, split_active
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_cluster_kernel_invariants
