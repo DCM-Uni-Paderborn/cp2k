@@ -1,12 +1,15 @@
 ! Slow/manual companion to the cheap ADDED_MOS AUTO k-point OT smoke test.
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
-! Local 2026-07 HIGH reference after residual-aware Schur response trust and
-! edge-gated residual AUTO growth: initial AUTO buffer 4, grow to 8 only, then
-! final convergence in 119 OT steps.  Total OT lines across AUTO rebuilds: 284.
-! E_total = Mermin = -8.14585274715756 Ha, with no first/last-band warnings
-! and no AUTO-exhausted warning.  The final tail is no longer solved by growing
-! into an empty virtual edge; remaining slowness is a response/Hessian issue.
+! Local 2026-07 HIGH reference from an isolated working directory after
+! residual-aware Schur response trust and edge-gated residual AUTO growth:
+! initial AUTO buffer 4, grow to 8 only, then final convergence in 110 OT
+! steps after the rebuild.  Total OT lines across AUTO rebuilds: 276.
+! E_total = Mermin = -8.14585274623751 Ha, with no first/last-band warnings
+! and no AUTO-exhausted warning.  Run this companion from a fresh CWD because
+! PROJECT files are written there and stale Al_kp_ot_added_auto* files make
+! diagnosis ambiguous.  The final tail is no longer solved by growing into an
+! empty virtual edge; remaining slowness is a response/Hessian issue.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto
