@@ -3,12 +3,12 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It checks the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-06 HIGH reference after the Direct floor-density response blend:
-! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path.
-! E_total = Mermin = -8.15998707551141 Ha, with no first/last-band warnings
-! and no AUTO-exhausted warning. The full eigenvalue response remains active
-! while the density source is pair-active filtered, matching the
-! symmetry-reduced companion within 4E-7 Ha.
+! Local 2026-07 HIGH reference after the globally supported low-curvature
+! density response update: AUTO grows to 8 and 16, then converges on the 1E-6
+! Mermin path in 75 SCF steps. E_total = Mermin = -8.15998356932113 Ha, with
+! no first/last-band warnings and no AUTO-exhausted warning. The full
+! eigenvalue response remains active while the density source is pair-active
+! filtered, matching the symmetry-reduced companion within 2E-6 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge

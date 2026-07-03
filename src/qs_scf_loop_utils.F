@@ -2034,7 +2034,8 @@ CONTAINS
                                        ABS(sign_safe_response) > EPSILON(sign_safe_response))
       globally_aligned_safe_response = alignment > 0.25_dp .AND. &
                                        safe_abs > EPSILON(safe_abs) .AND. &
-                                       projector_abs <= alignment*safe_abs
+                                       (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                        projector_abs <= alignment*safe_abs)
       anti_aligned_safe_response = PRESENT(density_projector_centered_response) .AND. &
                                    PRESENT(density_safe_centered_response) .AND. &
                                    sign_projector_response*sign_safe_response < 0.0_dp .AND. &
@@ -2092,8 +2093,8 @@ CONTAINS
 
       LOGICAL                                            :: globally_supported_response, &
                                                             locally_supported_response
-      REAL(KIND=dp) :: active_fraction, alignment, damping, projector_abs, residual_weight, &
-         response_support, safe_abs, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, global_support, projector_abs, &
+         residual_weight, response_support, safe_abs, sign_projector_response, sign_safe_response
 
       filtered_response = density_response
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2121,13 +2122,18 @@ CONTAINS
                                    projector_abs <= EPSILON(projector_abs)
       globally_supported_response = alignment > 0.25_dp .AND. &
                                     safe_abs > EPSILON(safe_abs) .AND. &
-                                    projector_abs <= alignment*safe_abs
+                                    (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                     projector_abs <= alignment*safe_abs)
       response_support = 0.0_dp
       IF (locally_supported_response .OR. globally_supported_response) THEN
          IF (projector_abs > EPSILON(projector_abs)) THEN
             response_support = MIN(1.0_dp, safe_abs/projector_abs)
          ELSE
             response_support = 1.0_dp
+         END IF
+         IF (globally_supported_response) THEN
+            global_support = MIN(1.0_dp, MAX(0.0_dp, alignment))
+            response_support = MAX(response_support, global_support)
          END IF
       END IF
 

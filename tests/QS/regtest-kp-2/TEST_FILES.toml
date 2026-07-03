@@ -55,12 +55,13 @@
 # 110 steps after the rebuild, 276 inner k-point OT calls overall, and
 # E_total = Mermin = -8.14585274623606 Ha.  No first/last-band warning,
 # AUTO-exhausted warning, or "Unsupported content type" signature is printed.
-# Current optional 3-k-point HIGH companion references remain:
-# the Sym3 path grows to 8 and 16 and has
-# E_total = Mermin = -8.15998668193697 Ha.  The full-grid companion follows
-# the same AUTO growth sequence and has
-# E_total = Mermin = -8.15998707551141 Ha.  The two optional 3-k-point paths
-# agree within 4E-7 Ha.  In both tails the full eigenvalue response stays active
+# Current optional 3-k-point HIGH companion references after the globally
+# supported low-curvature density response update:
+# the Sym3 path grows to 8 and 16, converges in 73 SCF steps, and has
+# E_total = Mermin = -8.15998522857351 Ha.  The full-grid companion follows
+# the same AUTO growth sequence, converges in 75 SCF steps, and has
+# E_total = Mermin = -8.15998356932113 Ha.  The two optional 3-k-point paths
+# agree within 2E-6 Ha.  In both tails the full eigenvalue response stays active
 # while the density source is pair-active filtered, and no first/last-band or
 # AUTO-exhausted warning is printed.  Exact SCF step counts are intentionally
 # not part of these optional 3-k-point companion references.

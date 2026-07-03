@@ -4940,6 +4940,7 @@ CONTAINS
 
       REAL(KIND=dp)                                      :: aligned_response, base_response, &
                                                             damped_response, err, good_response, &
+                                                            global_low_response, global_low_expected, &
                                                             occ_curv, occ_curv_max, &
                                                             partial_response
 
@@ -4959,23 +4960,29 @@ CONTAINS
       aligned_response = residual_gauge_density_response(base_response, 1.0_dp, 2.0_dp, &
                                                          occ_curv, occ_curv_max, response_ratio_gate, &
                                                          0.0_dp, 1.0_dp, 2.0_dp, 0.0_dp)
+      global_low_response = residual_gauge_density_response(base_response, 1.0_dp, 0.25_dp, &
+                                                            occ_curv, occ_curv_max, response_ratio_gate, &
+                                                            0.0_dp, 1.0_dp, 0.25_dp, 0.80_dp)
+      global_low_expected = 0.95_dp*base_response
 
       err = ABS(good_response - base_response)
       err = MAX(err, ABS(damped_response - 0.75_dp*base_response))
       err = MAX(err, ABS(partial_response - 0.8125_dp*base_response))
       err = MAX(err, ABS(aligned_response - base_response))
+      err = MAX(err, ABS(global_low_response - global_low_expected))
 
       IF (err > tol .OR. ABS(damped_response) >= ABS(good_response) .OR. &
           ABS(partial_response) <= ABS(damped_response) .OR. &
-          ABS(partial_response) >= ABS(good_response)) THEN
+          ABS(partial_response) >= ABS(good_response) .OR. &
+          ABS(global_low_response) <= ABS(partial_response)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/base/good/damped/partial", err, base_response, good_response, &
-            damped_response, partial_response
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/base/good/damped/partial/global", err, base_response, good_response, &
+            damped_response, partial_response, global_low_response
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/base/good/damped/partial", err, base_response, good_response, &
-            damped_response, partial_response
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/base/good/damped/partial/global", err, base_response, good_response, &
+            damped_response, partial_response, global_low_response
       END IF
 
    END SUBROUTINE check_projector_residual_gauge_density_response
@@ -12564,8 +12571,8 @@ CONTAINS
 
       LOGICAL                                            :: globally_supported_response, &
                                                             locally_supported_response
-      REAL(KIND=dp) :: active_fraction, alignment, damping, projector_abs, residual_weight, &
-         response_support, safe_abs, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, global_support, projector_abs, &
+         residual_weight, response_support, safe_abs, sign_projector_response, sign_safe_response
 
       filtered_response = density_response
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -12592,13 +12599,18 @@ CONTAINS
                                    projector_abs <= EPSILON(projector_abs)
       globally_supported_response = alignment > 0.25_dp .AND. &
                                     safe_abs > EPSILON(safe_abs) .AND. &
-                                    projector_abs <= alignment*safe_abs
+                                    (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                     projector_abs <= alignment*safe_abs)
       response_support = 0.0_dp
       IF (locally_supported_response .OR. globally_supported_response) THEN
          IF (projector_abs > EPSILON(projector_abs)) THEN
             response_support = MIN(1.0_dp, safe_abs/projector_abs)
          ELSE
             response_support = 1.0_dp
+         END IF
+         IF (globally_supported_response) THEN
+            global_support = MIN(1.0_dp, MAX(0.0_dp, alignment))
+            response_support = MAX(response_support, global_support)
          END IF
       END IF
 
@@ -16790,9 +16802,9 @@ CONTAINS
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, response_shape, &
-         safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, sign_projector_response, &
-         sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, projector_abs, projector_component, &
+         response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
+         sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -16821,7 +16833,8 @@ CONTAINS
                                        ABS(sign_safe_response) > EPSILON(sign_safe_response))
       globally_aligned_safe_response = alignment > 0.25_dp .AND. &
                                        safe_abs > EPSILON(safe_abs) .AND. &
-                                       projector_abs <= alignment*safe_abs
+                                       (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
+                                        projector_abs <= alignment*safe_abs)
       anti_aligned_safe_response = PRESENT(density_projector_centered_response) .AND. &
                                    PRESENT(density_safe_centered_response) .AND. &
                                    sign_projector_response*sign_safe_response < 0.0_dp .AND. &
