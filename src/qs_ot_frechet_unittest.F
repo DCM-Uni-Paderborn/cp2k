@@ -214,6 +214,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density floor bootstrap weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_floor_source_weight( &
       "complex projector density global floor-source weight", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_shadow_history_gate( &
+      "complex projector density global shadow-history gate", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_density_audit_trust_quality( &
@@ -8415,6 +8417,65 @@ CONTAINS
    END SUBROUTINE check_projector_density_global_floor_source_weight
 
 ! **************************************************************************************************
+!> \brief Check that global full-density shadow history needs selected or mature probes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_shadow_history_gate(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL :: high_residual, low_drop, ready, selected_ready, tail_without_probe, trust_veto, weak_close_call
+      REAL(KIND=dp)                                      :: err
+
+      selected_ready = dense_density_full_global_shadow_history_ready(2.0E-4_dp, .FALSE., .TRUE., &
+                                                                      .FALSE., &
+                                                                      0.0_dp, 0.0_dp, 0.0_dp, 2.0_dp)
+      ready = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                             .TRUE., &
+                                                             8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, 5.0E-1_dp)
+      tail_without_probe = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                         .FALSE., &
+                                                                         2.5E-8_dp, 1.0E-7_dp, 2.5E-8_dp, &
+                                                                         5.0E-1_dp)
+      weak_close_call = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                       .TRUE., &
+                                                                       7.9E-8_dp, 1.0E-7_dp, 7.9E-8_dp, &
+                                                                       5.0E-1_dp)
+      high_residual = dense_density_full_global_shadow_history_ready(2.0E-4_dp, .TRUE., .FALSE., &
+                                                                     .TRUE., &
+                                                                     8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, &
+                                                                     5.0E-1_dp)
+      trust_veto = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                  .TRUE., &
+                                                                  8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, 8.0E-1_dp)
+      low_drop = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                .TRUE., &
+                                                                1.0E-13_dp, 1.0E-7_dp, 1.0E-13_dp, &
+                                                                5.0E-1_dp)
+
+      err = 0.0_dp
+      IF (.NOT. selected_ready .OR. .NOT. ready .OR. tail_without_probe .OR. &
+          weak_close_call .OR. high_residual .OR. trust_veto .OR. low_drop) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "failed with selected/ready/tail-no-probe/weak/residual/trust/drop", &
+            selected_ready, ready, tail_without_probe, &
+            weak_close_call, high_residual, trust_veto, low_drop
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "OK with selected/ready/tail-no-probe/weak/residual/trust/drop", &
+            selected_ready, ready, tail_without_probe, &
+            weak_close_call, high_residual, trust_veto, low_drop
+      END IF
+
+   END SUBROUTINE check_projector_density_global_shadow_history_gate
+
+! **************************************************************************************************
 !> \brief Check that global fixed-N density-response trust follows the Mermin metric.
 !> \param label ...
 !> \param tol ...
@@ -12566,6 +12627,51 @@ CONTAINS
       weight = MAX(0.0_dp, MIN(1.0E-2_dp, weight))
 
    END FUNCTION dense_density_full_global_floor_source_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of global full-density shadow-history gate.
+!> \param residual_delta ...
+!> \param candidate_ready ...
+!> \param candidate_selected ...
+!> \param probe_ready ...
+!> \param candidate_expected_drop ...
+!> \param reference_expected_drop ...
+!> \param model_calibrated_drop ...
+!> \param weighted_trust_ratio ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_full_global_shadow_history_ready(residual_delta, candidate_ready, candidate_selected, &
+                                                           probe_ready, &
+                                                           candidate_expected_drop, reference_expected_drop, &
+                                                           model_calibrated_drop, weighted_trust_ratio) &
+      RESULT(history_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, &
+                                                            model_calibrated_drop, weighted_trust_ratio
+      LOGICAL, INTENT(IN)                                :: candidate_ready, candidate_selected, probe_ready
+      LOGICAL                                            :: history_ready
+
+      REAL(KIND=dp)                                      :: close_call_ratio
+
+      history_ready = .FALSE.
+      IF (candidate_selected) THEN
+         history_ready = .TRUE.
+         RETURN
+      END IF
+
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (.NOT. candidate_ready) RETURN
+      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
+      IF (model_calibrated_drop <= 1.0E-12_dp) RETURN
+      IF (weighted_trust_ratio > 7.5E-1_dp) RETURN
+      IF (.NOT. probe_ready) RETURN
+
+      close_call_ratio = 8.0E-1_dp
+      IF (candidate_expected_drop < close_call_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+
+      history_ready = .TRUE.
+
+   END FUNCTION dense_density_full_global_shadow_history_ready
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected Direct-density active-Hessian tail mix weight.

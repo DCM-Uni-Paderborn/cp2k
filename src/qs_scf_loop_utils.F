@@ -6660,7 +6660,8 @@ CONTAINS
          density_full_candidate_ready, density_full_candidate_selected, density_full_direct_candidate_ready, &
          density_full_direct_candidate_selected, density_full_direct_tail_probe_ready, &
          density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
-         density_full_global_candidate_selected, density_full_global_tail_prefer, &
+         density_full_global_candidate_selected, density_full_global_history_ready, &
+         density_full_global_tail_prefer, &
          density_full_global_tail_probe_ready
       LOGICAL :: density_full_tail_probe_ready, exact_attempt_response, &
          exact_density_direct_response_ready, exact_density_floor_audit_ready, &
@@ -8367,6 +8368,7 @@ CONTAINS
          density_full_global_bootstrap_ready = .FALSE.
          density_full_global_candidate_ready = .FALSE.
          density_full_global_candidate_selected = .FALSE.
+         density_full_global_history_ready = .FALSE.
          density_full_global_tail_prefer = .FALSE.
          density_full_global_tail_probe_ready = .FALSE.
          density_full_tail_probe_ready = .FALSE.
@@ -10650,6 +10652,7 @@ CONTAINS
                density_full_global_history_abs_trust_ratio = 0.0_dp
                density_full_global_history_drop = 0.0_dp
                density_full_global_history_gap_drop = 0.0_dp
+               density_full_global_history_ready = .FALSE.
                density_full_global_history_scale = 1.0_dp
                density_full_global_history_trust_quality = 1.0_dp
                density_full_global_history_weighted_step = 0.0_dp
@@ -16539,7 +16542,14 @@ CONTAINS
                   MIN(1.0_dp, MAX(0.0_dp, density_full_history_trust_quality))* &
                   density_full_history_drop
             END IF
-            IF (density_full_global_candidate_selected .AND. &
+            density_full_global_history_ready = &
+               kpoint_ot_density_full_global_shadow_history_ready( &
+               residual_delta, density_full_global_candidate_ready, &
+               density_full_global_candidate_selected, density_full_global_tail_probe_ready, &
+               density_full_global_expected_drop, accepted_model_calibrated_drop, &
+               density_full_global_model_calibrated_drop, &
+               density_full_global_response_weighted_trust_ratio)
+            IF (density_full_global_history_ready .AND. &
                 projector_density_full_history_enabled .AND. &
                 exact_density_full_audit_ready .AND. &
                 accepted_model_calibrated_drop > ot_kp_schur_projector_density_full_min_drop) THEN
@@ -19424,6 +19434,54 @@ CONTAINS
          weight = MAX(0.0_dp, MIN(ot_kp_schur_projector_density_global_floor_max_weight, weight))
 
       END FUNCTION kpoint_ot_density_full_global_floor_source_weight
+
+! **************************************************************************************************
+!> \brief whether global full-density response may collect shadow line-search history
+!> \param residual_delta current OT residual
+!> \param candidate_ready prechecked global full-density candidate gate
+!> \param candidate_selected whether this candidate supplied the accepted search direction
+!> \param probe_ready mature residual-tail probe gate
+!> \param candidate_expected_drop calibrated global full-density Mermin drop
+!> \param reference_expected_drop accepted/reference Mermin drop for this line-search step
+!> \param model_calibrated_drop uncapped candidate Mermin-model drop
+!> \param weighted_trust_ratio curvature-weighted response trust ratio
+!> \return true if the response is safe enough for shadow calibration
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_global_shadow_history_ready(residual_delta, candidate_ready, &
+                                                                  candidate_selected, probe_ready, &
+                                                                  candidate_expected_drop, &
+                                                                  reference_expected_drop, &
+                                                                  model_calibrated_drop, &
+                                                                  weighted_trust_ratio) &
+         RESULT(history_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
+                                                            reference_expected_drop, &
+                                                            model_calibrated_drop, weighted_trust_ratio
+      LOGICAL, INTENT(IN)                                :: candidate_ready, candidate_selected, probe_ready
+      LOGICAL                                            :: history_ready
+
+      REAL(KIND=dp)                                      :: close_call_ratio
+
+         history_ready = .FALSE.
+         IF (candidate_selected) THEN
+            history_ready = .TRUE.
+            RETURN
+         END IF
+
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (.NOT. candidate_ready) RETURN
+         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (model_calibrated_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (weighted_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
+         IF (.NOT. probe_ready) RETURN
+
+         close_call_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+         IF (candidate_expected_drop < close_call_ratio* &
+             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         history_ready = .TRUE.
+
+      END FUNCTION kpoint_ot_density_full_global_shadow_history_ready
 
 ! **************************************************************************************************
 !> \brief residual-aware active-Hessian mix from accepted Direct-density tail history
