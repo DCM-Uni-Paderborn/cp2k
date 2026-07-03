@@ -7009,7 +7009,8 @@ CONTAINS
          projector_physical_direct_trace_active_actual_ratio, &
          projector_physical_direct_trace_active_basis_weight, &
          projector_physical_direct_trace_active_diag_quad, &
-         projector_physical_direct_trace_active_free_quad
+         projector_physical_direct_trace_active_free_quad, &
+         projector_physical_direct_trace_selected_quality
       REAL(KIND=dp) :: projector_physical_direct_trace_active_norm, &
          projector_physical_direct_trace_active_quad, &
          projector_physical_direct_trace_actual_diag_quad, &
@@ -7032,6 +7033,7 @@ CONTAINS
          projector_physical_direct_trace_invariant_trust_quality, &
          projector_physical_direct_trace_local_separate_weight
       REAL(KIND=dp) :: projector_physical_direct_trace_ratio, &
+         projector_physical_direct_trace_residual_support, &
          projector_physical_direct_trace_scale_diag_avg, &
          projector_physical_direct_trace_trust_gap_drop, projector_physical_direct_trust_quality, &
          projector_physical_direct_trust_scale, projector_physical_direct_unit_abs_step, &
@@ -8041,6 +8043,7 @@ CONTAINS
          projector_physical_direct_trace_active_basis_weight = 0.0_dp
          projector_physical_direct_trace_active_diag_quad = 0.0_dp
          projector_physical_direct_trace_active_free_quad = 0.0_dp
+         projector_physical_direct_trace_selected_quality = 0.0_dp
          projector_physical_direct_trace_active_norm = 0.0_dp
          projector_physical_direct_trace_active_quad = 0.0_dp
          projector_physical_direct_trace_actual_diag_quad = 0.0_dp
@@ -8061,6 +8064,7 @@ CONTAINS
          projector_physical_direct_trace_invariant_term = 0.0_dp
          projector_physical_direct_trace_invariant_trust_quality = 1.0_dp
          projector_physical_direct_trace_trust_gap_drop = 0.0_dp
+         projector_physical_direct_trace_residual_support = 0.0_dp
          projector_physical_direct_trace_ratio = 0.0_dp
          projector_physical_direct_trust_quality = 1.0_dp
          projector_physical_direction_scale = 0.0_dp
@@ -11702,6 +11706,34 @@ CONTAINS
                      local_ot_env(1)%schur_projector_physical_trace_active_ema, &
                      local_ot_env(1)%schur_projector_mixed_direct_quality_ema, &
                      local_ot_env(1)%schur_projector_mixed_direct_quality_samples)
+                  IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                      local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples >= &
+                      ot_kp_schur_calibration_min_samples) THEN
+                     projector_physical_direct_trace_selected_quality = &
+                        MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                                        local_ot_env(1)%schur_projector_physical_direct_selected_quality_ema))
+                     projector_physical_direct_trace_residual_support = &
+                        kpoint_ot_selected_tail_mix_residual_quality( &
+                        local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality, &
+                        local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema)
+                     projector_physical_direct_trace_residual_support = &
+                        MAX(projector_physical_direct_trace_residual_support, &
+                            0.25_dp*SQRT(MAX(0.0_dp, &
+                                             MIN(1.0_dp, &
+                                                 local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema/ &
+                                                 MAX(ot_kp_schur_calibrated_quality_min_ratio, &
+                                                     EPSILON(1.0_dp))))))
+                     projector_physical_direct_trace_selected_quality = &
+                        projector_physical_direct_trace_selected_quality* &
+                        projector_physical_direct_trace_residual_support
+                     projector_physical_direct_trace_active_basis_weight = &
+                        MAX(projector_physical_direct_trace_active_basis_weight, &
+                            kpoint_ot_trace_active_basis_weight( &
+                            local_ot_env(1)%schur_projector_physical_trace_raw_ema, &
+                            local_ot_env(1)%schur_projector_physical_trace_active_ema, &
+                            projector_physical_direct_trace_selected_quality, &
+                            local_ot_env(1)%schur_projector_physical_direct_selected_quality_samples))
+                  END IF
                   projector_physical_direct_trace_active_basis_weight = &
                      kpoint_ot_physical_direct_density_mix( &
                      projector_physical_direct_trace_active_basis_weight, &

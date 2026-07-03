@@ -9528,33 +9528,53 @@ CONTAINS
                                                             history_quality = 4.7E-2_dp, &
                                                             raw_trace = -1.0_dp
 
-      REAL(KIND=dp)                                      :: al_like_weight, err, matched_weight, &
+      REAL(KIND=dp)                                      :: al_like_weight, ema_expected_weight, &
+                                                            ema_residual_weight, ema_trace_quality, &
+                                                            ema_weight, err, matched_weight, &
                                                             no_raw_weight, poor_weight, &
-                                                            saturated_weight, young_weight
+                                                            saturated_weight, selected_residual_weight, &
+                                                            selected_trace_quality, selected_veto_weight, &
+                                                            selected_weight, young_weight
 
       young_weight = dense_trace_active_basis_weight(raw_trace, active_trace, history_quality, 4)
       poor_weight = dense_trace_active_basis_weight(raw_trace, active_trace, 2.0E-2_dp, 16)
       no_raw_weight = dense_trace_active_basis_weight(0.0_dp, active_trace, history_quality, 16)
       matched_weight = dense_trace_active_basis_weight(raw_trace, raw_trace, history_quality, 16)
       al_like_weight = dense_trace_active_basis_weight(raw_trace, active_trace, history_quality, 16)
+      selected_residual_weight = dense_selected_tail_mix_residual_quality(4.953263E-1_dp, &
+                                                                          2.30894065E-1_dp)
+      selected_trace_quality = 5.83218814E-1_dp*selected_residual_weight
+      selected_weight = dense_trace_active_basis_weight(raw_trace, active_trace, &
+                                                        selected_trace_quality, 11)
+      ema_residual_weight = MAX(dense_selected_tail_mix_residual_quality(0.0_dp, 7.88101363E-2_dp), &
+                                0.25_dp*SQRT(7.88101363E-2_dp/2.5E-1_dp))
+      ema_trace_quality = 2.48926407E-1_dp*ema_residual_weight
+      ema_weight = dense_trace_active_basis_weight(raw_trace, active_trace, ema_trace_quality, 11)
+      ema_expected_weight = MIN(0.25_dp, (1.0_dp - ABS(active_trace/raw_trace))* &
+                                        SQRT(ema_trace_quality))
+      selected_veto_weight = dense_trace_active_basis_weight(raw_trace, active_trace, 2.0E-2_dp, 11)
       saturated_weight = dense_trace_active_basis_weight(raw_trace, 0.0_dp, 1.0_dp, 16)
 
       err = ABS(young_weight)
       err = MAX(err, ABS(poor_weight))
       err = MAX(err, ABS(no_raw_weight))
       err = MAX(err, ABS(matched_weight))
+      err = MAX(err, ABS(selected_weight - 0.25_dp))
+      err = MAX(err, ABS(ema_weight - ema_expected_weight))
+      err = MAX(err, ABS(selected_veto_weight))
       err = MAX(err, ABS(saturated_weight - 0.25_dp))
 
       IF (err > tol .OR. al_like_weight <= 0.18_dp .OR. al_like_weight >= 0.22_dp .OR. &
-          saturated_weight > 0.25_dp) THEN
+          selected_weight < 0.25_dp .OR. ema_weight <= 0.0_dp .OR. ema_weight >= selected_weight .OR. &
+          selected_veto_weight > 0.0_dp .OR. saturated_weight > 0.25_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "failed with error/young/poor/matched/al/sat", err, young_weight, poor_weight, &
-            matched_weight, al_like_weight, saturated_weight
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/poor/matched/al/sel/ema/selveto/sat", err, young_weight, poor_weight, &
+            matched_weight, al_like_weight, selected_weight, ema_weight, selected_veto_weight, saturated_weight
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            "OK with error/young/poor/matched/al/sat", err, young_weight, poor_weight, &
-            matched_weight, al_like_weight, saturated_weight
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/poor/matched/al/sel/ema/selveto/sat", err, young_weight, poor_weight, &
+            matched_weight, al_like_weight, selected_weight, ema_weight, selected_veto_weight, saturated_weight
       END IF
 
    END SUBROUTINE check_projector_trace_active_basis_weight
