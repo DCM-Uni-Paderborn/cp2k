@@ -1206,7 +1206,8 @@ CONTAINS
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
          physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
          raw_guard_delta, residual_spike_quality, residual_trust_quality, residual_trust_scale, &
-         sample_accepted_drop, sample_gap, sample_quality, sample_residual_growth_ratio, test_down, tmp
+         sample_accepted_drop, sample_gap, sample_guard_drop, sample_quality, &
+         sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1445,6 +1446,9 @@ CONTAINS
          sample_quality = 0.0_dp
          IF (qs_ot_env(1)%mermin_ls_best_sample_drop > EPSILON(1.0_dp)) &
             sample_quality = sample_accepted_drop/qs_ot_env(1)%mermin_ls_best_sample_drop
+         sample_guard_drop = sample_accepted_drop
+         IF (qs_ot_env(1)%mermin_ls_model_quality < 0.5_dp) &
+            sample_guard_drop = MAX(sample_guard_drop, qs_ot_env(1)%mermin_ls_model_drop)
          physical_raw_gap_guard = complex_kpoint_history .AND. &
                                   qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                                   qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
@@ -1452,17 +1456,18 @@ CONTAINS
                                   qs_ot_env(1)%kpoint_physical_delta_groups > 0 .AND. &
                                   qs_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
                                   qs_ot_env(1)%kpoint_raw_delta > qs_ot_env(1)%delta .AND. &
-                                  sample_accepted_drop > ot_cg_kp_physical_raw_delta_mermin_floor
+                                  sample_guard_drop > ot_cg_kp_physical_raw_delta_mermin_floor
          IF (physical_raw_gap_guard) THEN
             raw_guard_delta = ot_cg_kp_physical_raw_delta_floor_ratio*qs_ot_env(1)%kpoint_raw_delta
             IF (raw_guard_delta > qs_ot_env(1)%delta) THEN
                qs_ot_env(1)%delta = raw_guard_delta
                qs_ot_env(1)%kpoint_physical_delta = MAX(qs_ot_env(1)%kpoint_physical_delta, raw_guard_delta)
                IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
-                     " OT CG physical residual raw-gap guard raw floor adrop delta:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8))') &
+                     " OT CG physical residual raw-gap guard raw floor adrop gdrop mdrop mq delta:", &
                      qs_ot_env(1)%kpoint_raw_delta, raw_guard_delta, sample_accepted_drop, &
-                     qs_ot_env(1)%delta
+                     sample_guard_drop, qs_ot_env(1)%mermin_ls_model_drop, &
+                     qs_ot_env(1)%mermin_ls_model_quality, qs_ot_env(1)%delta
                END IF
             END IF
          END IF

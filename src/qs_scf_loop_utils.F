@@ -189,6 +189,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_density_fdir_probe_ratio = 8.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_refresh_ratio = 2.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_residual_ratio = 8.0E-1_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_ratio = 1.0E-2_dp, &
+                                        ot_kp_schur_physical_tail_eps_factor = 1.0_dp, &
                                         ot_kp_schur_residual_tail_plateau_quality = 2.5E-1_dp, &
                                         ot_kp_schur_residual_tail_plateau_slack = 5.0E-2_dp, &
                                         ot_kp_schur_projector_mode_trust_max_penalty = 2.5E-1_dp, &
@@ -1046,6 +1048,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: residual_delta
 
       INTEGER                                            :: local_channel
+      REAL(KIND=dp)                                      :: raw_delta
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -1055,6 +1058,14 @@ CONTAINS
       ! values before this synchronization point.
       residual_delta = local_ot_env(1)%delta
       CALL para_env_inter_kp%max(residual_delta)
+      raw_delta = 0.0_dp
+      IF (local_ot_env(1)%kpoint_physical_delta_ready .AND. &
+          local_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
+          local_ot_env(1)%kpoint_raw_delta > 0.0_dp) &
+         raw_delta = local_ot_env(1)%kpoint_raw_delta
+      CALL para_env_inter_kp%max(raw_delta)
+      IF (raw_delta > residual_delta) &
+         residual_delta = MAX(residual_delta, ot_kp_schur_physical_exit_raw_floor_ratio*raw_delta)
       DO local_channel = 1, SIZE(local_ot_env)
          local_ot_env(local_channel)%delta = residual_delta
       END DO
@@ -6573,7 +6584,7 @@ CONTAINS
             CALL precondition_kpoint_ot_schur_group(group, group_done(group), &
                                                     added_mos_auto_tail_enabled, &
                                                     added_mos_auto_tail_residual_limit, &
-                                                    response_raw_delta)
+                                                    eps_scf_channel, response_raw_delta)
          END DO
       END SUBROUTINE precondition_kpoint_ot_schur
 
@@ -6583,16 +6594,17 @@ CONTAINS
 !> \param group_done ...
 !> \param added_mos_auto_tail_enabled ...
 !> \param added_mos_auto_tail_residual_limit ...
+!> \param eps_scf_channel ...
 !> \param response_raw_delta unprojected residual from the previous accepted OT state
 ! **************************************************************************************************
       SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done, &
                                                     added_mos_auto_tail_enabled, &
                                                     added_mos_auto_tail_residual_limit, &
-                                                    response_raw_delta)
+                                                    eps_scf_channel, response_raw_delta)
       INTEGER, INTENT(IN)                                :: target_group
       LOGICAL, INTENT(OUT)                               :: group_done
       LOGICAL, INTENT(IN)                                :: added_mos_auto_tail_enabled
-      REAL(KIND=dp), INTENT(IN) :: added_mos_auto_tail_residual_limit, response_raw_delta
+      REAL(KIND=dp), INTENT(IN) :: added_mos_auto_tail_residual_limit, eps_scf_channel, response_raw_delta
 
       INTEGER, PARAMETER :: max_schur_rot = 800, reject_dgesv = 1, reject_model_gap = 6, &
          reject_model_mismatch = 8, reject_nondescent = 2, reject_norm = 3, &
@@ -6626,7 +6638,8 @@ CONTAINS
          exact_density_plateau_response_ready, exact_density_response_ready, &
          exact_energy_model_ready, exact_physical_response_ready, failed, metric_attempt_response, &
          metric_attempt_selectable, metric_attempt_tail_bridge, new_search_point, &
-         physical_delta_group_ready, projector_density_full_audit_enabled, &
+         physical_delta_group_ready, physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
+         projector_density_full_audit_enabled, &
          projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready
       LOGICAL :: projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
          projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
@@ -8572,10 +8585,23 @@ CONTAINS
          rot_grad_total_physical_norm = rot_grad_physical_norm + rot_grad_energy_norm
          ! With a complete rotation audit the raw physical gradient is a safer
          ! convergence metric than the preconditioned Schur search direction.
+         physical_delta_raw_tail_ready = eps_scf_channel > 0.0_dp .AND. &
+                                         response_raw_delta > 0.0_dp .AND. &
+                                         response_raw_delta <= &
+                                         ot_kp_schur_physical_tail_eps_factor*eps_scf_channel
+         physical_delta_plateau_ready = residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                        rot_grad_total_physical_norm <= &
+                                        MAX(rot_grad_gauge_norm, residual_delta*residual_delta) .AND. &
+                                        local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                        ot_kp_schur_calibration_min_samples .AND. &
+                                        local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp .AND. &
+                                        local_ot_env(1)%mermin_ls_accepted_gap_ema <= &
+                                        ot_kp_schur_residual_tail_plateau_slack
          physical_delta_group_ready = residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
                                       (.NOT. schur_active_subspace .OR. &
                                        rot_grad_gauge_norm > &
-                                       MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp)))
+                                       MAX(rot_grad_total_physical_norm, EPSILON(1.0_dp)) .OR. &
+                                       physical_delta_plateau_ready)
          local_ot_env(1)%kpoint_physical_delta_groups = &
             local_ot_env(1)%kpoint_physical_delta_groups + 1
          local_ot_env(1)%kpoint_physical_gnorm = &
@@ -8605,6 +8631,16 @@ CONTAINS
             " OT Schur physical residual audit group ready energy rot gauge total raw_delta:", &
             target_group, physical_delta_group_ready, rot_grad_energy_norm, rot_grad_physical_norm, &
             rot_grad_gauge_norm, rot_grad_total_physical_norm, residual_delta
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),6(1X,ES16.8),1X,I6)') &
+            " OT Schur physical residual plateau audit group ready plateau rawtail qema gema phys raw resp eps samples:", &
+            target_group, physical_delta_group_ready, physical_delta_plateau_ready, &
+            physical_delta_raw_tail_ready, &
+            local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+            local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+            rot_grad_total_physical_norm, residual_delta, response_raw_delta, &
+            ot_kp_schur_physical_tail_eps_factor*eps_scf_channel, &
+            local_ot_env(1)%mermin_ls_accepted_quality_samples
          IF (failed) THEN
             DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
                         z_density_floor_audit_trial, z_density_full_audit_trial, &
