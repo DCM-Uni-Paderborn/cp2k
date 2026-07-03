@@ -14610,6 +14610,7 @@ CONTAINS
          gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp, projector_window_gap = 8.0E-3_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_expected, &
+                                                            expected_kernel, &
                                                             docc_raw, docc_safe
       INTEGER                                            :: i
       LOGICAL                                            :: fd_used
@@ -14641,10 +14642,11 @@ CONTAINS
       occ_window(:) = occ_raw(:)
       CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_window, &
                                                     projector_window_gap)
-      CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_window, docc_expected, &
-                                                       occ_curv, gauge_gap, projector_window_gap)
+      expected_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, dchc, occ_curv, occ_window, gauge_gap, &
+                                                  projector_weight, expected_kernel, projector_window_gap)
+      docc_expected(:, :) = expected_kernel(:, :)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_raw, docc_raw, occ_curv, gauge_gap)
-      docc_expected(:, :) = projector_weight*docc_expected(:, :)
       docc_raw(:, :) = projector_weight*docc_raw(:, :)
 
       err = MAXVAL(ABS(docc_safe(:, :) - docc_expected(:, :)))
@@ -16829,24 +16831,30 @@ CONTAINS
 !> \param occ_curv ...
 !> \param gauge_gap ...
 !> \param projector_window_gap ...
+!> \param cluster_projector_response ...
 ! **************************************************************************************************
    SUBROUTINE dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_scale, docc_mat, occ_curv, gauge_gap, &
-                                                          projector_window_gap)
+                                                          projector_window_gap, cluster_projector_response)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_scale
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: docc_mat
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: occ_curv
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      LOGICAL, INTENT(IN), OPTIONAL                      :: cluster_projector_response
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, work
       INTEGER                                            :: i, j, n
+      LOGICAL                                            :: use_cluster_projector_response
       REAL(KIND=dp) :: allowed_jump, coeff, denom, diag_response_shift, gap_tol, occ_curv_sum, &
          occ_jump, occ_tol, physical_slope, scale, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals, occ_work
 
       n = SIZE(chc, 1)
       ALLOCATE (evec(n, n), kernel(n, n), work(n, n), evals(n), occ_work(n))
+      use_cluster_projector_response = .FALSE.
+      IF (PRESENT(cluster_projector_response)) &
+         use_cluster_projector_response = cluster_projector_response
 
       CALL diag_complex(chc, evec, evals)
       work(:, :) = MATMUL(CONJG(TRANSPOSE(evec)), MATMUL(dchc, evec))
@@ -16917,6 +16925,10 @@ CONTAINS
             kernel(i, j) = coeff*work(i, j)
          END DO
       END DO
+
+      IF (use_cluster_projector_response .AND. PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) &
+         CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_work, gauge_gap, 1.0_dp, &
+                                                     kernel, projector_window_gap)
 
       docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
       docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
@@ -17025,7 +17037,8 @@ CONTAINS
       END IF
       IF (PRESENT(occ_curv) .AND. PRESENT(gauge_gap)) THEN
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat, occ_curv, gauge_gap, &
-                                                          projector_window_gap)
+                                                          projector_window_gap, &
+                                                          cluster_projector_response=.TRUE.)
       ELSE
          CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_work, docc_mat)
       END IF

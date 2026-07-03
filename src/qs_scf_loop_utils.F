@@ -21655,6 +21655,10 @@ CONTAINS
             END DO
          END DO
 
+         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
+            CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
+                                                        1.0_dp, kernel, projector_window_gap)
+
          docc_mat(:, :) = projector_weight*MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
          docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
 
