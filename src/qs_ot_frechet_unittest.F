@@ -6240,28 +6240,35 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp)                                      :: err, max_only_tail, single_scale, &
-                                                            robust_mid, robust_scale, robust_tail
+                                                            robust_mid, robust_scale, robust_tail, &
+                                                            tiny_scale, tiny_tail, tiny_weight
 
       robust_scale = dense_projector_response_character_scale(1.0_dp, 0.60_dp)
       single_scale = dense_projector_response_character_scale(1.0_dp, 1.0_dp)
       robust_mid = MIN(1.0_dp, 0.40_dp/robust_scale)
       robust_tail = MIN(1.0_dp, 0.20_dp/robust_scale)
       max_only_tail = 0.20_dp
+      tiny_weight = dense_projector_response_signal_weight(4.0E-22_dp)
+      tiny_scale = dense_projector_response_character_scale(2.0E-11_dp, 1.0E-11_dp)
+      tiny_tail = MIN(1.0_dp, tiny_weight/tiny_scale)
 
       err = ABS(robust_scale - 0.60_dp)
       err = MAX(err, ABS(single_scale - 1.0_dp))
       err = MAX(err, ABS(robust_mid - 2.0_dp/3.0_dp))
       err = MAX(err, ABS(robust_tail - 1.0_dp/3.0_dp))
+      err = MAX(err, ABS(tiny_weight - 2.0E-11_dp))
+      err = MAX(err, ABS(tiny_scale - 1.0E-11_dp))
+      err = MAX(err, ABS(tiny_tail - 1.0_dp))
 
       IF (err > tol .OR. robust_tail <= max_only_tail .OR. robust_mid <= 0.40_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/scale/single/mid/tail/maxonly", err, robust_scale, single_scale, &
-            robust_mid, robust_tail, max_only_tail
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/scale/single/mid/tail/maxonly/tw/tt", err, robust_scale, single_scale, &
+            robust_mid, robust_tail, max_only_tail, tiny_weight, tiny_tail
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/scale/single/mid/tail/maxonly", err, robust_scale, single_scale, &
-            robust_mid, robust_tail, max_only_tail
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/scale/single/mid/tail/maxonly/tw/tt", err, robust_scale, single_scale, &
+            robust_mid, robust_tail, max_only_tail, tiny_weight, tiny_tail
       END IF
 
    END SUBROUTINE check_projector_response_character_scale
@@ -16642,6 +16649,21 @@ CONTAINS
       pair_weight = MIN(projector_weight, MAX(0.0_dp, pair_weight))
 
    END FUNCTION dense_physical_pair_projector_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of finite response-character weight from a squared signal.
+!> \param response_signal ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_projector_response_signal_weight(response_signal) RESULT(response_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: response_signal
+      REAL(KIND=dp)                                      :: response_weight
+
+      response_weight = 0.0_dp
+      IF (response_signal <= 0.0_dp) RETURN
+      response_weight = SQRT(response_signal)
+
+   END FUNCTION dense_projector_response_signal_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of robust finite projector response-character scale.

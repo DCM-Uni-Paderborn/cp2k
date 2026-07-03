@@ -1938,6 +1938,21 @@ CONTAINS
    END FUNCTION kpoint_ot_physical_pair_projector_weight
 
 ! **************************************************************************************************
+!> \brief finite response-character weight from a squared Mermin response signal
+!> \param response_signal nonnegative curvature-weighted squared response amplitude
+!> \return square-root response amplitude without an absolute machine-epsilon floor
+! **************************************************************************************************
+   FUNCTION kpoint_ot_projector_response_signal_weight(response_signal) RESULT(response_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: response_signal
+      REAL(KIND=dp)                                      :: response_weight
+
+      response_weight = 0.0_dp
+      IF (response_signal <= 0.0_dp) RETURN
+      response_weight = SQRT(response_signal)
+
+   END FUNCTION kpoint_ot_projector_response_signal_weight
+
+! **************************************************************************************************
 !> \brief robust scale for finite projector density-response character
 !> \param response_max largest positive channel response amplitude
 !> \param response_mean mean positive channel response amplitude
@@ -7190,7 +7205,7 @@ CONTAINS
          projector_response_gdot_energy, projector_response_gdot_rotation, &
          projector_response_gdotp, projector_response_metric_norm_energy, projector_response_signal, &
          projector_response_signal_count, projector_response_signal_max, projector_response_signal_mean, &
-         projector_response_signal_ref, projector_response_signal_sum, &
+         projector_response_signal_ref, projector_response_signal_sum, projector_response_signal_weight, &
          projector_response_metric_norm_rotation, projector_response_metric_normp, &
          projector_response_model_calibrated_drop
       REAL(KIND=dp) :: projector_response_model_drop, projector_response_model_gap, &
@@ -8879,8 +8894,10 @@ CONTAINS
                projector_response_signal = projector_response_signal + &
                                            MAX(0.0_dp, occ_curv(ie))*response_density_full_global(ie, r)**2
             END DO
-            IF (projector_response_signal > EPSILON(projector_response_signal)) THEN
-               var_projector_response_weight(r) = SQRT(projector_response_signal)
+            projector_response_signal_weight = &
+               kpoint_ot_projector_response_signal_weight(projector_response_signal)
+            IF (projector_response_signal_weight > 0.0_dp) THEN
+               var_projector_response_weight(r) = projector_response_signal_weight
                projector_response_signal_max = MAX(projector_response_signal_max, &
                                                    var_projector_response_weight(r))
                projector_response_signal_sum = projector_response_signal_sum + &
