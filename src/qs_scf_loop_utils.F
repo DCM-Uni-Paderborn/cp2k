@@ -146,6 +146,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_added_mos_auto_strong_tail_basis_frac = 2.0E-1_dp, &
                                         ot_kp_added_mos_auto_fractional_tail_basis_frac = 7.0E-2_dp, &
                                         ot_kp_added_mos_auto_fractional_tail_residual_factor = 4.0_dp, &
+                                        ot_kp_added_mos_auto_fractional_tail_residual_floor = 1.2E-2_dp, &
                                         ot_kp_added_mos_auto_fractional_tail_peak_frac = 8.0E-2_dp, &
                                         ot_kp_added_mos_auto_strong_tail_frac = 2.5E-1_dp
    INTEGER, PARAMETER, PRIVATE :: ot_kp_ref_overlap_guard_max_attempts = 12
@@ -1346,8 +1347,8 @@ CONTAINS
          residual_tail_limited, strong_tail_limited
       REAL(KIND=dp) :: accepted_response_quality, accepted_response_residual_gap, basis_signal, &
          edge_fractional_weight, edge_grow_limit, edge_tail_occ_min, fractional_weight, grow_limit, &
-         max_edge_fractional, max_fractional, maxocc, occ_tail, residual_model_delta, &
-         response_quality, response_residual_gap, tail_occ_min, weight
+         fractional_tail_residual_limit, max_edge_fractional, max_fractional, maxocc, occ_tail, &
+         residual_model_delta, response_quality, response_residual_gap, tail_occ_min, weight
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers, wkp
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -1457,9 +1458,13 @@ CONTAINS
                                 max_fractional >= ot_kp_fermi_window_tail_fraction .AND. &
                                 max_fractional >= ot_kp_added_mos_auto_fractional_tail_peak_frac .AND. &
                                 basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
-                                ot_kp_added_mos_auto_basis_signal_min .AND. &
-                                scf_env%iter_delta <= ot_kp_added_mos_auto_fractional_tail_residual_factor* &
-                                edge_grow_limit
+                                ot_kp_added_mos_auto_basis_signal_min
+      fractional_tail_residual_limit = ot_kp_added_mos_auto_fractional_tail_residual_factor*edge_grow_limit
+      IF (fractional_tail_limited) THEN
+         fractional_tail_residual_limit = MAX(fractional_tail_residual_limit, &
+                                              ot_kp_added_mos_auto_fractional_tail_residual_floor)
+         fractional_tail_limited = scf_env%iter_delta <= fractional_tail_residual_limit
+      END IF
       residual_ready = scf_env%iter_delta <= grow_limit
       ! A residual-limited grow must see occupation at the virtual edge.  The
       ! non-edge probe is only a basis-signal bootstrap; otherwise ordinary
