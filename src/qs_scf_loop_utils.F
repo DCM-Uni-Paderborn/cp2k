@@ -21897,9 +21897,9 @@ CONTAINS
       LOGICAL                                            :: fd_cluster_used
       REAL(KIND=dp) :: channel_occ_curv_max, density_global_lift_weight, &
          density_plateau_full_response, density_plateau_response, density_response, &
-         density_response_alignment, density_safe_curvature, projector_centered_shift, &
-         projector_response, projector_response_norm, projector_safe_response_dot, &
-         projector_weight, raw_response, safe_centered_shift, safe_response_norm, weighted_curv_sum
+         density_response_alignment, projector_centered_shift, projector_response, &
+         projector_response_norm, projector_safe_response_dot, projector_weight, raw_response, &
+         safe_centered_shift, safe_response_norm, weighted_curv_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_floor_audit_column, &
          density_full_centered_column, density_full_column, density_mixed_column, &
          density_plateau_centered_column, density_plateau_column, density_projector_column, eps_m, &
@@ -22080,11 +22080,8 @@ CONTAINS
                      ! The raw derivative remains exposed through the audit
                      ! channels below.
                      density_plateau_column(ie) = density_projector_column(ie)
-                     density_safe_curvature = MAX(occ_curv_channel(ie), &
-                                                  ot_kp_schur_projector_response_ratio_gate* &
-                                                  channel_occ_curv_max)
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
-                                               density_safe_curvature
+                                               occ_curv_channel(ie)
                   END IF
                END DO
                density_plateau_centered_column(:) = density_plateau_column(:)

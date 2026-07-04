@@ -5311,8 +5311,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, dchc, docc_raw, docc_safe
       INTEGER                                            :: i
-      REAL(KIND=dp) :: active_floor, collapsed, err, low_suppression, occ_curv_max, retained, &
-         safe_norm, spectral_response, unsafe_safe_density
+      REAL(KIND=dp) :: aligned_low_response, collapsed, collapsed_low_response, err, &
+         low_suppression, occ_curv_max, retained, safe_norm, spectral_response, unsafe_safe_density
       REAL(KIND=dp), DIMENSION(n)                        :: occ_curv, occ_scale, projector_response, &
                                                             raw_density, safe_density, shift
 
@@ -5332,37 +5332,45 @@ CONTAINS
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_safe, occ_curv, gauge_gap)
 
-      active_floor = response_ratio_gate*occ_curv_max
       unsafe_safe_density = 0.0_dp
       DO i = 1, n
          projector_response(i) = -projector_weight*shift(i)
          raw_density(i) = 0.5_dp*REAL(docc_raw(i, i), KIND=dp)/occ_curv(i)
          IF (i == n) unsafe_safe_density = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
-         safe_density(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/ &
-                           MAX(occ_curv(i), active_floor)
+         safe_density(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
       END DO
 
       retained = dense_physical_density_response(projector_response(1), safe_density(1), &
                                                  occ_curv(1), occ_curv_max, response_ratio_gate)
       collapsed = dense_physical_density_response(projector_response(1), raw_density(1), &
                                                   occ_curv(1), occ_curv_max, response_ratio_gate)
+      collapsed_low_response = dense_physical_density_response(projector_response(n), safe_density(n), &
+                                                               occ_curv(n), occ_curv_max, &
+                                                               response_ratio_gate)
+      aligned_low_response = dense_physical_density_response(projector_response(n), safe_density(n), &
+                                                             occ_curv(n), occ_curv_max, &
+                                                             response_ratio_gate, projector_response(n), &
+                                                             safe_density(n), 0.80_dp)
       spectral_response = projector_response(1)
       safe_norm = MAXVAL(ABS(safe_density(:)))
-      low_suppression = ABS(safe_density(n))/MAX(ABS(unsafe_safe_density), EPSILON(1.0_dp))
+      low_suppression = ABS(collapsed_low_response)/MAX(ABS(unsafe_safe_density), EPSILON(1.0_dp))
       err = MAXVAL(ABS(raw_density(:)))
 
       IF (err > tol .OR. ABS(retained - safe_density(1)) > tol .OR. &
           ABS(collapsed - spectral_response) > tol .OR. safe_norm < active_tol .OR. &
           ABS(retained - spectral_response) < active_tol .OR. &
-          ABS(unsafe_safe_density) < active_tol .OR. low_suppression > 1.0E-4_dp) THEN
+          ABS(unsafe_safe_density) < active_tol .OR. low_suppression > 1.0E-4_dp .OR. &
+          ABS(aligned_low_response) <= 4.0_dp*MAX(ABS(collapsed_low_response), tol)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with raw/retained/collapsed/safe/spec/unsafe/suppress", err, retained, &
-            collapsed, safe_norm, spectral_response, unsafe_safe_density, low_suppression
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with raw/retained/collapsed/safe/spec/unsafe/suppress/aligned", err, &
+            retained, collapsed, safe_norm, spectral_response, unsafe_safe_density, &
+            low_suppression, aligned_low_response
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with raw/retained/collapsed/safe/spec/unsafe/suppress", err, retained, &
-            collapsed, safe_norm, spectral_response, unsafe_safe_density, low_suppression
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with raw/retained/collapsed/safe/spec/unsafe/suppress/aligned", err, &
+            retained, collapsed, safe_norm, spectral_response, unsafe_safe_density, &
+            low_suppression, aligned_low_response
       END IF
 
    END SUBROUTINE check_projector_physical_density_safe_source
@@ -5385,9 +5393,8 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc_safe, &
                                                             q, work
       INTEGER                                            :: i
-      REAL(KIND=dp) :: active_fixed_n_leak, active_floor, active_shift, active_sum, active_weight, &
-         audit_gap, finite_total_err, full_fixed_n_leak, full_shift, full_sum, occ_curv_max, &
-         total_active_gap
+      REAL(KIND=dp) :: active_fixed_n_leak, active_shift, active_sum, active_weight, audit_gap, &
+         finite_total_err, full_fixed_n_leak, full_shift, full_sum, occ_curv_max, total_active_gap
       REAL(KIND=dp), DIMENSION(n) :: active_density_response, density_column, &
          finite_physical_response, full_density_response, occ_curv, occ_scale, occ_work, &
          physical_occ_response, projector_evals_m, projector_evals_p, total_response
@@ -5437,14 +5444,13 @@ CONTAINS
       CALL diag_complex(chc - fd_step*dchc, work, projector_evals_m)
 
       full_sum = SUM(occ_curv(:))
-      active_floor = response_ratio_gate*occ_curv_max
       full_shift = 0.0_dp
       active_sum = 0.0_dp
       active_shift = 0.0_dp
       DO i = 1, n
          finite_physical_response(i) = (1.0_dp - projector_weight)*REAL(dchc(i, i), KIND=dp) + &
                                        projector_weight*(projector_evals_p(i) - projector_evals_m(i))/(2.0_dp*fd_step)
-         density_column(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/MAX(occ_curv(i), active_floor)
+         density_column(i) = 0.5_dp*REAL(docc_safe(i, i), KIND=dp)/occ_curv(i)
          full_shift = full_shift + occ_curv(i)*density_column(i)
          active_weight = SQRT(MIN(1.0_dp, MAX(0.0_dp, occ_curv(i)/occ_curv_max)))
          occ_work(i) = active_weight
