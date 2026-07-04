@@ -22670,20 +22670,17 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: cluster_evec, cluster_evec_b, &
-                                                            cluster_kernel, cluster_work, &
-                                                            cluster_work_b, modal_block, &
-                                                            response_block
-      INTEGER                                            :: a, b, first, first_b, j, last, last_b, &
-                                                            m, m_b, n
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
+         cluster_evec_b, cluster_kernel, cluster_work, cluster_work_b, modal_block, response_block
+      INTEGER                                            :: a, b, c, first, first_b, j, last, &
+                                                            last_b, m, m_b, n
       LOGICAL                                            :: outside_gauge_cluster
       REAL(KIND=dp)                                      :: component_weight, curv, denom, gap_tol, &
                                                             local_gap, mu_den, mu_num, mu_shift, &
                                                             occ_curv_max, offdiag_coeff, slope_cap
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: cluster_eval, cluster_eval_b, &
-                                                            modal_curv, modal_curv_b, &
-                                                            modal_energy, modal_energy_b, &
-                                                            modal_occ, modal_occ_b
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cluster_eval, cluster_eval_b, modal_curv, &
+         modal_curv_b, modal_curv_scale, modal_energy, modal_energy_b, modal_occ, modal_occ_b, &
+         modal_raw_curv
 
          n = SIZE(evals)
          IF (n <= 0) RETURN
@@ -22741,9 +22738,11 @@ CONTAINS
             m = last - first + 1
             IF (m > 1) THEN
                kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-               ALLOCATE (cluster_col(m), cluster_work(m, m), cluster_evec(m, m), cluster_kernel(m, m), &
+               ALLOCATE (cluster_col(m), cluster_curv(m, m), cluster_work(m, m), &
+                         cluster_evec(m, m), cluster_kernel(m, m), &
                          modal_col(m), modal_energy(m), modal_occ(m), response_block(m, m), &
-                         response_col(m), cluster_eval(m), modal_curv(m))
+                         response_col(m), cluster_eval(m), modal_curv(m), modal_raw_curv(m), &
+                         modal_curv_scale(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
@@ -22760,9 +22759,29 @@ CONTAINS
                                                                  occ_slope(first:last), modal_energy, modal_occ, &
                                                                  modal_curv)
                cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               cluster_curv(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               modal_raw_curv(:) = 0.0_dp
                DO a = 1, m
-                  cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*modal_curv(a)* &
-                                               (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
+                  DO c = 1, m
+                     curv = MAX(0.0_dp, occ_curv_channel(first + c - 1))
+                     modal_raw_curv(a) = modal_raw_curv(a) + ABS(cluster_evec(c, a))**2*curv
+                  END DO
+                  modal_curv_scale(a) = 0.0_dp
+                  IF (modal_raw_curv(a) > EPSILON(modal_raw_curv(a))) &
+                     modal_curv_scale(a) = SQRT(MAX(0.0_dp, modal_curv(a))/modal_raw_curv(a))
+               END DO
+               DO b = 1, m
+                  DO a = 1, m
+                     DO c = 1, m
+                        curv = MAX(0.0_dp, occ_curv_channel(first + c - 1))
+                        cluster_curv(a, b) = cluster_curv(a, b) + &
+                                             CONJG(cluster_evec(c, a))*curv*cluster_evec(c, b)
+                     END DO
+                     cluster_curv(a, b) = modal_curv_scale(a)*modal_curv_scale(b)*cluster_curv(a, b)
+                     cluster_kernel(a, b) = -projector_weight*cluster_curv(a, b)* &
+                                            CMPLX(cluster_eval(a) + cluster_eval(b) - 2.0_dp*mu_shift, &
+                                                  0.0_dp, KIND=dp)
+                  END DO
                END DO
                response_block(:, :) = MATMUL(cluster_evec, &
                                              MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
@@ -22818,8 +22837,9 @@ CONTAINS
                      kernel(j, first + a - 1) = CONJG(kernel(first + a - 1, j))
                   END DO
                END DO
-               DEALLOCATE (cluster_col, cluster_work, cluster_evec, cluster_kernel, modal_col, modal_energy, &
-                           modal_occ, response_block, response_col, cluster_eval, modal_curv)
+               DEALLOCATE (cluster_col, cluster_curv, cluster_work, cluster_evec, cluster_kernel, modal_col, &
+                           modal_energy, modal_occ, response_block, response_col, cluster_eval, modal_curv, &
+                           modal_raw_curv, modal_curv_scale)
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
                kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
