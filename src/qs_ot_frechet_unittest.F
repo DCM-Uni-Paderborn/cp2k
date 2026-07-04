@@ -364,6 +364,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector cluster-pair response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_modal_occ_shape( &
       "history-safe occupation-projector cluster modal occupation", 5.0E-12_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_gauge_response( &
+      "history-safe occupation-projector cluster gauge-invariant response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_kernel_invariants( &
       "history-safe occupation-projector cluster kernel invariants", 5.0E-12_dp, nfail)
    CALL check_complex_nondiag_tether_gradient("complex non-diagonal tether gradient", &
@@ -16667,6 +16669,85 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_cluster_modal_occ_shape
+
+! **************************************************************************************************
+!> \brief Check that cluster-response physics ignores internal occupation-gauge noise.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_gauge_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 0.37_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel_base, kernel_charge, &
+                                                            kernel_gauge, work
+      INTEGER                                            :: i
+      REAL(KIND=dp)                                      :: active, charge_gap, err, herm_err, &
+                                                            trace_leak
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_charge, occ_curv, occ_gauge, &
+                                                            occ_slope
+
+      evals(:) = [-0.010000_dp, -0.009986_dp, -0.009972_dp, 0.37_dp]
+      occ_curv(:) = [0.044_dp, 0.031_dp, 0.020_dp, 0.006_dp]
+      occ_slope(:) = [0.86_dp, 0.80_dp, 0.74_dp, 0.78_dp]
+      occ_gauge(:) = [1.12_dp, 0.48_dp, 0.80_dp, 0.78_dp]
+      occ_charge(:) = [0.90_dp, 0.84_dp, 0.78_dp, 0.78_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 1) = CMPLX(0.09_dp, 0.0_dp, KIND=dp)
+      work(2, 2) = CMPLX(-0.04_dp, 0.0_dp, KIND=dp)
+      work(3, 3) = CMPLX(0.025_dp, 0.0_dp, KIND=dp)
+      work(4, 4) = CMPLX(-0.015_dp, 0.0_dp, KIND=dp)
+      work(1, 2) = CMPLX(0.18_dp, -0.11_dp, KIND=dp)
+      work(1, 3) = CMPLX(-0.13_dp, 0.07_dp, KIND=dp)
+      work(2, 3) = CMPLX(0.10_dp, 0.06_dp, KIND=dp)
+      work(1, 4) = CMPLX(-0.07_dp, 0.04_dp, KIND=dp)
+      work(2, 4) = CMPLX(0.05_dp, -0.03_dp, KIND=dp)
+      work(3, 4) = CMPLX(0.04_dp, 0.02_dp, KIND=dp)
+      DO i = 2, n
+         work(i, 1:i - 1) = CONJG(work(1:i - 1, i))
+      END DO
+
+      kernel_base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      kernel_gauge(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      kernel_charge(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
+                                                  projector_weight, kernel_base)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_gauge, gauge_gap, &
+                                                  projector_weight, kernel_gauge)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_charge, gauge_gap, &
+                                                  projector_weight, kernel_charge)
+
+      err = MAXVAL(ABS(kernel_base(:, :) - kernel_gauge(:, :)))
+      charge_gap = MAXVAL(ABS(kernel_base(1:3, 4) - kernel_charge(1:3, 4)))
+      herm_err = MAXVAL(ABS(kernel_base(:, :) - CONJG(TRANSPOSE(kernel_base(:, :)))))
+      active = MAXVAL(ABS(kernel_base(:, :)))
+      trace_leak = 0.0_dp
+      DO i = 1, n
+         trace_leak = trace_leak + REAL(kernel_base(i, i), KIND=dp)
+      END DO
+      trace_leak = ABS(trace_leak)
+
+      IF (err > tol .OR. herm_err > tol .OR. trace_leak > tol .OR. &
+          active < active_tol .OR. charge_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with gauge/herm/trace/active/charge", err, herm_err, &
+            trace_leak, active, charge_gap
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with gauge/herm/trace/active/charge", err, herm_err, &
+            trace_leak, active, charge_gap
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_gauge_response
 
 ! **************************************************************************************************
 !> \brief Check mixed cluster/singleton fixed-N kernel invariants independently of the formula mirror.
