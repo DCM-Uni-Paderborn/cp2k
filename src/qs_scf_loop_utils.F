@@ -7197,15 +7197,16 @@ CONTAINS
          projector_physical_direct_density_scale_quality, &
          projector_physical_direct_density_selected_history_quality
       REAL(KIND=dp) :: projector_physical_direct_density_selected_mermin_quality, &
+         projector_physical_direct_density_selective_blend_weight, &
          projector_physical_direct_density_shadow_expected_drop, &
          projector_physical_direct_density_shadow_quality_for_selection, &
          projector_physical_direct_density_trust_quality, projector_physical_direct_diag_balance, &
          projector_physical_direct_diag_compensation, &
          projector_physical_direct_diag_compensation_local_avg, &
          projector_physical_direct_diag_compensation_local_fraction, &
-         projector_physical_direct_diag_compensation_local_max, &
-         projector_physical_direct_diag_shift_avg, projector_physical_direct_diag_shift_max
-      REAL(KIND=dp) :: projector_physical_direct_diag_shift_sum, &
+         projector_physical_direct_diag_compensation_local_max
+      REAL(KIND=dp) :: projector_physical_direct_diag_shift_avg, &
+         projector_physical_direct_diag_shift_max, projector_physical_direct_diag_shift_sum, &
          projector_physical_direct_diagref_correction_drop, &
          projector_physical_direct_diagref_correction_negative, &
          projector_physical_direct_diagref_cross_drop, &
@@ -7213,9 +7214,9 @@ CONTAINS
          projector_physical_direct_diagref_expected_drop, &
          projector_physical_direct_diagref_gdot_energy, &
          projector_physical_direct_diagref_gdot_rotation, projector_physical_direct_diagref_gdotp, &
-         projector_physical_direct_diagref_model_calibrated_drop, &
-         projector_physical_direct_diagref_model_drop
-      REAL(KIND=dp) :: projector_physical_direct_diagref_negative_coeff, &
+         projector_physical_direct_diagref_model_calibrated_drop
+      REAL(KIND=dp) :: projector_physical_direct_diagref_model_drop, &
+         projector_physical_direct_diagref_negative_coeff, &
          projector_physical_direct_diagref_negative_drop, &
          projector_physical_direct_diagref_norm_energy, &
          projector_physical_direct_diagref_norm_rotation, projector_physical_direct_diagref_normp, &
@@ -7223,43 +7224,42 @@ CONTAINS
          projector_physical_direct_diagref_positive_drop, &
          projector_physical_direct_diagref_raw_negative_fraction, &
          projector_physical_direct_diagref_response_abs_step, &
-         projector_physical_direct_diagref_response_abs_trust_ratio, &
-         projector_physical_direct_diagref_response_weighted_step
-      REAL(KIND=dp) :: projector_physical_direct_diagref_response_weighted_trust_ratio, &
+         projector_physical_direct_diagref_response_abs_trust_ratio
+      REAL(KIND=dp) :: projector_physical_direct_diagref_response_weighted_step, &
+         projector_physical_direct_diagref_response_weighted_trust_ratio, &
          projector_physical_direct_diagref_scale_quality, &
          projector_physical_direct_diagref_trust_quality, &
          projector_physical_direct_diagref_weight, projector_physical_direct_direction_scale, &
          projector_physical_direct_euclidean_scale, projector_physical_direct_expected_drop, &
          projector_physical_direct_floor_density_bootstrap_weight, &
          projector_physical_direct_floor_density_maturity, &
-         projector_physical_direct_floor_density_quality, &
-         projector_physical_direct_floor_density_trust_quality
-      REAL(KIND=dp) :: projector_physical_direct_floor_density_weight, &
+         projector_physical_direct_floor_density_quality
+      REAL(KIND=dp) :: projector_physical_direct_floor_density_trust_quality, &
+         projector_physical_direct_floor_density_weight, &
          projector_physical_direct_gdot_base_energy, projector_physical_direct_gdot_energy, &
          projector_physical_direct_gdot_model_response, &
          projector_physical_direct_gdot_raw_response, projector_physical_direct_gdot_rotation, &
          projector_physical_direct_gdotp, projector_physical_direct_history_growth_scale, &
          projector_physical_direct_history_quality, projector_physical_direct_history_scale, &
-         projector_physical_direct_inactive_offdiag_balance, &
-         projector_physical_direct_inactive_offdiag_weight, projector_physical_direct_line_step
-      REAL(KIND=dp) :: projector_physical_direct_line_step_curvature, &
+         projector_physical_direct_inactive_offdiag_balance
+      REAL(KIND=dp) :: projector_physical_direct_inactive_offdiag_weight, &
+         projector_physical_direct_line_step, projector_physical_direct_line_step_curvature, &
          projector_physical_direct_line_step_trust, projector_physical_direct_metric_norm_energy, &
          projector_physical_direct_metric_norm_ratio, &
          projector_physical_direct_metric_norm_rotation, projector_physical_direct_metric_normp, &
          projector_physical_direct_mixed_consistency_scale, &
          projector_physical_direct_mixed_drop_ratio, projector_physical_direct_mixed_quality, &
-         projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight, &
-         projector_physical_direct_model_calibrated_drop, projector_physical_direct_model_drop
-      REAL(KIND=dp) :: projector_physical_direct_model_gap, &
+         projector_physical_direct_mixed_step_scale, projector_physical_direct_mixed_weight
+      REAL(KIND=dp) :: projector_physical_direct_model_calibrated_drop, &
+         projector_physical_direct_model_drop, projector_physical_direct_model_gap, &
          projector_physical_direct_model_gap_drop, projector_physical_direct_model_gap_ratio, &
          projector_physical_direct_model_gap_trust, projector_physical_direct_norm_energy, &
          projector_physical_direct_norm_ratio, projector_physical_direct_norm_rotation, &
          projector_physical_direct_normcap_gap_drop, &
          projector_physical_direct_normcap_model_calibrated_drop, &
-         projector_physical_direct_normcap_model_drop, &
-         projector_physical_direct_normcap_norm_ratio, &
-         projector_physical_direct_normcap_response_abs_step
-      REAL(KIND=dp) :: projector_physical_direct_normcap_response_weighted_step, &
+         projector_physical_direct_normcap_model_drop, projector_physical_direct_normcap_norm_ratio
+      REAL(KIND=dp) :: projector_physical_direct_normcap_response_abs_step, &
+         projector_physical_direct_normcap_response_weighted_step, &
          projector_physical_direct_normcap_scale, projector_physical_direct_normp, &
          projector_physical_direct_offdiag_mix_weight, &
          projector_physical_direct_plateau_gap_mix_weight, &
@@ -7267,10 +7267,10 @@ CONTAINS
          projector_physical_direct_response_abs_step, &
          projector_physical_direct_response_abs_trust_ratio, &
          projector_physical_direct_response_correction_drop, &
-         projector_physical_direct_response_correction_negative, &
-         projector_physical_direct_response_cross_drop, &
-         projector_physical_direct_response_negative_coeff
-      REAL(KIND=dp) :: projector_physical_direct_response_negative_drop, &
+         projector_physical_direct_response_correction_negative
+      REAL(KIND=dp) :: projector_physical_direct_response_cross_drop, &
+         projector_physical_direct_response_negative_coeff, &
+         projector_physical_direct_response_negative_drop, &
          projector_physical_direct_response_positive_coeff, &
          projector_physical_direct_response_positive_drop, &
          projector_physical_direct_response_raw_negative_fraction, &
@@ -7278,18 +7278,20 @@ CONTAINS
          projector_physical_direct_response_weighted_step, &
          projector_physical_direct_response_weighted_trust_ratio, &
          projector_physical_direct_rot_floor_min, projector_physical_direct_scale_quality, &
-         projector_physical_direct_schur_diag_min, projector_physical_direct_schur_eval_max, &
-         projector_physical_direct_schur_eval_min
-      REAL(KIND=dp) :: projector_physical_direct_schur_negative_fraction, &
+         projector_physical_direct_schur_diag_min
+      REAL(KIND=dp) :: projector_physical_direct_schur_eval_max, &
+         projector_physical_direct_schur_eval_min, &
+         projector_physical_direct_schur_negative_fraction, &
          projector_physical_direct_shadow_quality_for_promotion, &
          projector_physical_direct_shadow_weight, projector_physical_direct_soft_cut, &
          projector_physical_direct_soft_metric_fraction, &
          projector_physical_direct_soft_norm_fraction, &
          projector_physical_direct_spectral_direction_scale, &
          projector_physical_direct_spectral_dot, projector_physical_direct_spectral_drop, &
-         projector_physical_direct_spectral_expected_drop, &
-         projector_physical_direct_spectral_floor, projector_physical_direct_spectral_gdot_energy
-      REAL(KIND=dp) :: projector_physical_direct_spectral_gdot_rotation, &
+         projector_physical_direct_spectral_expected_drop
+      REAL(KIND=dp) :: projector_physical_direct_spectral_floor, &
+         projector_physical_direct_spectral_gdot_energy, &
+         projector_physical_direct_spectral_gdot_rotation, &
          projector_physical_direct_spectral_gdotp, &
          projector_physical_direct_spectral_metric_norm_energy, &
          projector_physical_direct_spectral_metric_norm_rotation, &
@@ -7297,21 +7299,20 @@ CONTAINS
          projector_physical_direct_spectral_model_calibrated_drop, &
          projector_physical_direct_spectral_model_drop, &
          projector_physical_direct_spectral_model_gap, &
-         projector_physical_direct_spectral_model_gap_drop, &
-         projector_physical_direct_spectral_model_gap_ratio, &
-         projector_physical_direct_spectral_model_gap_trust
-      REAL(KIND=dp) :: projector_physical_direct_spectral_norm, &
-         projector_physical_direct_spectral_norm_energy, &
+         projector_physical_direct_spectral_model_gap_drop
+      REAL(KIND=dp) :: projector_physical_direct_spectral_model_gap_ratio, &
+         projector_physical_direct_spectral_model_gap_trust, &
+         projector_physical_direct_spectral_norm, projector_physical_direct_spectral_norm_energy, &
          projector_physical_direct_spectral_norm_ratio, &
          projector_physical_direct_spectral_norm_rotation, &
          projector_physical_direct_spectral_normp, &
          projector_physical_direct_spectral_quality_for_selection, &
          projector_physical_direct_spectral_resp_atrust, &
          projector_physical_direct_spectral_resp_wtrust, &
-         projector_physical_direct_spectral_response_abs_step, &
-         projector_physical_direct_spectral_response_weighted_step, &
-         projector_physical_direct_spectral_scale_quality
-      REAL(KIND=dp) :: projector_physical_direct_spectral_shadow_quality_for_probe, &
+         projector_physical_direct_spectral_response_abs_step
+      REAL(KIND=dp) :: projector_physical_direct_spectral_response_weighted_step, &
+         projector_physical_direct_spectral_scale_quality, &
+         projector_physical_direct_spectral_shadow_quality_for_probe, &
          projector_physical_direct_spectral_shift_avg, &
          projector_physical_direct_spectral_shift_max, &
          projector_physical_direct_spectral_trust_quality, &
@@ -7319,145 +7320,149 @@ CONTAINS
          projector_physical_direct_spectral_unit_abs_step, &
          projector_physical_direct_spectral_unit_model_gap_drop, &
          projector_physical_direct_spectral_unit_weighted_step, &
-         projector_physical_direct_step_negative_fraction, &
-         projector_physical_direct_tail_history_quality, &
-         projector_physical_direct_tail_history_scale
-      REAL(KIND=dp) :: projector_physical_direct_tail_residual_quality, &
+         projector_physical_direct_step_negative_fraction
+      REAL(KIND=dp) :: projector_physical_direct_tail_history_quality, &
+         projector_physical_direct_tail_history_scale, &
+         projector_physical_direct_tail_residual_quality, &
          projector_physical_direct_trace_active_actual_ratio, &
          projector_physical_direct_trace_active_basis_weight, &
          projector_physical_direct_trace_active_diag_quad, &
          projector_physical_direct_trace_active_free_quad, &
          projector_physical_direct_trace_active_norm, projector_physical_direct_trace_active_quad, &
          projector_physical_direct_trace_actual_diag_quad, &
-         projector_physical_direct_trace_actual_free_quad, &
-         projector_physical_direct_trace_actual_norm, projector_physical_direct_trace_actual_quad
-      REAL(KIND=dp) :: projector_physical_direct_trace_base_diag_avg, &
+         projector_physical_direct_trace_actual_free_quad
+      REAL(KIND=dp) :: projector_physical_direct_trace_actual_norm, &
+         projector_physical_direct_trace_actual_quad, &
+         projector_physical_direct_trace_base_diag_avg, &
          projector_physical_direct_trace_diag_scale, projector_physical_direct_trace_excess_quad, &
          projector_physical_direct_trace_free_scale, &
          projector_physical_direct_trace_full_diag_quad, &
          projector_physical_direct_trace_full_free_quad, &
          projector_physical_direct_trace_full_norm, projector_physical_direct_trace_full_quad, &
          projector_physical_direct_trace_invariant_diag_quad, &
-         projector_physical_direct_trace_invariant_free_quad, &
-         projector_physical_direct_trace_invariant_gap_quad, &
-         projector_physical_direct_trace_invariant_norm
-      REAL(KIND=dp) :: projector_physical_direct_trace_invariant_quad, &
+         projector_physical_direct_trace_invariant_free_quad
+      REAL(KIND=dp) :: projector_physical_direct_trace_invariant_gap_quad, &
+         projector_physical_direct_trace_invariant_norm, &
+         projector_physical_direct_trace_invariant_quad, &
          projector_physical_direct_trace_invariant_ratio, &
          projector_physical_direct_trace_invariant_term, &
          projector_physical_direct_trace_invariant_trust_quality, &
          projector_physical_direct_trace_local_separate_weight, &
          projector_physical_direct_trace_ratio, projector_physical_direct_trace_residual_support, &
          projector_physical_direct_trace_scale_diag_avg, &
-         projector_physical_direct_trace_selected_quality, &
-         projector_physical_direct_trace_trust_gap_drop, projector_physical_direct_trust_quality, &
-         projector_physical_direct_trust_scale
-      REAL(KIND=dp) :: projector_physical_direct_unit_abs_step, &
-         projector_physical_direct_unit_model_gap, projector_physical_direct_unit_model_gap_drop, &
+         projector_physical_direct_trace_selected_quality
+      REAL(KIND=dp) :: projector_physical_direct_trace_trust_gap_drop, &
+         projector_physical_direct_trust_quality, projector_physical_direct_trust_scale, &
+         projector_physical_direct_unit_abs_step, projector_physical_direct_unit_model_gap, &
+         projector_physical_direct_unit_model_gap_drop, &
          projector_physical_direct_unit_trace_gap_drop, &
          projector_physical_direct_unit_trace_invariant_gap_drop, &
          projector_physical_direct_unit_weighted_step, projector_physical_direction_scale, &
          projector_physical_expected_drop, projector_physical_gdot_energy, &
-         projector_physical_gdot_rotation, projector_physical_gdotp, &
-         projector_physical_model_calibrated_drop, projector_physical_model_drop, &
-         projector_physical_model_gap, projector_physical_model_gap_drop
-      REAL(KIND=dp) :: projector_physical_model_gap_ratio, projector_physical_model_gap_trust, &
+         projector_physical_gdot_rotation, projector_physical_gdotp
+      REAL(KIND=dp) :: projector_physical_model_calibrated_drop, projector_physical_model_drop, &
+         projector_physical_model_gap, projector_physical_model_gap_drop, &
+         projector_physical_model_gap_ratio, projector_physical_model_gap_trust, &
          projector_physical_norm_energy, projector_physical_norm_ratio, &
          projector_physical_norm_rotation, projector_physical_normp, &
          projector_physical_offdiag_abs_avg, projector_physical_offdiag_abs_ratio, &
          projector_physical_offdiag_active_abs_avg, projector_physical_offdiag_delta_max, &
-         projector_physical_offdiag_diag_avg, projector_physical_offdiag_inactive_abs_avg, &
-         projector_physical_offdiag_mode_abs_quad, projector_physical_offdiag_mode_eval_max, &
-         projector_physical_offdiag_mode_eval_min
-      REAL(KIND=dp) :: projector_physical_offdiag_mode_negative_fraction, &
+         projector_physical_offdiag_diag_avg, projector_physical_offdiag_inactive_abs_avg
+      REAL(KIND=dp) :: projector_physical_offdiag_mode_abs_quad, &
+         projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
+         projector_physical_offdiag_mode_negative_fraction, &
          projector_physical_offdiag_mode_negative_quad, &
          projector_physical_offdiag_mode_positive_quad, projector_physical_offdiag_mode_quad, &
          projector_physical_offdiag_mode_quad_abs_ratio, &
          projector_physical_offdiag_mode_quad_signed_ratio, &
          projector_physical_offdiag_mode_step_negative_fraction, &
-         projector_physical_offdiag_plateau_abs_avg, projector_physical_offdiag_plateau_delta_max, &
-         projector_physical_offdiag_plateau_diag_avg, &
+         projector_physical_offdiag_plateau_abs_avg, projector_physical_offdiag_plateau_delta_max
+      REAL(KIND=dp) :: projector_physical_offdiag_plateau_diag_avg, &
          projector_physical_offdiag_plateau_gap_abs_avg, &
-         projector_physical_offdiag_plateau_gap_active_abs_avg
-      REAL(KIND=dp) :: projector_physical_offdiag_plateau_gap_delta_max, &
+         projector_physical_offdiag_plateau_gap_active_abs_avg, &
+         projector_physical_offdiag_plateau_gap_delta_max, &
          projector_physical_offdiag_plateau_gap_diag_avg, &
          projector_physical_offdiag_plateau_gap_inactive_abs_avg, &
          projector_physical_quality_for_selection, projector_physical_residual_abs_avg, &
          projector_physical_residual_delta, projector_physical_residual_delta_max, &
          projector_physical_residual_diag_avg, projector_physical_response_abs_step, &
-         projector_physical_response_abs_trust_ratio, &
-         projector_physical_response_audit_base_weight, &
+         projector_physical_response_abs_trust_ratio
+      REAL(KIND=dp) :: projector_physical_response_audit_base_weight, &
          projector_physical_response_audit_eval_abs_avg, &
-         projector_physical_response_audit_negative_weight_sum
-      REAL(KIND=dp) :: projector_physical_response_audit_positive_weight_sum, &
+         projector_physical_response_audit_negative_weight_sum, &
+         projector_physical_response_audit_positive_weight_sum, &
          projector_physical_response_audit_response_total_sum, &
          projector_physical_response_audit_step_weight_sum, &
          projector_physical_response_correction_drop, &
          projector_physical_response_correction_negative, projector_physical_response_cross_drop, &
          projector_physical_response_negative_coeff, projector_physical_response_negative_drop, &
-         projector_physical_response_positive_coeff, projector_physical_response_positive_drop, &
-         projector_physical_response_raw_negative_fraction, projector_physical_response_weight
-      REAL(KIND=dp) :: projector_physical_response_weighted_step, &
+         projector_physical_response_positive_coeff
+      REAL(KIND=dp) :: projector_physical_response_positive_drop, &
+         projector_physical_response_raw_negative_fraction, projector_physical_response_weight, &
+         projector_physical_response_weighted_step, &
          projector_physical_response_weighted_trust_ratio, projector_physical_scale_quality, &
          projector_physical_trace_balance, &
          projector_physical_trace_invariant_quality_for_selection, &
          projector_physical_trace_split_quality, projector_physical_trust_quality, &
          projector_physical_trust_scale, projector_physical_unit_abs_step, &
-         projector_physical_unit_weighted_step, projector_plateau_gap_delta_diag_avg, &
-         projector_plateau_gap_delta_weight, projector_plateau_gap_quality_for_selection, &
-         projector_response_character_abs_avg
-      REAL(KIND=dp) :: projector_response_character_fraction, projector_response_character_max, &
+         projector_physical_unit_weighted_step, projector_plateau_gap_delta_diag_avg
+      REAL(KIND=dp) :: projector_plateau_gap_delta_weight, &
+         projector_plateau_gap_quality_for_selection, projector_response_character_abs_avg, &
+         projector_response_character_fraction, projector_response_character_max, &
          projector_response_direction_scale, projector_response_expected_drop, &
          projector_response_gap_avg, projector_response_gap_max, projector_response_gap_norm, &
          projector_response_gdot_energy, projector_response_gdot_rotation, &
          projector_response_gdotp, projector_response_metric_norm_energy, &
-         projector_response_metric_norm_rotation, projector_response_metric_normp, &
-         projector_response_model_calibrated_drop, projector_response_model_drop, &
-         projector_response_model_gap, projector_response_model_gap_drop
-      REAL(KIND=dp) :: projector_response_model_gap_ratio, projector_response_model_gap_trust, &
+         projector_response_metric_norm_rotation, projector_response_metric_normp
+      REAL(KIND=dp) :: projector_response_model_calibrated_drop, projector_response_model_drop, &
+         projector_response_model_gap, projector_response_model_gap_drop, &
+         projector_response_model_gap_ratio, projector_response_model_gap_trust, &
          projector_response_norm_energy, projector_response_norm_ratio, &
          projector_response_norm_rotation, projector_response_normp, &
          projector_response_quality_for_selection, projector_response_response_abs_step, &
          projector_response_response_abs_trust_ratio, projector_response_response_weighted_step, &
-         projector_response_response_weighted_trust_ratio, projector_response_scale_quality, &
-         projector_response_signal, projector_response_signal_count, &
-         projector_response_signal_max, projector_response_signal_mean
-      REAL(KIND=dp) :: projector_response_signal_ref, projector_response_signal_sum, &
-         projector_response_signal_weight, projector_response_trust_quality, &
-         projector_response_trust_scale, projector_response_unit_abs_step, &
-         projector_response_unit_weighted_step, projector_tail_active_delta_diag_avg, &
-         projector_tail_active_delta_weight, projector_tail_delta_diag_avg, rayleigh_edge_gap, &
-         residual_delta, residual_reference_quality, response_abs_step, response_abs_trust, &
-         response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
-         response_penalty_term, response_shift, response_step_max
-      REAL(KIND=dp) :: response_trust, response_trust_base, response_trust_factor, &
-         response_trust_ratio, response_weighted_step, response_weighted_trust_ratio, &
-         rot_diag_sum, rot_floor_min, rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
-         rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, rot_grad_energy_norm, &
+         projector_response_response_weighted_trust_ratio
+      REAL(KIND=dp) :: projector_response_scale_quality, projector_response_signal, &
+         projector_response_signal_count, projector_response_signal_max, &
+         projector_response_signal_mean, projector_response_signal_ref, &
+         projector_response_signal_sum, projector_response_signal_weight, &
+         projector_response_trust_quality, projector_response_trust_scale, &
+         projector_response_unit_abs_step, projector_response_unit_weighted_step, &
+         projector_tail_active_delta_diag_avg, projector_tail_active_delta_weight, &
+         projector_tail_delta_diag_avg, rayleigh_edge_gap, residual_delta, &
+         residual_reference_quality, response_abs_step
+      REAL(KIND=dp) :: response_abs_trust, response_abs_trust_ratio, response_mixed_diag_avg, &
+         response_penalty_diag_sum, response_penalty_term, response_shift, response_step_max, &
+         response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
+         response_weighted_step, response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, &
+         rot_grad_active_fraction_avg, rot_grad_active_fraction_max, rot_grad_active_im, &
+         rot_grad_active_re, rot_grad_active_weight_sum, rot_grad_energy_norm, &
          rot_grad_fermi_weight, rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, &
-         rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
+         rot_grad_gap_weight
+      REAL(KIND=dp) :: rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
          rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
-         rot_grad_inactive_weight_sum
-      REAL(KIND=dp) :: rot_grad_pair_fraction, rot_grad_physical_norm, rot_grad_rest_fraction, &
-         rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, &
-         row_floor_max, row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
-         row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
-         schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
-         spectral_resp_correction_negative, spectral_resp_cross_drop, &
-         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff
-      REAL(KIND=dp) :: spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, &
-         spectral_resp_weight, split_curvature_scale, split_dense_expected_ratio, &
-         split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, &
-         split_direction_scale, split_expected_drop, split_gdot_energy, split_gdot_rotation, &
-         split_gdotp, split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, &
-         split_norm_energy, split_norm_ratio, split_norm_rotation, split_normp, &
-         split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
-         split_quality_for_selection
-      REAL(KIND=dp) :: split_residual_delta, split_residual_quality, split_response_abs_step, &
-         split_response_abs_trust, split_response_abs_trust_ratio, split_response_step, &
-         split_response_trust, split_response_trust_factor, split_response_weighted_step, &
-         split_response_weighted_trust_ratio, split_rot_floor_min, split_scale_quality, &
-         split_schur_diag_min, split_trust_quality, step_gauge_quality, tether_curv_diag_max, &
-         tether_curv_diag_sum, tether_projected_term, tether_response, tether_response_diag_sum, &
+         rot_grad_inactive_weight_sum, rot_grad_pair_fraction, rot_grad_physical_norm, &
+         rot_grad_rest_fraction, rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, &
+         row_floor_avg, row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
+         row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, rx_shift, &
+         rx_weight, scale_quality, schur_active_occ_min, schur_diag_min, schur_energy_window, &
+         spectral_resp_correction_drop
+      REAL(KIND=dp) :: spectral_resp_correction_negative, spectral_resp_cross_drop, &
+         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff, &
+         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
+         split_curvature_scale, split_dense_expected_ratio, split_density_projector_fraction, &
+         split_diag_shift_max, split_diag_shift_sum, split_direction_scale, split_expected_drop, &
+         split_gdot_energy, split_gdot_rotation, split_gdotp, split_model_calibrated_drop, &
+         split_model_drop, split_model_gap_ratio, split_norm_energy, split_norm_ratio
+      REAL(KIND=dp) :: split_norm_rotation, split_normp, split_occgap_shadow_drop, &
+         split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
+         split_quality_for_selection, split_residual_delta, split_residual_quality, &
+         split_response_abs_step, split_response_abs_trust, split_response_abs_trust_ratio, &
+         split_response_step, split_response_trust, split_response_trust_factor, &
+         split_response_weighted_step, split_response_weighted_trust_ratio, split_rot_floor_min, &
+         split_scale_quality, split_schur_diag_min, split_trust_quality, step_gauge_quality, &
+         tether_curv_diag_max, tether_curv_diag_sum
+      REAL(KIND=dp) :: tether_projected_term, tether_response, tether_response_diag_sum, &
          tether_strength, tether_weight, total_curv_diag_max, total_curv_diag_sum, z_shift, &
          z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, constrained_sol, &
@@ -8514,6 +8519,7 @@ CONTAINS
          projector_physical_direct_floor_density_quality = 0.0_dp
          projector_physical_direct_floor_density_trust_quality = 1.0_dp
          projector_physical_direct_floor_density_weight = 0.0_dp
+         projector_physical_direct_density_selective_blend_weight = 0.0_dp
          projector_physical_response_abs_step = 0.0_dp
          projector_physical_response_abs_trust_ratio = 0.0_dp
          projector_physical_response_weighted_step = 0.0_dp
@@ -10006,6 +10012,46 @@ CONTAINS
                   MERGE(response_density_floor_audit_exact(:, :), &
                         response_density_full_audit_exact(:, :), &
                         exact_density_floor_audit_ready)
+            END IF
+         END IF
+         IF (exact_density_direct_response_ready .AND. &
+             exact_density_basis_selective_audit_ready .AND. &
+             projector_physical_direct_floor_density_weight > &
+             EPSILON(projector_physical_direct_floor_density_weight) .AND. &
+             projector_density_full_global_selective_mix_weight > &
+             EPSILON(projector_density_full_global_selective_mix_weight)) THEN
+            projector_physical_direct_density_selective_blend_weight = &
+               MIN(1.0_dp, MAX(0.0_dp, projector_density_full_global_selective_mix_weight))
+            IF (exact_density_response_ready) THEN
+               energy_cross_density_direct(:, :) = &
+                  (1.0_dp - projector_physical_direct_density_selective_blend_weight)* &
+                  energy_cross_density_direct(:, :) + &
+                  projector_physical_direct_density_selective_blend_weight* &
+                  ((1.0_dp - projector_physical_direct_floor_density_weight)* &
+                   energy_cross_density(:, :) + &
+                   projector_physical_direct_floor_density_weight* &
+                   energy_cross_density_basis_selective_audit(:, :))
+               response_density_direct_exact(:, :) = &
+                  (1.0_dp - projector_physical_direct_density_selective_blend_weight)* &
+                  response_density_direct_exact(:, :) + &
+                  projector_physical_direct_density_selective_blend_weight* &
+                  ((1.0_dp - projector_physical_direct_floor_density_weight)* &
+                   response_density_exact(:, :) + &
+                   projector_physical_direct_floor_density_weight* &
+                   response_density_basis_selective_audit_exact(:, :))
+            ELSE
+               energy_cross_density_direct(:, :) = &
+                  (1.0_dp - projector_physical_direct_density_selective_blend_weight)* &
+                  energy_cross_density_direct(:, :) + &
+                  projector_physical_direct_density_selective_blend_weight* &
+                  projector_physical_direct_floor_density_weight* &
+                  energy_cross_density_basis_selective_audit(:, :)
+               response_density_direct_exact(:, :) = &
+                  (1.0_dp - projector_physical_direct_density_selective_blend_weight)* &
+                  response_density_direct_exact(:, :) + &
+                  projector_physical_direct_density_selective_blend_weight* &
+                  projector_physical_direct_floor_density_weight* &
+                  response_density_basis_selective_audit_exact(:, :)
             END IF
          END IF
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &

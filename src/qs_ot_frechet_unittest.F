@@ -300,6 +300,8 @@ PROGRAM qs_ot_frechet_unittest
                                                     5.0E-14_dp, nfail)
    CALL check_projector_direct_floor_density_schur( &
       "complex projector Direct floor-density Schur blend", 5.0E-13_dp, nfail)
+   CALL check_projector_direct_selective_density_blend( &
+      "complex projector Direct selective density blend", 5.0E-14_dp, nfail)
    CALL check_projector_direct_density_curvature_mix( &
       "complex projector Direct density curvature mix", 5.0E-14_dp, nfail)
    CALL check_projector_modal_response_sign_model("complex projector modal response sign model", &
@@ -11304,6 +11306,72 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_direct_floor_density_schur
+
+! **************************************************************************************************
+!> \brief Check that selective density-basis response only replaces the Direct floor source.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_selective_density_blend(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 2
+      REAL(KIND=dp), PARAMETER                           :: floor_weight = 0.32_dp, &
+                                                            selective_weight = 0.27_dp
+
+      REAL(KIND=dp)                                      :: base_gap, endpoint_err, err, source_gap
+      REAL(KIND=dp), DIMENSION(ne, nrot) :: base_response, direct_response, expected_response, &
+         floor_response, full_selective, selective_response, zero_selective
+
+      base_response(:, :) = RESHAPE([ &
+                                    0.10_dp, -0.04_dp, 0.02_dp, -0.01_dp, &
+                                    -0.08_dp, 0.06_dp, -0.03_dp, 0.05_dp], [ne, nrot])
+      floor_response(:, :) = RESHAPE([ &
+                                     0.03_dp, -0.02_dp, 0.08_dp, -0.06_dp, &
+                                     -0.01_dp, 0.04_dp, -0.05_dp, 0.02_dp], [ne, nrot])
+      selective_response(:, :) = RESHAPE([ &
+                                         -0.02_dp, 0.01_dp, 0.04_dp, -0.03_dp, &
+                                         0.05_dp, -0.03_dp, 0.01_dp, 0.07_dp], [ne, nrot])
+
+      direct_response(:, :) = (1.0_dp - floor_weight)*base_response(:, :) + &
+                              floor_weight*floor_response(:, :)
+      expected_response(:, :) = (1.0_dp - floor_weight)*base_response(:, :) + &
+                                floor_weight*((1.0_dp - selective_weight)*floor_response(:, :) + &
+                                              selective_weight*selective_response(:, :))
+      direct_response(:, :) = (1.0_dp - selective_weight)*direct_response(:, :) + &
+                              selective_weight*((1.0_dp - floor_weight)*base_response(:, :) + &
+                                                floor_weight*selective_response(:, :))
+      zero_selective(:, :) = (1.0_dp - floor_weight)*base_response(:, :) + &
+                             floor_weight*floor_response(:, :)
+      full_selective(:, :) = (1.0_dp - floor_weight)*base_response(:, :) + &
+                             floor_weight*selective_response(:, :)
+
+      err = MAXVAL(ABS(direct_response(:, :) - expected_response(:, :)))
+      endpoint_err = MAXVAL(ABS(zero_selective(:, :) - &
+                                ((1.0_dp - floor_weight)*base_response(:, :) + &
+                                 floor_weight*floor_response(:, :))))
+      endpoint_err = MAX(endpoint_err, MAXVAL(ABS(full_selective(:, :) - &
+                                                  ((1.0_dp - floor_weight)*base_response(:, :) + &
+                                                   floor_weight*selective_response(:, :)))))
+      base_gap = MAXVAL(ABS((expected_response(:, :) - floor_weight* &
+                             ((1.0_dp - selective_weight)*floor_response(:, :) + &
+                              selective_weight*selective_response(:, :))) - &
+                            (1.0_dp - floor_weight)*base_response(:, :)))
+      source_gap = MAXVAL(ABS(floor_response(:, :) - selective_response(:, :)))
+
+      IF (err > tol .OR. endpoint_err > tol .OR. base_gap > tol .OR. source_gap < 1.0E-2_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/endpoint/base/source", err, endpoint_err, base_gap, source_gap
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/endpoint/base/source", err, endpoint_err, base_gap, source_gap
+      END IF
+
+   END SUBROUTINE check_projector_direct_selective_density_blend
 
 ! **************************************************************************************************
 !> \brief Check the sign-aware finite Projector-Hessian response model in mixed curvature modes.
