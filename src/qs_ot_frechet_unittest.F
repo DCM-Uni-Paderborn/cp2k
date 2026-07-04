@@ -220,6 +220,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density floor bootstrap weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_floor_source_weight( &
       "complex projector density global floor-source weight", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_filtered_source_weight( &
+      "complex projector density global filtered-source weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_selected_response_scale( &
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
@@ -8827,6 +8829,62 @@ CONTAINS
    END SUBROUTINE check_projector_density_global_floor_source_weight
 
 ! **************************************************************************************************
+!> \brief Check accepted-history calibrated global filtered-source response mix.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_filtered_source_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: active_weight, err, expected_weight, high_lowcurv, high_residual, immature, &
+         low_mermin, no_residual, weak_response
+
+      active_weight = dense_density_full_global_filtered_source_weight( &
+                      5.0E-6_dp, 0.95_dp, 0.90_dp, 0.25_dp, 0.16_dp, 16, &
+                      1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      low_mermin = dense_density_full_global_filtered_source_weight( &
+                   5.0E-6_dp, 0.01_dp, 0.90_dp, 0.25_dp, 0.16_dp, 16, &
+                   1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      high_residual = dense_density_full_global_filtered_source_weight( &
+                      2.0E-4_dp, 0.95_dp, 0.90_dp, 0.25_dp, 0.16_dp, 16, &
+                      1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      immature = dense_density_full_global_filtered_source_weight( &
+                 5.0E-6_dp, 0.95_dp, 0.90_dp, 0.25_dp, 0.16_dp, 3, &
+                 1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      no_residual = dense_density_full_global_filtered_source_weight( &
+                    5.0E-6_dp, 0.95_dp, 0.90_dp, 0.0_dp, 0.0_dp, 16, &
+                    1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      weak_response = dense_density_full_global_filtered_source_weight( &
+                      5.0E-6_dp, 0.95_dp, 0.90_dp, 0.25_dp, 0.16_dp, 16, &
+                      1.0E-6_dp, 1.0E-10_dp, 2.0E-2_dp)
+      high_lowcurv = dense_density_full_global_filtered_source_weight( &
+                     5.0E-6_dp, 0.95_dp, 0.90_dp, 0.25_dp, 0.16_dp, 16, &
+                     1.0E-6_dp, 8.0E-7_dp, 2.0E-1_dp)
+
+      expected_weight = 2.5E-3_dp*SQRT(0.90_dp*dense_selected_tail_mix_residual_quality(0.25_dp, &
+                                                                                        0.16_dp))* &
+                        SQRT(8.0E-1_dp)*(1.0_dp - 2.0E-2_dp/1.0E-1_dp)
+      err = ABS(active_weight - expected_weight)
+
+      IF (err > tol .OR. active_weight <= 0.0_dp .OR. active_weight >= 2.5E-3_dp .OR. &
+          low_mermin > tol .OR. high_residual > tol .OR. immature > tol .OR. &
+          no_residual > tol .OR. weak_response > tol .OR. high_lowcurv > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/lm/hr/im/nr/wr/hl", err, active_weight, low_mermin, &
+            high_residual, immature, no_residual, weak_response, high_lowcurv
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/lm/hr/im/nr/wr/hl", err, active_weight, low_mermin, &
+            high_residual, immature, no_residual, weak_response, high_lowcurv
+      END IF
+
+   END SUBROUTINE check_projector_density_global_filtered_source_weight
+
+! **************************************************************************************************
 !> \brief Check accepted-history selected global response step scaling.
 !> \param label ...
 !> \param tol ...
@@ -13302,6 +13360,76 @@ CONTAINS
       weight = MAX(0.0_dp, MIN(1.0E-2_dp, weight))
 
    END FUNCTION dense_density_full_global_floor_source_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of global full-density filtered-source response mix.
+!> \param residual_delta ...
+!> \param selected_quality ...
+!> \param selected_quality_ema ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \param filtered_abs_avg ...
+!> \param filtered_exact_abs_avg ...
+!> \param filtered_low_curv_fraction ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_full_global_filtered_source_weight(residual_delta, selected_quality, &
+                                                             selected_quality_ema, &
+                                                             selected_residual_quality, &
+                                                             selected_residual_quality_ema, &
+                                                             selected_samples, filtered_abs_avg, &
+                                                             filtered_exact_abs_avg, &
+                                                             filtered_low_curv_fraction) &
+      RESULT(weight)
+      REAL(KIND=dp), INTENT(IN) :: residual_delta, selected_quality, selected_quality_ema, &
+         selected_residual_quality, selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: filtered_abs_avg, &
+                                                            filtered_exact_abs_avg, &
+                                                            filtered_low_curv_fraction
+      REAL(KIND=dp)                                      :: weight
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: low_curv_quality, maturity, &
+                                                            mermin_support, recent_quality, &
+                                                            residual_support, response_support
+
+      weight = 0.0_dp
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (selected_samples < 4) RETURN
+      IF (filtered_abs_avg <= EPSILON(filtered_abs_avg)) RETURN
+      IF (filtered_exact_abs_avg <= EPSILON(filtered_exact_abs_avg)) RETURN
+
+      response_support = filtered_exact_abs_avg/MAX(filtered_abs_avg, EPSILON(filtered_abs_avg))
+      IF (response_support < 1.0E-3_dp) RETURN
+      response_support = MIN(1.0_dp, SQRT(MAX(0.0_dp, response_support)))
+
+      low_curv_quality = 1.0_dp - filtered_low_curv_fraction/1.0E-1_dp
+      low_curv_quality = MAX(0.0_dp, MIN(1.0_dp, low_curv_quality))
+      IF (low_curv_quality <= EPSILON(low_curv_quality)) RETURN
+
+      residual_support = dense_selected_tail_mix_residual_quality(selected_residual_quality, &
+                                                                  selected_residual_quality_ema)
+      IF (residual_support <= EPSILON(residual_support)) RETURN
+
+      mermin_support = MAX(0.0_dp, MIN(1.0_dp, selected_quality_ema))
+      IF (selected_quality > EPSILON(selected_quality)) THEN
+         recent_quality = MAX(0.0_dp, MIN(1.0_dp, selected_quality))
+         mermin_support = MIN(mermin_support, recent_quality)
+      END IF
+      IF (mermin_support < 2.5E-2_dp) RETURN
+
+      maturity_samples = 13
+      maturity = REAL(MAX(0, selected_samples - 4 + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+
+      weight = 2.5E-3_dp*maturity* &
+               SQRT(MAX(0.0_dp, MIN(1.0_dp, residual_support*mermin_support)))* &
+               response_support*low_curv_quality
+      weight = MAX(0.0_dp, MIN(2.5E-3_dp, weight))
+
+   END FUNCTION dense_density_full_global_filtered_source_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected global full-density response step scaling.
