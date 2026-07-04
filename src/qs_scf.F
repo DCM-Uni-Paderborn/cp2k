@@ -1935,7 +1935,8 @@ CONTAINS
                                         nkpoint=nkpoint, &
                                         nspin_ot=nspin_ot, &
                                         kp_range=kp_range, &
-                                        wkp=wkp)
+                                        wkp=wkp, &
+                                        kpoints=kpoints)
                CALL allocate_qs_ot_kpoint_state(qs_env=qs_env, &
                                                 scf_env=scf_env, &
                                                 scf_control=scf_control, &
@@ -2079,9 +2080,10 @@ CONTAINS
 !> \param nspin_ot ...
 !> \param kp_range ...
 !> \param wkp ...
+!> \param kpoints ...
 ! **************************************************************************************************
    SUBROUTINE allocate_qs_ot_envs(scf_env, scf_control, dft_control, scf_section, &
-                                  do_kpoints, nkpoint, nspin_ot, kp_range, wkp)
+                                  do_kpoints, nkpoint, nspin_ot, kp_range, wkp, kpoints)
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -2090,9 +2092,11 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: nkpoint, nspin_ot
       INTEGER, DIMENSION(2), INTENT(IN)                  :: kp_range
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(kpoint_type), OPTIONAL, POINTER               :: kpoints
 
-      INTEGER                                            :: ikpoint, ispin, local_kpoint, &
-                                                            number_of_OT_envs, ot_channel
+      INTEGER                                            :: ikpoint, ispin, kpoint_multiplicity, &
+                                                            local_kpoint, number_of_OT_envs, &
+                                                            ot_channel
       LOGICAL                                            :: do_rotation, is_full_all
       REAL(KIND=dp)                                      :: kpoint_weight
 
@@ -2152,11 +2156,23 @@ CONTAINS
             IF (do_kpoints) THEN
                kpoint_weight = 1.0_dp
                IF (ASSOCIATED(wkp)) kpoint_weight = wkp(ikpoint)
+               kpoint_multiplicity = 1
+               IF (PRESENT(kpoints)) THEN
+                  IF (ASSOCIATED(kpoints)) THEN
+                     IF (ASSOCIATED(kpoints%kp_sym)) THEN
+                        IF (ikpoint <= SIZE(kpoints%kp_sym)) THEN
+                           IF (ASSOCIATED(kpoints%kp_sym(ikpoint)%kpoint_sym)) &
+                              kpoint_multiplicity = MAX(1, kpoints%kp_sym(ikpoint)%kpoint_sym%nwght)
+                        END IF
+                     END IF
+                  END IF
+               END IF
                CALL qs_ot_set_context(scf_env%qs_ot_env(ot_channel), &
                                       spin_index=ispin, &
                                       kpoint_index=ikpoint, &
                                       local_kpoint_index=local_kpoint, &
-                                      kpoint_weight=kpoint_weight)
+                                      kpoint_weight=kpoint_weight, &
+                                      kpoint_multiplicity=kpoint_multiplicity)
             ELSE
                CALL qs_ot_set_context(scf_env%qs_ot_env(ot_channel), spin_index=ispin)
             END IF

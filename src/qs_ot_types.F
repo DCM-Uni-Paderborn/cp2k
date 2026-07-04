@@ -111,6 +111,7 @@ MODULE qs_ot_types
       TYPE(qs_ot_settings_type) :: settings = qs_ot_settings_type()
       LOGICAL                   :: restricted = .FALSE.
       INTEGER                   :: spin_index = 0, kpoint_index = 0, local_kpoint_index = 0
+      INTEGER                   :: kpoint_multiplicity = 1
       REAL(KIND=dp)             :: kpoint_weight = 1.0_dp
       LOGICAL                   :: has_kpoint_context = .FALSE.
       LOGICAL                   :: state_allocated = .FALSE.
@@ -709,17 +710,22 @@ CONTAINS
 !> \param kpoint_index ...
 !> \param local_kpoint_index ...
 !> \param kpoint_weight ...
+!> \param kpoint_multiplicity ...
 ! **************************************************************************************************
-   SUBROUTINE qs_ot_set_context(qs_ot_env, spin_index, kpoint_index, local_kpoint_index, kpoint_weight)
+   SUBROUTINE qs_ot_set_context(qs_ot_env, spin_index, kpoint_index, local_kpoint_index, kpoint_weight, &
+                                kpoint_multiplicity)
       TYPE(qs_ot_type)                                   :: qs_ot_env
       INTEGER, INTENT(IN), OPTIONAL                      :: spin_index, kpoint_index, &
                                                             local_kpoint_index
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: kpoint_weight
+      INTEGER, INTENT(IN), OPTIONAL                      :: kpoint_multiplicity
 
       IF (PRESENT(spin_index)) qs_ot_env%spin_index = spin_index
       IF (PRESENT(kpoint_index)) qs_ot_env%kpoint_index = kpoint_index
       IF (PRESENT(local_kpoint_index)) qs_ot_env%local_kpoint_index = local_kpoint_index
       IF (PRESENT(kpoint_weight)) qs_ot_env%kpoint_weight = kpoint_weight
+      IF (PRESENT(kpoint_multiplicity)) &
+         qs_ot_env%kpoint_multiplicity = MAX(1, kpoint_multiplicity)
       qs_ot_env%has_kpoint_context = PRESENT(kpoint_index) .OR. PRESENT(local_kpoint_index)
 
    END SUBROUTINE qs_ot_set_context
