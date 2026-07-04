@@ -9450,7 +9450,7 @@ CONTAINS
                END DO
                CALL project_kpoint_ot_schur_response(response_density_basis_damped_audit(:, s), &
                                                      occ_curv, tether_curv, occ_curv_projection_sum, &
-                                                     channel_nmo, e_offset)
+                                                     channel_nmo, e_offset, metric_floor_fraction=0.1_dp)
             END DO
             projector_density_basis_damped_audit_abs_avg = &
                SUM(ABS(response_density_basis_damped_audit(:, :)))/REAL(MAX(1, ne*nrot), KIND=dp)
@@ -18999,13 +18999,15 @@ CONTAINS
 !> \param occ_curv_sum ...
 !> \param channel_nmo ...
 !> \param e_offset ...
+!> \param metric_floor_fraction ...
 ! **************************************************************************************************
       SUBROUTINE project_kpoint_ot_schur_response(response_vec, occ_curv, tether_curv, &
-                                                  occ_curv_sum, channel_nmo, e_offset)
+                                                  occ_curv_sum, channel_nmo, e_offset, metric_floor_fraction)
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response_vec
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
       REAL(KIND=dp), INTENT(IN)                          :: occ_curv_sum
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: metric_floor_fraction
 
       INTEGER                                            :: first_energy, ie, local_channel, nmo, &
                                                             pass
@@ -19016,7 +19018,8 @@ CONTAINS
          ! the canonical tether gauge is local to each OT channel.
          projected = .FALSE.
          CALL project_kpoint_ot_schur_response_metric(response_vec, occ_curv, tether_curv, &
-                                                      occ_curv_sum, channel_nmo, e_offset, projected)
+                                                      occ_curv_sum, channel_nmo, e_offset, projected, &
+                                                      metric_floor_fraction)
          IF (.NOT. projected) THEN
             DO pass = 1, 2
                IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
@@ -19053,19 +19056,22 @@ CONTAINS
 !> \param channel_nmo ...
 !> \param e_offset ...
 !> \param projected ...
+!> \param metric_floor_fraction ...
 ! **************************************************************************************************
       SUBROUTINE project_kpoint_ot_schur_response_metric(response_vec, occ_curv, tether_curv, &
-                                                         occ_curv_sum, channel_nmo, e_offset, projected)
+                                                         occ_curv_sum, channel_nmo, e_offset, projected, &
+                                                         metric_floor_fraction)
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response_vec
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
       REAL(KIND=dp), INTENT(IN)                          :: occ_curv_sum
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
       LOGICAL, INTENT(OUT)                               :: projected
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: metric_floor_fraction
 
       INTEGER                                            :: first_energy, ie, local_channel, nmo
-      REAL(KIND=dp) :: channel_alpha, channel_beta, channel_rhs, curv_max, denom, &
-         global_alpha2_over_beta, global_alpha_rhs_over_beta, lambda_occ, max_lambda, occ_metric, &
-         occ_rhs, total_curv
+      REAL(KIND=dp) :: channel_alpha, channel_beta, channel_rhs, curv_floor, curv_max, denom, &
+         denom_curv, global_alpha2_over_beta, global_alpha_rhs_over_beta, lambda_occ, max_lambda, &
+         occ_metric, occ_rhs, total_curv
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: channel_lambda, inv_curv
 
          projected = .FALSE.
@@ -19075,12 +19081,16 @@ CONTAINS
          IF (curv_max <= EPSILON(curv_max)) THEN
             RETURN
          END IF
+         curv_floor = 0.0_dp
+         IF (PRESENT(metric_floor_fraction)) &
+            curv_floor = MAX(0.0_dp, metric_floor_fraction)*curv_max
          ALLOCATE (channel_lambda(SIZE(channel_nmo)), inv_curv(SIZE(response_vec)))
          channel_lambda(:) = 0.0_dp
          DO ie = 1, SIZE(response_vec)
             total_curv = occ_curv(ie) + tether_curv(ie)
             IF (total_curv > EPSILON(curv_max)) THEN
-               inv_curv(ie) = 1.0_dp/total_curv
+               denom_curv = MAX(total_curv, curv_floor)
+               inv_curv(ie) = 1.0_dp/denom_curv
             ELSE
                inv_curv(ie) = 0.0_dp
             END IF
