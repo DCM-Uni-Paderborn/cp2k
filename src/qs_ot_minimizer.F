@@ -43,6 +43,7 @@ MODULE qs_ot_minimizer
    PUBLIC  :: ot_mini
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
+   INTEGER, PARAMETER, PRIVATE :: ot_cg_kp_physical_control_min_samples = 8
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_cg_kp_history_spike_ratio = 1.0E4_dp, &
                                         ot_cg_kp_history_jump_ratio = 1.0E2_dp, &
                                         ot_cg_kp_history_jump_beta = 1.0E1_dp, &
@@ -68,6 +69,9 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
                                         ot_cg_kp_physical_raw_delta_floor_ratio = 1.0E-2_dp, &
                                         ot_cg_kp_physical_raw_delta_mermin_floor = 1.0E-8_dp, &
+                                        ot_cg_kp_physical_control_eps_factor = 3.0_dp, &
+                                        ot_cg_kp_physical_control_quality = 8.0E-1_dp, &
+                                        ot_cg_kp_physical_control_gap = 5.0E-2_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
@@ -1228,10 +1232,10 @@ CONTAINS
          schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, mermin_tail_min, &
-         nvar, physical_delta, physical_gnorm, raw_delta, raw_guard_delta, raw_matrix_gnorm_im, &
-         raw_matrix_gnorm_re, residual_spike_quality, residual_tail_min, residual_trust_quality, &
-         residual_trust_scale, sample_accepted_drop, sample_gap, sample_guard_drop, &
-         sample_quality, sample_residual_growth_ratio, test_down, tmp
+         nvar, physical_control_delta, physical_delta, physical_gnorm, raw_delta, raw_guard_delta, &
+         raw_matrix_gnorm_im, raw_matrix_gnorm_re, residual_spike_quality, residual_tail_min, &
+         residual_trust_quality, residual_trust_scale, sample_accepted_drop, sample_gap, &
+         sample_guard_drop, sample_quality, sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1457,13 +1461,28 @@ CONTAINS
          qs_ot_env(1)%kpoint_physical_delta = -1.0_dp
          IF (complex_kpoint_history .AND. qs_ot_env(1)%settings%occupation_preconditioner .AND. &
              qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
-             qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
              qs_ot_env(1)%kpoint_physical_delta_groups > 0) THEN
             matrix_gnorm = MAX(0.0_dp, raw_matrix_gnorm_re) + MAX(0.0_dp, raw_matrix_gnorm_im)
             physical_gnorm = matrix_gnorm + MAX(0.0_dp, qs_ot_env(1)%kpoint_physical_gnorm)
             physical_delta = SQRT(ABS(physical_gnorm)/nvar)
             qs_ot_env(1)%kpoint_physical_delta = physical_delta
-            IF (physical_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_delta
+            IF (qs_ot_env(1)%kpoint_physical_delta_ready) THEN
+               IF (physical_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_delta
+            ELSE IF (qs_ot_env(1)%kpoint_eps_scf > 0.0_dp .AND. &
+                     physical_delta > 0.0_dp .AND. physical_delta < qs_ot_env(1)%delta .AND. &
+                     qs_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                     ot_cg_kp_physical_control_min_samples .AND. &
+                     qs_ot_env(1)%mermin_ls_accepted_quality_ema >= &
+                     ot_cg_kp_physical_control_quality .AND. &
+                     qs_ot_env(1)%mermin_ls_accepted_gap_ema <= &
+                     ot_cg_kp_physical_control_gap) THEN
+               ! Keep non-ready tail steps above EPS_SCF, but steer trust/projector logic
+               ! with the measured fixed-N residual instead of a preconditioned raw spike.
+               physical_control_delta = MAX(physical_delta, &
+                                            ot_cg_kp_physical_control_eps_factor* &
+                                            qs_ot_env(1)%kpoint_eps_scf)
+               IF (physical_control_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_control_delta
+            END IF
          END IF
          beta_pr = (qs_ot_env(1)%gnorm - gnorm_cross)/qs_ot_env(1)%gnorm_old
       ELSE
