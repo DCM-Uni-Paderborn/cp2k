@@ -134,6 +134,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical density global alignment", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_global_low_curv( &
       "complex projector physical density global low-curv response", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_lift_control( &
+      "complex projector density global residual-tail lift control", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_convexity( &
       "complex projector physical density-response convexity", 5.0E-14_dp, nfail)
    CALL check_projector_density_floor_audit_response_helper( &
@@ -5438,6 +5440,48 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_global_low_curv
+
+! **************************************************************************************************
+!> \brief Check residual-tail control of the global low-curvature density lift.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_lift_control(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, loose_control, strict_far_control, &
+                                                            strict_floor_control, &
+                                                            strict_full_control, &
+                                                            strict_tail_control
+
+      strict_far_control = dense_density_global_lift_control(1.0E-7_dp, 2.0E-4_dp)
+      strict_tail_control = dense_density_global_lift_control(1.0E-7_dp, 5.0E-7_dp)
+      strict_floor_control = dense_density_global_lift_control(1.0E-7_dp, 1.5E-7_dp)
+      strict_full_control = dense_density_global_lift_control(1.0E-7_dp, 2.0E-6_dp)
+      loose_control = dense_density_global_lift_control(1.0E-6_dp, 1.5E-7_dp)
+
+      err = MAX(ABS(strict_far_control - 1.0E-7_dp), &
+                ABS(strict_tail_control - 5.0E-7_dp), &
+                ABS(strict_floor_control - 1.5E-7_dp), &
+                ABS(strict_full_control - 1.0E-6_dp), &
+                ABS(loose_control - 1.0E-6_dp))
+
+      IF (err > tol .OR. strict_tail_control <= strict_far_control .OR. &
+          strict_full_control > 1.0E-6_dp + tol .OR. loose_control < strict_full_control - tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with far/tail/floor/full/loose", strict_far_control, strict_tail_control, &
+            strict_floor_control, strict_full_control, loose_control
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with far/tail/floor/full/loose", strict_far_control, strict_tail_control, &
+            strict_floor_control, strict_full_control, loose_control
+      END IF
+
+   END SUBROUTINE check_projector_density_global_lift_control
 
 ! **************************************************************************************************
 !> \brief Check that conflicting density responses are blended, not extrapolated.
@@ -18064,6 +18108,24 @@ CONTAINS
                          (2.0_dp*active_fraction - active_fraction*active_fraction)
 
    END FUNCTION dense_bounded_density_response
+
+! **************************************************************************************************
+!> \brief Dense mirror of the residual-aware global density-lift control.
+!> \param eps_scf_channel ...
+!> \param residual_delta ...
+!> \return lift control used to recover low-curvature response in the residual tail
+! **************************************************************************************************
+   FUNCTION dense_density_global_lift_control(eps_scf_channel, residual_delta) RESULT(lift_control)
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf_channel, residual_delta
+      REAL(KIND=dp)                                      :: lift_control
+
+      REAL(KIND=dp), PARAMETER :: lift_eps_full = 1.0E-6_dp, response_full_delta = 1.0E-4_dp
+
+      lift_control = MAX(0.0_dp, eps_scf_channel)
+      IF (residual_delta <= response_full_delta) &
+         lift_control = MAX(lift_control, MIN(MAX(0.0_dp, residual_delta), lift_eps_full))
+
+   END FUNCTION dense_density_global_lift_control
 
 ! **************************************************************************************************
 !> \brief gauge-free physical density response matching the production Schur helper.

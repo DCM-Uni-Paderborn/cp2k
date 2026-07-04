@@ -2094,6 +2094,24 @@ CONTAINS
    END FUNCTION kpoint_ot_bounded_density_response
 
 ! **************************************************************************************************
+!> \brief control variable for the global fixed-N low-curvature density lift
+!> \param eps_scf_channel SCF convergence threshold of the local OT channel
+!> \param residual_delta current physical k-point OT residual
+!> \return lift control which follows the residual tail but vanishes at the final floor
+! **************************************************************************************************
+   FUNCTION kpoint_ot_density_global_lift_control(eps_scf_channel, residual_delta) RESULT(lift_control)
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf_channel, residual_delta
+      REAL(KIND=dp)                                      :: lift_control
+
+      lift_control = MAX(0.0_dp, eps_scf_channel)
+      IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
+         lift_control = MAX(lift_control, &
+                            MIN(MAX(0.0_dp, residual_delta), &
+                                ot_kp_density_global_lift_eps_full))
+
+   END FUNCTION kpoint_ot_density_global_lift_control
+
+! **************************************************************************************************
 !> \brief gauge-free physical diagonal projector-density response
 !> \param density_projector_response finite projector eigenvalue response
 !> \param density_safe_response gauge-safe dP/occupation-curvature response
@@ -7027,21 +7045,20 @@ CONTAINS
          density_gap_response_abs_step
       REAL(KIND=dp) :: density_gap_response_abs_trust_ratio, density_gap_response_weighted_step, &
          density_gap_response_weighted_trust_ratio, density_gap_scale_quality, &
-         density_gap_trust_quality, density_plateau_direction_scale, &
+         density_gap_trust_quality, density_global_lift_control, density_plateau_direction_scale, &
          density_plateau_exact_gap_avg, density_plateau_exact_gap_max, &
          density_plateau_expected_drop, density_plateau_gdot_energy, &
          density_plateau_gdot_rotation, density_plateau_gdotp, &
          density_plateau_model_calibrated_drop, density_plateau_model_drop, &
-         density_plateau_model_gap_drop, density_plateau_norm_energy, &
-         density_plateau_norm_rotation, density_plateau_normp
-      REAL(KIND=dp) :: density_plateau_raw_gap_avg, density_plateau_raw_gap_max, &
-         density_plateau_response_abs_step, density_plateau_response_abs_trust_ratio, &
-         density_plateau_response_weighted_step, density_plateau_response_weighted_trust_ratio, &
-         density_plateau_scale_quality, density_plateau_trust_quality, &
-         density_projector_control_delta, density_projector_fraction, &
-         density_projector_response_trust_fraction, density_projector_trust_scale, &
-         diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, diag_shift, diag_shift_avg, &
-         diag_shift_fraction, diag_shift_max, diag_shift_sum
+         density_plateau_model_gap_drop, density_plateau_norm_energy, density_plateau_norm_rotation
+      REAL(KIND=dp) :: density_plateau_normp, density_plateau_raw_gap_avg, &
+         density_plateau_raw_gap_max, density_plateau_response_abs_step, &
+         density_plateau_response_abs_trust_ratio, density_plateau_response_weighted_step, &
+         density_plateau_response_weighted_trust_ratio, density_plateau_scale_quality, &
+         density_plateau_trust_quality, density_projector_control_delta, &
+         density_projector_fraction, density_projector_response_trust_fraction, &
+         density_projector_trust_scale, diag_prefloor_avg, diag_prefloor_max, diag_prefloor_min, &
+         diag_shift, diag_shift_avg, diag_shift_fraction, diag_shift_max, diag_shift_sum
       REAL(KIND=dp) :: direct_pg_correction_drop, direct_pg_correction_negative, &
          direct_pg_cross_drop, direct_pg_metric_drop, direct_pg_metric_ratio, &
          direct_pg_metric_step, direct_pg_negative_coeff, direct_pg_negative_drop, &
@@ -8923,6 +8940,8 @@ CONTAINS
                         rot_floor(ivar) = schur_gauge_curvature_floor
                   END DO
                END DO
+               density_global_lift_control = &
+                  kpoint_ot_density_global_lift_control(eps_scf_channel, residual_delta)
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
                                                     e_offset(local_channel), h_re, h_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
@@ -8932,7 +8951,7 @@ CONTAINS
                                                     projector_physical_shadow_enabled, &
                                                     projector_density_full_audit_enabled, &
                                                     projector_plateau_gap_model_enabled, &
-                                                    step_gauge_quality, eps_scf_channel, &
+                                                    step_gauge_quality, density_global_lift_control, &
                                                     rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                     rot_hessian_projector_physical, &
                                                     rot_hessian_projector_physical_offdiag, &
@@ -22829,7 +22848,7 @@ CONTAINS
 !> \param compute_density_full_audit ...
 !> \param compute_projector_plateau_audit ...
 !> \param step_gauge_quality ...
-!> \param density_lift_eps_scf SCF threshold controlling the low-curvature global density lift
+!> \param density_lift_control threshold-like control for the low-curvature global density lift
 !> \param rot_hessian ...
 !> \param rot_hessian_coupled ...
 !> \param rot_hessian_projector ...
@@ -22854,7 +22873,7 @@ CONTAINS
                                                  projector_window_gap, occ_curv_channel, var_i, var_j, var_kind, &
                                                  compute_projector_shadow, &
                                                  compute_density_full_audit, compute_projector_plateau_audit, &
-                                                 step_gauge_quality, density_lift_eps_scf, &
+                                                 step_gauge_quality, density_lift_control, &
                                                  rot_hessian, rot_hessian_coupled, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, &
                                                  rot_hessian_projector_physical_offdiag, &
@@ -22874,7 +22893,7 @@ CONTAINS
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       LOGICAL, INTENT(IN) :: compute_projector_shadow, compute_density_full_audit, &
          compute_projector_plateau_audit
-      REAL(KIND=dp), INTENT(IN)                          :: step_gauge_quality, density_lift_eps_scf
+      REAL(KIND=dp), INTENT(IN)                          :: step_gauge_quality, density_lift_control
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT) :: rot_hessian, rot_hessian_coupled, &
          rot_hessian_projector, rot_hessian_projector_physical, &
          rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_plateau, &
@@ -22941,9 +22960,9 @@ CONTAINS
          projector_weight = kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
                                                                  ot_kp_canonical_projector_max_weight)
          density_global_lift_weight = 0.0_dp
-         IF (density_lift_eps_scf > ot_kp_density_global_lift_eps_floor) THEN
+         IF (density_lift_control > ot_kp_density_global_lift_eps_floor) THEN
             density_global_lift_weight = &
-               (density_lift_eps_scf - ot_kp_density_global_lift_eps_floor)/ &
+               (density_lift_control - ot_kp_density_global_lift_eps_floor)/ &
                (ot_kp_density_global_lift_eps_full - ot_kp_density_global_lift_eps_floor)
             density_global_lift_weight = MIN(1.0_dp, MAX(0.0_dp, density_global_lift_weight))
          END IF
