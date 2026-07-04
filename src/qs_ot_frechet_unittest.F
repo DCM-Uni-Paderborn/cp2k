@@ -16495,7 +16495,8 @@ CONTAINS
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_safe, occ_curv, gauge_gap)
       CALL dense_spectral_occ_projector_derivative_chc(chc, dchc, occ_filtered, docc_ref, &
-                                                       occ_curv, gauge_gap)
+                                                       occ_curv, gauge_gap, &
+                                                       cluster_projector_response=.TRUE.)
       docc_ref(:, :) = projector_weight*docc_ref(:, :)
       CALL dense_history_safe_occ_projector_from_chc(chc + fd_step*dchc, occ_scale, projector_weight, &
                                                      occ_mat_p, occ_curv, gauge_gap)
@@ -16505,7 +16506,7 @@ CONTAINS
       err = MAX(MAXVAL(ABS(docc_safe(:, :) - docc_ref(:, :))), shape_err)
       active = MAXVAL(ABS(docc_safe(:, :)))
 
-      IF (total_err > tol .OR. active < active_tol .OR. &
+      IF (err > tol .OR. total_err > tol .OR. active < active_tol .OR. &
           MAXVAL(ABS(docc_fd(:, :) - docc_ref(:, :))) < active_tol .OR. span < 1.0E-7_dp) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
