@@ -64,6 +64,8 @@ PROGRAM qs_ot_frechet_unittest
                                                          5.0E-9_dp, nfail)
    CALL check_complex_projector_physical_response_channel("complex projector physical response channel", &
                                                           5.0E-9_dp, nfail)
+   CALL check_complex_projector_density_basis_projection( &
+      "complex projector density basis projection", 5.0E-8_dp, nfail)
    CALL check_complex_projector_physical_hessian_split("complex projector physical Hessian split", &
                                                        2.0E-6_dp, nfail)
    CALL check_mixed_fixed_n_tether_projector("mixed fixed-N/tether Schur projector", &
@@ -1782,6 +1784,128 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_projector_physical_response_channel
+
+! **************************************************************************************************
+!> \brief Check that density response is projected in the same basis as the energy response channel.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_projector_density_basis_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
+                                                            gauge_gap = 5.0E-5_dp, &
+                                                            projector_weight = 1.0_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_rot, dchc, dchc_rot, docc_rot, &
+                                                            docc_safe, evec, evec_rot, occ_basis, q
+      INTEGER                                            :: band, i, j
+      REAL(KIND=dp)                                      :: active, basis_gap, err, old_cov_gap
+      REAL(KIND=dp), DIMENSION(n)                        :: density_ref, density_rot, evals, old_ref, &
+                                                            old_rot, occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.17_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(0.04_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.31_dp, 0.0_dp, KIND=dp)
+      chc(1, 2) = CMPLX(0.045_dp, -0.028_dp, KIND=dp)
+      chc(1, 3) = CMPLX(-0.026_dp, 0.018_dp, KIND=dp)
+      chc(2, 3) = CMPLX(0.034_dp, 0.041_dp, KIND=dp)
+      DO i = 2, n
+         chc(i, 1:i - 1) = CONJG(chc(1:i - 1, i))
+      END DO
+
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(1, 1) = CMPLX(0.08_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.05_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.02_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(-0.11_dp, 0.07_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(0.06_dp, 0.04_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(-0.03_dp, 0.09_dp, KIND=dp)
+      DO i = 2, n
+         dchc(i, 1:i - 1) = CONJG(dchc(1:i - 1, i))
+      END DO
+
+      occ_scale(:) = [1.42_dp, 0.73_dp, 0.18_dp]
+      occ_curv(:) = [0.052_dp, 0.031_dp, 0.014_dp]
+
+      CALL diag_complex(chc, evec, evals)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
+                                                           docc_safe, occ_curv, gauge_gap)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.17_dp
+      x_re(1, 3) = -0.08_dp
+      x_re(2, 3) = 0.05_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.03_dp
+      x_im(2, 2) = -0.02_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(1, 2) = -0.06_dp
+      x_im(1, 3) = 0.04_dp
+      x_im(2, 3) = 0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc_rot(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(chc, q))
+      dchc_rot(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(dchc, q))
+      CALL diag_complex(chc_rot, evec_rot, evals)
+      CALL dense_history_safe_occ_projector_derivative_chc(chc_rot, dchc_rot, occ_scale, projector_weight, &
+                                                           docc_rot, occ_curv, gauge_gap)
+
+      density_ref(:) = 0.0_dp
+      density_rot(:) = 0.0_dp
+      old_ref(:) = 0.0_dp
+      old_rot(:) = 0.0_dp
+      DO band = 1, n
+         occ_basis(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         DO j = 1, n
+            DO i = 1, n
+               occ_basis(i, j) = projector_weight*evec(i, band)*CONJG(evec(j, band))
+            END DO
+         END DO
+         occ_basis(band, band) = occ_basis(band, band) + &
+                                 CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
+         density_ref(band) = 0.5_dp*REAL(SUM(CONJG(occ_basis(:, :))*docc_safe(:, :)), KIND=dp)/ &
+                             occ_curv(band)
+         old_ref(band) = 0.5_dp*REAL(docc_safe(band, band), KIND=dp)/occ_curv(band)
+         occ_basis(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         DO j = 1, n
+            DO i = 1, n
+               occ_basis(i, j) = projector_weight*evec_rot(i, band)*CONJG(evec_rot(j, band))
+            END DO
+         END DO
+         occ_basis(band, band) = occ_basis(band, band) + &
+                                 CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
+         density_rot(band) = 0.5_dp*REAL(SUM(CONJG(occ_basis(:, :))*docc_rot(:, :)), KIND=dp)/ &
+                             occ_curv(band)
+         old_rot(band) = 0.5_dp*REAL(docc_rot(band, band), KIND=dp)/occ_curv(band)
+      END DO
+      err = MAXVAL(ABS(density_ref(:) - density_rot(:)))
+      basis_gap = MAXVAL(ABS(density_ref(:) - old_ref(:)))
+      old_cov_gap = MAXVAL(ABS(old_ref(:) - old_rot(:)))
+      active = MAXVAL(ABS(density_ref(:)))
+
+      IF (err > tol .OR. basis_gap < active_tol .OR. old_cov_gap < active_tol .OR. &
+          active < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with error/gap/oldcov/active", err, basis_gap, old_cov_gap, active
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with error/gap/oldcov/active", err, basis_gap, old_cov_gap, active
+      END IF
+
+   END SUBROUTINE check_complex_projector_density_basis_projection
 
 ! **************************************************************************************************
 !> \brief Check that the physical Projector-Hessian keeps off-diagonal occupation response.
