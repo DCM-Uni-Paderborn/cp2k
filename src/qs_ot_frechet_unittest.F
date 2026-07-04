@@ -208,6 +208,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global fixed-N projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_exact_source_projection( &
       "complex projector density exact source projection", 5.0E-12_dp, nfail)
+   CALL check_projector_density_selective_exact_floor( &
+      "complex projector density selective exact floor", 5.0E-12_dp, nfail)
    CALL check_projector_density_floor_global_projection( &
       "complex projector density floor global projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_floor_response( &
@@ -1805,8 +1807,8 @@ CONTAINS
                                                             docc_safe, evec, evec_rot, occ_basis, q
       INTEGER                                            :: band, i, j
       REAL(KIND=dp)                                      :: active, basis_gap, err, old_cov_gap
-      REAL(KIND=dp), DIMENSION(n)                        :: density_ref, density_rot, evals, old_ref, &
-                                                            old_rot, occ_curv, occ_scale
+      REAL(KIND=dp), DIMENSION(n)                        :: density_ref, density_rot, evals, &
+                                                            occ_curv, occ_scale, old_ref, old_rot
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -3020,6 +3022,109 @@ CONTAINS
       END DO
 
    END SUBROUTINE build_test_mixed_energy_block
+
+! **************************************************************************************************
+!> \brief Build a dense exact-response block with optional selective diagonal curvature floor.
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param response_occ ...
+!> \param response_tether ...
+!> \param curv_floor_fraction ...
+!> \param curv_floor_weight ...
+!> \param h ...
+!> \param b ...
+! **************************************************************************************************
+   SUBROUTINE build_test_selective_floor_energy_block(occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                      response_occ, response_tether, curv_floor_fraction, &
+                                                      curv_floor_weight, h, b)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_occ, response_tether
+      REAL(KIND=dp), INTENT(IN)                          :: curv_floor_fraction
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: curv_floor_weight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: h, b
+
+      INTEGER                                            :: first_energy, i, j, local_channel, ne, &
+                                                            nmo, nrot, r
+      REAL(KIND=dp)                                      :: channel_occ_sum, curv_max, gauge_weight, &
+                                                            local_floor, occ_sum, response_floor, &
+                                                            shift, total_curv, weight_sum
+
+      ne = SIZE(h, 1)
+      nrot = SIZE(b, 2)
+      h(:, :) = 0.0_dp
+      b(:, :) = 0.0_dp
+      curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
+      IF (curv_max <= 0.0_dp) RETURN
+      response_floor = MAX(0.0_dp, curv_floor_fraction)*curv_max
+      DO i = 1, ne
+         total_curv = occ_curv(i) + tether_curv(i)
+         local_floor = response_floor*MIN(1.0_dp, MAX(0.0_dp, curv_floor_weight(i)))
+         h(i, i) = total_curv
+         IF (local_floor > EPSILON(local_floor) .AND. total_curv > EPSILON(curv_max)) &
+            h(i, i) = MAX(total_curv, local_floor)
+      END DO
+
+      occ_sum = SUM(occ_curv(:))
+      IF (occ_sum > EPSILON(occ_sum)) THEN
+         DO j = 1, ne
+            DO i = 1, ne
+               h(i, j) = h(i, j) - occ_curv(i)*occ_curv(j)/occ_sum
+            END DO
+         END DO
+         DO r = 1, nrot
+            shift = DOT_PRODUCT(occ_curv(:), response_occ(:, r))
+            b(:, r) = b(:, r) + occ_curv(:)*(response_occ(:, r) - shift/occ_sum)
+         END DO
+      END IF
+
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum)) CYCLE
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               h(i, j) = h(i, j) - tether_curv(i)*tether_curv(j)/weight_sum
+            END DO
+         END DO
+         DO r = 1, nrot
+            shift = DOT_PRODUCT(tether_curv(first_energy:first_energy + nmo - 1), &
+                                response_tether(first_energy:first_energy + nmo - 1, r))
+            b(first_energy:first_energy + nmo - 1, r) = b(first_energy:first_energy + nmo - 1, r) + &
+                                                        tether_curv(first_energy:first_energy + nmo - 1)* &
+                                                        (response_tether(first_energy:first_energy + nmo - 1, r) - &
+                                                         shift/weight_sum)
+         END DO
+      END DO
+
+      gauge_weight = curv_max/REAL(MAX(1, ne), KIND=dp)
+      IF (occ_sum > EPSILON(occ_sum)) h(:, :) = h(:, :) + gauge_weight
+      DO local_channel = 1, SIZE(channel_nmo)
+         nmo = channel_nmo(local_channel)
+         IF (nmo <= 0) CYCLE
+         first_energy = e_offset(local_channel)
+         weight_sum = SUM(tether_curv(first_energy:first_energy + nmo - 1))
+         channel_occ_sum = SUM(occ_curv(first_energy:first_energy + nmo - 1))
+         IF (weight_sum <= EPSILON(weight_sum) .OR. channel_occ_sum > EPSILON(channel_occ_sum)) CYCLE
+         DO j = first_energy, first_energy + nmo - 1
+            DO i = first_energy, first_energy + nmo - 1
+               h(i, j) = h(i, j) + gauge_weight
+            END DO
+         END DO
+      END DO
+      DO i = 1, ne
+         IF (occ_curv(i) + tether_curv(i) > EPSILON(curv_max)) CYCLE
+         h(i, :) = 0.0_dp
+         h(:, i) = 0.0_dp
+         h(i, i) = 1.0_dp
+         b(i, :) = 0.0_dp
+      END DO
+
+   END SUBROUTINE build_test_selective_floor_energy_block
 
 ! **************************************************************************************************
 !> \brief Diagonal of U^H H U for each dense complex k-point channel.
@@ -8309,6 +8414,102 @@ CONTAINS
    END SUBROUTINE check_projector_density_exact_source_projection
 
 ! **************************************************************************************************
+!> \brief Check that a selective floor regularizes only the low-curvature exact response inverse.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_selective_exact_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 1, ne = 4, nrot = 2
+
+      INTEGER                                            :: info, r
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      LOGICAL                                            :: projected
+      REAL(KIND=dp)                                      :: exact_charge, high_gap, low_floor_abs, &
+                                                            low_ratio, low_raw_abs, rhs_gap, &
+                                                            source_charge
+      REAL(KIND=dp), DIMENSION(ne)                       :: floor_weight, floor_weight_zero, &
+                                                            occ_curv, tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h_floor, h_raw
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_floor, b_raw, exact_floor, exact_raw, &
+                                                            projected_density, raw_density, &
+                                                            zero_tether
+
+      channel_nmo(:) = [4]
+      e_offset(:) = [1]
+      occ_curv(:) = [3.0E-1_dp, 2.0E-1_dp, 8.0E-7_dp, 6.0E-7_dp]
+      tether_curv(:) = 0.0_dp
+      floor_weight_zero(:) = 0.0_dp
+      floor_weight(:) = [0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp]
+      raw_density(:, 1) = [0.010_dp, -0.018_dp, 42.0_dp, -35.0_dp]
+      raw_density(:, 2) = [-0.015_dp, 0.012_dp, -28.0_dp, 24.0_dp]
+      zero_tether(:, :) = 0.0_dp
+
+      projected_density(:, :) = raw_density(:, :)
+      source_charge = 0.0_dp
+      DO r = 1, nrot
+         CALL dense_project_response_metric_distributed(projected_density(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         IF (.NOT. projected) source_charge = HUGE(source_charge)
+         source_charge = MAX(source_charge, ABS(DOT_PRODUCT(occ_curv(:), projected_density(:, r))))
+      END DO
+
+      CALL build_test_selective_floor_energy_block(occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                   projected_density, zero_tether, 1.0E-1_dp, &
+                                                   floor_weight_zero, h_raw, b_raw)
+      CALL build_test_selective_floor_energy_block(occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                   projected_density, zero_tether, 1.0E-1_dp, &
+                                                   floor_weight, h_floor, b_floor)
+      rhs_gap = MAXVAL(ABS(b_floor(:, :) - b_raw(:, :)))
+      exact_raw(:, :) = b_raw(:, :)
+      exact_floor(:, :) = b_floor(:, :)
+      CALL dgesv(ne, nrot, h_raw, ne, ipiv, exact_raw, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed raw dgesv", info
+         RETURN
+      END IF
+      CALL dgesv(ne, nrot, h_floor, ne, ipiv, exact_floor, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed floor dgesv", info
+         RETURN
+      END IF
+
+      exact_charge = 0.0_dp
+      DO r = 1, nrot
+         CALL dense_project_response_metric_distributed(exact_raw(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         CALL dense_project_response_metric_distributed(exact_floor(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         exact_charge = MAX(exact_charge, ABS(DOT_PRODUCT(occ_curv(:), exact_floor(:, r))))
+      END DO
+      low_raw_abs = MAXVAL(ABS(exact_raw(3:4, :)))
+      low_floor_abs = MAXVAL(ABS(exact_floor(3:4, :)))
+      low_ratio = low_raw_abs/MAX(low_floor_abs, EPSILON(low_floor_abs))
+      high_gap = MAXVAL(ABS(exact_floor(1:2, :) - exact_raw(1:2, :)))
+
+      IF (source_charge > tol .OR. exact_charge > tol .OR. rhs_gap > tol .OR. &
+          low_raw_abs < 1.0_dp .OR. low_floor_abs > 1.0E-2_dp .OR. &
+          low_ratio < 1.0E3_dp .OR. high_gap > 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with charge/rhsgap/raw/floor/ratio", exact_charge, rhs_gap, low_raw_abs, &
+            low_floor_abs, low_ratio
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with charge/rhsgap/raw/floor/ratio", exact_charge, rhs_gap, low_raw_abs, &
+            low_floor_abs, low_ratio
+      END IF
+
+   END SUBROUTINE check_projector_density_selective_exact_floor
+
+! **************************************************************************************************
 !> \brief Check that floor-limited density response is suitable for global fixed-N projection.
 !> \param label ...
 !> \param tol ...
@@ -10332,8 +10533,7 @@ CONTAINS
 
       LOGICAL                                            :: failure_veto, first_probe, &
                                                             selected_retry, shadow_retry, &
-                                                            tiny_shadow_veto, &
-                                                            weak_shadow_veto
+                                                            tiny_shadow_veto, weak_shadow_veto
       REAL(KIND=dp)                                      :: err
 
       first_probe = dense_spectral_probe_history_ready(0, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
@@ -11120,17 +11320,18 @@ CONTAINS
 
       INTEGER                                            :: i, imode
       REAL(KIND=dp) :: active, applied_weight_dead, applied_weight_diag, applied_weight_ref, &
-         applied_weight_rot, base_weight, c, cross_drop_dead, cross_drop_diag, cross_drop_rot, &
-         basis_mismatch, dead_active, drop_dead, drop_diag, drop_ref, drop_rot, err, eval_abs_avg, &
-         mode_norm, mode_weight, neg_balance, neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, neg_drop_dead, &
-         neg_drop_diag, neg_drop_rot, neg_fraction_dead, neg_fraction_diag, neg_fraction_ref, &
-         neg_fraction_rot, neg_norm_diag, neg_weight_sum, pos_coeff_dead, pos_coeff_diag, &
-         pos_coeff_rot, pos_drop_dead, pos_drop_diag, pos_drop_rot, pos_weight_sum
-      REAL(KIND=dp) :: raw_neg_fraction_dead, raw_neg_fraction_diag, raw_neg_fraction_ref, &
-         raw_neg_fraction_rot, raw_neg_sum, response_total_sum, s, spectral_weight, &
-         step_weight_sum, target_neg, target_pos
+         applied_weight_rot, base_weight, basis_mismatch, c, cross_drop_dead, cross_drop_diag, &
+         cross_drop_rot, dead_active, drop_dead, drop_diag, drop_ref, drop_rot, err, eval_abs_avg, &
+         mode_norm, mode_weight, neg_balance, neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, &
+         neg_drop_dead, neg_drop_diag, neg_drop_rot, neg_fraction_dead, neg_fraction_diag, &
+         neg_fraction_ref, neg_fraction_rot, neg_norm_diag, neg_weight_sum, pos_coeff_dead, &
+         pos_coeff_diag, pos_coeff_rot, pos_drop_dead, pos_drop_diag, pos_drop_rot
+      REAL(KIND=dp) :: pos_weight_sum, raw_neg_fraction_dead, raw_neg_fraction_diag, &
+         raw_neg_fraction_ref, raw_neg_fraction_rot, raw_neg_sum, response_total_sum, s, &
+         spectral_weight, step_weight_sum, target_neg, target_pos
       REAL(KIND=dp), DIMENSION(ne) :: cand_dead, cand_diag, cand_ref, cand_rot, cand_wrong, &
-         corr_ref, curv, energy_base, grad_e, mode_rx, response_base, response_neg_ref, response_pos_ref
+         corr_ref, curv, energy_base, grad_e, mode_rx, response_base, response_neg_ref, &
+         response_pos_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: response_delta_diag, response_delta_rot, &
                                                             response_exact_diag, &
                                                             response_exact_rot, response_raw
@@ -12618,11 +12819,8 @@ CONTAINS
                                                shadow_norm_ema, shadow_floor_ema) &
       RESULT(history_ready)
       INTEGER, INTENT(IN)                                :: selected_failures
-      REAL(KIND=dp), INTENT(IN)                          :: selected_quality_ema, &
-                                                            selected_residual_quality_ema, &
-                                                            shadow_quality, shadow_quality_ema, &
-                                                            shadow_dot_ema, shadow_norm_ema, &
-                                                            shadow_floor_ema
+      REAL(KIND=dp), INTENT(IN) :: selected_quality_ema, selected_residual_quality_ema, &
+         shadow_quality, shadow_quality_ema, shadow_dot_ema, shadow_norm_ema, shadow_floor_ema
       LOGICAL                                            :: history_ready
 
       LOGICAL                                            :: shadow_signal_ok
