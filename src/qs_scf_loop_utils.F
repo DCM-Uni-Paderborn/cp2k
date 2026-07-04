@@ -2549,6 +2549,43 @@ CONTAINS
    END FUNCTION kpoint_ot_projector_pair_slope_cap
 
 ! **************************************************************************************************
+!> \brief thermally widened response gap for one occupation-projector cluster
+!> \param evals ...
+!> \param occ_curv_channel ...
+!> \param first ...
+!> \param last ...
+!> \param gauge_gap ...
+!> \param occ_curv_max ...
+!> \param projector_window_gap ...
+!> \return maximum local pair gap inside the cluster
+! **************************************************************************************************
+   FUNCTION kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, first, last, gauge_gap, &
+                                                     occ_curv_max, projector_window_gap) RESULT(cluster_gap)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_curv_channel
+      INTEGER, INTENT(IN)                                :: first, last
+      REAL(KIND=dp), INTENT(IN)                          :: gauge_gap, occ_curv_max
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      REAL(KIND=dp)                                      :: cluster_gap
+
+      INTEGER                                            :: i
+
+      cluster_gap = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+      DO i = first, last - 1
+         IF (PRESENT(projector_window_gap)) THEN
+            cluster_gap = MAX(cluster_gap, &
+                              kpoint_ot_projector_occupation_pair_gap(gauge_gap, occ_curv_channel(i), &
+                                                                      occ_curv_channel(i + 1), occ_curv_max, &
+                                                                      projector_window_gap))
+         ELSE
+            cluster_gap = MAX(cluster_gap, &
+                              kpoint_ot_projector_occupation_pair_gap(gauge_gap, occ_curv_channel(i), &
+                                                                      occ_curv_channel(i + 1), occ_curv_max))
+         END IF
+      END DO
+
+   END FUNCTION kpoint_ot_projector_cluster_response_gap
+
+! **************************************************************************************************
 !> \brief Direct-model trace compensation for the physical Projector Schur correction
 !> \param coupled_weight ...
 !> \param direct_delta_diag_avg ...
@@ -23644,8 +23681,9 @@ CONTAINS
                                                             last_b, m, m_b, n
       LOGICAL                                            :: cluster_exact_gauge, &
                                                             outside_gauge_cluster
-      REAL(KIND=dp) :: cluster_scalar_curv, cluster_span, component_weight, curv, denom, gap_tol, &
-         local_gap, mu_den, mu_num, mu_shift, occ_curv_max, offdiag_coeff, slope_cap
+      REAL(KIND=dp) :: cluster_gauge_blend, cluster_response_gap, cluster_scalar_curv, &
+         cluster_span, component_weight, curv, denom, gap_tol, local_gap, mu_den, mu_num, &
+         mu_shift, occ_curv_max, offdiag_coeff, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cluster_eval, cluster_eval_b, modal_curv, &
          modal_curv_b, modal_curv_scale, modal_energy, modal_energy_b, modal_occ, modal_occ_b, &
          modal_raw_curv
@@ -23675,14 +23713,13 @@ CONTAINS
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
                cluster_span = ABS(evals(last) - evals(first))
-               cluster_exact_gauge = cluster_span <= gap_tol
-               IF (cluster_exact_gauge) THEN
-                  cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
-                  modal_curv(:) = cluster_scalar_curv
-               ELSE
-                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                               modal_curv, split_response=.TRUE.)
-               END IF
+               cluster_response_gap = kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, first, last, &
+                                                                               gauge_gap, occ_curv_max, &
+                                                                               projector_window_gap)
+               CALL dense_fixed_n_projector_cluster_modal_response(cluster_evec, occ_curv_channel(first:last), &
+                                                                   cluster_span, cluster_response_gap, gap_tol, &
+                                                                   modal_curv, cluster_scalar_curv, &
+                                                                   cluster_gauge_blend)
                DO a = 1, m
                   mu_num = mu_num + modal_curv(a)*cluster_eval(a)
                   mu_den = mu_den + modal_curv(a)
@@ -23713,7 +23750,9 @@ CONTAINS
             m = last - first + 1
             IF (m > 1) THEN
                cluster_span = ABS(evals(last) - evals(first))
-               cluster_exact_gauge = cluster_span <= gap_tol
+               cluster_response_gap = kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, first, last, &
+                                                                               gauge_gap, occ_curv_max, &
+                                                                               projector_window_gap)
                kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                ALLOCATE (cluster_col(m), cluster_curv(m, m), cluster_work(m, m), &
                          cluster_evec(m, m), cluster_kernel(m, m), &
@@ -23723,13 +23762,11 @@ CONTAINS
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-               IF (cluster_exact_gauge) THEN
-                  cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
-                  modal_curv(:) = cluster_scalar_curv
-               ELSE
-                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                               modal_curv, split_response=.TRUE.)
-               END IF
+               CALL dense_fixed_n_projector_cluster_modal_response(cluster_evec, occ_curv_channel(first:last), &
+                                                                   cluster_span, cluster_response_gap, gap_tol, &
+                                                                   modal_curv, cluster_scalar_curv, &
+                                                                   cluster_gauge_blend)
+               cluster_exact_gauge = cluster_gauge_blend <= EPSILON(1.0_dp)
                modal_energy(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
@@ -23766,6 +23803,8 @@ CONTAINS
                                                 CONJG(cluster_evec(c, a))*curv*cluster_evec(c, b)
                         END DO
                         cluster_curv(a, b) = modal_curv_scale(a)*modal_curv_scale(b)*cluster_curv(a, b)
+                        IF (cluster_gauge_blend < 1.0_dp .AND. a /= b) &
+                           cluster_curv(a, b) = cluster_gauge_blend*cluster_curv(a, b)
                         cluster_kernel(a, b) = -projector_weight*cluster_curv(a, b)* &
                                                CMPLX(cluster_eval(a) + cluster_eval(b) - 2.0_dp*mu_shift, &
                                                      0.0_dp, KIND=dp)
@@ -23851,19 +23890,18 @@ CONTAINS
             m = last - first + 1
             IF (m > 1) THEN
                cluster_span = ABS(evals(last) - evals(first))
-               cluster_exact_gauge = cluster_span <= gap_tol
+               cluster_response_gap = kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, first, last, &
+                                                                               gauge_gap, occ_curv_max, &
+                                                                               projector_window_gap)
                ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m), &
                          modal_energy(m), modal_occ(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-               IF (cluster_exact_gauge) THEN
-                  cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
-                  modal_curv(:) = cluster_scalar_curv
-               ELSE
-                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                               modal_curv, split_response=.TRUE.)
-               END IF
+               CALL dense_fixed_n_projector_cluster_modal_response(cluster_evec, occ_curv_channel(first:last), &
+                                                                   cluster_span, cluster_response_gap, gap_tol, &
+                                                                   modal_curv, cluster_scalar_curv, &
+                                                                   cluster_gauge_blend)
                modal_energy(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
@@ -23888,22 +23926,20 @@ CONTAINS
                   m_b = last_b - first_b + 1
                   IF (m_b > 1) THEN
                      cluster_span = ABS(evals(last_b) - evals(first_b))
-                     cluster_exact_gauge = cluster_span <= gap_tol
+                     cluster_response_gap = kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, &
+                                                                                     first_b, last_b, gauge_gap, &
+                                                                                     occ_curv_max, projector_window_gap)
                      ALLOCATE (cluster_work_b(m_b, m_b), cluster_evec_b(m_b, m_b), &
                                cluster_eval_b(m_b), modal_curv_b(m_b), modal_energy_b(m_b), &
                                modal_occ_b(m_b), modal_block(m, m_b), response_block(m, m_b))
                      cluster_work_b(:, :) = 0.5_dp*(work(first_b:last_b, first_b:last_b) + &
                                                     CONJG(TRANSPOSE(work(first_b:last_b, first_b:last_b))))
                      CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
-                     IF (cluster_exact_gauge) THEN
-                        cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first_b:last_b)))/ &
-                                              REAL(m_b, KIND=dp)
-                        modal_curv_b(:) = cluster_scalar_curv
-                     ELSE
-                        CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, &
-                                                                     occ_curv_channel(first_b:last_b), &
-                                                                     modal_curv_b, split_response=.TRUE.)
-                     END IF
+                     CALL dense_fixed_n_projector_cluster_modal_response(cluster_evec_b, &
+                                                                         occ_curv_channel(first_b:last_b), &
+                                                                         cluster_span, cluster_response_gap, gap_tol, &
+                                                                         modal_curv_b, cluster_scalar_curv, &
+                                                                         cluster_gauge_blend)
                      modal_energy_b(:) = 0.0_dp
                      DO a = 1, m_b
                         DO b = 1, m_b
@@ -23962,6 +23998,51 @@ CONTAINS
          END DO
 
       END SUBROUTINE dense_fixed_n_projector_cluster_kernel
+
+! **************************************************************************************************
+!> \brief Smoothly connect exact-gauge and resolved modal curvatures in one projector cluster.
+!> \param cluster_evec ...
+!> \param occ_curv ...
+!> \param cluster_span ...
+!> \param cluster_gap ...
+!> \param gap_tol ...
+!> \param modal_curv ...
+!> \param scalar_curv ...
+!> \param modal_blend ...
+! **************************************************************************************************
+      SUBROUTINE dense_fixed_n_projector_cluster_modal_response(cluster_evec, occ_curv, cluster_span, cluster_gap, &
+                                                                gap_tol, modal_curv, scalar_curv, modal_blend)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: cluster_evec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv
+      REAL(KIND=dp), INTENT(IN)                          :: cluster_span, cluster_gap, gap_tol
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_curv
+      REAL(KIND=dp), INTENT(OUT)                         :: scalar_curv, modal_blend
+
+      REAL(KIND=dp)                                      :: blend_den, near_gauge_gap
+
+         scalar_curv = 0.0_dp
+         modal_blend = 1.0_dp
+         IF (SIZE(occ_curv) <= 0) THEN
+            modal_curv(:) = 0.0_dp
+            RETURN
+         END IF
+
+         scalar_curv = SUM(MAX(0.0_dp, occ_curv(:)))/REAL(SIZE(occ_curv), KIND=dp)
+         CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv, modal_curv, split_response=.TRUE.)
+
+         near_gauge_gap = MIN(cluster_gap, 16.0_dp*gap_tol)
+         IF (cluster_span <= gap_tol) THEN
+            modal_blend = 0.0_dp
+         ELSE IF (near_gauge_gap > gap_tol) THEN
+            blend_den = MAX(EPSILON(1.0_dp), near_gauge_gap - gap_tol)
+            modal_blend = (cluster_span - gap_tol)/blend_den
+            modal_blend = MIN(1.0_dp, MAX(0.0_dp, modal_blend))
+         END IF
+
+         IF (modal_blend < 1.0_dp) &
+            modal_curv(:) = (1.0_dp - modal_blend)*scalar_curv + modal_blend*modal_curv(:)
+
+      END SUBROUTINE dense_fixed_n_projector_cluster_modal_response
 
 ! **************************************************************************************************
 !> \brief Active-selective modal curvature in one near-degenerate Projector cluster.
