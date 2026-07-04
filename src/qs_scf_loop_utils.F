@@ -3999,45 +3999,45 @@ CONTAINS
          projector_offdiag_selected_quality_ratio, projector_offdiag_signed_ratio, &
          projector_offdiag_step_negative, projector_physical_compensation_quality, &
          projector_physical_compensation_ratio, projector_physical_correction_quality, &
-         projector_physical_correction_ratio, &
+         projector_physical_correction_ratio, projector_physical_direct_density_fshadow_coverage, &
          projector_physical_direct_density_fshadow_predicted_drop, &
          projector_physical_direct_density_fshadow_quality_ratio, &
-         projector_physical_direct_density_selected_predicted_drop, &
-         projector_physical_direct_density_selected_quality_ratio, &
-         projector_physical_direct_predicted_drop
-      REAL(KIND=dp) :: projector_physical_direct_quality, projector_physical_direct_quality_ratio, &
-         projector_physical_direct_ratio, projector_physical_direct_selected_predicted_drop, &
+         projector_physical_direct_density_selected_predicted_drop
+      REAL(KIND=dp) :: projector_physical_direct_density_selected_quality_ratio, &
+         projector_physical_direct_predicted_drop, projector_physical_direct_quality, &
+         projector_physical_direct_quality_ratio, projector_physical_direct_ratio, &
+         projector_physical_direct_selected_predicted_drop, &
          projector_physical_direct_selected_quality_ratio, projector_physical_metric_quality, &
          projector_physical_metric_ratio, projector_physical_negative_quality, &
          projector_physical_predicted_drop, projector_physical_quality_ratio, &
-         projector_physical_selected_quality, projector_physical_selected_ratio, &
-         projector_physical_shift_quality, projector_physical_shift_ratio, &
-         projector_physical_trace_active_avg
-      REAL(KIND=dp) :: projector_physical_trace_active_diag_avg, &
+         projector_physical_selected_quality, projector_physical_selected_ratio
+      REAL(KIND=dp) :: projector_physical_shift_quality, projector_physical_shift_ratio, &
+         projector_physical_trace_active_avg, projector_physical_trace_active_diag_avg, &
          projector_physical_trace_active_diag_quality, projector_physical_trace_active_free_avg, &
          projector_physical_trace_active_free_quality, projector_physical_trace_active_quality, &
          projector_physical_trace_actual_avg, projector_physical_trace_actual_diag_avg, &
          projector_physical_trace_actual_diag_quality, projector_physical_trace_actual_free_avg, &
-         projector_physical_trace_actual_free_quality, projector_physical_trace_actual_quality, &
-         projector_physical_trace_invariant_avg, projector_physical_trace_invariant_diag_avg
-      REAL(KIND=dp) :: projector_physical_trace_invariant_diag_quality, &
+         projector_physical_trace_actual_free_quality, projector_physical_trace_actual_quality
+      REAL(KIND=dp) :: projector_physical_trace_invariant_avg, &
+         projector_physical_trace_invariant_diag_avg, &
+         projector_physical_trace_invariant_diag_quality, &
          projector_physical_trace_invariant_free_avg, &
          projector_physical_trace_invariant_free_quality, &
          projector_physical_trace_invariant_quality, projector_physical_trace_raw_avg, &
          projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality, &
          projector_physical_trace_raw_free_avg, projector_physical_trace_raw_free_quality, &
          projector_physical_trace_raw_quality, projector_physical_weight_quality, &
-         projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
-         projector_response_predicted_drop
-      REAL(KIND=dp) :: projector_response_quality_ratio, &
-         projector_response_selected_predicted_drop, projector_response_selected_quality_ratio, &
-         projector_spectral_predicted_drop, projector_spectral_quality_ratio, &
-         projector_spectral_selected_predicted_drop, projector_spectral_selected_quality_ratio, &
-         quality_ratio, raw_residual_quality_ratio, residual_current_delta, residual_drop, &
-         residual_quality_ratio, sample_accepted_drop, sample_gap, sample_gap_ratio, &
-         sample_quality, sample_reference_drop, split_shadow_calibrated_predicted_drop, &
-         split_shadow_calibrated_quality_ratio
-      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio
+         projector_plateau_gap_predicted_drop
+      REAL(KIND=dp) :: projector_plateau_gap_quality_ratio, projector_response_predicted_drop, &
+         projector_response_quality_ratio, projector_response_selected_predicted_drop, &
+         projector_response_selected_quality_ratio, projector_spectral_predicted_drop, &
+         projector_spectral_quality_ratio, projector_spectral_selected_predicted_drop, &
+         projector_spectral_selected_quality_ratio, quality_ratio, raw_residual_quality_ratio, &
+         residual_current_delta, residual_drop, residual_quality_ratio, sample_accepted_drop, &
+         sample_gap, sample_gap_ratio, sample_quality, sample_reference_drop
+      REAL(KIND=dp) :: split_shadow_calibrated_predicted_drop, &
+         split_shadow_calibrated_quality_ratio, split_shadow_predicted_drop, &
+         split_shadow_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -5784,6 +5784,8 @@ CONTAINS
          projector_physical_direct_density_fshadow_predicted_drop = &
             local_ot_env(1)%schur_projector_phys_direct_density_fshadow
          projector_physical_direct_density_fshadow_quality_ratio = 0.0_dp
+         projector_physical_direct_density_fshadow_coverage = &
+            local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage
          IF (mermin_search .AND. projector_physical_direct_density_fshadow_predicted_drop > &
              EPSILON(projector_physical_direct_density_fshadow_predicted_drop) .AND. &
              measured_drop > 0.0_dp) THEN
@@ -5818,6 +5820,25 @@ CONTAINS
                projector_physical_direct_density_fshadow_predicted_drop
             local_ot_env(1)%schur_projector_phys_direct_density_fshadow_measured_sum = &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_measured_sum + measured_drop
+            projector_physical_direct_density_fshadow_coverage = &
+               kpoint_ot_physical_direct_density_filtered_shadow_coverage( &
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_drop_sum, &
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_measured_sum, &
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_quality_samples, &
+               ot_kp_schur_projector_response_min_samples)
+            local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage = &
+               projector_physical_direct_density_fshadow_coverage
+            IF (samples == 1 .OR. &
+                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage_ema <= &
+                EPSILON(1.0_dp)) THEN
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage_ema = &
+                  projector_physical_direct_density_fshadow_coverage
+            ELSE
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage_ema + &
+                  ot_kp_schur_quality_ema_alpha*projector_physical_direct_density_fshadow_coverage
+            END IF
          END IF
          projector_mixed_direct_predicted_drop = local_ot_env(1)%schur_projector_mixed_direct_drop
          projector_mixed_direct_quality_ratio = 0.0_dp
@@ -6434,13 +6455,15 @@ CONTAINS
                local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
                local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
                projector_physical_direct_density_selected_predicted_drop
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,7(1X,ES16.8))') &
-               " OT Schur LS projector physical direct-density fshadow history n ratio ema resid rema pred meas latest:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8))') &
+               " OT Schur LS projector physical direct-density fshadow history n ratio ema resid rema cov cema pred meas latest:", &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_quality_samples, &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_quality, &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_quality_ema, &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_resid_quality, &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_resid_quality_ema, &
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage, &
+               local_ot_env(1)%schur_projector_phys_direct_density_fshadow_coverage_ema, &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_drop_sum, &
                local_ot_env(1)%schur_projector_phys_direct_density_fshadow_measured_sum, &
                projector_physical_direct_density_fshadow_predicted_drop
@@ -20266,6 +20289,30 @@ CONTAINS
                 MIN(1.0_dp, MAX(0.0_dp, history_trust_quality))
 
       END FUNCTION kpoint_ot_physical_direct_density_filtered_shadow_drop
+
+! **************************************************************************************************
+!> \brief accepted-history coverage for filtered-source Direct-density shadow drops
+!> \param predicted_sum accumulated filtered-source shadow Mermin drop
+!> \param measured_sum accumulated accepted Mermin drop used for calibration
+!> \param samples number of accepted shadow response samples
+!> \param min_samples minimum samples before coverage is trusted
+!> \return clipped predicted/measured coverage; small values mean under-supported shadow history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_physical_direct_density_filtered_shadow_coverage(predicted_sum, measured_sum, &
+                                                                          samples, min_samples) RESULT(coverage)
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp)                                      :: coverage
+
+         coverage = 0.0_dp
+         IF (samples < min_samples) RETURN
+         IF (predicted_sum <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (measured_sum <= ot_kp_schur_projector_density_full_min_drop) RETURN
+
+         coverage = predicted_sum/MAX(measured_sum, ot_kp_schur_projector_density_full_min_drop)
+         coverage = MAX(0.0_dp, MIN(1.0_dp, coverage))
+
+      END FUNCTION kpoint_ot_physical_direct_density_filtered_shadow_coverage
 
 ! **************************************************************************************************
 !> \brief pair-aware row floor for the raw Schur fallback in the metallic residual tail

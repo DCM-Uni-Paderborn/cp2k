@@ -226,6 +226,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density direct filtered-source shadow", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_filtered_shadow_drop( &
       "complex projector density direct filtered-source shadow drop", 5.0E-14_dp, nfail)
+   CALL check_projector_density_direct_filtered_shadow_coverage( &
+      "complex projector density direct filtered-source shadow coverage", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_selected_response_scale( &
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
@@ -8978,6 +8980,53 @@ CONTAINS
    END SUBROUTINE check_projector_density_direct_filtered_shadow_drop
 
 ! **************************************************************************************************
+!> \brief Check filtered Direct-density shadow accepted-history coverage.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_filtered_shadow_coverage(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: active_coverage, err, immature, &
+                                                            overcovered, tiny_coverage, &
+                                                            zero_measured, zero_predicted
+
+      active_coverage = dense_physical_direct_density_filtered_shadow_coverage( &
+                        2.5E-6_dp, 1.0E-5_dp, 8, 8, 1.0E-12_dp)
+      tiny_coverage = dense_physical_direct_density_filtered_shadow_coverage( &
+                      6.5E-10_dp, 5.0E-6_dp, 9, 8, 1.0E-12_dp)
+      overcovered = dense_physical_direct_density_filtered_shadow_coverage( &
+                    2.0E-5_dp, 1.0E-5_dp, 8, 8, 1.0E-12_dp)
+      immature = dense_physical_direct_density_filtered_shadow_coverage( &
+                 2.5E-6_dp, 1.0E-5_dp, 7, 8, 1.0E-12_dp)
+      zero_predicted = dense_physical_direct_density_filtered_shadow_coverage( &
+                       0.0_dp, 1.0E-5_dp, 8, 8, 1.0E-12_dp)
+      zero_measured = dense_physical_direct_density_filtered_shadow_coverage( &
+                      2.5E-6_dp, 0.0_dp, 8, 8, 1.0E-12_dp)
+
+      err = ABS(active_coverage - 0.25_dp)
+      err = MAX(err, ABS(tiny_coverage - 1.3E-4_dp))
+      err = MAX(err, ABS(overcovered - 1.0_dp))
+
+      IF (err > tol .OR. active_coverage <= tiny_coverage .OR. tiny_coverage >= 1.0E-3_dp .OR. &
+          overcovered < 1.0_dp - tol .OR. immature > tol .OR. zero_predicted > tol .OR. &
+          zero_measured > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/tiny/over/imm/zp/zm", err, active_coverage, tiny_coverage, &
+            overcovered, immature, zero_predicted, zero_measured
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/tiny/over/imm/zp/zm", err, active_coverage, tiny_coverage, &
+            overcovered, immature, zero_predicted, zero_measured
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_filtered_shadow_coverage
+
+! **************************************************************************************************
 !> \brief Check accepted-history selected global response step scaling.
 !> \param label ...
 !> \param tol ...
@@ -13594,6 +13643,32 @@ CONTAINS
              MIN(1.0_dp, MAX(0.0_dp, history_trust_quality))
 
    END FUNCTION dense_physical_direct_density_filtered_shadow_drop
+
+! **************************************************************************************************
+!> \brief Dense mirror of filtered-source Direct-density accepted-history coverage.
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param samples ...
+!> \param min_samples ...
+!> \param min_drop ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_physical_direct_density_filtered_shadow_coverage(predicted_sum, measured_sum, samples, &
+                                                                   min_samples, min_drop) RESULT(coverage)
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: min_drop
+      REAL(KIND=dp)                                      :: coverage
+
+      coverage = 0.0_dp
+      IF (samples < min_samples) RETURN
+      IF (predicted_sum <= min_drop) RETURN
+      IF (measured_sum <= min_drop) RETURN
+
+      coverage = predicted_sum/MAX(measured_sum, min_drop)
+      coverage = MAX(0.0_dp, MIN(1.0_dp, coverage))
+
+   END FUNCTION dense_physical_direct_density_filtered_shadow_coverage
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected global full-density response step scaling.

@@ -576,6 +576,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_resid_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_resid_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_coverage = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_coverage_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_phys_direct_density_fshadow_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_selected = 0.0_dp
@@ -1261,6 +1263,8 @@ CONTAINS
       qs_ot_env%schur_projector_phys_direct_density_fshadow_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_resid_quality = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_resid_quality_ema = 1.0_dp
+      qs_ot_env%schur_projector_phys_direct_density_fshadow_coverage = 0.0_dp
+      qs_ot_env%schur_projector_phys_direct_density_fshadow_coverage_ema = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_phys_direct_density_fshadow_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_physical_selected = 0.0_dp
