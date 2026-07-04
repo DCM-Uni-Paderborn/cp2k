@@ -2293,6 +2293,55 @@ CONTAINS
    END FUNCTION kpoint_ot_physical_density_floor_audit_response
 
 ! **************************************************************************************************
+!> \brief selected-history retry gate for the physical spectral projector Schur candidate
+!> \param selected_failures accepted-line-search probes that overpredicted too strongly
+!> \param selected_quality_ema selected accepted-drop quality EMA
+!> \param selected_residual_quality_ema selected residual-quality EMA
+!> \param shadow_quality current independent shadow accepted-drop quality
+!> \param shadow_quality_ema independent shadow accepted-drop quality EMA
+!> \param shadow_dot_ema independent shadow linear response signal EMA
+!> \param shadow_norm_ema independent shadow metric response signal EMA
+!> \param shadow_floor_ema independent shadow finite spectral floor EMA
+!> \return true if selected spectral probes may continue collecting accepted history
+! **************************************************************************************************
+   FUNCTION kpoint_ot_spectral_probe_history_ready(selected_failures, selected_quality_ema, &
+                                                   selected_residual_quality_ema, shadow_quality, &
+                                                   shadow_quality_ema, shadow_dot_ema, &
+                                                   shadow_norm_ema, shadow_floor_ema) &
+      RESULT(history_ready)
+      INTEGER, INTENT(IN)                                :: selected_failures
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality_ema, &
+                                                            selected_residual_quality_ema, &
+                                                            shadow_quality, shadow_quality_ema, &
+                                                            shadow_dot_ema, shadow_norm_ema, &
+                                                            shadow_floor_ema
+      LOGICAL                                            :: history_ready
+
+      LOGICAL                                            :: shadow_signal_ok
+
+      history_ready = .FALSE.
+      IF (selected_failures >= ot_kp_schur_projector_spectral_probe_max_failures) RETURN
+      IF (selected_failures == 0) THEN
+         history_ready = .TRUE.
+         RETURN
+      END IF
+
+      IF (selected_quality_ema >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .OR. &
+          selected_residual_quality_ema >= 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
+         history_ready = .TRUE.
+         RETURN
+      END IF
+
+      shadow_signal_ok = shadow_floor_ema > EPSILON(shadow_floor_ema) .AND. &
+                         shadow_dot_ema >= shadow_floor_ema .AND. &
+                         shadow_norm_ema >= shadow_floor_ema
+      history_ready = shadow_signal_ok .AND. &
+                      shadow_quality >= ot_kp_schur_projector_spectral_probe_quality_min .AND. &
+                      shadow_quality_ema >= ot_kp_schur_projector_spectral_probe_quality_min
+
+   END FUNCTION kpoint_ot_spectral_probe_history_ready
+
+! **************************************************************************************************
 !> \brief tail bootstrap gate for the physical Direct k-point Schur candidate
 !> \param candidate_used ...
 !> \param promoted ...
@@ -13073,13 +13122,15 @@ CONTAINS
                               .AND. &
                               local_ot_env(1)%schur_projector_spectral_selected_quality_samples < &
                               ot_kp_schur_projector_response_min_samples .AND. &
-                              local_ot_env(1)%schur_projector_spectral_selected_failure_samples < &
-                              ot_kp_schur_projector_spectral_probe_max_failures .AND. &
-                              (local_ot_env(1)%schur_projector_spectral_selected_failure_samples == 0 .OR. &
-                               local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
-                               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .OR. &
-                               local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema >= &
-                               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) .AND. &
+                              kpoint_ot_spectral_probe_history_ready( &
+                              local_ot_env(1)%schur_projector_spectral_selected_failure_samples, &
+                              local_ot_env(1)%schur_projector_spectral_selected_quality_ema, &
+                              local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema, &
+                              local_ot_env(1)%schur_projector_spectral_quality, &
+                              local_ot_env(1)%schur_projector_spectral_quality_ema, &
+                              local_ot_env(1)%schur_projector_spectral_dot_ema, &
+                              local_ot_env(1)%schur_projector_spectral_norm_ema, &
+                              local_ot_env(1)%schur_projector_spectral_floor_ema) .AND. &
                               local_ot_env(1)%schur_projector_spectral_quality_samples >= &
                               ot_kp_schur_projector_response_min_samples .AND. &
                               projector_physical_direct_spectral_shadow_quality_for_probe >= &
@@ -17737,6 +17788,22 @@ CONTAINS
                      projector_physical_direct_spectral_response_weighted_step, &
                      projector_physical_direct_spectral_response_abs_step, &
                      projector_physical_direct_spectral_direction_scale
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),10(1X,ES16.8),1X,L1)') &
+                     " OT Schur projector phys direct spectral enable history n fail sq sqema srq srqema "// &
+                     "shq shqema dotema normema floorema eminema enabled:", &
+                     local_ot_env(1)%schur_projector_spectral_selected_quality_samples, &
+                     local_ot_env(1)%schur_projector_spectral_selected_failure_samples, &
+                     local_ot_env(1)%schur_projector_spectral_selected_quality, &
+                     local_ot_env(1)%schur_projector_spectral_selected_quality_ema, &
+                     local_ot_env(1)%schur_projector_spectral_selected_residual_quality, &
+                     local_ot_env(1)%schur_projector_spectral_selected_residual_quality_ema, &
+                     local_ot_env(1)%schur_projector_spectral_quality, &
+                     local_ot_env(1)%schur_projector_spectral_quality_ema, &
+                     local_ot_env(1)%schur_projector_spectral_dot_ema, &
+                     local_ot_env(1)%schur_projector_spectral_norm_ema, &
+                     local_ot_env(1)%schur_projector_spectral_floor_ema, &
+                     local_ot_env(1)%schur_projector_spectral_emin_ema, &
+                     local_ot_env(1)%schur_projector_spectral_candidate_enabled
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                      " OT Schur projector phys direct spectral active-response "// &
                      "w cdrop cneg rneg pdrop ndrop xdrop cpos ncoeff:", &

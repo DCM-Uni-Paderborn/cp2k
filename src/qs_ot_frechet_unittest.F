@@ -272,6 +272,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_spectral_metric_norm_scale("complex projector spectral metric norm scale", &
                                                    5.0E-14_dp, nfail)
+   CALL check_projector_spectral_probe_history_ready( &
+      "complex projector spectral probe-history retry", 5.0E-14_dp, nfail)
    CALL check_projector_spectral_selected_history_promotion( &
       "complex projector spectral selected-history promotion", 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
@@ -10194,6 +10196,53 @@ CONTAINS
    END SUBROUTINE check_projector_spectral_metric_norm_scale
 
 ! **************************************************************************************************
+!> \brief Check selected spectral probe retries against independent shadow history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_spectral_probe_history_ready(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failure_veto, first_probe, &
+                                                            selected_retry, shadow_retry, &
+                                                            tiny_shadow_veto, &
+                                                            weak_shadow_veto
+      REAL(KIND=dp)                                      :: err
+
+      first_probe = dense_spectral_probe_history_ready(0, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+                                                       0.0_dp, 0.0_dp, 0.0_dp)
+      weak_shadow_veto = dense_spectral_probe_history_ready(1, 0.0_dp, 0.0_dp, 0.12_dp, 0.09_dp, &
+                                                            0.2_dp, 0.2_dp, 0.1_dp)
+      shadow_retry = dense_spectral_probe_history_ready(1, 0.0_dp, 0.0_dp, 0.12_dp, 0.31_dp, &
+                                                        0.2_dp, 0.2_dp, 0.1_dp)
+      selected_retry = dense_spectral_probe_history_ready(1, 0.06_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+                                                          0.0_dp, 0.0_dp, 0.0_dp)
+      tiny_shadow_veto = dense_spectral_probe_history_ready(1, 0.0_dp, 0.0_dp, 0.12_dp, 0.31_dp, &
+                                                            1.0E-9_dp, 1.0E-9_dp, 3.0E-4_dp)
+      failure_veto = dense_spectral_probe_history_ready(2, 0.67_dp, 0.67_dp, 0.31_dp, 0.31_dp, &
+                                                        0.2_dp, 0.2_dp, 0.1_dp)
+
+      err = 0.0_dp
+      IF (.NOT. first_probe .OR. weak_shadow_veto .OR. .NOT. shadow_retry .OR. &
+          .NOT. selected_retry .OR. tiny_shadow_veto .OR. failure_veto) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "failed with first/weak-shadow/shadow/selected/tiny/failure", first_probe, &
+            weak_shadow_veto, shadow_retry, selected_retry, tiny_shadow_veto, failure_veto
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "OK with first/weak-shadow/shadow/selected/tiny/failure", first_probe, &
+            weak_shadow_veto, shadow_retry, selected_retry, tiny_shadow_veto, failure_veto
+      END IF
+
+   END SUBROUTINE check_projector_spectral_probe_history_ready
+
+! **************************************************************************************************
 !> \brief Check that mature spectral shadow history can promote a good early selected step.
 !> \param label ...
 !> \param tol ...
@@ -12418,6 +12467,53 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_direct_tail_close_call
+
+! **************************************************************************************************
+!> \brief Dense mirror of the selected spectral probe-history retry gate.
+!> \param selected_failures ...
+!> \param selected_quality_ema ...
+!> \param selected_residual_quality_ema ...
+!> \param shadow_quality ...
+!> \param shadow_quality_ema ...
+!> \param shadow_dot_ema ...
+!> \param shadow_norm_ema ...
+!> \param shadow_floor_ema ...
+!> \return true if selected spectral probes may continue collecting accepted history
+! **************************************************************************************************
+   FUNCTION dense_spectral_probe_history_ready(selected_failures, selected_quality_ema, &
+                                               selected_residual_quality_ema, shadow_quality, &
+                                               shadow_quality_ema, shadow_dot_ema, &
+                                               shadow_norm_ema, shadow_floor_ema) &
+      RESULT(history_ready)
+      INTEGER, INTENT(IN)                                :: selected_failures
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality_ema, &
+                                                            selected_residual_quality_ema, &
+                                                            shadow_quality, shadow_quality_ema, &
+                                                            shadow_dot_ema, shadow_norm_ema, &
+                                                            shadow_floor_ema
+      LOGICAL                                            :: history_ready
+
+      LOGICAL                                            :: shadow_signal_ok
+
+      history_ready = .FALSE.
+      IF (selected_failures >= 2) RETURN
+      IF (selected_failures == 0) THEN
+         history_ready = .TRUE.
+         RETURN
+      END IF
+
+      IF (selected_quality_ema >= 5.0E-2_dp .OR. selected_residual_quality_ema >= 5.0E-2_dp) THEN
+         history_ready = .TRUE.
+         RETURN
+      END IF
+
+      shadow_signal_ok = shadow_floor_ema > EPSILON(shadow_floor_ema) .AND. &
+                         shadow_dot_ema >= shadow_floor_ema .AND. &
+                         shadow_norm_ema >= shadow_floor_ema
+      history_ready = shadow_signal_ok .AND. &
+                      shadow_quality >= 1.0E-1_dp .AND. shadow_quality_ema >= 1.0E-1_dp
+
+   END FUNCTION dense_spectral_probe_history_ready
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the spectral selected-history candidate promotion gate.
