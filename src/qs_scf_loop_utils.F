@@ -6642,6 +6642,7 @@ CONTAINS
             local_ot_env(1)%kpoint_physical_delta_groups = 0
             local_ot_env(1)%kpoint_raw_delta = -1.0_dp
             local_ot_env(1)%kpoint_physical_delta = -1.0_dp
+            local_ot_env(1)%kpoint_eps_scf = eps_scf_channel
             local_ot_env(1)%kpoint_physical_gnorm = 0.0_dp
             local_ot_env(1)%kpoint_physical_rot_gnorm = 0.0_dp
             local_ot_env(1)%kpoint_physical_energy_gnorm = 0.0_dp

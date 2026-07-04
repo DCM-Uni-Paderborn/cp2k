@@ -59,10 +59,12 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_tail_jump_norm = 1.0E-10_dp, &
                                         ot_cg_kp_residual_tail_min_delta = 3.0E-6_dp, &
                                         ot_cg_kp_residual_tail_max_delta = 5.0E-6_dp, &
+                                        ot_cg_kp_residual_tail_min_eps_factor = 3.0_dp, &
                                         ot_cg_kp_mermin_residual_growth_ratio = 1.5_dp, &
                                         ot_cg_kp_mermin_residual_growth_max_delta = 1.2E-5_dp, &
                                         ot_cg_kp_mermin_recovery_tail_min_delta = 1.5E-6_dp, &
                                         ot_cg_kp_mermin_recovery_tail_max_delta = 5.0E-6_dp, &
+                                        ot_cg_kp_mermin_recovery_tail_min_eps_factor = 1.5_dp, &
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
                                         ot_cg_kp_physical_raw_delta_floor_ratio = 1.0E-2_dp, &
                                         ot_cg_kp_physical_raw_delta_mermin_floor = 1.0E-8_dp, &
@@ -338,13 +340,30 @@ CONTAINS
    END FUNCTION use_three_point_mermin_search
 
 ! **************************************************************************************************
+!> \brief scale a k-point tail lower bound with the active SCF target when available
+!> \param default_delta ...
+!> \param eps_factor ...
+!> \param eps_scf ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION kpoint_eps_scaled_tail_min(default_delta, eps_factor, eps_scf) RESULT(delta_min)
+      REAL(KIND=dp), INTENT(IN)                          :: default_delta, eps_factor, eps_scf
+      REAL(KIND=dp)                                      :: delta_min
+
+      delta_min = default_delta
+      IF (eps_scf > 0.0_dp) delta_min = MIN(delta_min, eps_factor*eps_scf)
+      delta_min = MAX(delta_min, 1.0E4_dp*EPSILON(1.0_dp))
+
+   END FUNCTION kpoint_eps_scaled_tail_min
+
+! **************************************************************************************************
 !> \brief restart a k-point Mermin line search that has collapsed to a numerically zero step
 !> \param qs_ot_env ...
 ! **************************************************************************************************
    SUBROUTINE recover_collapsed_mermin_search(qs_ot_env)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
-      REAL(KIND=dp)                                      :: step_floor
+      REAL(KIND=dp)                                      :: mermin_tail_min, step_floor
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
@@ -353,8 +372,12 @@ CONTAINS
       step_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
                        qs_ot_env(1)%settings%eps_taylor)* &
                    MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+      mermin_tail_min = kpoint_eps_scaled_tail_min( &
+                        ot_cg_kp_mermin_recovery_tail_min_delta, &
+                        ot_cg_kp_mermin_recovery_tail_min_eps_factor, &
+                        qs_ot_env(1)%kpoint_eps_scf)
       IF (qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
-          qs_ot_env(1)%kpoint_physical_delta > ot_cg_kp_mermin_recovery_tail_min_delta .AND. &
+          qs_ot_env(1)%kpoint_physical_delta > mermin_tail_min .AND. &
           qs_ot_env(1)%kpoint_physical_delta < ot_cg_kp_mermin_recovery_tail_max_delta) THEN
          step_floor = MAX(step_floor, ot_cg_kp_mermin_recovery_step_floor* &
                           MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min)))
@@ -1198,16 +1221,17 @@ CONTAINS
       INTEGER                                            :: handle, ispin, itmp, k, n, nener, nspin, &
                                                             schur_attempt, schur_flavor, &
                                                             schur_last_attempt, schur_last_flavor
-      LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, negative_beta, &
-         reset_to_sd, residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
+      LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, &
+         mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, reset_to_sd, &
+         residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
          schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
-         schur_projector_tail_reset, mermin_residual_growth_reset, physical_raw_gap_guard
+         schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
-         gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, nvar, &
-         physical_delta, physical_gnorm, raw_delta, raw_matrix_gnorm_im, raw_matrix_gnorm_re, &
-         raw_guard_delta, residual_spike_quality, residual_trust_quality, residual_trust_scale, &
-         sample_accepted_drop, sample_gap, sample_guard_drop, sample_quality, &
-         sample_residual_growth_ratio, test_down, tmp
+         gnorm_matrix_re, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, matrix_gnorm, mermin_tail_min, &
+         nvar, physical_delta, physical_gnorm, raw_delta, raw_guard_delta, raw_matrix_gnorm_im, &
+         raw_matrix_gnorm_re, residual_spike_quality, residual_tail_min, residual_trust_quality, &
+         residual_trust_scale, sample_accepted_drop, sample_gap, sample_guard_drop, &
+         sample_quality, sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1229,6 +1253,14 @@ CONTAINS
       residual_spike_quality = 1.0_dp
       residual_tail_spike_reset = .FALSE.
       residual_trust_quality = 1.0_dp
+      mermin_tail_min = kpoint_eps_scaled_tail_min( &
+                        ot_cg_kp_mermin_recovery_tail_min_delta, &
+                        ot_cg_kp_mermin_recovery_tail_min_eps_factor, &
+                        qs_ot_env(1)%kpoint_eps_scf)
+      residual_tail_min = kpoint_eps_scaled_tail_min( &
+                          ot_cg_kp_residual_tail_min_delta, &
+                          ot_cg_kp_residual_tail_min_eps_factor, &
+                          qs_ot_env(1)%kpoint_eps_scf)
       reset_to_sd = .FALSE.
       schur_attempt = qs_ot_env(1)%schur_model_attempt
       schur_flavor = qs_ot_env(1)%schur_model_flavor
@@ -1547,7 +1579,7 @@ CONTAINS
                                   qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                                   qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
                                   qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
-                                  qs_ot_env(1)%kpoint_physical_delta > ot_cg_kp_residual_tail_min_delta .AND. &
+                                  qs_ot_env(1)%kpoint_physical_delta > residual_tail_min .AND. &
                                   qs_ot_env(1)%kpoint_physical_delta < ot_cg_kp_residual_tail_max_delta .AND. &
                                   beta_pr > ot_cg_kp_residual_tail_jump_beta .AND. &
                                   qs_ot_env(1)%gnorm > ot_cg_kp_residual_tail_jump_norm .AND. &
@@ -1571,7 +1603,7 @@ CONTAINS
       residual_spike_history_reset = history_spike_reset .AND. &
                                      qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
                                      qs_ot_env(1)%kpoint_physical_delta > &
-                                     ot_cg_kp_mermin_recovery_tail_min_delta .AND. &
+                                     mermin_tail_min .AND. &
                                      qs_ot_env(1)%kpoint_physical_delta < &
                                      ot_cg_kp_mermin_recovery_tail_max_delta .AND. &
                                      (schur_projector_tail_reset .OR. residual_tail_spike_reset)
@@ -1588,7 +1620,7 @@ CONTAINS
                residual_spike_quality, gnorm_ratio, qs_ot_env(1)%kpoint_physical_delta, &
                MAX(ot_cg_kp_residual_trust_min_scale, &
                    MIN(1.0_dp, SQRT(MAX(residual_spike_quality, &
-                                         ot_cg_kp_residual_trust_quality_floor)))), &
+                                        ot_cg_kp_residual_trust_quality_floor)))), &
                schur_flavor, schur_last_flavor
          END IF
       END IF
