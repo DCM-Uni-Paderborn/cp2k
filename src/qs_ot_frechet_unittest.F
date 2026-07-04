@@ -228,6 +228,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density direct filtered-source shadow drop", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_filtered_shadow_coverage( &
       "complex projector density direct filtered-source shadow coverage", 5.0E-14_dp, nfail)
+   CALL check_projector_density_direct_filtered_shadow_promotion( &
+      "complex projector density direct filtered-source shadow promotion", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_selected_response_scale( &
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
@@ -9027,6 +9029,53 @@ CONTAINS
    END SUBROUTINE check_projector_density_direct_filtered_shadow_coverage
 
 ! **************************************************************************************************
+!> \brief Check coverage-aware filtered Direct-density shadow promotion.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_filtered_shadow_promotion(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: active_weight, err, expected_weight, high_underpredict, immature, &
+         low_coverage, low_residual, no_shadow, weak_coverage_ema
+
+      active_weight = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                      1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
+      low_coverage = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                     1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 1.3E-4_dp, 1.3E-4_dp)
+      weak_coverage_ema = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                          1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.04_dp)
+      high_underpredict = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                          1.0E-3_dp, 12, 1.10E4_dp, 9.9E3_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
+      low_residual = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                     1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.02_dp, 0.03_dp, 0.25_dp, 0.20_dp)
+      immature = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                 1.0E-3_dp, 7, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
+      no_shadow = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                  0.0_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
+
+      expected_weight = 1.0E-3_dp*(5.0_dp/8.0_dp)*SQRT(0.20_dp)*SQRT(0.25_dp)
+      err = ABS(active_weight - expected_weight)
+
+      IF (err > tol .OR. active_weight <= 0.0_dp .OR. low_coverage > tol .OR. &
+          weak_coverage_ema > tol .OR. high_underpredict > tol .OR. low_residual > tol .OR. &
+          immature > tol .OR. no_shadow > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/lcov/wcov/hunder/lres/imm/nosh", err, active_weight, &
+            low_coverage, weak_coverage_ema, high_underpredict, low_residual, immature, no_shadow
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/lcov/wcov/hunder/lres/imm/nosh", err, active_weight, low_coverage, &
+            weak_coverage_ema, high_underpredict, low_residual, immature, no_shadow
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_filtered_shadow_promotion
+
+! **************************************************************************************************
 !> \brief Check accepted-history selected global response step scaling.
 !> \param label ...
 !> \param tol ...
@@ -13669,6 +13718,65 @@ CONTAINS
       coverage = MAX(0.0_dp, MIN(1.0_dp, coverage))
 
    END FUNCTION dense_physical_direct_density_filtered_shadow_coverage
+
+! **************************************************************************************************
+!> \brief Dense mirror of coverage-aware filtered Direct-density shadow promotion.
+!> \param shadow_weight ...
+!> \param samples ...
+!> \param quality ...
+!> \param quality_ema ...
+!> \param residual_quality ...
+!> \param residual_quality_ema ...
+!> \param coverage ...
+!> \param coverage_ema ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_physical_direct_density_filtered_shadow_promotion_weight(shadow_weight, samples, quality, &
+                                                                           quality_ema, residual_quality, &
+                                                                           residual_quality_ema, coverage, &
+                                                                           coverage_ema) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: shadow_weight
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: quality, quality_ema, residual_quality, &
+                                                            residual_quality_ema, coverage, &
+                                                            coverage_ema
+      REAL(KIND=dp)                                      :: weight
+
+      INTEGER                                            :: maturity_samples
+      REAL(KIND=dp)                                      :: coverage_signal, maturity, &
+                                                            mermin_signal, residual_signal
+
+      weight = 0.0_dp
+      IF (shadow_weight <= EPSILON(shadow_weight)) RETURN
+      IF (samples < 8) RETURN
+      IF (quality < 5.0E-2_dp) RETURN
+      IF (quality_ema < 1.0E-1_dp) RETURN
+      IF (quality > 20.0_dp) RETURN
+      IF (quality_ema > 20.0_dp) RETURN
+      IF (coverage < 5.0E-2_dp) RETURN
+      IF (coverage_ema < 1.0E-1_dp) RETURN
+
+      residual_signal = MAX(0.0_dp, MIN(1.0_dp, residual_quality_ema))
+      IF (residual_quality > EPSILON(residual_quality)) &
+         residual_signal = MIN(residual_signal, MAX(0.0_dp, MIN(1.0_dp, residual_quality)))
+      IF (residual_signal < 1.0E-1_dp) RETURN
+
+      coverage_signal = MIN(MAX(0.0_dp, MIN(1.0_dp, coverage)), &
+                            MAX(0.0_dp, MIN(1.0_dp, coverage_ema)))
+      IF (coverage_signal < 1.0E-1_dp) RETURN
+
+      mermin_signal = MIN(MAX(0.0_dp, MIN(1.0_dp, quality)), &
+                          MAX(0.0_dp, MIN(1.0_dp, quality_ema)))
+      IF (mermin_signal < 1.0E-1_dp) RETURN
+
+      maturity_samples = 8
+      maturity = REAL(MAX(0, samples - 8 + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+      maturity = MAX(0.0_dp, MIN(1.0_dp, maturity))
+
+      weight = MAX(0.0_dp, shadow_weight)*maturity*SQRT(coverage_signal)* &
+               SQRT(residual_signal)*mermin_signal
+
+   END FUNCTION dense_physical_direct_density_filtered_shadow_promotion_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected global full-density response step scaling.
