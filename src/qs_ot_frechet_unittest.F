@@ -5372,10 +5372,12 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp) :: active_fraction, component_response, full_lifted_response, &
-         geometric_lifted_response, geometric_response, global_response, half_lifted_response, &
+      REAL(KIND=dp) :: active_fraction, component_response, full_component_response, &
+         full_lifted_response, geometric_component_response, geometric_lifted_response, &
+         geometric_response, global_response, half_component_response, half_lifted_response, &
          half_response, local_response, occ_curv, occ_curv_max, old_expected_response, &
-         raw_response, response_shape, safe_blend, safe_response
+         raw_response, response_root, response_shape, safe_blend, safe_blend_floor, safe_cap, &
+         safe_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5385,15 +5387,24 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
-      safe_blend = MAX(active_fraction, 0.80_dp*SQRT(response_shape))
-      component_response = (1.0_dp - safe_blend)*raw_response + &
-                           safe_blend*SQRT(response_shape)*safe_response
+      response_root = SQRT(response_shape)
+      safe_blend_floor = 0.80_dp*response_root
+      safe_blend = MAX(active_fraction, safe_blend_floor)
+      safe_cap = response_root*safe_response
+      component_response = (1.0_dp - safe_blend)*raw_response + safe_blend*safe_cap
+      geometric_component_response = component_response
+      safe_cap = (response_root + 0.5_dp*(1.0_dp - response_root))*safe_response
+      half_component_response = (1.0_dp - safe_blend)*raw_response + safe_blend*safe_cap
+      full_component_response = (1.0_dp - safe_blend)*raw_response + safe_blend*safe_response
       old_expected_response = response_shape*component_response
       geometric_lifted_response = &
-         MAX(response_shape, SQRT(response_shape*0.80_dp*SQRT(response_shape)))*component_response
-      full_lifted_response = MAX(response_shape, 0.80_dp*SQRT(response_shape))*component_response
-      half_lifted_response = geometric_lifted_response + &
-                             0.5_dp*(full_lifted_response - geometric_lifted_response)
+         MAX(response_shape, SQRT(response_shape*safe_blend_floor))*geometric_component_response
+      full_lifted_response = MAX(response_shape, safe_blend_floor)*full_component_response
+      half_lifted_response = &
+         (MAX(response_shape, SQRT(response_shape*safe_blend_floor)) + &
+          0.5_dp*(MAX(response_shape, safe_blend_floor) - &
+                  MAX(response_shape, SQRT(response_shape*safe_blend_floor))))* &
+         half_component_response
 
       local_response = dense_physical_density_response(raw_response, safe_response, &
                                                        occ_curv, occ_curv_max, response_ratio_gate)
@@ -18084,9 +18095,9 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, density_shape, density_shape_full, &
-         density_shape_geometric, lift_weight, projector_abs, projector_component, response_shape, &
-         safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
-         sign_projector_response, sign_safe_response
+         density_shape_geometric, global_cap_lift, global_safe_cap, lift_weight, projector_abs, &
+         projector_component, response_root, response_shape, safe_abs, safe_blend, &
+         safe_blend_floor, safe_cap, safe_component, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -18095,6 +18106,7 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      response_root = SQRT(MAX(0.0_dp, response_shape))
       density_shape = response_shape
       lift_weight = 0.0_dp
       IF (PRESENT(density_global_lift_weight)) &
@@ -18128,14 +18140,16 @@ CONTAINS
                                    projector_abs > EPSILON(projector_abs)
       IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
          IF (globally_aligned_safe_response) THEN
-            safe_cap = MAX(4.0_dp*projector_abs, SQRT(response_shape)*safe_abs)
+            global_cap_lift = lift_weight
+            global_safe_cap = (response_root + global_cap_lift*(1.0_dp - response_root))*safe_abs
+            safe_cap = MAX(4.0_dp*projector_abs, global_safe_cap)
          ELSE
             safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          END IF
          safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
          safe_blend = active_fraction
          IF (globally_aligned_safe_response) THEN
-            safe_blend_floor = MIN(1.0_dp, alignment)*SQRT(response_shape)
+            safe_blend_floor = MIN(1.0_dp, alignment)*response_root
             safe_blend = MAX(safe_blend, safe_blend_floor)
             density_shape_geometric = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
             density_shape_full = MAX(density_shape, safe_blend_floor)

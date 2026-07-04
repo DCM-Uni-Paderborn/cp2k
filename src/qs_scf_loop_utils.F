@@ -2122,9 +2122,9 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, density_shape, density_shape_full, &
-         density_shape_geometric, lift_weight, projector_abs, projector_component, response_shape, &
-         safe_abs, safe_blend, safe_blend_floor, safe_cap, safe_component, &
-         sign_projector_response, sign_safe_response
+         density_shape_geometric, global_cap_lift, global_safe_cap, lift_weight, projector_abs, &
+         projector_component, response_root, response_shape, safe_abs, safe_blend, &
+         safe_blend_floor, safe_cap, safe_component, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2134,6 +2134,7 @@ CONTAINS
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      response_root = SQRT(MAX(0.0_dp, response_shape))
       density_shape = response_shape
       lift_weight = 0.0_dp
       IF (PRESENT(density_global_lift_weight)) &
@@ -2167,14 +2168,16 @@ CONTAINS
                                    projector_abs > EPSILON(projector_abs)
       IF (locally_aligned_safe_response .OR. globally_aligned_safe_response) THEN
          IF (globally_aligned_safe_response) THEN
-            safe_cap = MAX(4.0_dp*projector_abs, SQRT(response_shape)*safe_abs)
+            global_cap_lift = lift_weight
+            global_safe_cap = (response_root + global_cap_lift*(1.0_dp - response_root))*safe_abs
+            safe_cap = MAX(4.0_dp*projector_abs, global_safe_cap)
          ELSE
             safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          END IF
          safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
          safe_blend = active_fraction
          IF (globally_aligned_safe_response) THEN
-            safe_blend_floor = MIN(1.0_dp, alignment)*SQRT(response_shape)
+            safe_blend_floor = MIN(1.0_dp, alignment)*response_root
             safe_blend = MAX(safe_blend, safe_blend_floor)
             density_shape_geometric = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
             density_shape_full = MAX(density_shape, safe_blend_floor)
