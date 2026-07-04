@@ -7200,6 +7200,15 @@ CONTAINS
          projector_physical_direct_plateau_gap_mix_weight, &
          projector_physical_direct_quality_for_selection, &
          projector_physical_direct_response_abs_step
+      REAL(KIND=dp) :: projector_physical_direct_actual_response_correction_drop, &
+         projector_physical_direct_actual_response_correction_negative, &
+         projector_physical_direct_actual_response_cross_drop, &
+         projector_physical_direct_actual_response_negative_coeff, &
+         projector_physical_direct_actual_response_negative_drop, &
+         projector_physical_direct_actual_response_positive_coeff, &
+         projector_physical_direct_actual_response_positive_drop, &
+         projector_physical_direct_actual_response_raw_negative_fraction, &
+         projector_physical_direct_actual_response_weight
       REAL(KIND=dp) :: projector_physical_direct_response_abs_trust_ratio, &
          projector_physical_direct_response_correction_drop, &
          projector_physical_direct_response_correction_negative, &
@@ -8244,6 +8253,15 @@ CONTAINS
          projector_physical_direct_schur_diag_min = HUGE(1.0_dp)
          projector_physical_direct_schur_eval_max = 0.0_dp
          projector_physical_direct_schur_eval_min = 0.0_dp
+         projector_physical_direct_actual_response_correction_drop = 0.0_dp
+         projector_physical_direct_actual_response_correction_negative = 0.0_dp
+         projector_physical_direct_actual_response_cross_drop = 0.0_dp
+         projector_physical_direct_actual_response_negative_coeff = 0.0_dp
+         projector_physical_direct_actual_response_negative_drop = 0.0_dp
+         projector_physical_direct_actual_response_positive_coeff = 0.0_dp
+         projector_physical_direct_actual_response_positive_drop = 0.0_dp
+         projector_physical_direct_actual_response_raw_negative_fraction = 0.0_dp
+         projector_physical_direct_actual_response_weight = 0.0_dp
          projector_physical_direct_response_abs_step = 0.0_dp
          projector_physical_direct_response_abs_trust_ratio = 0.0_dp
          projector_physical_direct_response_weighted_step = 0.0_dp
@@ -14489,6 +14507,43 @@ CONTAINS
                                     EPSILON(projector_physical_direct_diagref_model_drop)
                               END IF
                            END IF
+                        END IF
+                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                            projector_physical_direct_shadow_enabled) THEN
+                           projector_physical_direct_curv_vec(:, :) = &
+                              0.5_dp*((rot_hessian(:, :) + projector_physical_direct_delta(:, :)) + &
+                                      TRANSPOSE(rot_hessian(:, :) + projector_physical_direct_delta(:, :)))
+                           CALL audit_kpoint_ot_projector_response_modes( &
+                              rot_hessian, projector_physical_direct_curv_vec, &
+                              projector_physical_direct_sol, response_exact_raw, response_physical_model, &
+                              curv, occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, &
+                              e_offset, .TRUE., projector_coupled_weight, residual_delta, &
+                              projector_mode_history_quality, &
+                              local_ot_env(1)%schur_projector_mode_trust_ema, &
+                              projector_mode_history_response_ratio, grad_e, &
+                              z_exact_physical_trial + projector_physical_direct_rx_e, &
+                              projector_physical_direct_rx_e, direct_pg_base_e, &
+                              projector_physical_direct_actual_response_weight, &
+                              projector_physical_direct_actual_response_correction_drop, &
+                              projector_physical_direct_actual_response_correction_negative, &
+                              projector_physical_direct_actual_response_raw_negative_fraction, &
+                              projector_physical_direct_actual_response_positive_drop, &
+                              projector_physical_direct_actual_response_negative_drop, &
+                              projector_physical_direct_actual_response_cross_drop, &
+                              projector_physical_direct_actual_response_positive_coeff, &
+                              projector_physical_direct_actual_response_negative_coeff, &
+                              raw_residual_delta=response_raw_delta)
+                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
+                              " OT Schur projector phys direct actual-response w cdrop cneg rneg pdrop ndrop xdrop cpos ncoeff:", &
+                              projector_physical_direct_actual_response_weight, &
+                              projector_physical_direct_actual_response_correction_drop, &
+                              projector_physical_direct_actual_response_correction_negative, &
+                              projector_physical_direct_actual_response_raw_negative_fraction, &
+                              projector_physical_direct_actual_response_positive_drop, &
+                              projector_physical_direct_actual_response_negative_drop, &
+                              projector_physical_direct_actual_response_cross_drop, &
+                              projector_physical_direct_actual_response_positive_coeff, &
+                              projector_physical_direct_actual_response_negative_coeff
                         END IF
                         IF (projector_physical_direct_response_weight > &
                             EPSILON(projector_physical_direct_response_weight)) THEN
