@@ -222,6 +222,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global floor-source weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_filtered_source_weight( &
       "complex projector density global filtered-source weight", 5.0E-14_dp, nfail)
+   CALL check_projector_density_direct_filtered_shadow_weight( &
+      "complex projector density direct filtered-source shadow", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_selected_response_scale( &
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
@@ -8885,6 +8887,61 @@ CONTAINS
    END SUBROUTINE check_projector_density_global_filtered_source_weight
 
 ! **************************************************************************************************
+!> \brief Check filtered finite-projector source shadow for the physical Direct density Hessian.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_filtered_shadow_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: active_weight, err, expected_weight, high_lowcurv, high_residual, &
+         low_quality, low_trust, no_floor, weak_response
+
+      active_weight = dense_physical_direct_density_filtered_shadow_weight( &
+                      5.0E-6_dp, 0.20_dp, 0.80_dp, 0.90_dp, &
+                      1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      high_residual = dense_physical_direct_density_filtered_shadow_weight( &
+                      2.0E-4_dp, 0.20_dp, 0.80_dp, 0.90_dp, &
+                      1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      no_floor = dense_physical_direct_density_filtered_shadow_weight( &
+                 5.0E-6_dp, 0.0_dp, 0.80_dp, 0.90_dp, &
+                 1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      low_quality = dense_physical_direct_density_filtered_shadow_weight( &
+                    5.0E-6_dp, 0.20_dp, 1.0E-3_dp, 0.90_dp, &
+                    1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      low_trust = dense_physical_direct_density_filtered_shadow_weight( &
+                  5.0E-6_dp, 0.20_dp, 0.80_dp, 0.0_dp, &
+                  1.0E-6_dp, 8.0E-7_dp, 2.0E-2_dp)
+      weak_response = dense_physical_direct_density_filtered_shadow_weight( &
+                      5.0E-6_dp, 0.20_dp, 0.80_dp, 0.90_dp, &
+                      1.0E-6_dp, 1.0E-10_dp, 2.0E-2_dp)
+      high_lowcurv = dense_physical_direct_density_filtered_shadow_weight( &
+                     5.0E-6_dp, 0.20_dp, 0.80_dp, 0.90_dp, &
+                     1.0E-6_dp, 8.0E-7_dp, 2.0E-1_dp)
+
+      expected_weight = 1.25E-3_dp*SQRT(0.80_dp*0.90_dp)*SQRT(8.0E-1_dp)* &
+                        (1.0_dp - 2.0E-2_dp/1.0E-1_dp)
+      err = ABS(active_weight - expected_weight)
+
+      IF (err > tol .OR. active_weight <= 0.0_dp .OR. active_weight >= 1.25E-3_dp .OR. &
+          high_residual > tol .OR. no_floor > tol .OR. low_quality > tol .OR. &
+          low_trust > tol .OR. weak_response > tol .OR. high_lowcurv > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/hr/nf/lq/lt/wr/hl", err, active_weight, high_residual, &
+            no_floor, low_quality, low_trust, weak_response, high_lowcurv
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/hr/nf/lq/lt/wr/hl", err, active_weight, high_residual, &
+            no_floor, low_quality, low_trust, weak_response, high_lowcurv
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_filtered_shadow_weight
+
+! **************************************************************************************************
 !> \brief Check accepted-history selected global response step scaling.
 !> \param label ...
 !> \param tol ...
@@ -13430,6 +13487,54 @@ CONTAINS
       weight = MAX(0.0_dp, MIN(2.5E-3_dp, weight))
 
    END FUNCTION dense_density_full_global_filtered_source_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of physical Direct density filtered-source response shadow.
+!> \param residual_delta ...
+!> \param floor_weight ...
+!> \param floor_quality ...
+!> \param floor_trust_quality ...
+!> \param filtered_abs_avg ...
+!> \param filtered_exact_abs_avg ...
+!> \param filtered_low_curv_fraction ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_physical_direct_density_filtered_shadow_weight(residual_delta, floor_weight, floor_quality, &
+                                                                 floor_trust_quality, filtered_abs_avg, &
+                                                                 filtered_exact_abs_avg, &
+                                                                 filtered_low_curv_fraction) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN) :: residual_delta, floor_weight, floor_quality, &
+         floor_trust_quality, filtered_abs_avg, filtered_exact_abs_avg, filtered_low_curv_fraction
+      REAL(KIND=dp)                                      :: weight
+
+      REAL(KIND=dp)                                      :: low_curv_quality, quality_support, &
+                                                            response_support
+
+      weight = 0.0_dp
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (floor_weight <= EPSILON(floor_weight)) RETURN
+      IF (floor_quality < 2.5E-2_dp) RETURN
+      IF (floor_trust_quality <= EPSILON(floor_trust_quality)) RETURN
+      IF (filtered_abs_avg <= EPSILON(filtered_abs_avg)) RETURN
+      IF (filtered_exact_abs_avg <= EPSILON(filtered_exact_abs_avg)) RETURN
+
+      response_support = filtered_exact_abs_avg/MAX(filtered_abs_avg, EPSILON(filtered_abs_avg))
+      IF (response_support < 1.0E-3_dp) RETURN
+      response_support = MIN(1.0_dp, SQRT(MAX(0.0_dp, response_support)))
+
+      low_curv_quality = 1.0_dp - filtered_low_curv_fraction/1.0E-1_dp
+      low_curv_quality = MAX(0.0_dp, MIN(1.0_dp, low_curv_quality))
+      IF (low_curv_quality <= EPSILON(low_curv_quality)) RETURN
+
+      quality_support = SQRT(MAX(0.0_dp, MIN(1.0_dp, floor_quality))* &
+                             MAX(0.0_dp, MIN(1.0_dp, floor_trust_quality)))
+      IF (quality_support <= EPSILON(quality_support)) RETURN
+
+      weight = MIN(0.5_dp*MAX(0.0_dp, floor_weight), 1.25E-3_dp)
+      weight = weight*quality_support*response_support*low_curv_quality
+      weight = MAX(0.0_dp, MIN(1.25E-3_dp, weight))
+
+   END FUNCTION dense_physical_direct_density_filtered_shadow_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected global full-density response step scaling.
