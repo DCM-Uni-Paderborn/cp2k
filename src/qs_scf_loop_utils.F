@@ -7055,24 +7055,25 @@ CONTAINS
          projector_density_floor_audit_low_curv_fraction, &
          projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg, &
          projector_density_full_global_abs_avg, projector_density_full_global_floor_mix_weight, &
-         projector_density_history_quality, projector_density_history_weight
-      REAL(KIND=dp) :: projector_density_selected_history_weight, projector_diag_compensation, &
+         projector_density_full_global_selective_mix_weight
+      REAL(KIND=dp) :: projector_density_history_quality, projector_density_history_weight, &
+         projector_density_selected_history_weight, projector_diag_compensation, &
          projector_diagref_quality_for_selection, projector_diagref_weight, &
          projector_gauge_abs_avg, projector_gauge_delta_max, projector_hessian_abs_avg, &
          projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
          projector_hessian_diag_avg, projector_inactive_offdiag_direction_scale, &
          projector_inactive_offdiag_expected_drop, projector_inactive_offdiag_gdot_energy, &
-         projector_inactive_offdiag_gdot_rotation, projector_inactive_offdiag_gdotp, &
-         projector_inactive_offdiag_history_quality
-      REAL(KIND=dp) :: projector_inactive_offdiag_history_response_ratio, &
+         projector_inactive_offdiag_gdot_rotation, projector_inactive_offdiag_gdotp
+      REAL(KIND=dp) :: projector_inactive_offdiag_history_quality, &
+         projector_inactive_offdiag_history_response_ratio, &
          projector_inactive_offdiag_history_trust, &
          projector_inactive_offdiag_model_calibrated_drop, projector_inactive_offdiag_model_drop, &
          projector_inactive_offdiag_model_gap, projector_inactive_offdiag_model_gap_drop, &
          projector_inactive_offdiag_model_gap_ratio, projector_inactive_offdiag_model_gap_trust, &
          projector_inactive_offdiag_norm_energy, projector_inactive_offdiag_norm_ratio, &
-         projector_inactive_offdiag_norm_rotation, projector_inactive_offdiag_normp, &
-         projector_inactive_offdiag_quality_for_selection
-      REAL(KIND=dp) :: projector_inactive_offdiag_response_abs_step, &
+         projector_inactive_offdiag_norm_rotation, projector_inactive_offdiag_normp
+      REAL(KIND=dp) :: projector_inactive_offdiag_quality_for_selection, &
+         projector_inactive_offdiag_response_abs_step, &
          projector_inactive_offdiag_response_abs_trust_ratio, &
          projector_inactive_offdiag_response_correction_drop, &
          projector_inactive_offdiag_response_correction_negative, &
@@ -7081,18 +7082,18 @@ CONTAINS
          projector_inactive_offdiag_response_negative_drop, &
          projector_inactive_offdiag_response_positive_coeff, &
          projector_inactive_offdiag_response_positive_drop, &
-         projector_inactive_offdiag_response_raw_negative_fraction, &
-         projector_inactive_offdiag_response_weight
-      REAL(KIND=dp) :: projector_inactive_offdiag_response_weighted_step, &
+         projector_inactive_offdiag_response_raw_negative_fraction
+      REAL(KIND=dp) :: projector_inactive_offdiag_response_weight, &
+         projector_inactive_offdiag_response_weighted_step, &
          projector_inactive_offdiag_response_weighted_trust_ratio, &
          projector_inactive_offdiag_scale_quality, &
          projector_inactive_offdiag_selected_quality_for_selection, &
          projector_inactive_offdiag_selected_scale, projector_inactive_offdiag_trust_quality, &
          projector_inactive_offdiag_trust_scale, projector_inactive_offdiag_unit_abs_step, &
          projector_inactive_offdiag_unit_weighted_step, projector_mode_damped_abs_avg, &
-         projector_mode_eval_max, projector_mode_eval_min, projector_mode_history_quality, &
-         projector_mode_history_response_negative
-      REAL(KIND=dp) :: projector_mode_history_response_ratio, projector_mode_negative_fraction, &
+         projector_mode_eval_max, projector_mode_eval_min, projector_mode_history_quality
+      REAL(KIND=dp) :: projector_mode_history_response_negative, &
+         projector_mode_history_response_ratio, projector_mode_negative_fraction, &
          projector_mode_quality, projector_mode_response_audit_base_weight, &
          projector_mode_response_audit_eval_abs_avg, &
          projector_mode_response_audit_negative_weight_sum, &
@@ -7100,26 +7101,27 @@ CONTAINS
          projector_mode_response_audit_response_total_sum, &
          projector_mode_response_audit_step_weight_sum, projector_mode_response_correction_drop, &
          projector_mode_response_correction_negative, projector_mode_response_cross_drop, &
-         projector_mode_response_drop, projector_mode_response_drop_ratio
-      REAL(KIND=dp) :: projector_mode_response_negative_coeff, &
+         projector_mode_response_drop
+      REAL(KIND=dp) :: projector_mode_response_drop_ratio, projector_mode_response_negative_coeff, &
          projector_mode_response_negative_drop, projector_mode_response_negative_fraction, &
          projector_mode_response_positive_coeff, projector_mode_response_positive_drop, &
          projector_mode_response_raw_negative_fraction, projector_mode_response_weight, &
          projector_mode_step_negative_fraction, projector_mode_trust_quality, &
          projector_occupation_window_gap, projector_offdiag_abs_trust, &
          projector_offdiag_active_weight, projector_offdiag_direction_scale, &
-         projector_offdiag_expected_drop, projector_offdiag_expected_drop_ratio
-      REAL(KIND=dp) :: projector_offdiag_gdot_energy, projector_offdiag_gdot_rotation, &
-         projector_offdiag_gdotp, projector_offdiag_history_quality, &
-         projector_offdiag_history_response_ratio, projector_offdiag_history_trust, &
-         projector_offdiag_model_advantage_ratio, projector_offdiag_model_calibrated_drop, &
-         projector_offdiag_model_drop, projector_offdiag_model_gap, &
-         projector_offdiag_model_gap_drop, projector_offdiag_model_gap_ratio, &
-         projector_offdiag_model_gap_trust, projector_offdiag_norm_energy, &
-         projector_offdiag_norm_ratio, projector_offdiag_norm_rotation, projector_offdiag_normp
-      REAL(KIND=dp) :: projector_offdiag_quality_for_selection, projector_offdiag_reference_drop, &
-         projector_offdiag_response_abs_step, projector_offdiag_response_abs_trust_ratio, &
-         projector_offdiag_response_correction_drop, &
+         projector_offdiag_expected_drop
+      REAL(KIND=dp) :: projector_offdiag_expected_drop_ratio, projector_offdiag_gdot_energy, &
+         projector_offdiag_gdot_rotation, projector_offdiag_gdotp, &
+         projector_offdiag_history_quality, projector_offdiag_history_response_ratio, &
+         projector_offdiag_history_trust, projector_offdiag_model_advantage_ratio, &
+         projector_offdiag_model_calibrated_drop, projector_offdiag_model_drop, &
+         projector_offdiag_model_gap, projector_offdiag_model_gap_drop, &
+         projector_offdiag_model_gap_ratio, projector_offdiag_model_gap_trust, &
+         projector_offdiag_norm_energy, projector_offdiag_norm_ratio, &
+         projector_offdiag_norm_rotation
+      REAL(KIND=dp) :: projector_offdiag_normp, projector_offdiag_quality_for_selection, &
+         projector_offdiag_reference_drop, projector_offdiag_response_abs_step, &
+         projector_offdiag_response_abs_trust_ratio, projector_offdiag_response_correction_drop, &
          projector_offdiag_response_correction_negative, projector_offdiag_response_cross_drop, &
          projector_offdiag_response_negative_coeff, projector_offdiag_response_negative_drop, &
          projector_offdiag_response_positive_coeff, projector_offdiag_response_positive_drop, &
@@ -7983,6 +7985,7 @@ CONTAINS
          projector_density_basis_damped_retained_fraction = 0.0_dp
          projector_density_full_global_abs_avg = 0.0_dp
          projector_density_full_global_floor_mix_weight = 0.0_dp
+         projector_density_full_global_selective_mix_weight = 0.0_dp
          projector_physical_density_gap_abs_avg = 0.0_dp
          projector_physical_density_gap_abs_max = 0.0_dp
          projector_physical_density_diag_avg = 0.0_dp
@@ -9255,10 +9258,68 @@ CONTAINS
             local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
             local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
             local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples)
+         IF (projector_density_full_audit_enabled .AND. projector_density_basis_audit_abs_avg > &
+             EPSILON(projector_density_basis_audit_abs_avg)) THEN
+            density_basis_selective_floor_weight(:) = 0.0_dp
+            density_basis_source_abs_sum = 0.0_dp
+            density_basis_unsupported_abs_sum = 0.0_dp
+            DO ie = 1, ne
+               density_basis_row_basis_abs = SUM(ABS(response_density_basis_audit(ie, :)))
+               density_basis_row_physical_abs = SUM(ABS(response_density_physical(ie, :)))
+               density_basis_row_basis_norm = SQRT(SUM(response_density_basis_audit(ie, :)**2))
+               density_basis_row_physical_norm = SQRT(SUM(response_density_physical(ie, :)**2))
+               density_basis_row_dot = SUM(response_density_basis_audit(ie, :)*response_density_physical(ie, :))
+               density_basis_physical_support = 0.0_dp
+               IF (density_basis_row_basis_abs <= EPSILON(density_basis_row_basis_abs)) THEN
+                  density_basis_physical_support = 1.0_dp
+               ELSE IF (density_basis_row_basis_norm > EPSILON(density_basis_row_basis_norm) .AND. &
+                        density_basis_row_physical_norm > EPSILON(density_basis_row_physical_norm) .AND. &
+                        density_basis_row_dot > 0.0_dp) THEN
+                  density_basis_physical_support = density_basis_row_dot/ &
+                                                   (density_basis_row_basis_norm*density_basis_row_physical_norm)
+                  density_basis_physical_support = MIN(1.0_dp, MAX(0.0_dp, density_basis_physical_support))
+                  density_basis_physical_support = density_basis_physical_support* &
+                                                   MIN(1.0_dp, density_basis_row_physical_abs/ &
+                                                       MAX(density_basis_row_basis_abs, EPSILON(density_basis_row_basis_abs)))
+               END IF
+               density_basis_lowcurv_weight = 0.0_dp
+               IF (0.1_dp*total_curv_diag_max > EPSILON(total_curv_diag_max)) THEN
+                  density_basis_lowcurv_weight = &
+                     1.0_dp - MIN(1.0_dp, MAX(0.0_dp, occ_curv(ie) + tether_curv(ie))/ &
+                                  (0.1_dp*total_curv_diag_max))
+               END IF
+               density_basis_floor_weight = (1.0_dp - density_basis_physical_support)* &
+                                            density_basis_lowcurv_weight
+               density_basis_floor_weight = MIN(1.0_dp, MAX(0.0_dp, density_basis_floor_weight))
+               density_basis_selective_floor_weight(ie) = density_basis_floor_weight
+               projector_density_basis_selective_audit_floor_avg = &
+                  projector_density_basis_selective_audit_floor_avg + density_basis_floor_weight
+               projector_density_basis_selective_audit_floor_max = &
+                  MAX(projector_density_basis_selective_audit_floor_max, density_basis_floor_weight)
+               projector_density_basis_selective_audit_support_avg = &
+                  projector_density_basis_selective_audit_support_avg + density_basis_physical_support
+               density_basis_source_abs_sum = density_basis_source_abs_sum + density_basis_row_basis_abs
+               density_basis_unsupported_abs_sum = density_basis_unsupported_abs_sum + &
+                                                   density_basis_floor_weight*density_basis_row_basis_abs
+            END DO
+            projector_density_basis_selective_audit_floor_avg = &
+               projector_density_basis_selective_audit_floor_avg/REAL(MAX(1, ne), KIND=dp)
+            projector_density_basis_selective_audit_support_avg = &
+               projector_density_basis_selective_audit_support_avg/REAL(MAX(1, ne), KIND=dp)
+            IF (density_basis_source_abs_sum > EPSILON(density_basis_source_abs_sum)) &
+               projector_density_basis_selective_audit_unsupported_fraction = &
+               density_basis_unsupported_abs_sum/density_basis_source_abs_sum
+         END IF
+         projector_density_full_global_selective_mix_weight = &
+            projector_density_full_global_floor_mix_weight* &
+            MIN(1.0_dp, MAX(0.0_dp, projector_density_basis_selective_audit_unsupported_fraction))
          ! Use the active-window, gauge-safe physical density response for the
          ! global fixed-N candidate.  Once selected global-history repeatedly
          ! underpredicts accepted Mermin drops, admit a tiny piece of the
          ! floor-limited finite-projector source before the fixed-N projection.
+         ! The selective density-basis unsafe-subspace weight is used below for
+         ! the exact response metric, but the raw density-basis source itself
+         ! stays shadow-only until its accepted-step history is good enough.
          response_density_full_global(:, :) = response_density_physical(:, :)
          IF (projector_density_full_global_floor_mix_weight > &
              EPSILON(projector_density_full_global_floor_mix_weight)) &
@@ -9357,12 +9418,23 @@ CONTAINS
          IF (projector_physical_shadow_enabled) THEN
             ! The density source for the exact Mermin response must live in the
             ! same fixed-N/tether gauge as the solved energy response.
-            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
-                                                       0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
-                                                       channel_nmo, e_offset, energy_hessian, &
-                                                       energy_cross_density, response_density_exact, &
-                                                       z_density_trial, ipiv_energy, exact_density_response_ready, &
-                                                       energy_gauge_weight)
+            IF (projector_density_full_global_selective_mix_weight > &
+                EPSILON(projector_density_full_global_selective_mix_weight)) THEN
+               CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                          0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
+                                                          channel_nmo, e_offset, energy_hessian, &
+                                                          energy_cross_density, response_density_exact, &
+                                                          z_density_trial, ipiv_energy, exact_density_response_ready, &
+                                                          energy_gauge_weight, curv_floor_fraction=0.1_dp, &
+                                                          curv_floor_weight=density_basis_selective_floor_weight)
+            ELSE
+               CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                          0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
+                                                          channel_nmo, e_offset, energy_hessian, &
+                                                          energy_cross_density, response_density_exact, &
+                                                          z_density_trial, ipiv_energy, exact_density_response_ready, &
+                                                          energy_gauge_weight)
+            END IF
             IF (exact_density_response_ready) THEN
                projector_physical_density_rhs_abs_avg = &
                   SUM(ABS(energy_cross_density(:, :)))/REAL(MAX(1, ne*nrot), KIND=dp)
@@ -9438,10 +9510,6 @@ CONTAINS
          projector_density_basis_selective_audit_low_curv_fraction = 0.0_dp
          projector_density_basis_selective_audit_diag_abs_sum = 0.0_dp
          projector_density_basis_selective_audit_low_curv_sum = 0.0_dp
-         projector_density_basis_selective_audit_floor_avg = 0.0_dp
-         projector_density_basis_selective_audit_floor_max = 0.0_dp
-         projector_density_basis_selective_audit_support_avg = 0.0_dp
-         projector_density_basis_selective_audit_unsupported_fraction = 0.0_dp
          projector_density_basis_filtered_audit_abs_avg = 0.0_dp
          projector_density_basis_filtered_audit_exact_abs_avg = 0.0_dp
          projector_density_basis_filtered_audit_low_curv_fraction = 0.0_dp
@@ -9510,55 +9578,6 @@ CONTAINS
                   projector_density_basis_curvfloor_audit_low_curv_sum/ &
                   projector_density_basis_curvfloor_audit_diag_abs_sum
             END IF
-            density_basis_selective_floor_weight(:) = 0.0_dp
-            density_basis_source_abs_sum = 0.0_dp
-            density_basis_unsupported_abs_sum = 0.0_dp
-            DO ie = 1, ne
-               density_basis_row_basis_abs = SUM(ABS(response_density_basis_audit(ie, :)))
-               density_basis_row_physical_abs = SUM(ABS(response_density_physical(ie, :)))
-               density_basis_row_basis_norm = SQRT(SUM(response_density_basis_audit(ie, :)**2))
-               density_basis_row_physical_norm = SQRT(SUM(response_density_physical(ie, :)**2))
-               density_basis_row_dot = SUM(response_density_basis_audit(ie, :)*response_density_physical(ie, :))
-               density_basis_physical_support = 0.0_dp
-               IF (density_basis_row_basis_abs <= EPSILON(density_basis_row_basis_abs)) THEN
-                  density_basis_physical_support = 1.0_dp
-               ELSE IF (density_basis_row_basis_norm > EPSILON(density_basis_row_basis_norm) .AND. &
-                        density_basis_row_physical_norm > EPSILON(density_basis_row_physical_norm) .AND. &
-                        density_basis_row_dot > 0.0_dp) THEN
-                  density_basis_physical_support = density_basis_row_dot/ &
-                                                   (density_basis_row_basis_norm*density_basis_row_physical_norm)
-                  density_basis_physical_support = MIN(1.0_dp, MAX(0.0_dp, density_basis_physical_support))
-                  density_basis_physical_support = density_basis_physical_support* &
-                                                   MIN(1.0_dp, density_basis_row_physical_abs/ &
-                                                       MAX(density_basis_row_basis_abs, EPSILON(density_basis_row_basis_abs)))
-               END IF
-               density_basis_lowcurv_weight = 0.0_dp
-               IF (0.1_dp*total_curv_diag_max > EPSILON(total_curv_diag_max)) THEN
-                  density_basis_lowcurv_weight = &
-                     1.0_dp - MIN(1.0_dp, MAX(0.0_dp, occ_curv(ie) + tether_curv(ie))/ &
-                                  (0.1_dp*total_curv_diag_max))
-               END IF
-               density_basis_floor_weight = (1.0_dp - density_basis_physical_support)* &
-                                            density_basis_lowcurv_weight
-               density_basis_floor_weight = MIN(1.0_dp, MAX(0.0_dp, density_basis_floor_weight))
-               density_basis_selective_floor_weight(ie) = density_basis_floor_weight
-               projector_density_basis_selective_audit_floor_avg = &
-                  projector_density_basis_selective_audit_floor_avg + density_basis_floor_weight
-               projector_density_basis_selective_audit_floor_max = &
-                  MAX(projector_density_basis_selective_audit_floor_max, density_basis_floor_weight)
-               projector_density_basis_selective_audit_support_avg = &
-                  projector_density_basis_selective_audit_support_avg + density_basis_physical_support
-               density_basis_source_abs_sum = density_basis_source_abs_sum + density_basis_row_basis_abs
-               density_basis_unsupported_abs_sum = density_basis_unsupported_abs_sum + &
-                                                   density_basis_floor_weight*density_basis_row_basis_abs
-            END DO
-            projector_density_basis_selective_audit_floor_avg = &
-               projector_density_basis_selective_audit_floor_avg/REAL(MAX(1, ne), KIND=dp)
-            projector_density_basis_selective_audit_support_avg = &
-               projector_density_basis_selective_audit_support_avg/REAL(MAX(1, ne), KIND=dp)
-            IF (density_basis_source_abs_sum > EPSILON(density_basis_source_abs_sum)) &
-               projector_density_basis_selective_audit_unsupported_fraction = &
-               density_basis_unsupported_abs_sum/density_basis_source_abs_sum
             CALL build_kpoint_ot_exact_energy_response( &
                occ_curv, tether_curv, response_density_basis_audit, &
                0.0_dp*response_density_basis_audit, 0.0_dp*grad_e, channel_nmo, e_offset, &
@@ -9725,13 +9744,26 @@ CONTAINS
          END IF
          IF (projector_density_full_audit_enabled .AND. projector_density_full_global_abs_avg > &
              EPSILON(projector_density_full_global_abs_avg)) THEN
-            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
-                                                       0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
-                                                       channel_nmo, e_offset, energy_hessian, &
-                                                       energy_cross_density_full_global, &
-                                                       response_density_full_global_exact, &
-                                                       z_density_full_global_trial, ipiv_energy, &
-                                                       exact_density_full_audit_ready, energy_gauge_weight)
+            IF (projector_density_full_global_selective_mix_weight > &
+                EPSILON(projector_density_full_global_selective_mix_weight)) THEN
+               CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                          0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
+                                                          channel_nmo, e_offset, energy_hessian, &
+                                                          energy_cross_density_full_global, &
+                                                          response_density_full_global_exact, &
+                                                          z_density_full_global_trial, ipiv_energy, &
+                                                          exact_density_full_audit_ready, energy_gauge_weight, &
+                                                          curv_floor_fraction=0.1_dp, &
+                                                          curv_floor_weight=density_basis_selective_floor_weight)
+            ELSE
+               CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                          0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
+                                                          channel_nmo, e_offset, energy_hessian, &
+                                                          energy_cross_density_full_global, &
+                                                          response_density_full_global_exact, &
+                                                          z_density_full_global_trial, ipiv_energy, &
+                                                          exact_density_full_audit_ready, energy_gauge_weight)
+            END IF
             IF (exact_density_full_audit_ready) THEN
                energy_cross_density_full_audit(:, :) = energy_cross_density_full_global(:, :)
                response_density_full_audit_exact(:, :) = response_density_full_global_exact(:, :)
@@ -18298,9 +18330,9 @@ CONTAINS
                      density_full_direct_response_abs_trust_ratio, &
                      density_full_direct_trust_quality, density_full_direct_direction_scale, &
                      density_full_direct_history_scale
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),10(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),11(1X,ES16.8))') &
                      " OT Schur projector full-density global candidate ready selected boot prefer "// &
-                     "exp qsel cdrop rratio aratio tq scale hscale selscale srcw:", &
+                     "exp qsel cdrop rratio aratio tq scale hscale selscale srcw selw:", &
                      density_full_global_candidate_ready, density_full_global_candidate_selected, &
                      density_full_global_bootstrap_ready, density_full_global_tail_prefer, &
                      density_full_global_expected_drop, density_full_global_quality_for_selection, &
@@ -18309,7 +18341,8 @@ CONTAINS
                      density_full_global_response_abs_trust_ratio, &
                      density_full_global_trust_quality, density_full_global_direction_scale, &
                      density_full_global_history_scale, density_full_global_selected_response_scale, &
-                     projector_density_full_global_floor_mix_weight
+                     projector_density_full_global_floor_mix_weight, &
+                     projector_density_full_global_selective_mix_weight
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                      " OT Schur projector phys direct density model scale drop gdotp ge gr normp ne nr:", &
                      projector_physical_direct_density_direction_scale, &
