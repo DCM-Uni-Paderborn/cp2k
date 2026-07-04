@@ -23642,10 +23642,10 @@ CONTAINS
          cluster_evec_b, cluster_kernel, cluster_work, cluster_work_b, modal_block, response_block
       INTEGER                                            :: a, b, c, first, first_b, j, last, &
                                                             last_b, m, m_b, n
-      LOGICAL                                            :: outside_gauge_cluster
-      REAL(KIND=dp)                                      :: component_weight, curv, denom, gap_tol, &
-                                                            local_gap, mu_den, mu_num, mu_shift, &
-                                                            occ_curv_max, offdiag_coeff, slope_cap
+      LOGICAL                                            :: cluster_exact_gauge, &
+                                                            outside_gauge_cluster
+      REAL(KIND=dp) :: cluster_scalar_curv, cluster_span, component_weight, curv, denom, gap_tol, &
+         local_gap, mu_den, mu_num, mu_shift, occ_curv_max, offdiag_coeff, slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cluster_eval, cluster_eval_b, modal_curv, &
          modal_curv_b, modal_curv_scale, modal_energy, modal_energy_b, modal_occ, modal_occ_b, &
          modal_raw_curv
@@ -23674,8 +23674,15 @@ CONTAINS
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                            modal_curv, split_response=.TRUE.)
+               cluster_span = ABS(evals(last) - evals(first))
+               cluster_exact_gauge = cluster_span <= gap_tol
+               IF (cluster_exact_gauge) THEN
+                  cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
+                  modal_curv(:) = cluster_scalar_curv
+               ELSE
+                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                               modal_curv, split_response=.TRUE.)
+               END IF
                DO a = 1, m
                   mu_num = mu_num + modal_curv(a)*cluster_eval(a)
                   mu_den = mu_den + modal_curv(a)
@@ -23705,6 +23712,8 @@ CONTAINS
             END DO
             m = last - first + 1
             IF (m > 1) THEN
+               cluster_span = ABS(evals(last) - evals(first))
+               cluster_exact_gauge = cluster_span <= gap_tol
                kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                ALLOCATE (cluster_col(m), cluster_curv(m, m), cluster_work(m, m), &
                          cluster_evec(m, m), cluster_kernel(m, m), &
@@ -23714,8 +23723,13 @@ CONTAINS
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                            modal_curv, split_response=.TRUE.)
+               IF (cluster_exact_gauge) THEN
+                  cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
+                  modal_curv(:) = cluster_scalar_curv
+               ELSE
+                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                               modal_curv, split_response=.TRUE.)
+               END IF
                modal_energy(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
@@ -23728,29 +23742,36 @@ CONTAINS
                                                                  modal_curv)
                cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                cluster_curv(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-               modal_raw_curv(:) = 0.0_dp
-               DO a = 1, m
-                  DO c = 1, m
-                     curv = MAX(0.0_dp, occ_curv_channel(first + c - 1))
-                     modal_raw_curv(a) = modal_raw_curv(a) + ABS(cluster_evec(c, a))**2*curv
+               IF (cluster_exact_gauge) THEN
+                  DO a = 1, m
+                     cluster_kernel(a, a) = CMPLX(-2.0_dp*projector_weight*cluster_scalar_curv* &
+                                                  (cluster_eval(a) - mu_shift), 0.0_dp, KIND=dp)
                   END DO
-                  modal_curv_scale(a) = 0.0_dp
-                  IF (modal_raw_curv(a) > EPSILON(modal_raw_curv(a))) &
-                     modal_curv_scale(a) = SQRT(MAX(0.0_dp, modal_curv(a))/modal_raw_curv(a))
-               END DO
-               DO b = 1, m
+               ELSE
+                  modal_raw_curv(:) = 0.0_dp
                   DO a = 1, m
                      DO c = 1, m
                         curv = MAX(0.0_dp, occ_curv_channel(first + c - 1))
-                        cluster_curv(a, b) = cluster_curv(a, b) + &
-                                             CONJG(cluster_evec(c, a))*curv*cluster_evec(c, b)
+                        modal_raw_curv(a) = modal_raw_curv(a) + ABS(cluster_evec(c, a))**2*curv
                      END DO
-                     cluster_curv(a, b) = modal_curv_scale(a)*modal_curv_scale(b)*cluster_curv(a, b)
-                     cluster_kernel(a, b) = -projector_weight*cluster_curv(a, b)* &
-                                            CMPLX(cluster_eval(a) + cluster_eval(b) - 2.0_dp*mu_shift, &
-                                                  0.0_dp, KIND=dp)
+                     modal_curv_scale(a) = 0.0_dp
+                     IF (modal_raw_curv(a) > EPSILON(modal_raw_curv(a))) &
+                        modal_curv_scale(a) = SQRT(MAX(0.0_dp, modal_curv(a))/modal_raw_curv(a))
                   END DO
-               END DO
+                  DO b = 1, m
+                     DO a = 1, m
+                        DO c = 1, m
+                           curv = MAX(0.0_dp, occ_curv_channel(first + c - 1))
+                           cluster_curv(a, b) = cluster_curv(a, b) + &
+                                                CONJG(cluster_evec(c, a))*curv*cluster_evec(c, b)
+                        END DO
+                        cluster_curv(a, b) = modal_curv_scale(a)*modal_curv_scale(b)*cluster_curv(a, b)
+                        cluster_kernel(a, b) = -projector_weight*cluster_curv(a, b)* &
+                                               CMPLX(cluster_eval(a) + cluster_eval(b) - 2.0_dp*mu_shift, &
+                                                     0.0_dp, KIND=dp)
+                     END DO
+                  END DO
+               END IF
                response_block(:, :) = MATMUL(cluster_evec, &
                                              MATMUL(cluster_kernel, CONJG(TRANSPOSE(cluster_evec))))
                DO b = 1, m
@@ -23829,13 +23850,20 @@ CONTAINS
             END DO
             m = last - first + 1
             IF (m > 1) THEN
+               cluster_span = ABS(evals(last) - evals(first))
+               cluster_exact_gauge = cluster_span <= gap_tol
                ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m), &
                          modal_energy(m), modal_occ(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
-               CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
-                                                            modal_curv, split_response=.TRUE.)
+               IF (cluster_exact_gauge) THEN
+                  cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first:last)))/REAL(m, KIND=dp)
+                  modal_curv(:) = cluster_scalar_curv
+               ELSE
+                  CALL dense_fixed_n_projector_modal_curvature(cluster_evec, occ_curv_channel(first:last), &
+                                                               modal_curv, split_response=.TRUE.)
+               END IF
                modal_energy(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
@@ -23859,15 +23887,23 @@ CONTAINS
                   END DO
                   m_b = last_b - first_b + 1
                   IF (m_b > 1) THEN
+                     cluster_span = ABS(evals(last_b) - evals(first_b))
+                     cluster_exact_gauge = cluster_span <= gap_tol
                      ALLOCATE (cluster_work_b(m_b, m_b), cluster_evec_b(m_b, m_b), &
                                cluster_eval_b(m_b), modal_curv_b(m_b), modal_energy_b(m_b), &
                                modal_occ_b(m_b), modal_block(m, m_b), response_block(m, m_b))
                      cluster_work_b(:, :) = 0.5_dp*(work(first_b:last_b, first_b:last_b) + &
                                                     CONJG(TRANSPOSE(work(first_b:last_b, first_b:last_b))))
                      CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
-                     CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, &
-                                                                  occ_curv_channel(first_b:last_b), &
-                                                                  modal_curv_b, split_response=.TRUE.)
+                     IF (cluster_exact_gauge) THEN
+                        cluster_scalar_curv = SUM(MAX(0.0_dp, occ_curv_channel(first_b:last_b)))/ &
+                                              REAL(m_b, KIND=dp)
+                        modal_curv_b(:) = cluster_scalar_curv
+                     ELSE
+                        CALL dense_fixed_n_projector_modal_curvature(cluster_evec_b, &
+                                                                     occ_curv_channel(first_b:last_b), &
+                                                                     modal_curv_b, split_response=.TRUE.)
+                     END IF
                      modal_energy_b(:) = 0.0_dp
                      DO a = 1, m_b
                         DO b = 1, m_b
