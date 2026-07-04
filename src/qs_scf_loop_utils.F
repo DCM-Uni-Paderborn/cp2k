@@ -6796,8 +6796,8 @@ CONTAINS
       LOGICAL :: density_full_global_history_ready, density_full_global_tail_prefer, &
          density_full_global_tail_probe_ready, density_full_tail_probe_ready, &
          exact_attempt_response, exact_density_direct_response_ready, &
-         exact_density_floor_audit_ready, exact_density_full_audit_ready, &
-         exact_density_full_response_ready, exact_density_plateau_response_ready, &
+         exact_density_floor_audit_ready, &
+         exact_density_full_audit_ready, exact_density_full_response_ready, exact_density_plateau_response_ready, &
          exact_density_response_ready, exact_energy_model_ready, exact_physical_response_ready, &
          failed, metric_attempt_response, metric_attempt_selectable, metric_attempt_tail_bridge, &
          new_search_point, physical_delta_group_ready, physical_delta_norm_ready
@@ -6994,7 +6994,10 @@ CONTAINS
          projector_density_floor_audit_diag_abs_sum, projector_density_floor_audit_exact_abs_avg, &
          projector_density_floor_audit_gap_abs_avg, &
          projector_density_floor_audit_low_curv_fraction, &
-         projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg
+         projector_density_floor_audit_low_curv_sum, projector_density_full_audit_abs_avg, &
+         projector_density_basis_audit_abs_avg, projector_density_basis_raw_gap_abs_avg, &
+         projector_density_basis_raw_gap_abs_max, projector_density_basis_physical_gap_abs_avg, &
+         projector_density_basis_physical_gap_abs_max
       REAL(KIND=dp) :: projector_density_full_global_abs_avg, &
          projector_density_full_global_floor_mix_weight, projector_density_history_quality, &
          projector_density_history_weight, projector_density_selected_history_weight, &
@@ -7445,7 +7448,8 @@ CONTAINS
          projector_physical_direct_schur_mat
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: projector_physical_direct_schur_vec, &
          response, response_coupled, response_density_direct_exact, response_density_exact, &
-         response_density_floor_audit, response_density_floor_audit_exact, response_density_full, &
+         response_density_basis_audit, response_density_floor_audit, &
+         response_density_floor_audit_exact, response_density_full, &
          response_density_full_audit, response_density_full_audit_exact, &
          response_density_full_exact, response_density_full_global, &
          response_density_full_global_exact, response_density_physical, response_density_plateau, &
@@ -7652,7 +7656,7 @@ CONTAINS
                    energy_hessian(ne, ne), response(ne, nrot), response_coupled(ne, nrot), &
                    response_density_direct_exact(ne, nrot), &
                    response_density_exact(ne, nrot), response_density_physical(ne, nrot), &
-                   response_density_floor_audit(ne, nrot), &
+                   response_density_basis_audit(ne, nrot), response_density_floor_audit(ne, nrot), &
                    response_density_full(ne, nrot), response_density_plateau(ne, nrot), &
                    response_density_full_audit(ne, nrot), response_density_full_audit_exact(ne, nrot), &
                    response_density_floor_audit_exact(ne, nrot), &
@@ -7764,6 +7768,7 @@ CONTAINS
          response_coupled(:, :) = 0.0_dp
          response_density_direct_exact(:, :) = 0.0_dp
          response_density_exact(:, :) = 0.0_dp
+         response_density_basis_audit(:, :) = 0.0_dp
          response_density_floor_audit(:, :) = 0.0_dp
          response_density_floor_audit_exact(:, :) = 0.0_dp
          response_density_full(:, :) = 0.0_dp
@@ -7852,6 +7857,11 @@ CONTAINS
          projector_physical_density_delta_max = 0.0_dp
          projector_physical_density_full_abs_avg = 0.0_dp
          projector_density_full_audit_abs_avg = 0.0_dp
+         projector_density_basis_audit_abs_avg = 0.0_dp
+         projector_density_basis_raw_gap_abs_avg = 0.0_dp
+         projector_density_basis_raw_gap_abs_max = 0.0_dp
+         projector_density_basis_physical_gap_abs_avg = 0.0_dp
+         projector_density_basis_physical_gap_abs_max = 0.0_dp
          projector_density_full_global_abs_avg = 0.0_dp
          projector_density_full_global_floor_mix_weight = 0.0_dp
          projector_physical_density_gap_abs_avg = 0.0_dp
@@ -8706,6 +8716,7 @@ CONTAINS
                                                     response_occ, response_occ_physical, response_density_physical, &
                                                     response_density_floor_audit, response_density_full, &
                                                     response_density_full_audit, &
+                                                    response_density_basis_audit, &
                                                     response_density_plateau, &
                                                     projector_fd_cluster_derivatives, &
                                                     projector_fd_cluster_replacements, failed)
@@ -9044,6 +9055,15 @@ CONTAINS
             SUM(ABS(response_density_floor_audit(:, :) - response_density_physical(:, :)))
          projector_physical_density_full_abs_avg = SUM(ABS(response_density_full(:, :)))
          projector_density_full_audit_abs_avg = SUM(ABS(response_density_full_audit(:, :)))
+         projector_density_basis_audit_abs_avg = SUM(ABS(response_density_basis_audit(:, :)))
+         projector_density_basis_raw_gap_abs_avg = &
+            SUM(ABS(response_density_basis_audit(:, :) - response_density_full_audit(:, :)))
+         projector_density_basis_raw_gap_abs_max = &
+            MAXVAL(ABS(response_density_basis_audit(:, :) - response_density_full_audit(:, :)))
+         projector_density_basis_physical_gap_abs_avg = &
+            SUM(ABS(response_density_basis_audit(:, :) - response_density_physical(:, :)))
+         projector_density_basis_physical_gap_abs_max = &
+            MAXVAL(ABS(response_density_basis_audit(:, :) - response_density_physical(:, :)))
          IF (local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples >= &
              ot_kp_schur_calibration_min_samples) THEN
             IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
@@ -9129,6 +9149,9 @@ CONTAINS
          CALL para_env_inter_kp%sum(projector_density_floor_audit_gap_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_full_abs_avg)
          CALL para_env_inter_kp%sum(projector_density_full_audit_abs_avg)
+         CALL para_env_inter_kp%sum(projector_density_basis_audit_abs_avg)
+         CALL para_env_inter_kp%sum(projector_density_basis_raw_gap_abs_avg)
+         CALL para_env_inter_kp%sum(projector_density_basis_physical_gap_abs_avg)
          CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_active_abs_avg)
          CALL para_env_inter_kp%sum(projector_physical_density_gap_abs_avg)
@@ -9136,6 +9159,8 @@ CONTAINS
          CALL para_env_inter_kp%sum(projector_response_character_fraction)
          CALL para_env_inter_kp%max(projector_response_character_max)
          CALL para_env_inter_kp%max(projector_physical_density_gap_abs_max)
+         CALL para_env_inter_kp%max(projector_density_basis_raw_gap_abs_max)
+         CALL para_env_inter_kp%max(projector_density_basis_physical_gap_abs_max)
          projector_density_floor_audit_abs_avg = projector_density_floor_audit_abs_avg/ &
                                                  REAL(MAX(1, ne*nrot), KIND=dp)
          projector_density_floor_audit_gap_abs_avg = projector_density_floor_audit_gap_abs_avg/ &
@@ -9144,6 +9169,12 @@ CONTAINS
                                                    REAL(MAX(1, ne*nrot), KIND=dp)
          projector_density_full_audit_abs_avg = projector_density_full_audit_abs_avg/ &
                                                 REAL(MAX(1, ne*nrot), KIND=dp)
+         projector_density_basis_audit_abs_avg = projector_density_basis_audit_abs_avg/ &
+                                                 REAL(MAX(1, ne*nrot), KIND=dp)
+         projector_density_basis_raw_gap_abs_avg = projector_density_basis_raw_gap_abs_avg/ &
+                                                   REAL(MAX(1, ne*nrot), KIND=dp)
+         projector_density_basis_physical_gap_abs_avg = &
+            projector_density_basis_physical_gap_abs_avg/REAL(MAX(1, ne*nrot), KIND=dp)
          projector_density_full_global_abs_avg = projector_density_full_global_abs_avg/ &
                                                  REAL(MAX(1, ne*nrot), KIND=dp)
          projector_physical_density_active_abs_avg = projector_physical_density_active_abs_avg/ &
@@ -17602,6 +17633,11 @@ CONTAINS
                      exact_density_full_response_ready, projector_physical_shadow_enabled, exact_density_response_ready, &
                      projector_density_full_audit_abs_avg, projector_physical_density_active_fraction, &
                      density_full_model_calibrated_drop
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
+                     " OT Schur projector density-basis audit abs rawgap physgap rawmax physmax:", &
+                     projector_density_basis_audit_abs_avg, projector_density_basis_raw_gap_abs_avg, &
+                     projector_density_basis_physical_gap_abs_avg, projector_density_basis_raw_gap_abs_max, &
+                     projector_density_basis_physical_gap_abs_max
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,L1),8(1X,ES16.8))') &
                      " OT Schur projector full-density candidate ready selected exp qsel cdrop rratio aratio tq scale hscale:", &
                      density_full_candidate_ready, density_full_candidate_selected, &
@@ -18569,7 +18605,7 @@ CONTAINS
                      energy_cross_density_full_global, energy_cross_density_plateau, &
                      energy_hessian, response, response_coupled, response_density_direct_exact, &
                      response_density_exact, &
-                     response_density_floor_audit, response_density_floor_audit_exact, &
+                     response_density_basis_audit, response_density_floor_audit, response_density_floor_audit_exact, &
                      response_density_full, response_density_full_audit, &
                      response_density_full_audit_exact, response_density_full_exact, &
                      response_density_full_global, response_density_full_global_exact, response_density_physical, &
@@ -21972,6 +22008,7 @@ CONTAINS
 !> \param response_density_floor_audit ...
 !> \param response_density_full ...
 !> \param response_density_full_audit ...
+!> \param response_density_basis_audit ...
 !> \param response_density_plateau ...
 !> \param projector_fd_cluster_derivatives ...
 !> \param projector_fd_cluster_replacements ...
@@ -21990,6 +22027,7 @@ CONTAINS
                                                  response_occ, response_occ_physical, response_density_physical, &
                                                  response_density_floor_audit, response_density_full, &
                                                  response_density_full_audit, &
+                                                 response_density_basis_audit, &
                                                  response_density_plateau, projector_fd_cluster_derivatives, &
                                                  projector_fd_cluster_replacements, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
@@ -22007,6 +22045,7 @@ CONTAINS
          rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_plateau, &
          response, response_occ, response_occ_physical, response_density_physical, &
          response_density_floor_audit, response_density_full, response_density_full_audit, &
+         response_density_basis_audit, &
          response_density_plateau
       INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, projector_fd_cluster_replacements
       LOGICAL, INTENT(INOUT)                             :: failed
@@ -22018,12 +22057,13 @@ CONTAINS
       INTEGER                                            :: ie, imo, jmo, r, s
       LOGICAL                                            :: fd_cluster_used
       REAL(KIND=dp) :: channel_occ_curv_max, density_global_lift_weight, &
+         density_basis_response, &
          density_plateau_full_response, density_plateau_response, density_response, &
          density_response_alignment, projector_centered_shift, projector_response, &
          projector_response_norm, projector_safe_response_dot, projector_weight, raw_response, &
          safe_centered_shift, safe_response_norm, weighted_curv_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_floor_audit_column, &
-         density_full_centered_column, density_full_column, density_mixed_column, &
+         density_basis_column, density_full_centered_column, density_full_column, density_mixed_column, &
          density_plateau_centered_column, density_plateau_column, density_projector_column, eps_m, &
          eps_p, projector_evals, projector_evals_m, projector_evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
@@ -22049,7 +22089,7 @@ CONTAINS
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
                    occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
          ALLOCATE (density_floor_audit_column(nmo), density_full_centered_column(nmo), &
-                   density_full_column(nmo), density_mixed_column(nmo), &
+                   density_basis_column(nmo), density_full_column(nmo), density_mixed_column(nmo), &
                    density_plateau_centered_column(nmo), density_plateau_column(nmo), &
                    density_projector_column(nmo))
          chc = CMPLX(chc_re, chc_im, KIND=dp)
@@ -22189,6 +22229,7 @@ CONTAINS
                ! near-degenerate projector-gauge motion does not enter the
                ! finite complex Mermin curvature.
                density_full_column(:) = 0.0_dp
+               density_basis_column(:) = 0.0_dp
                density_floor_audit_column(:) = 0.0_dp
                density_mixed_column(:) = 0.0_dp
                density_plateau_column(:) = 0.0_dp
@@ -22204,6 +22245,14 @@ CONTAINS
                      density_plateau_column(ie) = density_projector_column(ie)
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
+                     IF (compute_density_full_audit) THEN
+                        CALL dense_history_safe_occ_projector_basis(projector_evec, projector_weight, ie, &
+                                                                    occ_basis)
+                        density_basis_response = &
+                           0.5_dp*REAL(SUM(CONJG(occ_basis(:, :))*docc_plateau(:, :)), KIND=dp)/ &
+                           occ_curv_channel(ie)
+                        density_basis_column(ie) = density_basis_response
+                     END IF
                   END IF
                END DO
                density_plateau_centered_column(:) = density_plateau_column(:)
@@ -22286,6 +22335,9 @@ CONTAINS
                                         occ_curv_channel(ie)
                      IF (compute_density_full_audit) &
                         response_density_full_audit(first_energy + ie - 1, s) = density_response
+                     IF (compute_density_full_audit) &
+                        response_density_basis_audit(first_energy + ie - 1, s) = &
+                        density_basis_column(ie)
                      IF (compute_density_full_audit) &
                         response_density_floor_audit(first_energy + ie - 1, s) = &
                         density_floor_audit_column(ie)
@@ -22381,8 +22433,8 @@ CONTAINS
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
                      occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
          DEALLOCATE (density_floor_audit_column, density_full_centered_column, density_full_column, &
-                     density_mixed_column, density_plateau_centered_column, density_plateau_column, &
-                     density_projector_column)
+                     density_basis_column, density_mixed_column, density_plateau_centered_column, &
+                     density_plateau_column, density_projector_column)
          DEALLOCATE (x_p_re, x_p_im, x_m_re, x_m_im, grad_p_re, grad_p_im, grad_m_re, grad_m_im)
          DEALLOCATE (eps_p, eps_m, projector_evals_p, projector_evals_m)
       END SUBROUTINE build_finite_ref_rotation_model
