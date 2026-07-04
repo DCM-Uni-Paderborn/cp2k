@@ -224,6 +224,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global filtered-source weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_filtered_shadow_weight( &
       "complex projector density direct filtered-source shadow", 5.0E-14_dp, nfail)
+   CALL check_projector_density_direct_filtered_shadow_drop( &
+      "complex projector density direct filtered-source shadow drop", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_selected_response_scale( &
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
@@ -8942,6 +8944,40 @@ CONTAINS
    END SUBROUTINE check_projector_density_direct_filtered_shadow_weight
 
 ! **************************************************************************************************
+!> \brief Check filtered Direct-density shadow accepted-drop calibration.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_filtered_shadow_drop(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: active_drop, err, expected_drop, &
+                                                            low_drop, low_trust, no_shadow
+
+      active_drop = dense_physical_direct_density_filtered_shadow_drop(1.0E-3_dp, 4.0E-6_dp, 0.75_dp)
+      no_shadow = dense_physical_direct_density_filtered_shadow_drop(0.0_dp, 4.0E-6_dp, 0.75_dp)
+      low_drop = dense_physical_direct_density_filtered_shadow_drop(1.0E-3_dp, 1.0E-13_dp, 0.75_dp)
+      low_trust = dense_physical_direct_density_filtered_shadow_drop(1.0E-3_dp, 4.0E-6_dp, 1.0E-2_dp)
+
+      expected_drop = 1.0E-3_dp*4.0E-6_dp*0.75_dp
+      err = ABS(active_drop - expected_drop)
+
+      IF (err > tol .OR. active_drop <= 0.0_dp .OR. no_shadow > tol .OR. &
+          low_drop > tol .OR. low_trust > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/ns/ld/lt", err, active_drop, no_shadow, low_drop, low_trust
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/ns/ld/lt", err, active_drop, no_shadow, low_drop, low_trust
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_filtered_shadow_drop
+
+! **************************************************************************************************
 !> \brief Check accepted-history selected global response step scaling.
 !> \param label ...
 !> \param tol ...
@@ -13535,6 +13571,29 @@ CONTAINS
       weight = MAX(0.0_dp, MIN(1.25E-3_dp, weight))
 
    END FUNCTION dense_physical_direct_density_filtered_shadow_weight
+
+! **************************************************************************************************
+!> \brief Dense mirror of filtered-source Direct-density accepted-drop calibration.
+!> \param shadow_weight ...
+!> \param history_drop ...
+!> \param history_trust_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_physical_direct_density_filtered_shadow_drop(shadow_weight, history_drop, &
+                                                               history_trust_quality) RESULT(drop)
+      REAL(KIND=dp), INTENT(IN)                          :: shadow_weight, history_drop, &
+                                                            history_trust_quality
+      REAL(KIND=dp)                                      :: drop
+
+      drop = 0.0_dp
+      IF (shadow_weight <= EPSILON(shadow_weight)) RETURN
+      IF (history_drop <= 1.0E-12_dp) RETURN
+      IF (history_trust_quality < 2.5E-2_dp) RETURN
+
+      drop = MAX(0.0_dp, shadow_weight)*history_drop* &
+             MIN(1.0_dp, MAX(0.0_dp, history_trust_quality))
+
+   END FUNCTION dense_physical_direct_density_filtered_shadow_drop
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected global full-density response step scaling.
