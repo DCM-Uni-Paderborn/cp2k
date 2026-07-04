@@ -10997,16 +10997,16 @@ CONTAINS
       INTEGER                                            :: i, imode
       REAL(KIND=dp) :: active, applied_weight_dead, applied_weight_diag, applied_weight_ref, &
          applied_weight_rot, base_weight, c, cross_drop_dead, cross_drop_diag, cross_drop_rot, &
-         dead_active, drop_dead, drop_diag, drop_ref, drop_rot, err, eval_abs_avg, mode_norm, &
-         mode_weight, neg_balance, neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, neg_drop_dead, &
+         basis_mismatch, dead_active, drop_dead, drop_diag, drop_ref, drop_rot, err, eval_abs_avg, &
+         mode_norm, mode_weight, neg_balance, neg_coeff_dead, neg_coeff_diag, neg_coeff_rot, neg_drop_dead, &
          neg_drop_diag, neg_drop_rot, neg_fraction_dead, neg_fraction_diag, neg_fraction_ref, &
          neg_fraction_rot, neg_norm_diag, neg_weight_sum, pos_coeff_dead, pos_coeff_diag, &
          pos_coeff_rot, pos_drop_dead, pos_drop_diag, pos_drop_rot, pos_weight_sum
       REAL(KIND=dp) :: raw_neg_fraction_dead, raw_neg_fraction_diag, raw_neg_fraction_ref, &
          raw_neg_fraction_rot, raw_neg_sum, response_total_sum, s, spectral_weight, &
          step_weight_sum, target_neg, target_pos
-      REAL(KIND=dp), DIMENSION(ne) :: cand_dead, cand_diag, cand_ref, cand_rot, corr_ref, curv, &
-         energy_base, grad_e, mode_rx, response_base, response_neg_ref, response_pos_ref
+      REAL(KIND=dp), DIMENSION(ne) :: cand_dead, cand_diag, cand_ref, cand_rot, cand_wrong, &
+         corr_ref, curv, energy_base, grad_e, mode_rx, response_base, response_neg_ref, response_pos_ref
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: response_delta_diag, response_delta_rot, &
                                                             response_exact_diag, &
                                                             response_exact_rot, response_raw
@@ -11133,18 +11133,26 @@ CONTAINS
                 ABS(applied_weight_rot - applied_weight_ref))
       err = MAX(err, ABS(pos_coeff_diag - target_pos), ABS(pos_coeff_rot - target_pos))
       err = MAX(err, ABS(neg_coeff_diag - target_neg), ABS(neg_coeff_rot - target_neg))
+      CALL dense_projector_modal_response_candidate(rot_hessian, delta_diag, step_rot, response_raw, &
+                                                    response_exact_rot, curv, grad_e, energy_base, &
+                                                    response_base, base_weight, cand_wrong, applied_weight_dead, &
+                                                    drop_dead, neg_fraction_dead, raw_neg_fraction_dead, &
+                                                    pos_drop_dead, neg_drop_dead, cross_drop_dead, &
+                                                    pos_coeff_dead, neg_coeff_dead)
+      basis_mismatch = MAXVAL(ABS(cand_wrong(:) - cand_ref(:)))
 
       active = MAXVAL(ABS(cand_ref(:) - response_base(:)))
       IF (err > tol .OR. active < 1.0E-4_dp .OR. raw_neg_fraction_ref < 0.1_dp .OR. &
-          raw_neg_fraction_ref > 0.9_dp .OR. neg_fraction_ref <= 0.0_dp) THEN
+          raw_neg_fraction_ref > 0.9_dp .OR. neg_fraction_ref <= 0.0_dp .OR. &
+          basis_mismatch < 1.0E-5_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/active/dead/rawneg/corrneg", &
-            err, active, dead_active, raw_neg_fraction_ref, neg_fraction_ref
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/active/dead/rawneg/corrneg/basis", &
+            err, active, dead_active, raw_neg_fraction_ref, neg_fraction_ref, basis_mismatch
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/active/dead/rawneg/corrneg", err, active, dead_active, &
-            raw_neg_fraction_ref, neg_fraction_ref
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/active/dead/rawneg/corrneg/basis", err, active, dead_active, &
+            raw_neg_fraction_ref, neg_fraction_ref, basis_mismatch
       END IF
 
    END SUBROUTINE check_projector_modal_response_sign_model
