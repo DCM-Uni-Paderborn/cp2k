@@ -302,6 +302,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_density_quality_samples = 0
       INTEGER :: schur_projector_density_audit_samples = 0
       INTEGER :: schur_projector_density_descent_quality_samples = 0
+      INTEGER :: schur_projector_density_descent_incremental_quality_samples = 0
       INTEGER :: schur_projector_density_descent_selected_quality_samples = 0
       INTEGER :: schur_projector_density_full_quality_samples = 0
       INTEGER :: schur_projector_density_full_selected_quality_samples = 0
@@ -475,6 +476,12 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_density_descent_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_base = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_incremental = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_incremental_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_incremental_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_incremental_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_descent_incremental_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_coeff = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_coeff_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_descent_support = 0.0_dp
@@ -984,6 +991,7 @@ CONTAINS
       qs_ot_env%schur_projector_density_quality_samples = 0
       qs_ot_env%schur_projector_density_audit_samples = 0
       qs_ot_env%schur_projector_density_descent_quality_samples = 0
+      qs_ot_env%schur_projector_density_descent_incremental_quality_samples = 0
       qs_ot_env%schur_projector_density_descent_selected_quality_samples = 0
       qs_ot_env%schur_projector_density_full_quality_samples = 0
       qs_ot_env%schur_projector_density_full_selected_quality_samples = 0
@@ -1176,6 +1184,12 @@ CONTAINS
       qs_ot_env%schur_projector_density_descent_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_density_descent_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_density_descent_measured_sum = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_base = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_incremental = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_incremental_quality = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_incremental_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_incremental_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_density_descent_incremental_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_density_descent_coeff = 0.0_dp
       qs_ot_env%schur_projector_density_descent_coeff_ema = 0.0_dp
       qs_ot_env%schur_projector_density_descent_support = 0.0_dp

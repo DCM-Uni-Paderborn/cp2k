@@ -8351,8 +8351,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: base_model, base_quality, capped, err, gap_quality, no_base, old_expected, &
-         split_expected, total_model, trust_quality
+      LOGICAL                                            :: floor_signal, strong_signal, weak_signal
+      REAL(KIND=dp) :: base_model, base_quality, capped, err, gap_quality, incremental_high, &
+         incremental_low, no_base, old_expected, quality_capped, quality_zero, split_expected, &
+         total_model, trust_quality
 
       total_model = 1.22118544E-6_dp
       base_model = 1.21788891E-6_dp
@@ -8367,22 +8369,45 @@ CONTAINS
                                                           base_quality, gap_quality, trust_quality)
       capped = dense_density_descent_split_expected_drop(0.8_dp*base_model, base_model, &
                                                          base_quality, gap_quality, 0.5_dp)
+      incremental_low = dense_density_descent_incremental_measured_drop(0.7_dp*base_model, &
+                                                                        base_model)
+      incremental_high = dense_density_descent_incremental_measured_drop(base_model + &
+                                                                         0.3_dp* &
+                                                                         (total_model - base_model), &
+                                                                         base_model)
+      strong_signal = dense_density_descent_incremental_history_signal(0.05_dp*total_model, &
+                                                                       total_model, 1.0E-12_dp)
+      weak_signal = dense_density_descent_incremental_history_signal(1.0E-5_dp*total_model, &
+                                                                     total_model, 1.0E-12_dp)
+      floor_signal = dense_density_descent_incremental_history_signal(5.0E-13_dp, &
+                                                                      total_model, 1.0E-12_dp)
+      quality_capped = dense_density_descent_incremental_history_quality(10.0_dp*total_model, &
+                                                                         0.1_dp*total_model)
+      quality_zero = dense_density_descent_incremental_history_quality(total_model, 0.0_dp)
       err = ABS(split_expected - &
                 (base_model*base_quality + (total_model - base_model)*gap_quality))
       err = MAX(err, ABS(no_base - old_expected))
       err = MAX(err, ABS(capped - 0.5_dp*0.8_dp*base_model*base_quality))
+      err = MAX(err, ABS(incremental_low))
+      err = MAX(err, ABS(incremental_high - 0.3_dp*(total_model - base_model)))
+      err = MAX(err, ABS(quality_capped - 1.25_dp))
+      err = MAX(err, ABS(quality_zero))
 
       IF (err > tol .OR. split_expected <= old_expected .OR. &
           split_expected >= total_model .OR. ABS(no_base - old_expected) > tol .OR. &
-          capped >= split_expected) THEN
+          capped >= split_expected .OR. incremental_low > tol .OR. &
+          incremental_high <= 0.0_dp .OR. .NOT. strong_signal .OR. weak_signal .OR. &
+          floor_signal) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with err/old/split/nobase/capped", err, old_expected, &
-            split_expected, no_base, capped
+         WRITE (*, '(A,1X,A,9(1X,ES12.5),3(1X,L1))') TRIM(label), &
+            "failed with err/old/split/nobase/capped/ilow/ihigh/qcap/qzero/strong/weak/floor", &
+            err, old_expected, split_expected, no_base, capped, incremental_low, incremental_high, &
+            quality_capped, quality_zero, strong_signal, weak_signal, floor_signal
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with err/old/split/nobase/capped", err, old_expected, &
-            split_expected, no_base, capped
+         WRITE (*, '(A,1X,A,9(1X,ES12.5),3(1X,L1))') TRIM(label), &
+            "OK with err/old/split/nobase/capped/ilow/ihigh/qcap/qzero/strong/weak/floor", &
+            err, old_expected, split_expected, no_base, capped, incremental_low, incremental_high, &
+            quality_capped, quality_zero, strong_signal, weak_signal, floor_signal
       END IF
 
    END SUBROUTINE check_projector_density_descent_split_expected
@@ -13764,6 +13789,65 @@ CONTAINS
       expected_drop = trust_q*(base_drop*base_q + gap_drop*gap_q)
 
    END FUNCTION dense_density_descent_split_expected_drop
+
+! **************************************************************************************************
+!> \brief Dense mirror of conservative incremental measured density-descent drop.
+!> \param measured_drop ...
+!> \param base_model_drop ...
+!> \return measured drop not already explained by the baseline model
+! **************************************************************************************************
+   FUNCTION dense_density_descent_incremental_measured_drop(measured_drop, base_model_drop) &
+      RESULT(incremental_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: measured_drop, base_model_drop
+      REAL(KIND=dp)                                      :: incremental_drop
+
+      incremental_drop = MAX(0.0_dp, MAX(0.0_dp, measured_drop) - &
+                             MAX(0.0_dp, base_model_drop))
+
+   END FUNCTION dense_density_descent_incremental_measured_drop
+
+! **************************************************************************************************
+!> \brief Dense mirror of capped incremental density-descent response quality.
+!> \param measured_incremental_drop ...
+!> \param incremental_model_drop ...
+!> \return history quality clipped to the Schur projector response quality range
+! **************************************************************************************************
+   FUNCTION dense_density_descent_incremental_history_quality(measured_incremental_drop, &
+                                                              incremental_model_drop) &
+      RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: measured_incremental_drop, &
+                                                            incremental_model_drop
+      REAL(KIND=dp)                                      :: quality
+
+      quality = 0.0_dp
+      IF (incremental_model_drop <= EPSILON(incremental_model_drop)) RETURN
+      quality = MAX(0.0_dp, measured_incremental_drop)/incremental_model_drop
+      quality = MIN(1.25_dp, quality)
+
+   END FUNCTION dense_density_descent_incremental_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of the incremental density-descent history signal filter.
+!> \param incremental_model_drop ...
+!> \param total_model_drop ...
+!> \param min_model_drop ...
+!> \return true if the incremental model signal is both absolute and relative significant
+! **************************************************************************************************
+   FUNCTION dense_density_descent_incremental_history_signal(incremental_model_drop, &
+                                                             total_model_drop, min_model_drop) &
+      RESULT(ready)
+      REAL(KIND=dp), INTENT(IN)                          :: incremental_model_drop, &
+                                                            total_model_drop, min_model_drop
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: incremental_drop, total_drop
+
+      incremental_drop = MAX(0.0_dp, incremental_model_drop)
+      total_drop = MAX(0.0_dp, total_model_drop)
+      ready = incremental_drop > MAX(0.0_dp, min_model_drop) .AND. &
+              incremental_drop >= 1.0E-3_dp*MAX(total_drop, min_model_drop)
+
+   END FUNCTION dense_density_descent_incremental_history_signal
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density Direct residual-tail close-call gate.
