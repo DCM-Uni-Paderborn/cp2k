@@ -2307,7 +2307,9 @@ CONTAINS
                                                             occ_curv_max
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp)                                      :: active_fraction, response_shape
+      LOGICAL                                            :: collapsed_projector_response
+      REAL(KIND=dp)                                      :: active_fraction, projector_abs, &
+                                                            response_shape, safe_abs
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2318,6 +2320,12 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       density_response = response_shape*density_projector_response
+      safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(density_projector_response)
+      collapsed_projector_response = safe_abs > EPSILON(safe_abs) .AND. &
+                                     projector_abs <= SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, safe_abs)
+      IF (collapsed_projector_response) &
+         density_response = response_shape*density_safe_response
 
    END FUNCTION kpoint_ot_physical_density_floor_audit_response
 

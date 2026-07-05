@@ -5549,20 +5549,19 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER, PARAMETER                                 :: n = 4
+      INTEGER, PARAMETER                                 :: n = 5
       REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, response_ratio_gate = 2.0E-2_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: active_fraction, err, finite_floor, &
-                                                            occ_curv_max, physical_recovery, &
-                                                            response_shape, safe_rejection
+      REAL(KIND=dp) :: active_fraction, err, finite_floor, occ_curv_max, physical_recovery, &
+         response_shape, safe_rejection, safe_shadow
       REAL(KIND=dp), DIMENSION(n)                        :: expected, floor_response, occ_curv, &
                                                             physical_response, projector_response, &
                                                             safe_response
 
-      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp]
-      projector_response(:) = [0.010_dp, -0.008_dp, 0.006_dp, -0.004_dp]
-      safe_response(:) = [0.10_dp, -0.08_dp, 0.06_dp, -25.0_dp]
+      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp, 4.0E-5_dp]
+      projector_response(:) = [0.010_dp, -0.008_dp, 0.006_dp, -0.004_dp, 0.0_dp]
+      safe_response(:) = [0.10_dp, -0.08_dp, 0.06_dp, -25.0_dp, 0.12_dp]
       occ_curv_max = MAXVAL(occ_curv(:))
 
       DO i = 1, n
@@ -5575,25 +5574,28 @@ CONTAINS
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
          expected(i) = response_shape*projector_response(i)
+         IF (ABS(projector_response(i)) <= SQRT(EPSILON(1.0_dp))* &
+             MAX(1.0_dp, ABS(safe_response(i)))) &
+            expected(i) = response_shape*safe_response(i)
       END DO
 
       err = MAXVAL(ABS(floor_response(:) - expected(:)))
-      finite_floor = ABS(floor_response(n))/MAX(ABS(projector_response(n)), EPSILON(1.0_dp))
+      finite_floor = ABS(floor_response(n - 1))/MAX(ABS(projector_response(n - 1)), EPSILON(1.0_dp))
       physical_recovery = ABS(physical_response(3)) - ABS(floor_response(3))
       safe_rejection = MAXVAL(ABS(floor_response(:) - safe_response(:)))
+      safe_shadow = ABS(floor_response(n))
 
       IF (err > tol .OR. ABS(floor_response(1) - physical_response(1)) < active_tol .OR. &
           finite_floor < 5.0E-5_dp .OR. physical_recovery <= active_tol .OR. &
-          safe_rejection < active_tol .OR. &
-          MAXVAL(ABS(floor_response(:))) > MAXVAL(ABS(projector_response(:))) + tol) THEN
+          safe_rejection < active_tol .OR. safe_shadow <= active_tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/floor/recovery/reject/max", err, finite_floor, physical_recovery, &
-            safe_rejection, MAXVAL(ABS(floor_response(:)))
+            "failed with error/floor/recovery/reject/shadow", err, finite_floor, physical_recovery, &
+            safe_rejection, safe_shadow
       ELSE
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/floor/recovery/reject/max", err, finite_floor, physical_recovery, &
-            safe_rejection, MAXVAL(ABS(floor_response(:)))
+            "OK with error/floor/recovery/reject/shadow", err, finite_floor, physical_recovery, &
+            safe_rejection, safe_shadow
       END IF
 
    END SUBROUTINE check_projector_density_floor_audit_response_helper
@@ -18719,7 +18721,9 @@ CONTAINS
                                                             occ_curv_max, response_ratio_gate
       REAL(KIND=dp)                                      :: density_response
 
-      REAL(KIND=dp)                                      :: active_fraction, response_shape
+      LOGICAL                                            :: collapsed_projector_response
+      REAL(KIND=dp)                                      :: active_fraction, projector_abs, &
+                                                            response_shape, safe_abs
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -18729,6 +18733,12 @@ CONTAINS
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
       density_response = response_shape*density_projector_response
+      safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(density_projector_response)
+      collapsed_projector_response = safe_abs > EPSILON(safe_abs) .AND. &
+                                     projector_abs <= SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, safe_abs)
+      IF (collapsed_projector_response) &
+         density_response = response_shape*density_safe_response
 
    END FUNCTION dense_physical_density_floor_audit_response
 
