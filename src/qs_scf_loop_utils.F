@@ -18368,7 +18368,8 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_global_pending = .TRUE.
                local_ot_env(1)%schur_projector_density_full_global_drop = &
                   local_ot_env(1)%schur_projector_density_full_global_drop + &
-                  density_full_global_history_drop
+                  kpoint_ot_density_full_global_history_drop( &
+                  density_full_global_history_drop, density_full_global_history_trust_quality)
                local_ot_env(1)%schur_projector_density_full_global_trust = &
                   MIN(local_ot_env(1)%schur_projector_density_full_global_trust, &
                       density_full_global_history_trust_quality)
@@ -18381,7 +18382,8 @@ CONTAINS
                IF (density_full_global_candidate_selected) &
                   local_ot_env(1)%schur_projector_density_full_global_selected = &
                   local_ot_env(1)%schur_projector_density_full_global_selected + &
-                  density_full_global_history_drop
+                  kpoint_ot_density_full_global_history_drop( &
+                  density_full_global_history_drop, density_full_global_history_trust_quality)
             END IF
             IF (projector_density_full_history_enabled .AND. &
                 exact_density_full_audit_ready .AND. &
@@ -21696,6 +21698,20 @@ CONTAINS
          history_ready = .TRUE.
 
       END FUNCTION kpoint_ot_density_full_global_shadow_history_ready
+
+! **************************************************************************************************
+!> \brief trust-weighted accepted-history drop for global full-density response
+!> \param history_drop calibrated accepted Mermin drop represented by the response model
+!> \param trust_quality curvature-weighted response trust quality for that history sample
+!> \return drop contribution used for later accepted-history calibration
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_full_global_history_drop(history_drop, trust_quality) RESULT(weighted_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: history_drop, trust_quality
+      REAL(KIND=dp)                                      :: weighted_drop
+
+         weighted_drop = MAX(0.0_dp, history_drop)*MIN(1.0_dp, MAX(0.0_dp, trust_quality))
+
+      END FUNCTION kpoint_ot_density_full_global_history_drop
 
 ! **************************************************************************************************
 !> \brief residual-aware active-Hessian mix from accepted Direct-density tail history

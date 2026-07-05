@@ -240,6 +240,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
       "complex projector density global shadow-history gate", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_history_drop_weight( &
+      "complex projector density global history-drop weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
       "complex projector density global metric trust", 5.0E-14_dp, nfail)
    CALL check_projector_density_audit_trust_quality( &
@@ -9472,6 +9474,47 @@ CONTAINS
    END SUBROUTINE check_projector_density_global_shadow_history_gate
 
 ! **************************************************************************************************
+!> \brief Check that global full-density history drops are weighted by their response trust.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_history_drop_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, high_trust, low_trust, &
+                                                            negative_drop, negative_trust, &
+                                                            over_trust
+
+      high_trust = dense_density_full_global_history_drop(2.0E-7_dp, 1.0_dp)
+      low_trust = dense_density_full_global_history_drop(2.0E-7_dp, 2.5E-1_dp)
+      over_trust = dense_density_full_global_history_drop(2.0E-7_dp, 3.0_dp)
+      negative_trust = dense_density_full_global_history_drop(2.0E-7_dp, -1.0_dp)
+      negative_drop = dense_density_full_global_history_drop(-2.0E-7_dp, 1.0_dp)
+
+      err = MAX(ABS(high_trust - 2.0E-7_dp), &
+                ABS(low_trust - 5.0E-8_dp), &
+                ABS(over_trust - 2.0E-7_dp), &
+                ABS(negative_trust), &
+                ABS(negative_drop))
+
+      IF (err > tol .OR. low_trust >= high_trust .OR. over_trust /= high_trust .OR. &
+          negative_trust /= 0.0_dp .OR. negative_drop /= 0.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with high/low/over/negtrust/negdrop", high_trust, low_trust, over_trust, &
+            negative_trust, negative_drop
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with high/low/over/negtrust/negdrop", high_trust, low_trust, over_trust, &
+            negative_trust, negative_drop
+      END IF
+
+   END SUBROUTINE check_projector_density_global_history_drop_weight
+
+! **************************************************************************************************
 !> \brief Check that global fixed-N density-response trust follows the Mermin metric.
 !> \param label ...
 !> \param tol ...
@@ -14514,6 +14557,20 @@ CONTAINS
       history_ready = .TRUE.
 
    END FUNCTION dense_density_full_global_shadow_history_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of trust-weighted global full-density history drop.
+!> \param history_drop ...
+!> \param trust_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_density_full_global_history_drop(history_drop, trust_quality) RESULT(weighted_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: history_drop, trust_quality
+      REAL(KIND=dp)                                      :: weighted_drop
+
+      weighted_drop = MAX(0.0_dp, history_drop)*MIN(1.0_dp, MAX(0.0_dp, trust_quality))
+
+   END FUNCTION dense_density_full_global_history_drop
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected Direct-density active-Hessian tail mix weight.
