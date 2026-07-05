@@ -18316,9 +18316,10 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(3, 3)                  :: cluster_evec, cluster_work
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
       INTEGER                                            :: a, b, i
-      REAL(KIND=dp) :: charge_err, cluster_occ_blend, cluster_response_gap, cluster_span, &
-         coeff_new, coeff_old, component_weight, curv_sum, denom, err, gap_tol, herm_err, &
-         mu_response, occ_tol, raw_gap, shape_err, slope_cap
+      REAL(KIND=dp) :: basis_delta, basis_mean, basis_physical_dot, basis_scale, charge_err, &
+         cluster_occ_blend, cluster_response_gap, cluster_span, coeff_new, coeff_old, &
+         component_weight, curv_sum, denom, err, gap_tol, herm_err, mu_response, occ_tol, &
+         physical_delta, physical_norm, raw_gap, response_mean, shape_err, slope_cap
       REAL(KIND=dp), DIMENSION(3) :: cluster_eval, modal_curv, modal_energy, modal_occ_basis, &
          modal_occ_expected, modal_occ_new, modal_occ_old, occ_cluster
       REAL(KIND=dp), DIMENSION(n)                        :: evals, occ_curv, occ_slope
@@ -18379,8 +18380,24 @@ CONTAINS
                                  2.0_dp*MAX(0.0_dp, modal_curv(a))* &
                                  (modal_energy(a) - mu_response)
       END DO
-      modal_occ_expected(:) = (1.0_dp - cluster_occ_blend)*modal_occ_expected(:) + &
-                              cluster_occ_blend*modal_occ_basis(:)
+      response_mean = SUM(modal_occ_expected(:))/3.0_dp
+      basis_mean = SUM(modal_occ_basis(:))/3.0_dp
+      physical_norm = 0.0_dp
+      basis_physical_dot = 0.0_dp
+      DO a = 1, 3
+         physical_delta = modal_occ_expected(a) - response_mean
+         basis_delta = modal_occ_basis(a) - basis_mean
+         physical_norm = physical_norm + physical_delta*physical_delta
+         basis_physical_dot = basis_physical_dot + basis_delta*physical_delta
+      END DO
+      IF (physical_norm > EPSILON(1.0_dp) .AND. basis_physical_dot > 0.0_dp) THEN
+         basis_scale = basis_physical_dot/physical_norm
+         DO a = 1, 3
+            physical_delta = modal_occ_expected(a) - response_mean
+            modal_occ_expected(a) = (1.0_dp - cluster_occ_blend)*modal_occ_expected(a) + &
+                                    cluster_occ_blend*(basis_mean + basis_scale*physical_delta)
+         END DO
+      END IF
       modal_occ_expected(:) = modal_occ_expected(:) + &
                               (SUM(occ_slope(1:3)) - SUM(modal_occ_expected(:)))/3.0_dp
 
@@ -18440,8 +18457,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: partial_weight = 0.35_dp
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: charge_err, curv_sum, err, mu_shift, &
-                                                            partial_gap, resolved_gap
+      REAL(KIND=dp) :: basis_delta, basis_mean, basis_physical_dot, basis_scale, charge_err, &
+         curv_sum, err, mu_shift, partial_gap, physical_delta, physical_norm, resolved_gap, &
+         response_mean
       REAL(KIND=dp), DIMENSION(m) :: exact_occ, expected_exact, expected_partial, &
          expected_resolved, modal_basis_occ, modal_curv, modal_energy, occ_curv, occ_slope, &
          partial_occ, resolved_occ
@@ -18460,10 +18478,28 @@ CONTAINS
       END DO
       expected_exact(:) = expected_exact(:) + &
                           (SUM(occ_slope(:)) - SUM(expected_exact(:)))/REAL(m, KIND=dp)
-      expected_resolved(:) = modal_basis_occ(:) + &
-                             (SUM(occ_slope(:)) - SUM(modal_basis_occ(:)))/REAL(m, KIND=dp)
+      expected_resolved(:) = expected_exact(:)
+      response_mean = SUM(expected_exact(:))/REAL(m, KIND=dp)
+      basis_mean = SUM(modal_basis_occ(:))/REAL(m, KIND=dp)
+      physical_norm = 0.0_dp
+      basis_physical_dot = 0.0_dp
+      DO i = 1, m
+         physical_delta = expected_exact(i) - response_mean
+         basis_delta = modal_basis_occ(i) - basis_mean
+         physical_norm = physical_norm + physical_delta*physical_delta
+         basis_physical_dot = basis_physical_dot + basis_delta*physical_delta
+      END DO
+      IF (physical_norm > EPSILON(1.0_dp) .AND. basis_physical_dot > 0.0_dp) THEN
+         basis_scale = basis_physical_dot/physical_norm
+         DO i = 1, m
+            physical_delta = expected_exact(i) - response_mean
+            expected_resolved(i) = basis_mean + basis_scale*physical_delta
+         END DO
+      END IF
+      expected_resolved(:) = expected_resolved(:) + &
+                             (SUM(occ_slope(:)) - SUM(expected_resolved(:)))/REAL(m, KIND=dp)
       expected_partial(:) = (1.0_dp - partial_weight)*expected_exact(:) + &
-                            partial_weight*modal_basis_occ(:)
+                            partial_weight*expected_resolved(:)
       expected_partial(:) = expected_partial(:) + &
                             (SUM(occ_slope(:)) - SUM(expected_partial(:)))/REAL(m, KIND=dp)
 
@@ -19834,8 +19870,9 @@ CONTAINS
 
       INTEGER                                            :: i, m
       LOGICAL                                            :: fixed_response_ready
-      REAL(KIND=dp) :: blend, charge_shift, curv, curv_sum, delta_e, eval_center, fit_den, &
-         fit_num, mu_shift, occ_mean, physical_slope, slope_cap
+      REAL(KIND=dp) :: basis_delta, basis_mean, basis_physical_dot, basis_scale, blend, &
+         charge_shift, curv, curv_sum, delta_e, eval_center, fit_den, fit_num, mu_shift, occ_mean, &
+         physical_delta, physical_norm, physical_slope, response_mean, slope_cap
 
       m = SIZE(evals)
       modal_occ(:) = 0.0_dp
@@ -19893,8 +19930,27 @@ CONTAINS
       IF (PRESENT(modal_occ_basis) .AND. PRESENT(resolution_weight)) THEN
          IF (SIZE(modal_occ_basis) >= m) THEN
             blend = MIN(1.0_dp, MAX(0.0_dp, resolution_weight))
-            IF (blend > 0.0_dp) &
-               modal_occ(1:m) = (1.0_dp - blend)*modal_occ(1:m) + blend*modal_occ_basis(1:m)
+            IF (blend > 0.0_dp) THEN
+               response_mean = SUM(modal_occ(1:m))/REAL(m, KIND=dp)
+               basis_mean = SUM(modal_occ_basis(1:m))/REAL(m, KIND=dp)
+               physical_norm = 0.0_dp
+               basis_physical_dot = 0.0_dp
+               DO i = 1, m
+                  physical_delta = modal_occ(i) - response_mean
+                  basis_delta = modal_occ_basis(i) - basis_mean
+                  physical_norm = physical_norm + physical_delta*physical_delta
+                  basis_physical_dot = basis_physical_dot + basis_delta*physical_delta
+               END DO
+               IF (physical_norm > EPSILON(1.0_dp) .AND. &
+                   basis_physical_dot > 0.0_dp) THEN
+                  basis_scale = basis_physical_dot/physical_norm
+                  DO i = 1, m
+                     physical_delta = modal_occ(i) - response_mean
+                     modal_occ(i) = (1.0_dp - blend)*modal_occ(i) + &
+                                    blend*(basis_mean + basis_scale*physical_delta)
+                  END DO
+               END IF
+            END IF
          END IF
       END IF
 

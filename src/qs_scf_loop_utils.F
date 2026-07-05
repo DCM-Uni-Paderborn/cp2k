@@ -24816,8 +24816,9 @@ CONTAINS
 
       INTEGER                                            :: i, m
       LOGICAL                                            :: fixed_response_ready
-      REAL(KIND=dp) :: blend, charge_shift, curv, curv_sum, delta_e, eval_center, fit_den, &
-         fit_num, mu_shift, occ_mean, physical_slope, slope_cap
+      REAL(KIND=dp) :: basis_delta, basis_mean, basis_physical_dot, basis_scale, blend, &
+         charge_shift, curv, curv_sum, delta_e, eval_center, fit_den, fit_num, mu_shift, occ_mean, &
+         physical_delta, physical_norm, physical_slope, response_mean, slope_cap
 
          m = SIZE(evals)
          modal_occ(:) = 0.0_dp
@@ -24875,8 +24876,27 @@ CONTAINS
          IF (PRESENT(modal_occ_basis) .AND. PRESENT(resolution_weight)) THEN
             IF (SIZE(modal_occ_basis) >= m) THEN
                blend = MIN(1.0_dp, MAX(0.0_dp, resolution_weight))
-               IF (blend > 0.0_dp) &
-                  modal_occ(1:m) = (1.0_dp - blend)*modal_occ(1:m) + blend*modal_occ_basis(1:m)
+               IF (blend > 0.0_dp) THEN
+                  response_mean = SUM(modal_occ(1:m))/REAL(m, KIND=dp)
+                  basis_mean = SUM(modal_occ_basis(1:m))/REAL(m, KIND=dp)
+                  physical_norm = 0.0_dp
+                  basis_physical_dot = 0.0_dp
+                  DO i = 1, m
+                     physical_delta = modal_occ(i) - response_mean
+                     basis_delta = modal_occ_basis(i) - basis_mean
+                     physical_norm = physical_norm + physical_delta*physical_delta
+                     basis_physical_dot = basis_physical_dot + basis_delta*physical_delta
+                  END DO
+                  IF (physical_norm > EPSILON(1.0_dp) .AND. &
+                      basis_physical_dot > 0.0_dp) THEN
+                     basis_scale = basis_physical_dot/physical_norm
+                     DO i = 1, m
+                        physical_delta = modal_occ(i) - response_mean
+                        modal_occ(i) = (1.0_dp - blend)*modal_occ(i) + &
+                                       blend*(basis_mean + basis_scale*physical_delta)
+                     END DO
+                  END IF
+               END IF
             END IF
          END IF
 
