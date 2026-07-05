@@ -9809,7 +9809,7 @@ CONTAINS
          early_capped_bootstrap_quality, early_floor_quality, early_good_quality, err, &
          mature_bad_quality, mature_bootstrap_quality, mature_floor_quality, &
          no_samples_bootstrap_quality, no_samples_floor_quality, no_samples_quality, &
-         probe_early_quality, probe_mature_quality, recent_bootstrap_quality, &
+         probe_early_quality, probe_mature_quality, probe_young_quality, recent_bootstrap_quality, &
          stale_bootstrap_quality
 
       no_samples_quality = dense_direct_selected_history_quality(1.0_dp, 10.0_dp, 1.0_dp, &
@@ -9828,6 +9828,8 @@ CONTAINS
                                                                 4, 4, 8, max_quality)
       probe_mature_quality = dense_direct_selected_probe_quality(min_quality, 0.053_dp, &
                                                                  16, 4, 8, max_quality)
+      probe_young_quality = dense_direct_selected_probe_quality(min_quality, 1.0_dp, &
+                                                                1, 4, 8, max_quality)
       no_samples_floor_quality = dense_direct_floor_selected_quality(max_quality, 0.053_dp, 3, 4, 8, &
                                                                      max_quality)
       early_floor_quality = dense_direct_floor_selected_quality(max_quality, 0.053_dp, 4, 4, 8, &
@@ -9861,6 +9863,7 @@ CONTAINS
       err = MAX(err, ABS(early_good_quality - (1.0_dp + (1.0_dp/13.0_dp)*(max_quality - 1.0_dp))))
       err = MAX(err, ABS(probe_early_quality - ((12.0_dp*min_quality + 0.053_dp)/13.0_dp)))
       err = MAX(err, ABS(probe_mature_quality - 0.053_dp))
+      err = MAX(err, ABS(probe_young_quality - ((12.0_dp*min_quality + 1.0_dp)/13.0_dp)))
       err = MAX(err, ABS(no_samples_floor_quality - max_quality))
       err = MAX(err, ABS(early_floor_quality - ((12.0_dp*max_quality + 0.053_dp)/13.0_dp)))
       err = MAX(err, ABS(mature_floor_quality - 0.053_dp))
@@ -9877,6 +9880,7 @@ CONTAINS
       IF (err > tol .OR. early_bad_quality <= mature_bad_quality .OR. &
           early_bad_quality <= min_quality .OR. early_good_quality <= no_samples_quality .OR. &
           probe_early_quality >= min_quality .OR. probe_mature_quality >= min_quality .OR. &
+          probe_young_quality <= min_quality .OR. probe_young_quality >= early_good_quality .OR. &
           early_floor_quality <= mature_floor_quality .OR. mature_floor_quality >= min_quality .OR. &
           capped_floor_quality >= max_quality .OR. &
           early_bootstrap_quality >= max_quality .OR. recent_bootstrap_quality >= early_bootstrap_quality .OR. &
@@ -9884,20 +9888,20 @@ CONTAINS
           mature_bootstrap_quality >= recent_bootstrap_quality .OR. &
           stale_bootstrap_quality <= mature_bootstrap_quality) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,17(1X,ES12.5))') TRIM(label), &
-            "failed err/no/early/mature/good/probe/mprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootecap/bootm/stale", &
+         WRITE (*, '(A,1X,A,18(1X,ES12.5))') TRIM(label), &
+           "failed err/no/early/mature/good/probe/mprobe/yprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootecap/bootm/stale", &
             err, no_samples_quality, &
             early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
-            probe_mature_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality, &
+            probe_mature_quality, probe_young_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality, &
             capped_floor_quality, no_samples_bootstrap_quality, early_bootstrap_quality, &
             recent_bootstrap_quality, early_capped_bootstrap_quality, mature_bootstrap_quality, &
             stale_bootstrap_quality
       ELSE
-         WRITE (*, '(A,1X,A,17(1X,ES12.5))') TRIM(label), &
-            "OK err/no/early/mature/good/probe/mprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootecap/bootm/stale", &
+         WRITE (*, '(A,1X,A,18(1X,ES12.5))') TRIM(label), &
+            "OK err/no/early/mature/good/probe/mprobe/yprobe/floor0/floor1/floorm/fcap/boot0/boot1/boot2/bootecap/bootm/stale", &
             err, no_samples_quality, &
             early_bad_quality, mature_bad_quality, early_good_quality, probe_early_quality, &
-            probe_mature_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality, &
+            probe_mature_quality, probe_young_quality, no_samples_floor_quality, early_floor_quality, mature_floor_quality, &
             capped_floor_quality, no_samples_bootstrap_quality, early_bootstrap_quality, &
             recent_bootstrap_quality, early_capped_bootstrap_quality, mature_bootstrap_quality, &
             stale_bootstrap_quality
@@ -13450,14 +13454,19 @@ CONTAINS
       INTEGER                                            :: maturity_samples
       REAL(KIND=dp)                                      :: maturity, selected_quality_clipped
 
+      maturity_samples = MAX(1, 2*response_min_samples - min_samples + 1)
       quality = base_quality
-      IF (samples < min_samples) RETURN
+      IF (samples <= 0) RETURN
 
       selected_quality_clipped = MAX(0.0_dp, MIN(max_quality, selected_quality))
-      maturity_samples = MAX(1, 2*response_min_samples - min_samples + 1)
-      maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
-                 REAL(maturity_samples, KIND=dp)
-      maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+      IF (samples < min_samples) THEN
+         IF (selected_quality_clipped <= quality) RETURN
+         maturity = 1.0_dp/REAL(maturity_samples, KIND=dp)
+      ELSE
+         maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/ &
+                    REAL(maturity_samples, KIND=dp)
+         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+      END IF
 
       quality = (1.0_dp - maturity)*base_quality + maturity*selected_quality_clipped
       quality = MAX(0.0_dp, MIN(max_quality, quality))

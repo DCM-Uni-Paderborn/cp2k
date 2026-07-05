@@ -10477,6 +10477,40 @@ CONTAINS
                   projector_physical_direct_density_mix_residual_quality, &
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples)
             END IF
+         ELSE IF (local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples > 0 .AND. &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum > &
+                  ot_kp_schur_projector_density_full_min_drop .AND. &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum > 0.0_dp .AND. &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema >= &
+                  ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema >= &
+                  0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
+            ! A single accepted Direct-density tail step is not mature enough
+            ! to promote the response model, but it is real Mermin evidence.
+            ! Use it only as an early quality boost for subsequent probes.
+            projector_physical_direct_density_selected_mermin_quality = &
+               kpoint_ot_schur_history_quality( &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+               1, 0.0_dp, 0.0_dp, &
+               ot_kp_schur_projector_response_quality_max_ratio)
+            projector_physical_direct_density_selected_history_quality = &
+               projector_physical_direct_density_selected_mermin_quality
+            IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
+               projector_physical_direct_density_recent_residual_quality = &
+                  kpoint_ot_selected_tail_residual_quality( &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema)
+               projector_physical_direct_density_mix_residual_quality = &
+                  kpoint_ot_selected_tail_mix_residual_quality( &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+                  local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema)
+               projector_physical_direct_density_selected_history_quality = &
+                  projector_physical_direct_density_selected_history_quality* &
+                  projector_physical_direct_density_recent_residual_quality
+            END IF
          END IF
          IF (local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples >= &
              ot_kp_schur_calibration_min_samples) THEN
@@ -21332,14 +21366,19 @@ CONTAINS
       INTEGER                                            :: maturity_samples
       REAL(KIND=dp)                                      :: maturity, selected_quality_clipped
 
+         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - min_samples + 1)
          quality = base_quality
-         IF (samples < min_samples) RETURN
+         IF (samples <= 0) RETURN
 
          selected_quality_clipped = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, &
                                                     selected_quality))
-         maturity_samples = MAX(1, 2*ot_kp_schur_projector_response_min_samples - min_samples + 1)
-         maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
-         maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+         IF (samples < min_samples) THEN
+            IF (selected_quality_clipped <= quality) RETURN
+            maturity = 1.0_dp/REAL(maturity_samples, KIND=dp)
+         ELSE
+            maturity = REAL(MAX(0, samples - min_samples + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
+            maturity = MIN(1.0_dp, MAX(0.0_dp, maturity))
+         END IF
 
          quality = (1.0_dp - maturity)*base_quality + maturity*selected_quality_clipped
          quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
