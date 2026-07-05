@@ -1518,6 +1518,7 @@ CONTAINS
          raw_delta = qs_ot_env(1)%delta
          qs_ot_env(1)%kpoint_raw_delta = raw_delta
          qs_ot_env(1)%kpoint_physical_delta = -1.0_dp
+         qs_ot_env(1)%kpoint_projected_delta = -1.0_dp
          IF (complex_kpoint_history .AND. qs_ot_env(1)%settings%occupation_preconditioner .AND. &
              qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
              qs_ot_env(1)%kpoint_physical_delta_groups > 0) THEN
@@ -1526,6 +1527,7 @@ CONTAINS
             physical_gnorm_metric = matrix_gnorm_metric + MAX(0.0_dp, qs_ot_env(1)%kpoint_physical_gnorm)
             physical_delta = SQRT(ABS(physical_gnorm_metric)/nvar)
             qs_ot_env(1)%kpoint_physical_delta = physical_delta
+            qs_ot_env(1)%kpoint_projected_delta = physical_delta
             IF (qs_ot_env(1)%kpoint_physical_delta_ready) THEN
                IF (physical_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_delta
             ELSE IF (qs_ot_env(1)%kpoint_eps_scf > 0.0_dp .AND. &
@@ -1549,6 +1551,7 @@ CONTAINS
          qs_ot_env(1)%delta = 0.0_dp
          qs_ot_env(1)%kpoint_raw_delta = 0.0_dp
          qs_ot_env(1)%kpoint_physical_delta = 0.0_dp
+         qs_ot_env(1)%kpoint_projected_delta = 0.0_dp
          beta_pr = 0.0_dp
       END IF
       IF (complex_kpoint_history .AND. qs_ot_env(1)%mermin_ls_sample_pending) THEN
@@ -1574,9 +1577,10 @@ CONTAINS
                qs_ot_env(1)%delta = raw_guard_delta
                qs_ot_env(1)%kpoint_physical_delta = MAX(qs_ot_env(1)%kpoint_physical_delta, raw_guard_delta)
                IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8))') &
-                     " OT CG physical residual raw-gap guard raw floor adrop gdrop mdrop mq delta:", &
-                     qs_ot_env(1)%kpoint_raw_delta, raw_guard_delta, sample_accepted_drop, &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+                     " OT CG physical residual raw-gap guard raw floor projected adrop gdrop mdrop mq delta:", &
+                     qs_ot_env(1)%kpoint_raw_delta, raw_guard_delta, &
+                     qs_ot_env(1)%kpoint_projected_delta, sample_accepted_drop, &
                      sample_guard_drop, qs_ot_env(1)%mermin_ls_model_drop, &
                      qs_ot_env(1)%mermin_ls_model_quality, qs_ot_env(1)%delta
                END IF
@@ -1620,10 +1624,11 @@ CONTAINS
             gnorm_matrix_re, gnorm_matrix_im, gnorm_rot_re, gnorm_rot_im, &
             gnorm_ener, qs_ot_env(1)%gnorm
          IF (qs_ot_env(1)%kpoint_physical_delta_groups > 0) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,I6,7(1X,ES16.8))') &
-            " OT CG physical residual ready groups raw effective physical matrix phys_rot phys_eps gauge:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,I6,8(1X,ES16.8))') &
+            " OT CG physical residual ready groups raw effective guarded projected matrix phys_rot phys_eps gauge:", &
             qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_physical_delta_groups, &
             qs_ot_env(1)%kpoint_raw_delta, qs_ot_env(1)%delta, qs_ot_env(1)%kpoint_physical_delta, &
+            qs_ot_env(1)%kpoint_projected_delta, &
             MAX(0.0_dp, raw_matrix_gnorm_re) + MAX(0.0_dp, raw_matrix_gnorm_im), &
             qs_ot_env(1)%kpoint_physical_rot_gnorm, &
             qs_ot_env(1)%kpoint_physical_energy_gnorm, qs_ot_env(1)%kpoint_gauge_gnorm

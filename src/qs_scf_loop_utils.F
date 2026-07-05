@@ -1065,8 +1065,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
 
       INTEGER                                            :: local_channel
-      REAL(KIND=dp) :: env_delta, gap_weight, ot_delta, physical_delta, projected_raw_ratio, &
-         quality_weight, raw_delta, raw_floor_ratio, tail_weight
+      REAL(KIND=dp) :: env_delta, gap_weight, ot_delta, physical_delta, projected_delta, &
+         projected_raw_ratio, quality_weight, raw_delta, raw_floor_ratio, tail_weight
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -1080,14 +1080,18 @@ CONTAINS
       env_delta = ot_delta
       raw_delta = 0.0_dp
       physical_delta = 0.0_dp
+      projected_delta = 0.0_dp
       IF (local_ot_env(1)%kpoint_physical_delta_ready .AND. &
           local_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
           local_ot_env(1)%kpoint_raw_delta > 0.0_dp) THEN
          raw_delta = local_ot_env(1)%kpoint_raw_delta
          physical_delta = local_ot_env(1)%kpoint_physical_delta
+         projected_delta = local_ot_env(1)%kpoint_projected_delta
+         IF (projected_delta <= 0.0_dp) projected_delta = physical_delta
       END IF
       CALL para_env_inter_kp%max(raw_delta)
       CALL para_env_inter_kp%max(physical_delta)
+      CALL para_env_inter_kp%max(projected_delta)
       IF (PRESENT(eps_scf)) THEN
          IF (eps_scf > 0.0_dp .AND. raw_delta > residual_delta) THEN
             raw_floor_ratio = ot_kp_schur_physical_exit_raw_floor_ratio
@@ -1113,7 +1117,7 @@ CONTAINS
                ! overestimate the fixed-N physical residual.  Keep it as a guard,
                ! but do not let it dominate the projected Mermin residual that is
                ! already below the requested SCF threshold.
-               projected_raw_ratio = physical_delta/MAX(raw_delta, EPSILON(1.0_dp))
+               projected_raw_ratio = projected_delta/MAX(raw_delta, EPSILON(1.0_dp))
                raw_floor_ratio = MIN(raw_floor_ratio, projected_raw_ratio)
             END IF
             CALL para_env_inter_kp%max(raw_floor_ratio)
@@ -6911,6 +6915,7 @@ CONTAINS
             local_ot_env(1)%kpoint_physical_delta_groups = 0
             local_ot_env(1)%kpoint_raw_delta = -1.0_dp
             local_ot_env(1)%kpoint_physical_delta = -1.0_dp
+            local_ot_env(1)%kpoint_projected_delta = -1.0_dp
             local_ot_env(1)%kpoint_eps_scf = eps_scf_channel
             local_ot_env(1)%kpoint_physical_gnorm = 0.0_dp
             local_ot_env(1)%kpoint_physical_rot_gnorm = 0.0_dp

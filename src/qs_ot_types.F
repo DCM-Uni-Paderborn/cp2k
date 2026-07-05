@@ -327,6 +327,7 @@ MODULE qs_ot_types
       LOGICAL :: kpoint_physical_delta_ready = .FALSE.
       INTEGER :: kpoint_physical_delta_groups = 0
       REAL(KIND=dp) :: kpoint_raw_delta = -1.0_dp, kpoint_physical_delta = -1.0_dp
+      REAL(KIND=dp) :: kpoint_projected_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_eps_scf = -1.0_dp
       REAL(KIND=dp) :: kpoint_physical_gnorm = 0.0_dp, kpoint_physical_rot_gnorm = 0.0_dp
       REAL(KIND=dp) :: kpoint_physical_energy_gnorm = 0.0_dp, kpoint_gauge_gnorm = 0.0_dp
@@ -1015,6 +1016,7 @@ CONTAINS
       qs_ot_env%kpoint_physical_delta_groups = 0
       qs_ot_env%kpoint_raw_delta = -1.0_dp
       qs_ot_env%kpoint_physical_delta = -1.0_dp
+      qs_ot_env%kpoint_projected_delta = -1.0_dp
       qs_ot_env%kpoint_eps_scf = -1.0_dp
       qs_ot_env%kpoint_physical_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
