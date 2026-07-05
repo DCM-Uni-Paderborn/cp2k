@@ -14582,6 +14582,12 @@ CONTAINS
                                  schur_projector_phys_direct_density_sel_quality_samples, &
                                  ot_kp_schur_calibration_min_samples)
                            END IF
+                           projector_physical_direct_density_quality_for_selection = &
+                              kpoint_ot_direct_density_quality_cap( &
+                              projector_physical_direct_density_quality_for_selection, &
+                              projector_physical_direct_quality_for_selection, &
+                              projector_physical_direct_density_model_calibrated_drop, &
+                              projector_physical_direct_model_calibrated_drop)
                            projector_physical_direct_density_shadow_expected_drop = &
                               kpoint_ot_schur_expected_drop( &
                               projector_physical_direct_density_model_calibrated_drop, &
@@ -22087,6 +22093,35 @@ CONTAINS
          probe_drop = shadow_expected_drop
 
       END FUNCTION kpoint_ot_density_full_direct_probe_drop
+
+! **************************************************************************************************
+!> \brief cap overconfident Direct-density history when its Mermin model matches Direct
+!> \param density_quality current Direct-density quality used for expected-drop selection
+!> \param direct_quality current physical Direct quality used for expected-drop selection
+!> \param density_model_drop Mermin-model drop of the Direct-density candidate
+!> \param direct_model_drop Mermin-model drop of the physical Direct candidate
+!> \return quality capped to the physical Direct evidence unless density has a model advantage
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_density_quality_cap(density_quality, direct_quality, &
+                                                    density_model_drop, direct_model_drop) &
+         RESULT(capped_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: density_quality, direct_quality, &
+                                                            density_model_drop, direct_model_drop
+      REAL(KIND=dp)                                      :: capped_quality
+
+         capped_quality = density_quality
+         IF (density_quality <= 1.0_dp) RETURN
+         IF (direct_quality <= EPSILON(direct_quality)) RETURN
+         IF (density_model_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (direct_model_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (density_model_drop >= &
+             ot_kp_schur_projector_response_advantage_ratio*direct_model_drop) RETURN
+
+         capped_quality = MIN(capped_quality, &
+                              MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                  direct_quality))
+
+      END FUNCTION kpoint_ot_direct_density_quality_cap
 
 ! **************************************************************************************************
 !> \brief trust-safe density-descent drop visible only to residual-tail refresh probes

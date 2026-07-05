@@ -204,6 +204,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector physical-direct density shadow", 5.0E-12_dp, nfail)
    CALL check_projector_density_candidate_total_response( &
       "complex projector density candidate total response", 5.0E-12_dp, nfail)
+   CALL check_projector_density_direct_quality_cap( &
+      "complex projector density Direct quality cap", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_history_mismatch( &
       "complex projector density direct history mismatch", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_selected_rotation( &
@@ -10502,6 +10504,47 @@ CONTAINS
    END SUBROUTINE check_projector_density_full_direct_tail_probe
 
 ! **************************************************************************************************
+!> \brief Check that overconfident Direct-density history is capped by Direct model parity.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_direct_quality_cap(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: capped, err, no_direct, no_model, &
+                                                            no_overpromotion, real_advantage
+
+      capped = dense_direct_density_quality_cap(1.25_dp, 0.63_dp, 2.03E-7_dp, 2.02E-7_dp)
+      no_overpromotion = dense_direct_density_quality_cap(0.29_dp, 0.10_dp, 1.87E-4_dp, &
+                                                          1.87E-4_dp)
+      real_advantage = dense_direct_density_quality_cap(1.25_dp, 0.63_dp, 2.40E-7_dp, &
+                                                        2.00E-7_dp)
+      no_direct = dense_direct_density_quality_cap(1.25_dp, 0.0_dp, 2.03E-7_dp, 2.02E-7_dp)
+      no_model = dense_direct_density_quality_cap(1.25_dp, 0.63_dp, 0.0_dp, 2.02E-7_dp)
+
+      err = ABS(capped - 0.63_dp)
+      err = MAX(err, ABS(no_overpromotion - 0.29_dp))
+      err = MAX(err, ABS(real_advantage - 1.25_dp))
+      err = MAX(err, ABS(no_direct - 1.25_dp))
+      err = MAX(err, ABS(no_model - 1.25_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES16.8))') TRIM(label), &
+            "failed with cap/no_over/adv/nodir/nomodel", capped, no_overpromotion, real_advantage, &
+            no_direct, no_model
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES16.8))') TRIM(label), &
+            "OK with cap/no_over/adv/nodir/nomodel", capped, no_overpromotion, real_advantage, &
+            no_direct, no_model
+      END IF
+
+   END SUBROUTINE check_projector_density_direct_quality_cap
+
+! **************************************************************************************************
 !> \brief Check that fixed-N density-descent candidates can collect residual-tail history.
 !> \param label ...
 !> \param tol ...
@@ -14274,6 +14317,31 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of Direct-density quality cap for model-parity history.
+!> \param density_quality ...
+!> \param direct_quality ...
+!> \param density_model_drop ...
+!> \param direct_model_drop ...
+!> \return capped Direct-density quality
+! **************************************************************************************************
+   FUNCTION dense_direct_density_quality_cap(density_quality, direct_quality, density_model_drop, &
+                                             direct_model_drop) RESULT(capped_quality)
+      REAL(KIND=dp), INTENT(IN)                          :: density_quality, direct_quality, &
+                                                            density_model_drop, direct_model_drop
+      REAL(KIND=dp)                                      :: capped_quality
+
+      capped_quality = density_quality
+      IF (density_quality <= 1.0_dp) RETURN
+      IF (direct_quality <= EPSILON(direct_quality)) RETURN
+      IF (density_model_drop <= 1.0E-12_dp) RETURN
+      IF (direct_model_drop <= 1.0E-12_dp) RETURN
+      IF (density_model_drop >= 1.1_dp*direct_model_drop) RETURN
+
+      capped_quality = MIN(capped_quality, MAX(1.0E-1_dp, direct_quality))
+
+   END FUNCTION dense_direct_density_quality_cap
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the density-descent residual-tail close-call gate.
