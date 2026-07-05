@@ -16879,6 +16879,11 @@ CONTAINS
                IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
+                   kpoint_ot_projector_full_density_override_allowed( &
+                   projector_physical_direct_spectral_expected_drop, density_full_candidate_ready, &
+                   density_full_expected_drop, density_full_direct_candidate_ready, &
+                   density_full_direct_expected_drop, density_full_global_candidate_ready, &
+                   density_full_global_expected_drop) .AND. &
                    (.NOT. (density_full_global_candidate_selected .AND. &
                            density_full_global_tail_prefer) .OR. &
                     projector_physical_direct_spectral_expected_drop >= &
@@ -17470,6 +17475,11 @@ CONTAINS
                IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
+                   kpoint_ot_projector_full_density_override_allowed( &
+                   projector_physical_direct_spectral_expected_drop, density_full_candidate_ready, &
+                   density_full_expected_drop, density_full_direct_candidate_ready, &
+                   density_full_direct_expected_drop, density_full_global_candidate_ready, &
+                   density_full_global_expected_drop) .AND. &
                    (.NOT. (density_full_global_candidate_selected .AND. &
                            density_full_global_tail_prefer) .OR. &
                     projector_physical_direct_spectral_expected_drop >= &
@@ -22234,6 +22244,54 @@ CONTAINS
                          MAX(expected_drop, MAX(0.0_dp, reference_drop))
 
       END FUNCTION kpoint_ot_branch_loss_density_drop
+
+! **************************************************************************************************
+!> \brief protect ready full-density responses from weaker projector-response overrides
+!> \param candidate_expected_drop expected drop of the later projector-response candidate
+!> \param density_full_ready whether local full-density response is ready
+!> \param density_full_expected_drop expected drop of the local full-density response
+!> \param density_full_direct_ready whether direct full-density response is ready
+!> \param density_full_direct_expected_drop expected drop of the direct full-density response
+!> \param density_full_global_ready whether global full-density response is ready
+!> \param density_full_global_expected_drop expected drop of the global full-density response
+!> \return true if the later candidate may replace the ready full-density response
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_full_density_override_allowed(candidate_expected_drop, &
+                                                                 density_full_ready, &
+                                                                 density_full_expected_drop, &
+                                                                 density_full_direct_ready, &
+                                                                 density_full_direct_expected_drop, &
+                                                                 density_full_global_ready, &
+                                                                 density_full_global_expected_drop) &
+         RESULT(allowed)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop
+      LOGICAL, INTENT(IN)                                :: density_full_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_full_expected_drop
+      LOGICAL, INTENT(IN)                                :: density_full_direct_ready
+      REAL(KIND=dp), INTENT(IN) :: density_full_direct_expected_drop
+      LOGICAL, INTENT(IN)                                :: density_full_global_ready
+      REAL(KIND=dp), INTENT(IN) :: density_full_global_expected_drop
+      LOGICAL                                            :: allowed
+
+      REAL(KIND=dp)                                      :: reference_expected_drop
+
+         allowed = .TRUE.
+         reference_expected_drop = 0.0_dp
+         IF (density_full_ready) &
+            reference_expected_drop = MAX(reference_expected_drop, density_full_expected_drop)
+         IF (density_full_direct_ready) &
+            reference_expected_drop = MAX(reference_expected_drop, density_full_direct_expected_drop)
+         IF (density_full_global_ready) &
+            reference_expected_drop = MAX(reference_expected_drop, density_full_global_expected_drop)
+         IF (reference_expected_drop <= EPSILON(reference_expected_drop)) RETURN
+
+         allowed = .FALSE.
+         IF (candidate_expected_drop <= EPSILON(candidate_expected_drop)) RETURN
+         allowed = candidate_expected_drop >= &
+            ot_kp_schur_projector_response_advantage_ratio* &
+            MAX(reference_expected_drop, EPSILON(reference_expected_drop))
+
+      END FUNCTION kpoint_ot_projector_full_density_override_allowed
 
 ! **************************************************************************************************
 !> \brief ...

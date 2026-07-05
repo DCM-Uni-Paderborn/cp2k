@@ -294,6 +294,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector spectral probe-history retry", 5.0E-14_dp, nfail)
    CALL check_projector_spectral_selected_history_promotion( &
       "complex projector spectral selected-history promotion", 5.0E-14_dp, nfail)
+   CALL check_projector_full_density_override_guard( &
+      "complex projector full-density override guard", 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
       "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_promotion("complex projector mixed Direct promotion", &
@@ -11033,6 +11035,61 @@ CONTAINS
    END SUBROUTINE check_projector_spectral_selected_history_promotion
 
 ! **************************************************************************************************
+!> \brief Check that weaker projector candidates do not replace a ready full-density response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_full_density_override_guard(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: advantage = 1.10_dp, full_drop = 1.05168054E-7_dp, &
+         spectral_drop = 4.22042490E-8_dp
+
+      LOGICAL                                            :: allows_no_density, allows_stronger, &
+                                                            protects_direct, protects_global, &
+                                                            protects_local, protects_ready
+      REAL(KIND=dp)                                      :: err
+
+      protects_local = .NOT. dense_projector_full_density_override_allowed( &
+                       spectral_drop, .TRUE., full_drop, .FALSE., 0.0_dp, .FALSE., 0.0_dp, &
+                       advantage)
+      protects_direct = .NOT. dense_projector_full_density_override_allowed( &
+                        spectral_drop, .FALSE., 0.0_dp, .TRUE., full_drop, .FALSE., 0.0_dp, &
+                        advantage)
+      protects_global = .NOT. dense_projector_full_density_override_allowed( &
+                        spectral_drop, .FALSE., 0.0_dp, .FALSE., 0.0_dp, .TRUE., full_drop, &
+                        advantage)
+      protects_ready = .NOT. dense_projector_full_density_override_allowed( &
+                       spectral_drop, .TRUE., full_drop, .FALSE., 1.24327840E-8_dp, .TRUE., &
+                       3.69453276E-8_dp, advantage)
+      allows_stronger = dense_projector_full_density_override_allowed( &
+                        1.20E-7_dp, .TRUE., full_drop, .FALSE., 0.0_dp, .FALSE., 0.0_dp, &
+                        advantage)
+      allows_no_density = dense_projector_full_density_override_allowed( &
+                          spectral_drop, .FALSE., 0.0_dp, .FALSE., 0.0_dp, .FALSE., 0.0_dp, &
+                          advantage)
+
+      err = 0.0_dp
+      IF (.NOT. protects_local .OR. .NOT. protects_direct .OR. .NOT. protects_global .OR. &
+          .NOT. protects_ready .OR. .NOT. allows_stronger .OR. .NOT. allows_no_density) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "failed with local/direct/global/ready/stronger/no-density", protects_local, &
+            protects_direct, protects_global, protects_ready, allows_stronger, allows_no_density
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
+            "OK with local/direct/global/ready/stronger/no-density", protects_local, &
+            protects_direct, protects_global, protects_ready, allows_stronger, allows_no_density
+      END IF
+
+   END SUBROUTINE check_projector_full_density_override_guard
+
+! **************************************************************************************************
 !> \brief Check accepted-drop consistency scaling of mixed Direct history.
 !> \param label ...
 !> \param tol ...
@@ -13512,6 +13569,53 @@ CONTAINS
                 shadow_history_ok
 
    END FUNCTION dense_spectral_selected_history_promotion
+
+! **************************************************************************************************
+!> \brief Dense mirror of the ready full-density override guard for projector-response candidates.
+!> \param candidate_expected_drop ...
+!> \param density_full_ready ...
+!> \param density_full_expected_drop ...
+!> \param density_full_direct_ready ...
+!> \param density_full_direct_expected_drop ...
+!> \param density_full_global_ready ...
+!> \param density_full_global_expected_drop ...
+!> \param advantage_ratio ...
+!> \return true if the later candidate may replace the ready full-density response
+! **************************************************************************************************
+   FUNCTION dense_projector_full_density_override_allowed(candidate_expected_drop, &
+                                                          density_full_ready, density_full_expected_drop, &
+                                                          density_full_direct_ready, &
+                                                          density_full_direct_expected_drop, &
+                                                          density_full_global_ready, &
+                                                          density_full_global_expected_drop, &
+                                                          advantage_ratio) RESULT(allowed)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop
+      LOGICAL, INTENT(IN)                                :: density_full_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_full_expected_drop
+      LOGICAL, INTENT(IN)                                :: density_full_direct_ready
+      REAL(KIND=dp), INTENT(IN) :: density_full_direct_expected_drop
+      LOGICAL, INTENT(IN)                                :: density_full_global_ready
+      REAL(KIND=dp), INTENT(IN) :: density_full_global_expected_drop, advantage_ratio
+      LOGICAL                                            :: allowed
+
+      REAL(KIND=dp)                                      :: reference_expected_drop
+
+      allowed = .TRUE.
+      reference_expected_drop = 0.0_dp
+      IF (density_full_ready) reference_expected_drop = MAX(reference_expected_drop, &
+                                                            density_full_expected_drop)
+      IF (density_full_direct_ready) reference_expected_drop = MAX(reference_expected_drop, &
+                                                                   density_full_direct_expected_drop)
+      IF (density_full_global_ready) reference_expected_drop = MAX(reference_expected_drop, &
+                                                                   density_full_global_expected_drop)
+      IF (reference_expected_drop <= EPSILON(reference_expected_drop)) RETURN
+
+      allowed = .FALSE.
+      IF (candidate_expected_drop <= EPSILON(candidate_expected_drop)) RETURN
+      allowed = candidate_expected_drop >= &
+         advantage_ratio*MAX(reference_expected_drop, EPSILON(reference_expected_drop))
+
+   END FUNCTION dense_projector_full_density_override_allowed
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density Direct residual-tail close-call gate.
