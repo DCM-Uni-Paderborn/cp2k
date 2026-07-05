@@ -2,11 +2,11 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 HIGH reference after the selected-history calibrated
-! floor-source response mix: AUTO grows to 8 and 16, then converges on the
-! 1E-6 Mermin path in 188 SCF steps. E_total = Mermin =
-! -8.15998705573866 Ha, with no first/last-band warnings and no
-! AUTO-exhausted warning.
+! Local 2026-07 HIGH reference after the fixed-N projector-cluster audit and
+! mixed Direct-metric calibration: AUTO grows to 8 and 16, then converges on
+! the 1E-6 Mermin path in 77 SCF steps. E_total = Mermin =
+! -8.15998649609802 Ha, with no first/last-band warnings, no AUTO-exhausted
+! warning, and no "Unsupported content type" signature.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
