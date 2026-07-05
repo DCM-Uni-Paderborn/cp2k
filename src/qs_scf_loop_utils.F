@@ -20092,8 +20092,11 @@ CONTAINS
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
                   CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
-                  gdotp = DOT_PRODUCT(grad_e, accepted_z_e) + DOT_PRODUCT(grad_rot, accepted_sol)
-                  CALL kpoint_ot_mixed_projected_term(accepted_z_e, accepted_z_e, occ_curv, tether_curv, &
+                  z_e(:) = z_exact_physical_trial(:) + rx_model(:)
+                  CALL project_kpoint_ot_schur_response(z_e, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
+                  gdotp = DOT_PRODUCT(grad_e, z_e) + DOT_PRODUCT(grad_rot, accepted_sol)
+                  CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
                                                       occ_curv_projection_sum, channel_nmo, e_offset, &
                                                       projector_physical_direct_metric_norm_energy)
                   projector_physical_direct_metric_norm_energy = &

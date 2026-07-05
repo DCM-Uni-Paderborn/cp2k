@@ -322,6 +322,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_response_blend("complex projector mixed Direct response blend", &
                                                     5.0E-14_dp, nfail)
+   CALL check_projector_mixed_direct_metric_model("complex projector mixed Direct metric model", &
+                                                  5.0E-14_dp, nfail)
    CALL check_projector_direct_floor_density_schur( &
       "complex projector Direct floor-density Schur blend", 5.0E-13_dp, nfail)
    CALL check_projector_direct_selective_density_blend( &
@@ -12015,6 +12017,100 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_mixed_direct_response_blend
+
+! **************************************************************************************************
+!> \brief Check that mixed Direct history evaluates the blended candidate metric.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_mixed_direct_metric_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannel = 2, ne = 6, nrot = 2
+      REAL(KIND=dp), PARAMETER                           :: z_weight = 0.50_dp
+
+      INTEGER, DIMENSION(nchannel)                       :: channel_nmo, e_offset
+      LOGICAL                                            :: projected
+      REAL(KIND=dp)                                      :: err, gdot_model, gdot_old, legacy_gap, &
+                                                            metric_model, metric_old, model_drop, &
+                                                            norm_rotation, old_drop
+      REAL(KIND=dp), DIMENSION(ne)                       :: accepted_z, density_direct, grad_e, &
+                                                            occ_curv, physical_rx, raw_rx, &
+                                                            rx_model, tether_curv, z_base, z_model
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: density_response, physical_response, &
+                                                            raw_response
+      REAL(KIND=dp), DIMENSION(nrot)                     :: rhs, sol
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: schur
+
+      channel_nmo(:) = [3, 3]
+      e_offset(:) = [1, 4]
+      occ_curv(:) = [0.36_dp, 0.19_dp, 0.08_dp, 0.31_dp, 0.17_dp, 0.05_dp]
+      tether_curv(:) = [0.09_dp, 0.04_dp, 0.02_dp, 0.11_dp, 0.06_dp, 0.03_dp]
+      z_base(:) = [0.12_dp, -0.08_dp, 0.04_dp, -0.09_dp, 0.06_dp, -0.05_dp]
+      sol(:) = [0.18_dp, -0.13_dp]
+      schur(:, :) = RESHAPE([0.72_dp, -0.05_dp, &
+                             -0.05_dp, 0.58_dp], [nrot, nrot])
+      raw_response(:, :) = RESHAPE([ &
+                                   0.08_dp, -0.04_dp, 0.02_dp, -0.05_dp, 0.03_dp, -0.01_dp, &
+                                   -0.03_dp, 0.07_dp, -0.02_dp, 0.04_dp, -0.06_dp, 0.02_dp], &
+                                   [ne, nrot])
+      physical_response(:, :) = raw_response(:, :)
+      physical_response(:, 1) = physical_response(:, 1) + &
+                                [0.10_dp, -0.03_dp, 0.06_dp, -0.08_dp, 0.04_dp, -0.02_dp]
+      physical_response(:, 2) = physical_response(:, 2) + &
+                                [-0.04_dp, 0.09_dp, -0.05_dp, 0.03_dp, -0.02_dp, 0.06_dp]
+      density_response(:, :) = RESHAPE([ &
+                                       0.05_dp, -0.02_dp, 0.07_dp, -0.04_dp, 0.03_dp, -0.06_dp, &
+                                       -0.02_dp, 0.04_dp, -0.03_dp, 0.08_dp, -0.05_dp, 0.01_dp], &
+                                       [ne, nrot])
+
+      raw_rx(:) = MATMUL(raw_response, sol)
+      physical_rx(:) = MATMUL(physical_response, sol)
+      density_direct(:) = MATMUL(density_response, sol)
+      rx_model(:) = (1.0_dp - z_weight)*raw_rx(:) + z_weight*physical_rx(:) + &
+                    z_weight*density_direct(:)
+      CALL dense_project_response_metric_distributed(z_base, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, projected)
+      CALL dense_project_response_metric_distributed(rx_model, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, projected)
+      z_model(:) = z_base(:) + rx_model(:)
+      CALL dense_project_response_metric_distributed(z_model, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, projected)
+      accepted_z(:) = z_model(:) + &
+                      [1.20_dp, -1.05_dp, 0.66_dp, -1.10_dp, 0.82_dp, -0.53_dp]
+      CALL dense_project_response_metric_distributed(accepted_z, occ_curv, tether_curv, &
+                                                     channel_nmo, e_offset, projected)
+      grad_e(:) = 0.65_dp*(occ_curv(:) + tether_curv(:))*z_model(:)
+
+      CALL dense_projected_mixed_metric(z_model, z_model, occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, metric_model)
+      CALL dense_projected_mixed_metric(accepted_z, accepted_z, occ_curv, tether_curv, &
+                                        channel_nmo, e_offset, metric_old)
+      rhs(:) = MATMUL(schur, sol)
+      norm_rotation = SUM(ABS(sol(:)*rhs(:)))
+      gdot_model = DOT_PRODUCT(grad_e, z_model) + DOT_PRODUCT(rhs, sol)
+      gdot_old = DOT_PRODUCT(grad_e, accepted_z) + DOT_PRODUCT(rhs, sol)
+      model_drop = gdot_model - 0.5_dp*(metric_model + norm_rotation)
+      old_drop = gdot_old - 0.5_dp*(metric_old + norm_rotation)
+      legacy_gap = metric_old - metric_model
+      err = ABS(model_drop - (gdot_model - 0.5_dp*(metric_model + norm_rotation)))
+
+      IF (err > tol .OR. model_drop <= 0.0_dp .OR. legacy_gap <= 0.25_dp .OR. &
+          old_drop >= 0.25_dp*model_drop) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/model/old/mmold/legacy/gdotm/gdoto", &
+            err, model_drop, old_drop, metric_model, legacy_gap, gdot_model, gdot_old
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/model/old/mmold/legacy/gdotm/gdoto", &
+            err, model_drop, old_drop, metric_model, legacy_gap, gdot_model, gdot_old
+      END IF
+
+   END SUBROUTINE check_projector_mixed_direct_metric_model
 
 ! **************************************************************************************************
 !> \brief Check that the floor-density Direct blend is Schur/RHS consistent.
