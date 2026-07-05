@@ -5554,10 +5554,9 @@ CONTAINS
 
       INTEGER                                            :: i
       REAL(KIND=dp) :: active_fraction, err, finite_floor, occ_curv_max, physical_recovery, &
-         response_shape, safe_rejection, safe_shadow
-      REAL(KIND=dp), DIMENSION(n)                        :: expected, floor_response, occ_curv, &
-                                                            physical_response, projector_response, &
-                                                            safe_response
+         response_shape, safe_rejection, safe_shadow, safe_shadow_err, safe_shadow_reject
+      REAL(KIND=dp), DIMENSION(n) :: expected, floor_response, occ_curv, physical_response, &
+         projector_response, safe_floor_response, safe_response
 
       occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-8_dp, 4.0E-5_dp]
       projector_response(:) = [0.010_dp, -0.008_dp, 0.006_dp, -0.004_dp, 0.0_dp]
@@ -5570,6 +5569,9 @@ CONTAINS
          floor_response(i) = dense_physical_density_floor_audit_response(projector_response(i), safe_response(i), &
                                                                          occ_curv(i), occ_curv_max, &
                                                                          response_ratio_gate)
+         safe_floor_response(i) = &
+            dense_collapsed_safe_density_floor_response(projector_response(i), safe_response(i), &
+                                                        occ_curv(i), occ_curv_max, response_ratio_gate)
          active_fraction = occ_curv(i)/MAX(occ_curv(i), response_ratio_gate*occ_curv_max)
          active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
          response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
@@ -5584,18 +5586,21 @@ CONTAINS
       physical_recovery = ABS(physical_response(3)) - ABS(floor_response(3))
       safe_rejection = MAXVAL(ABS(floor_response(:) - safe_response(:)))
       safe_shadow = ABS(floor_response(n))
+      safe_shadow_err = ABS(safe_floor_response(n) - expected(n))
+      safe_shadow_reject = MAXVAL(ABS(safe_floor_response(1:n - 1)))
 
       IF (err > tol .OR. ABS(floor_response(1) - physical_response(1)) < active_tol .OR. &
           finite_floor < 5.0E-5_dp .OR. physical_recovery <= active_tol .OR. &
-          safe_rejection < active_tol .OR. safe_shadow <= active_tol) THEN
+          safe_rejection < active_tol .OR. safe_shadow <= active_tol .OR. &
+          safe_shadow_err > tol .OR. safe_shadow_reject > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with error/floor/recovery/reject/shadow", err, finite_floor, physical_recovery, &
-            safe_rejection, safe_shadow
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed with error/floor/recovery/reject/shadow/serr/srej", err, finite_floor, &
+            physical_recovery, safe_rejection, safe_shadow, safe_shadow_err, safe_shadow_reject
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with error/floor/recovery/reject/shadow", err, finite_floor, physical_recovery, &
-            safe_rejection, safe_shadow
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK with error/floor/recovery/reject/shadow/serr/srej", err, finite_floor, &
+            physical_recovery, safe_rejection, safe_shadow, safe_shadow_err, safe_shadow_reject
       END IF
 
    END SUBROUTINE check_projector_density_floor_audit_response_helper
@@ -18741,6 +18746,42 @@ CONTAINS
          density_response = response_shape*density_safe_response
 
    END FUNCTION dense_physical_density_floor_audit_response
+
+! **************************************************************************************************
+!> \brief Dense mirror of the collapsed-safe density Floor-Shadow source.
+!> \param density_projector_response ...
+!> \param density_safe_response ...
+!> \param occ_curv ...
+!> \param occ_curv_max ...
+!> \param response_ratio_gate ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_collapsed_safe_density_floor_response(density_projector_response, density_safe_response, &
+                                                        occ_curv, occ_curv_max, &
+                                                        response_ratio_gate) RESULT(density_response)
+      REAL(KIND=dp), INTENT(IN)                          :: density_projector_response, &
+                                                            density_safe_response, occ_curv, &
+                                                            occ_curv_max, response_ratio_gate
+      REAL(KIND=dp)                                      :: density_response
+
+      REAL(KIND=dp)                                      :: active_fraction, projector_abs, &
+                                                            response_shape, safe_abs
+
+      density_response = 0.0_dp
+      IF (occ_curv <= EPSILON(occ_curv)) RETURN
+      IF (occ_curv_max <= EPSILON(occ_curv_max)) RETURN
+
+      safe_abs = ABS(density_safe_response)
+      projector_abs = ABS(density_projector_response)
+      IF (safe_abs <= EPSILON(safe_abs)) RETURN
+      IF (projector_abs > SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, safe_abs)) RETURN
+
+      active_fraction = occ_curv/MAX(occ_curv, response_ratio_gate*occ_curv_max)
+      active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      density_response = response_shape*density_safe_response
+
+   END FUNCTION dense_collapsed_safe_density_floor_response
 
 ! **************************************************************************************************
 !> \brief Fréchet derivative of the dense spectral occupation projector.
