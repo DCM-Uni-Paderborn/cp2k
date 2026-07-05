@@ -24012,6 +24012,11 @@ CONTAINS
                                                                         channel_occ_curv_max)
                   END IF
                END DO
+               IF (weighted_curv_sum > EPSILON(weighted_curv_sum)) THEN
+                  safe_centered_shift = DOT_PRODUCT(MAX(0.0_dp, occ_curv_channel(:)), &
+                                                    density_mixed_column(:))/weighted_curv_sum
+                  density_mixed_column(:) = density_mixed_column(:) - safe_centered_shift
+               END IF
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
                      ! Keep the production density response tied to finite

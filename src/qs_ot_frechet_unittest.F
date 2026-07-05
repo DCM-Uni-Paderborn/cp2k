@@ -124,6 +124,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector bounded density-response helper", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_response_helper( &
       "complex projector physical density-response helper", 5.0E-14_dp, nfail)
+   CALL check_projector_physical_density_fixed_n_projection( &
+      "complex projector physical density fixed-N projection", 5.0E-14_dp, nfail)
    CALL check_projector_residual_gauge_density_response( &
       "complex projector residual gauge density-response", 5.0E-14_dp, nfail)
    CALL check_projector_physical_density_centered_sign( &
@@ -5187,6 +5189,67 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_physical_density_response_helper
+
+! **************************************************************************************************
+!> \brief Check that local physical-density blending is projected back to fixed N.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_physical_density_fixed_n_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-6_dp, alignment = 8.0E-1_dp, &
+         lift_weight = 2.0E-1_dp, response_ratio_gate = 2.0E-2_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp) :: input_charge, occ_curv_max, occ_sum, projected_charge, projection_shift, &
+         raw_charge, response_gap, response_norm, safe_shift, spectral_shift
+      REAL(KIND=dp), DIMENSION(n) :: occ_curv, projected_response, raw_response, safe_centered, &
+         safe_response, spectral_centered, spectral_response
+
+      occ_curv(:) = [4.0E-2_dp, 1.2E-2_dp, 4.0E-4_dp, 4.0E-5_dp]
+      spectral_response(:) = [3.0E-2_dp, -5.0E-2_dp, 2.0E-2_dp, -1.0E-2_dp]
+      safe_response(:) = [4.5E-1_dp, -1.5E-1_dp, 4.0E-1_dp, -1.0E-1_dp]
+      occ_curv_max = MAXVAL(occ_curv(:))
+      occ_sum = SUM(occ_curv(:))
+
+      spectral_shift = DOT_PRODUCT(occ_curv(:), spectral_response(:))/occ_sum
+      safe_shift = DOT_PRODUCT(occ_curv(:), safe_response(:))/occ_sum
+      spectral_centered(:) = spectral_response(:) - spectral_shift
+      safe_centered(:) = safe_response(:) - safe_shift
+
+      DO i = 1, n
+         raw_response(i) = dense_physical_density_response(spectral_centered(i), safe_centered(i), &
+                                                           occ_curv(i), occ_curv_max, response_ratio_gate, &
+                                                           spectral_centered(i), safe_centered(i), &
+                                                           alignment, lift_weight)
+      END DO
+      raw_charge = DOT_PRODUCT(occ_curv(:), raw_response(:))
+      projection_shift = raw_charge/occ_sum
+      projected_response(:) = raw_response(:) - projection_shift
+      projected_charge = ABS(DOT_PRODUCT(occ_curv(:), projected_response(:)))
+      input_charge = MAX(ABS(DOT_PRODUCT(occ_curv(:), spectral_centered(:))), &
+                         ABS(DOT_PRODUCT(occ_curv(:), safe_centered(:))))
+      response_gap = MAXVAL(ABS(projected_response(:) - raw_response(:)))
+      response_norm = MAXVAL(ABS(projected_response(:)))
+
+      IF (input_charge > tol .OR. ABS(raw_charge) < active_tol .OR. projected_charge > tol .OR. &
+          response_gap < active_tol .OR. response_norm < 1.0E-2_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with input/raw/projected/gap/norm", input_charge, raw_charge, projected_charge, &
+            response_gap, response_norm
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with input/raw/projected/gap/norm", input_charge, raw_charge, projected_charge, &
+            response_gap, response_norm
+      END IF
+
+   END SUBROUTINE check_projector_physical_density_fixed_n_projection
 
 ! **************************************************************************************************
 !> \brief Check residual-aware filtering of unsupported projector-density response.
