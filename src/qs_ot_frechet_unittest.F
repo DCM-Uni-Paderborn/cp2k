@@ -324,6 +324,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector modal response negative-only floor", 5.0E-12_dp, nfail)
    CALL check_projector_negative_step_balance("complex projector negative-step balance", &
                                               5.0E-14_dp, nfail)
+   CALL check_projector_direct_inactive_offdiag_mix( &
+      "complex projector Direct inactive-offdiag mix", 5.0E-14_dp, nfail)
    CALL check_projector_tail_gauge_quality("complex projector tail gauge quality", &
                                            5.0E-14_dp, nfail)
    CALL check_projector_offdiag_tail_abs_trust( &
@@ -12108,6 +12110,73 @@ CONTAINS
    END SUBROUTINE check_projector_negative_step_balance
 
 ! **************************************************************************************************
+!> \brief Inactive offdiag Direct mixing is tail-, history-, and invariant-quality gated.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_inactive_offdiag_mix(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: max_mix = 9.5E-1_dp, quality_min = 1.0E-1_dp, &
+         response_ratio_gate = 2.0E-2_dp, tail_delta = 1.0E-4_dp
+
+      REAL(KIND=dp)                                      :: above_tail, err, full_mix, low_quality, &
+                                                            no_coupling, no_trust, &
+                                                            partial_invariant, response_limited
+
+      full_mix = dense_direct_inactive_offdiag_mix_weight( &
+                 0.5_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                 0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
+                 response_ratio_gate)
+      partial_invariant = dense_direct_inactive_offdiag_mix_weight( &
+                          0.5_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                          0.0_dp, 1.0_dp, 0.4_dp, tail_delta, quality_min, max_mix, &
+                          response_ratio_gate)
+      response_limited = dense_direct_inactive_offdiag_mix_weight( &
+                         0.5_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                         16.0_dp*response_ratio_gate, 1.0_dp, 1.0_dp, tail_delta, quality_min, &
+                         max_mix, response_ratio_gate)
+      above_tail = dense_direct_inactive_offdiag_mix_weight( &
+                   2.0_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                   0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
+                   response_ratio_gate)
+      no_coupling = dense_direct_inactive_offdiag_mix_weight( &
+                    0.5_dp*tail_delta, 0.0_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                    0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
+                    response_ratio_gate)
+      low_quality = dense_direct_inactive_offdiag_mix_weight( &
+                    0.5_dp*tail_delta, 0.10_dp, 0.09_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                    0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
+                    response_ratio_gate)
+      no_trust = dense_direct_inactive_offdiag_mix_weight( &
+                 0.5_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 0.0_dp, &
+                 0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
+                 response_ratio_gate)
+
+      err = ABS(full_mix - projector_response_negative_balance_max)
+      err = MAX(err, ABS(partial_invariant - 0.4_dp*projector_response_negative_balance_max))
+      err = MAX(err, ABS(response_limited - 0.25_dp))
+      err = MAX(err, ABS(above_tail), ABS(no_coupling), ABS(low_quality), ABS(no_trust))
+
+      IF (err > tol .OR. full_mix <= partial_invariant .OR. response_limited >= full_mix) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/partial/limited/tail/nocoup/lowq/notrust", &
+            err, full_mix, partial_invariant, response_limited, above_tail, no_coupling, &
+            low_quality, no_trust
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/partial/limited/tail/nocoup/lowq/notrust", &
+            err, full_mix, partial_invariant, response_limited, above_tail, no_coupling, &
+            low_quality, no_trust
+      END IF
+
+   END SUBROUTINE check_projector_direct_inactive_offdiag_mix
+
+! **************************************************************************************************
 !> \brief Check that residual-tail gauge spikes are not hidden by a low EMA.
 !> \param label ...
 !> \param tol ...
@@ -12469,6 +12538,51 @@ CONTAINS
       balance = MIN(1.0_dp, MAX(0.0_dp, balance))
 
    END FUNCTION dense_projector_negative_step_balance
+
+! **************************************************************************************************
+!> \brief Dense copy of inactive-offdiag Direct mix gate.
+!> \param residual_delta ...
+!> \param coupled_weight ...
+!> \param inactive_quality ...
+!> \param inactive_selected_scale ...
+!> \param inactive_history_quality ...
+!> \param inactive_history_trust ...
+!> \param inactive_history_response_ratio ...
+!> \param inactive_step_negative ...
+!> \param invariant_quality ...
+!> \param tail_delta ...
+!> \param quality_min ...
+!> \param max_mix ...
+!> \param response_ratio_gate ...
+!> \return inactive offdiag mix weight
+! **************************************************************************************************
+   FUNCTION dense_direct_inactive_offdiag_mix_weight(residual_delta, coupled_weight, inactive_quality, &
+                                                     inactive_selected_scale, inactive_history_quality, &
+                                                     inactive_history_trust, &
+                                                     inactive_history_response_ratio, &
+                                                     inactive_step_negative, invariant_quality, &
+                                                     tail_delta, quality_min, max_mix, &
+                                                     response_ratio_gate) RESULT(mix_weight)
+      REAL(KIND=dp), INTENT(IN) :: residual_delta, coupled_weight, inactive_quality, &
+         inactive_selected_scale, inactive_history_quality, inactive_history_trust, &
+         inactive_history_response_ratio, inactive_step_negative, invariant_quality, tail_delta, &
+         quality_min, max_mix, response_ratio_gate
+      REAL(KIND=dp)                                      :: mix_weight
+
+      mix_weight = 0.0_dp
+      IF (residual_delta > tail_delta) RETURN
+      IF (coupled_weight <= EPSILON(coupled_weight)) RETURN
+      IF (inactive_quality*inactive_selected_scale < quality_min) RETURN
+      IF (inactive_history_trust <= EPSILON(inactive_history_trust)) RETURN
+
+      mix_weight = inactive_selected_scale* &
+                   dense_projector_negative_step_balance( &
+                   inactive_history_quality*inactive_selected_scale, inactive_history_trust, &
+                   inactive_history_response_ratio, inactive_step_negative, response_ratio_gate)
+      mix_weight = mix_weight*MIN(1.0_dp, MAX(0.0_dp, invariant_quality))
+      mix_weight = MIN(max_mix, MAX(0.0_dp, mix_weight))
+
+   END FUNCTION dense_direct_inactive_offdiag_mix_weight
 
 ! **************************************************************************************************
 !> \brief Dense copy of the finite Projector-Hessian modal response algebra.
