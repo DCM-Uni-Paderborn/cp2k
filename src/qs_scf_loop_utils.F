@@ -2144,10 +2144,11 @@ CONTAINS
       LOGICAL                                            :: anti_aligned_safe_response, &
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
-      REAL(KIND=dp) :: active_fraction, alignment, density_shape, density_shape_full, &
-         density_shape_geometric, global_cap_lift, global_safe_cap, lift_weight, projector_abs, &
-         projector_component, response_root, response_shape, safe_abs, safe_blend, &
-         safe_blend_floor, safe_cap, safe_component, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, bounded_safe_component, density_shape, &
+         density_shape_full, density_shape_geometric, global_cap_lift, global_safe_cap, &
+         lift_weight, projector_abs, projector_component, projector_response_weight, &
+         response_root, response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, &
+         safe_component, safe_response_weight, sign_projector_response, sign_safe_response
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2197,7 +2198,8 @@ CONTAINS
          ELSE
             safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
          END IF
-         safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
+         bounded_safe_component = SIGN(MIN(safe_abs, safe_cap), sign_safe_response)
+         safe_component = bounded_safe_component
          safe_blend = active_fraction
          IF (globally_aligned_safe_response) THEN
             safe_blend_floor = MIN(1.0_dp, alignment)*response_root
@@ -2208,7 +2210,14 @@ CONTAINS
                             lift_weight*(density_shape_full - density_shape_geometric)
          END IF
          safe_component = (1.0_dp - safe_blend)*projector_component + &
-                          safe_blend*safe_component
+                          safe_blend*bounded_safe_component
+         IF (globally_aligned_safe_response) THEN
+            projector_response_weight = (1.0_dp - safe_blend)*density_shape
+            safe_response_weight = safe_blend*(density_shape + lift_weight*(1.0_dp - density_shape))
+            density_response = projector_response_weight*projector_component + &
+                               safe_response_weight*bounded_safe_component
+            RETURN
+         END IF
       ELSE IF (anti_aligned_safe_response) THEN
          safe_component = SIGN(MIN(projector_abs, safe_abs), sign_safe_response)
       END IF
