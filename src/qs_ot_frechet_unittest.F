@@ -190,6 +190,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector response projected linear term", 5.0E-13_dp, nfail)
    CALL check_projector_density_candidate_metric_model( &
       "complex projector density candidate metric model", 5.0E-13_dp, nfail)
+   CALL check_projector_density_descent_split_expected( &
+      "complex projector density-descent split expected drop", 5.0E-14_dp, nfail)
    CALL check_projector_density_metric_coupled_schur( &
       "complex projector density metric-coupled Schur", 5.0E-13_dp, nfail)
    CALL check_complex_projector_offdiag_gauge_plateau_hessian( &
@@ -8339,6 +8341,53 @@ CONTAINS
    END SUBROUTINE check_projector_density_candidate_metric_model
 
 ! **************************************************************************************************
+!> \brief Check split calibration for Direct-density plus density-gap candidate drops.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_descent_split_expected(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: base_model, base_quality, capped, err, gap_quality, no_base, old_expected, &
+         split_expected, total_model, trust_quality
+
+      total_model = 1.22118544E-6_dp
+      base_model = 1.21788891E-6_dp
+      base_quality = 2.94658111E-1_dp*5.65E-1_dp
+      gap_quality = 1.0E-1_dp
+      trust_quality = 1.0_dp
+
+      old_expected = total_model*gap_quality*trust_quality
+      split_expected = dense_density_descent_split_expected_drop(total_model, base_model, &
+                                                                 base_quality, gap_quality, trust_quality)
+      no_base = dense_density_descent_split_expected_drop(total_model, 0.0_dp, &
+                                                          base_quality, gap_quality, trust_quality)
+      capped = dense_density_descent_split_expected_drop(0.8_dp*base_model, base_model, &
+                                                         base_quality, gap_quality, 0.5_dp)
+      err = ABS(split_expected - &
+                (base_model*base_quality + (total_model - base_model)*gap_quality))
+      err = MAX(err, ABS(no_base - old_expected))
+      err = MAX(err, ABS(capped - 0.5_dp*0.8_dp*base_model*base_quality))
+
+      IF (err > tol .OR. split_expected <= old_expected .OR. &
+          split_expected >= total_model .OR. ABS(no_base - old_expected) > tol .OR. &
+          capped >= split_expected) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with err/old/split/nobase/capped", err, old_expected, &
+            split_expected, no_base, capped
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with err/old/split/nobase/capped", err, old_expected, &
+            split_expected, no_base, capped
+      END IF
+
+   END SUBROUTINE check_projector_density_descent_split_expected
+
+! **************************************************************************************************
 !> \brief Check exact metric projection of coupled fixed-N and local tether response gauges.
 !> \param label ...
 !> \param tol ...
@@ -13681,6 +13730,40 @@ CONTAINS
          advantage_ratio*MAX(reference_expected_drop, EPSILON(reference_expected_drop))
 
    END FUNCTION dense_projector_full_density_override_allowed
+
+! **************************************************************************************************
+!> \brief Dense mirror of split-calibrated Direct-density plus density-gap expected drop.
+!> \param total_model_drop ...
+!> \param base_model_drop ...
+!> \param base_quality ...
+!> \param gap_quality ...
+!> \param trust_quality ...
+!> \return expected drop with separately calibrated common baseline and gap correction
+! **************************************************************************************************
+   FUNCTION dense_density_descent_split_expected_drop(total_model_drop, base_model_drop, &
+                                                      base_quality, gap_quality, trust_quality) &
+      RESULT(expected_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: total_model_drop, base_model_drop, &
+                                                            base_quality, gap_quality, &
+                                                            trust_quality
+      REAL(KIND=dp)                                      :: expected_drop
+
+      REAL(KIND=dp)                                      :: base_drop, base_q, gap_drop, gap_q, &
+                                                            total_drop, trust_q
+
+      expected_drop = 0.0_dp
+      total_drop = MAX(0.0_dp, total_model_drop)
+      IF (total_drop <= EPSILON(total_drop)) RETURN
+
+      base_drop = MIN(total_drop, MAX(0.0_dp, base_model_drop))
+      gap_drop = MAX(0.0_dp, total_drop - base_drop)
+      base_q = MAX(0.0_dp, MIN(1.0_dp, base_quality))
+      gap_q = MAX(0.0_dp, MIN(1.0_dp, gap_quality))
+      trust_q = MAX(0.0_dp, MIN(1.0_dp, trust_quality))
+
+      expected_drop = trust_q*(base_drop*base_q + gap_drop*gap_q)
+
+   END FUNCTION dense_density_descent_split_expected_drop
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density Direct residual-tail close-call gate.
