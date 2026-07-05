@@ -8352,9 +8352,10 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL                                            :: floor_signal, strong_signal, weak_signal
-      REAL(KIND=dp) :: base_model, base_quality, capped, err, gap_quality, incremental_high, &
-         incremental_low, no_base, old_expected, quality_capped, quality_zero, split_expected, &
-         total_model, trust_quality
+      REAL(KIND=dp) :: base_model, base_quality, capped, err, gap_quality, history_weight, &
+         history_weight_badq, history_weight_early, history_weight_ref, history_weight_tiny, &
+         incremental_high, incremental_low, no_base, old_expected, quality_capped, quality_zero, &
+         split_expected, total_model, trust_quality
 
       total_model = 1.22118544E-6_dp
       base_model = 1.21788891E-6_dp
@@ -8384,6 +8385,19 @@ CONTAINS
       quality_capped = dense_density_descent_incremental_history_quality(10.0_dp*total_model, &
                                                                          0.1_dp*total_model)
       quality_zero = dense_density_descent_incremental_history_quality(total_model, 0.0_dp)
+      history_weight = dense_density_descent_incremental_history_weight( &
+                       5.0E-5_dp, 0.5_dp, 8, 1.0E-6_dp, 5.0E-7_dp, &
+                       0.4_dp, 1.0_dp, 0.2_dp)
+      history_weight_ref = 0.10_dp*((1.0_dp - 0.5_dp)/(1.0_dp - 0.25_dp))*0.4_dp/1.2_dp
+      history_weight_early = dense_density_descent_incremental_history_weight( &
+                             5.0E-5_dp, 0.5_dp, 7, 1.0E-6_dp, 5.0E-7_dp, &
+                             0.4_dp, 1.0_dp, 0.2_dp)
+      history_weight_tiny = dense_density_descent_incremental_history_weight( &
+                            5.0E-5_dp, 0.5_dp, 8, 1.0E-13_dp, 5.0E-7_dp, &
+                            0.4_dp, 1.0_dp, 0.2_dp)
+      history_weight_badq = dense_density_descent_incremental_history_weight( &
+                            5.0E-5_dp, 5.0E-2_dp, 8, 1.0E-6_dp, 5.0E-7_dp, &
+                            0.4_dp, 1.0_dp, 0.2_dp)
       err = ABS(split_expected - &
                 (base_model*base_quality + (total_model - base_model)*gap_quality))
       err = MAX(err, ABS(no_base - old_expected))
@@ -8392,22 +8406,26 @@ CONTAINS
       err = MAX(err, ABS(incremental_high - 0.3_dp*(total_model - base_model)))
       err = MAX(err, ABS(quality_capped - 1.25_dp))
       err = MAX(err, ABS(quality_zero))
+      err = MAX(err, ABS(history_weight - history_weight_ref))
 
       IF (err > tol .OR. split_expected <= old_expected .OR. &
           split_expected >= total_model .OR. ABS(no_base - old_expected) > tol .OR. &
           capped >= split_expected .OR. incremental_low > tol .OR. &
           incremental_high <= 0.0_dp .OR. .NOT. strong_signal .OR. weak_signal .OR. &
-          floor_signal) THEN
+          floor_signal .OR. history_weight <= 0.0_dp .OR. history_weight_early > tol .OR. &
+          history_weight_tiny > tol .OR. history_weight_badq > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,ES12.5),3(1X,L1))') TRIM(label), &
-            "failed with err/old/split/nobase/capped/ilow/ihigh/qcap/qzero/strong/weak/floor", &
+         WRITE (*, '(A,1X,A,14(1X,ES12.5),3(1X,L1))') TRIM(label), &
+            "failed with err/old/split/nobase/capped/ilow/ihigh/qcap/qzero/iw/iwref/early/tiny/badq/strong/weak/floor", &
             err, old_expected, split_expected, no_base, capped, incremental_low, incremental_high, &
-            quality_capped, quality_zero, strong_signal, weak_signal, floor_signal
+            quality_capped, quality_zero, history_weight, history_weight_ref, history_weight_early, &
+            history_weight_tiny, history_weight_badq, strong_signal, weak_signal, floor_signal
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,ES12.5),3(1X,L1))') TRIM(label), &
-            "OK with err/old/split/nobase/capped/ilow/ihigh/qcap/qzero/strong/weak/floor", &
+         WRITE (*, '(A,1X,A,14(1X,ES12.5),3(1X,L1))') TRIM(label), &
+            "OK with err/old/split/nobase/capped/ilow/ihigh/qcap/qzero/iw/iwref/early/tiny/badq/strong/weak/floor", &
             err, old_expected, split_expected, no_base, capped, incremental_low, incremental_high, &
-            quality_capped, quality_zero, strong_signal, weak_signal, floor_signal
+            quality_capped, quality_zero, history_weight, history_weight_ref, history_weight_early, &
+            history_weight_tiny, history_weight_badq, strong_signal, weak_signal, floor_signal
       END IF
 
    END SUBROUTINE check_projector_density_descent_split_expected
@@ -13848,6 +13866,57 @@ CONTAINS
               incremental_drop >= 1.0E-3_dp*MAX(total_drop, min_model_drop)
 
    END FUNCTION dense_density_descent_incremental_history_signal
+
+! **************************************************************************************************
+!> \brief Dense mirror of incremental density-descent history coupling weight.
+!> \param residual_delta ...
+!> \param history_quality ...
+!> \param samples ...
+!> \param predicted_sum ...
+!> \param measured_sum ...
+!> \param density_projector_fraction ...
+!> \param projector_diag_avg ...
+!> \param projector_delta_diag_avg ...
+!> \return finite Projector-Hessian tail weight unlocked by mature incremental history
+! **************************************************************************************************
+   FUNCTION dense_density_descent_incremental_history_weight( &
+      residual_delta, history_quality, samples, predicted_sum, measured_sum, &
+      density_projector_fraction, projector_diag_avg, projector_delta_diag_avg) RESULT(projector_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, &
+                                                            density_projector_fraction, &
+                                                            projector_diag_avg, &
+                                                            projector_delta_diag_avg
+      REAL(KIND=dp)                                      :: projector_weight
+
+      REAL(KIND=dp)                                      :: clipped_quality, curvature_fraction, &
+                                                            density_fraction, diag_ratio, &
+                                                            quality_weight
+
+      projector_weight = 0.0_dp
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (samples < 8) RETURN
+      IF (predicted_sum <= 1.0E-12_dp) RETURN
+      IF (measured_sum <= 1.0E-12_dp) RETURN
+      IF (history_quality < 1.0E-1_dp) RETURN
+
+      clipped_quality = MIN(1.25_dp, MAX(1.0E-1_dp, history_quality))
+      IF (clipped_quality <= 1.0_dp) THEN
+         quality_weight = (1.0_dp - clipped_quality)/MAX(EPSILON(1.0_dp), 1.0_dp - 0.25_dp)
+      ELSE
+         quality_weight = (MIN(2.5_dp, clipped_quality) - 1.0_dp)/ &
+                          MAX(EPSILON(1.0_dp), 2.5_dp - 1.0_dp)
+      END IF
+      quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
+      diag_ratio = ABS(projector_delta_diag_avg)/MAX(ABS(projector_diag_avg), EPSILON(1.0_dp))
+      curvature_fraction = diag_ratio/MAX(1.0_dp, 1.0_dp + diag_ratio)
+      density_fraction = MAX(MIN(1.0_dp, MAX(0.0_dp, density_projector_fraction)), &
+                             0.25_dp*curvature_fraction)
+      projector_weight = 0.10_dp*quality_weight*density_fraction/ &
+                         MAX(1.0_dp, 1.0_dp + diag_ratio)
+
+   END FUNCTION dense_density_descent_incremental_history_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density Direct residual-tail close-call gate.

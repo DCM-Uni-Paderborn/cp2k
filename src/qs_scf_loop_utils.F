@@ -7284,15 +7284,15 @@ CONTAINS
          density_descent_gap_trial_weighted, density_descent_gdot_energy, &
          density_descent_gdot_rotation, density_descent_gdotp, density_descent_growth_scale, &
          density_descent_history_scale, density_descent_incremental_expected_drop, &
-         density_descent_incremental_model_drop
-      REAL(KIND=dp) :: density_descent_incremental_quality_for_selection, &
-         density_descent_model_calibrated_drop, density_descent_model_drop, &
-         density_descent_norm_energy, density_descent_norm_rotation, density_descent_normp, &
-         density_descent_probe_expected_drop, density_descent_quality_for_selection, &
-         density_descent_response_abs_step, density_descent_response_abs_trust_ratio, &
-         density_descent_response_weighted_step, density_descent_response_weighted_trust_ratio, &
-         density_descent_scale_quality, density_descent_trust_quality, &
-         density_floor_safe_history_abs_step
+         density_descent_incremental_history_weight
+      REAL(KIND=dp) :: density_descent_incremental_model_drop, &
+         density_descent_incremental_quality_for_selection, density_descent_model_calibrated_drop, &
+         density_descent_model_drop, density_descent_norm_energy, density_descent_norm_rotation, &
+         density_descent_normp, density_descent_probe_expected_drop, &
+         density_descent_quality_for_selection, density_descent_response_abs_step, &
+         density_descent_response_abs_trust_ratio, density_descent_response_weighted_step, &
+         density_descent_response_weighted_trust_ratio, density_descent_scale_quality, &
+         density_descent_trust_quality, density_floor_safe_history_abs_step
       REAL(KIND=dp) :: density_floor_safe_history_abs_trust_ratio, &
          density_floor_safe_history_drop, density_floor_safe_history_gap_drop, &
          density_floor_safe_history_quality, density_floor_safe_history_trust_quality, &
@@ -8901,6 +8901,7 @@ CONTAINS
          density_descent_bootstrap_maturity = 0.0_dp
          density_descent_bootstrap_quality = 0.0_dp
          density_descent_bootstrap_ready = .FALSE.
+         density_descent_incremental_history_weight = 0.0_dp
          density_descent_quality_for_selection = 0.0_dp
          projector_physical_trace_split_quality = 0.0_dp
          projector_physical_direct_density_audit_quality = 1.0_dp
@@ -11538,6 +11539,18 @@ CONTAINS
          END IF
          density_descent_incremental_quality_for_selection = &
             MIN(density_descent_incremental_quality_for_selection, density_descent_quality_for_selection)
+         density_descent_incremental_history_weight = &
+            kpoint_ot_density_descent_incremental_history_weight( &
+            residual_delta, density_descent_incremental_quality_for_selection, &
+            local_ot_env(1)%schur_projector_density_descent_incremental_quality_samples, &
+            local_ot_env(1)%schur_projector_density_descent_incremental_drop_sum, &
+            local_ot_env(1)%schur_projector_density_descent_incremental_measured_sum, &
+            density_projector_fraction, projector_hessian_diag_avg, projector_hessian_delta_diag_avg)
+         IF (projector_physical_shadow_enabled) &
+            projector_density_history_weight = &
+            MAX(projector_density_history_weight, density_descent_incremental_history_weight)
+         projector_density_active_mix_weight = &
+            MAX(projector_density_history_weight, projector_density_selected_history_weight)
          IF (local_ot_env(1)%schur_projector_offdiag_quality_samples >= &
              ot_kp_schur_projector_response_min_samples) THEN
             projector_offdiag_history_quality = &
@@ -19187,12 +19200,13 @@ CONTAINS
                      density_descent_gap_projected_abs, &
                      density_descent_gap_projected_weighted, &
                      density_descent_gap_recoverable_fraction
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
-                     " OT Schur projector density-descent split expected base inc bmodel imodel qbase qinc:", &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8))') &
+                     " OT Schur projector density-descent split expected base inc bmodel imodel qbase qinc incw:", &
                      density_descent_base_expected_drop, density_descent_incremental_expected_drop, &
                      density_descent_base_model_drop, density_descent_incremental_model_drop, &
                      density_descent_base_quality_for_selection, &
-                     density_descent_incremental_quality_for_selection
+                     density_descent_incremental_quality_for_selection, &
+                     density_descent_incremental_history_weight
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),10(1X,ES16.8))') &
                      " OT Schur projector density-descent candidate ready selected boot tail "// &
                      "exp qsel qboot cdrop rratio aratio tq scale hscale maturity:", &
@@ -22471,6 +22485,48 @@ CONTAINS
                  ot_kp_schur_density_descent_increment_min_frac*MAX(total_drop, min_model_drop)
 
       END FUNCTION kpoint_ot_density_descent_incremental_history_signal
+
+! **************************************************************************************************
+!> \brief accepted-drop calibrated Projector weight from incremental density-descent history.
+!> \param residual_delta current OT residual
+!> \param history_quality capped measured/predicted incremental Mermin-drop quality
+!> \param samples number of incremental quality samples
+!> \param predicted_sum accumulated incremental model drop
+!> \param measured_sum accumulated accepted drop not explained by the baseline
+!> \param density_projector_fraction active canonical density-projector fraction
+!> \param projector_diag_avg average finite Projector-Hessian diagonal
+!> \param projector_delta_diag_avg average finite Projector-Hessian diagonal shift
+!> \return finite Projector-Hessian tail weight unlocked by mature incremental history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_density_descent_incremental_history_weight( &
+         residual_delta, history_quality, samples, predicted_sum, measured_sum, &
+         density_projector_fraction, projector_diag_avg, projector_delta_diag_avg) RESULT(projector_weight)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality
+      INTEGER, INTENT(IN)                                :: samples
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, &
+                                                            density_projector_fraction, &
+                                                            projector_diag_avg, &
+                                                            projector_delta_diag_avg
+      REAL(KIND=dp)                                      :: projector_weight
+
+      REAL(KIND=dp)                                      :: clipped_quality
+
+         projector_weight = 0.0_dp
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (predicted_sum <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (measured_sum <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (history_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         clipped_quality = MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                               MAX(ot_kp_schur_projector_response_quality_min_ratio, &
+                                   history_quality))
+         projector_weight = &
+            kpoint_ot_projector_coupled_weight( &
+            residual_delta, clipped_quality, samples, density_projector_fraction, &
+            projector_diag_avg, projector_delta_diag_avg)
+
+      END FUNCTION kpoint_ot_density_descent_incremental_history_weight
 
 ! **************************************************************************************************
 !> \brief candidate competition drop including recoverable accepted-state density branch loss
