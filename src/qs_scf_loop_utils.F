@@ -9778,6 +9778,14 @@ CONTAINS
                                                           z_density_trial, ipiv_energy, exact_density_response_ready, &
                                                           energy_gauge_weight, curv_floor_fraction=0.1_dp, &
                                                           curv_floor_weight=density_basis_selective_floor_weight)
+            ELSE IF (projector_density_full_global_floor_mix_weight > &
+                     EPSILON(projector_density_full_global_floor_mix_weight)) THEN
+               CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                          0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
+                                                          channel_nmo, e_offset, energy_hessian, &
+                                                          energy_cross_density, response_density_exact, &
+                                                          z_density_trial, ipiv_energy, exact_density_response_ready, &
+                                                          energy_gauge_weight, curv_floor_fraction=0.1_dp)
             ELSE
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
                                                           0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
@@ -10168,6 +10176,16 @@ CONTAINS
                                                           exact_density_full_audit_ready, energy_gauge_weight, &
                                                           curv_floor_fraction=0.1_dp, &
                                                           curv_floor_weight=density_basis_selective_floor_weight)
+            ELSE IF (projector_density_full_global_floor_mix_weight > &
+                     EPSILON(projector_density_full_global_floor_mix_weight)) THEN
+               CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
+                                                          0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
+                                                          channel_nmo, e_offset, energy_hessian, &
+                                                          energy_cross_density_full_global, &
+                                                          response_density_full_global_exact, &
+                                                          z_density_full_global_trial, ipiv_energy, &
+                                                          exact_density_full_audit_ready, energy_gauge_weight, &
+                                                          curv_floor_fraction=0.1_dp)
             ELSE
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
                                                           0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
