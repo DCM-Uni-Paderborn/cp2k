@@ -2654,6 +2654,24 @@ CONTAINS
    END FUNCTION kpoint_ot_projector_cluster_response_gap
 
 ! **************************************************************************************************
+!> \brief resolved fraction of physical occupation response inside one Projector cluster
+!> \param cluster_span energy span of the near-degenerate cluster
+!> \param cluster_gap thermally widened response gap for the cluster
+!> \param gap_tol numerical exact-degeneracy threshold
+!> \return 0 for pure gauge degeneracy, 1 for thermally resolved clusters
+! **************************************************************************************************
+   FUNCTION kpoint_ot_projector_cluster_resolution_weight(cluster_span, cluster_gap, gap_tol) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: cluster_span, cluster_gap, gap_tol
+      REAL(KIND=dp)                                      :: weight
+
+      weight = 0.0_dp
+      IF (cluster_gap <= gap_tol) RETURN
+      weight = (cluster_span - gap_tol)/MAX(EPSILON(1.0_dp), cluster_gap - gap_tol)
+      weight = MIN(1.0_dp, MAX(0.0_dp, weight))
+
+   END FUNCTION kpoint_ot_projector_cluster_resolution_weight
+
+! **************************************************************************************************
 !> \brief Direct-model trace compensation for the physical Projector Schur correction
 !> \param coupled_weight ...
 !> \param direct_delta_diag_avg ...
@@ -24461,23 +24479,28 @@ CONTAINS
 !> \param modal_energy expectation values of the unperturbed energies in split modes
 !> \param modal_occ physical modal occupations with preserved cluster charge
 !> \param modal_curv optional fixed-N Mermin curvatures of the split modes
+!> \param modal_occ_basis optional gauge-filtered modal projection of the cluster occupation
+!> \param resolution_weight optional thermally resolved fraction of modal occupation response
 ! **************************************************************************************************
       SUBROUTINE kpoint_ot_projector_cluster_modal_occupation(evals, occ_curv_channel, occ_slope, &
-                                                              modal_energy, modal_occ, modal_curv)
+                                                              modal_energy, modal_occ, modal_curv, &
+                                                              modal_occ_basis, resolution_weight)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals, occ_curv_channel, occ_slope, &
                                                             modal_energy
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: modal_occ
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: modal_curv
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: modal_curv, modal_occ_basis
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: resolution_weight
 
       INTEGER                                            :: i, m
-      REAL(KIND=dp)                                      :: curv, curv_sum, delta_e, eval_center, &
-                                                            fit_den, fit_num, mu_shift, occ_mean, &
-                                                            physical_slope, slope_cap
+      LOGICAL                                            :: fixed_response_ready
+      REAL(KIND=dp) :: blend, charge_shift, curv, curv_sum, delta_e, eval_center, fit_den, &
+         fit_num, mu_shift, occ_mean, physical_slope, slope_cap
 
          m = SIZE(evals)
          modal_occ(:) = 0.0_dp
          IF (m <= 0) RETURN
 
+         fixed_response_ready = .FALSE.
          IF (PRESENT(modal_curv)) THEN
             curv_sum = 0.0_dp
             mu_shift = 0.0_dp
@@ -24493,36 +24516,49 @@ CONTAINS
                   modal_occ(i) = occ_mean - 2.0_dp*MAX(0.0_dp, modal_curv(i))* &
                                  (modal_energy(i) - mu_shift)
                END DO
-               RETURN
+               fixed_response_ready = .TRUE.
             END IF
          END IF
 
-         occ_mean = SUM(occ_slope(1:m))/REAL(m, KIND=dp)
-         eval_center = SUM(evals(1:m))/REAL(m, KIND=dp)
-         fit_den = 0.0_dp
-         fit_num = 0.0_dp
-         DO i = 1, m
-            delta_e = evals(i) - eval_center
-            fit_den = fit_den + delta_e*delta_e
-            fit_num = fit_num + delta_e*(occ_slope(i) - occ_mean)
-         END DO
-         physical_slope = 0.0_dp
-         IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
-         physical_slope = MIN(0.0_dp, physical_slope)
-
-         slope_cap = HUGE(1.0_dp)
-         DO i = 1, m - 1
-            slope_cap = MIN(slope_cap, kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(i + 1)))
-         END DO
-         IF (slope_cap < HUGE(1.0_dp)/2.0_dp) THEN
-            physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
-         ELSE
+         IF (.NOT. fixed_response_ready) THEN
+            occ_mean = SUM(occ_slope(1:m))/REAL(m, KIND=dp)
+            eval_center = SUM(evals(1:m))/REAL(m, KIND=dp)
+            fit_den = 0.0_dp
+            fit_num = 0.0_dp
+            DO i = 1, m
+               delta_e = evals(i) - eval_center
+               fit_den = fit_den + delta_e*delta_e
+               fit_num = fit_num + delta_e*(occ_slope(i) - occ_mean)
+            END DO
             physical_slope = 0.0_dp
+            IF (fit_den > EPSILON(fit_den)) physical_slope = fit_num/fit_den
+            physical_slope = MIN(0.0_dp, physical_slope)
+
+            slope_cap = HUGE(1.0_dp)
+            DO i = 1, m - 1
+               slope_cap = MIN(slope_cap, kpoint_ot_shared_occ_slope(occ_curv_channel(i), occ_curv_channel(i + 1)))
+            END DO
+            IF (slope_cap < HUGE(1.0_dp)/2.0_dp) THEN
+               physical_slope = MAX(physical_slope, -MAX(0.0_dp, slope_cap))
+            ELSE
+               physical_slope = 0.0_dp
+            END IF
+
+            DO i = 1, m
+               modal_occ(i) = occ_mean + physical_slope*(modal_energy(i) - eval_center)
+            END DO
          END IF
 
-         DO i = 1, SIZE(modal_occ)
-            modal_occ(i) = occ_mean + physical_slope*(modal_energy(i) - eval_center)
-         END DO
+         IF (PRESENT(modal_occ_basis) .AND. PRESENT(resolution_weight)) THEN
+            IF (SIZE(modal_occ_basis) >= m) THEN
+               blend = MIN(1.0_dp, MAX(0.0_dp, resolution_weight))
+               IF (blend > 0.0_dp) &
+                  modal_occ(1:m) = (1.0_dp - blend)*modal_occ(1:m) + blend*modal_occ_basis(1:m)
+            END IF
+         END IF
+
+         charge_shift = (SUM(occ_slope(1:m)) - SUM(modal_occ(1:m)))/REAL(m, KIND=dp)
+         modal_occ(1:m) = modal_occ(1:m) + charge_shift
 
       END SUBROUTINE kpoint_ot_projector_cluster_modal_occupation
 
@@ -24553,17 +24589,19 @@ CONTAINS
                                                             last_b, m, m_b, n
       LOGICAL                                            :: cluster_exact_gauge, &
                                                             outside_gauge_cluster
-      REAL(KIND=dp) :: cluster_gauge_blend, cluster_response_gap, cluster_scalar_curv, &
-         cluster_span, component_weight, curv, denom, gap_tol, local_gap, mu_den, mu_num, &
-         mu_shift, occ_curv_max, offdiag_coeff, slope_cap
+      REAL(KIND=dp) :: cluster_gauge_blend, cluster_occ_blend, cluster_occ_blend_b, &
+         cluster_response_gap, cluster_scalar_curv, cluster_span, component_weight, curv, denom, &
+         gap_tol, local_gap, mu_den, mu_num, mu_shift, occ_curv_max, occ_tol, offdiag_coeff, &
+         slope_cap
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cluster_eval, cluster_eval_b, modal_curv, &
          modal_curv_b, modal_curv_scale, modal_energy, modal_energy_b, modal_occ, modal_occ_b, &
-         modal_raw_curv
+         modal_occ_basis, modal_occ_basis_b, modal_raw_curv, occ_cluster, occ_cluster_b
 
          n = SIZE(evals)
          IF (n <= 0) RETURN
          IF (projector_weight <= 0.0_dp) RETURN
          gap_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))
+         occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_slope(:))))
          occ_curv_max = MAXVAL(MAX(0.0_dp, occ_curv_channel(:)))
 
          mu_num = 0.0_dp
@@ -24628,9 +24666,9 @@ CONTAINS
                kernel(first:last, first:last) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                ALLOCATE (cluster_col(m), cluster_curv(m, m), cluster_work(m, m), &
                          cluster_evec(m, m), cluster_kernel(m, m), &
-                         modal_col(m), modal_energy(m), modal_occ(m), response_block(m, m), &
-                         response_col(m), cluster_eval(m), modal_curv(m), modal_raw_curv(m), &
-                         modal_curv_scale(m))
+                         modal_col(m), modal_energy(m), modal_occ(m), modal_occ_basis(m), &
+                         response_block(m, m), response_col(m), cluster_eval(m), modal_curv(m), &
+                         modal_raw_curv(m), modal_curv_scale(m), occ_cluster(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
@@ -24639,16 +24677,23 @@ CONTAINS
                                                                    modal_curv, cluster_scalar_curv, &
                                                                    cluster_gauge_blend)
                cluster_exact_gauge = cluster_gauge_blend <= EPSILON(1.0_dp)
+               cluster_occ_blend = kpoint_ot_projector_cluster_resolution_weight(cluster_span, &
+                                                                                 cluster_response_gap, gap_tol)
+               occ_cluster(:) = occ_slope(first:last)
+               CALL near_degenerate_occupation_plateau(evals(first:last), occ_curv_channel(first:last), &
+                                                       gauge_gap, occ_tol, occ_cluster, projector_window_gap)
                modal_energy(:) = 0.0_dp
+               modal_occ_basis(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
                      component_weight = ABS(cluster_evec(b, a))**2
                      modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
+                     modal_occ_basis(a) = modal_occ_basis(a) + component_weight*occ_cluster(b)
                   END DO
                END DO
                CALL kpoint_ot_projector_cluster_modal_occupation(evals(first:last), occ_curv_channel(first:last), &
                                                                  occ_slope(first:last), modal_energy, modal_occ, &
-                                                                 modal_curv)
+                                                                 modal_curv, modal_occ_basis, cluster_occ_blend)
                cluster_kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                cluster_curv(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                IF (cluster_exact_gauge) THEN
@@ -24738,8 +24783,8 @@ CONTAINS
                   END DO
                END DO
                DEALLOCATE (cluster_col, cluster_curv, cluster_work, cluster_evec, cluster_kernel, modal_col, &
-                           modal_energy, modal_occ, response_block, response_col, cluster_eval, modal_curv, &
-                           modal_raw_curv, modal_curv_scale)
+                           modal_energy, modal_occ, modal_occ_basis, response_block, response_col, cluster_eval, &
+                           modal_curv, modal_raw_curv, modal_curv_scale, occ_cluster)
             ELSE
                curv = MAX(0.0_dp, occ_curv_channel(first))
                kernel(first, first) = CMPLX(-2.0_dp*projector_weight*curv* &
@@ -24766,7 +24811,7 @@ CONTAINS
                                                                                gauge_gap, occ_curv_max, &
                                                                                projector_window_gap)
                ALLOCATE (cluster_work(m, m), cluster_evec(m, m), cluster_eval(m), modal_curv(m), &
-                         modal_energy(m), modal_occ(m))
+                         modal_energy(m), modal_occ(m), modal_occ_basis(m), occ_cluster(m))
                cluster_work(:, :) = 0.5_dp*(work(first:last, first:last) + &
                                             CONJG(TRANSPOSE(work(first:last, first:last))))
                CALL diag_complex(cluster_work, cluster_evec, cluster_eval)
@@ -24774,16 +24819,23 @@ CONTAINS
                                                                    cluster_span, cluster_response_gap, gap_tol, &
                                                                    modal_curv, cluster_scalar_curv, &
                                                                    cluster_gauge_blend)
+               cluster_occ_blend = kpoint_ot_projector_cluster_resolution_weight(cluster_span, &
+                                                                                 cluster_response_gap, gap_tol)
+               occ_cluster(:) = occ_slope(first:last)
+               CALL near_degenerate_occupation_plateau(evals(first:last), occ_curv_channel(first:last), &
+                                                       gauge_gap, occ_tol, occ_cluster, projector_window_gap)
                modal_energy(:) = 0.0_dp
+               modal_occ_basis(:) = 0.0_dp
                DO a = 1, m
                   DO b = 1, m
                      component_weight = ABS(cluster_evec(b, a))**2
                      modal_energy(a) = modal_energy(a) + component_weight*evals(first + b - 1)
+                     modal_occ_basis(a) = modal_occ_basis(a) + component_weight*occ_cluster(b)
                   END DO
                END DO
                CALL kpoint_ot_projector_cluster_modal_occupation(evals(first:last), occ_curv_channel(first:last), &
                                                                  occ_slope(first:last), modal_energy, modal_occ, &
-                                                                 modal_curv)
+                                                                 modal_curv, modal_occ_basis, cluster_occ_blend)
                first_b = last + 1
                DO WHILE (first_b <= n)
                   last_b = first_b
@@ -24803,7 +24855,8 @@ CONTAINS
                                                                                      occ_curv_max, projector_window_gap)
                      ALLOCATE (cluster_work_b(m_b, m_b), cluster_evec_b(m_b, m_b), &
                                cluster_eval_b(m_b), modal_curv_b(m_b), modal_energy_b(m_b), &
-                               modal_occ_b(m_b), modal_block(m, m_b), response_block(m, m_b))
+                               modal_occ_b(m_b), modal_occ_basis_b(m_b), modal_block(m, m_b), &
+                               response_block(m, m_b), occ_cluster_b(m_b))
                      cluster_work_b(:, :) = 0.5_dp*(work(first_b:last_b, first_b:last_b) + &
                                                     CONJG(TRANSPOSE(work(first_b:last_b, first_b:last_b))))
                      CALL diag_complex(cluster_work_b, cluster_evec_b, cluster_eval_b)
@@ -24812,18 +24865,27 @@ CONTAINS
                                                                          cluster_span, cluster_response_gap, gap_tol, &
                                                                          modal_curv_b, cluster_scalar_curv, &
                                                                          cluster_gauge_blend)
+                     cluster_occ_blend_b = kpoint_ot_projector_cluster_resolution_weight(cluster_span, &
+                                                                                         cluster_response_gap, gap_tol)
+                     occ_cluster_b(:) = occ_slope(first_b:last_b)
+                     CALL near_degenerate_occupation_plateau(evals(first_b:last_b), &
+                                                             occ_curv_channel(first_b:last_b), &
+                                                             gauge_gap, occ_tol, occ_cluster_b, projector_window_gap)
                      modal_energy_b(:) = 0.0_dp
+                     modal_occ_basis_b(:) = 0.0_dp
                      DO a = 1, m_b
                         DO b = 1, m_b
                            component_weight = ABS(cluster_evec_b(b, a))**2
                            modal_energy_b(a) = modal_energy_b(a) + &
                                                component_weight*evals(first_b + b - 1)
+                           modal_occ_basis_b(a) = modal_occ_basis_b(a) + component_weight*occ_cluster_b(b)
                         END DO
                      END DO
                      CALL kpoint_ot_projector_cluster_modal_occupation(evals(first_b:last_b), &
                                                                        occ_curv_channel(first_b:last_b), &
-                                                                       occ_slope(first_b:last_b), &
-                                                                       modal_energy_b, modal_occ_b, modal_curv_b)
+                                                                       occ_slope(first_b:last_b), modal_energy_b, &
+                                                                       modal_occ_b, modal_curv_b, &
+                                                                       modal_occ_basis_b, cluster_occ_blend_b)
                      modal_block(:, :) = MATMUL(CONJG(TRANSPOSE(cluster_evec)), &
                                                 MATMUL(work(first:last, first_b:last_b), cluster_evec_b))
                      DO b = 1, m_b
@@ -24860,11 +24922,13 @@ CONTAINS
                         END DO
                      END DO
                      DEALLOCATE (cluster_work_b, cluster_evec_b, cluster_eval_b, modal_curv_b, &
-                                 modal_energy_b, modal_occ_b, modal_block, response_block)
+                                 modal_energy_b, modal_occ_b, modal_occ_basis_b, modal_block, &
+                                 response_block, occ_cluster_b)
                   END IF
                   first_b = last_b + 1
                END DO
-               DEALLOCATE (cluster_work, cluster_evec, cluster_eval, modal_curv, modal_energy, modal_occ)
+               DEALLOCATE (cluster_work, cluster_evec, cluster_eval, modal_curv, modal_energy, modal_occ, &
+                           modal_occ_basis, occ_cluster)
             END IF
             first = last + 1
          END DO
