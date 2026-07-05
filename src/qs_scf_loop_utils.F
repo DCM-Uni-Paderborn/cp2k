@@ -7142,9 +7142,9 @@ CONTAINS
       INTEGER :: channel_var_start, constrained_reject_reason, coupled_reject_reason, &
          dense_reject_reason, group, ie, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
          local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, &
-         projector_fd_cluster_derivatives, projector_fd_cluster_replacements, r, reject_reason, s, &
-         schur_attempt, schur_used_attempt, selected_attempt, selected_flavor, &
-         split_selected_attempt
+         projector_fd_cluster_derivatives, projector_fd_cluster_replacements, &
+         projector_kernel_cluster_groups, r, reject_reason, s, schur_attempt, schur_used_attempt, &
+         selected_attempt, selected_flavor, split_selected_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             ipiv_energy, var_channel, var_ei, &
                                                             var_ej, var_i, var_j, var_kind
@@ -9169,6 +9169,7 @@ CONTAINS
          split_candidate_selected = .FALSE.
          projector_fd_cluster_derivatives = 0
          projector_fd_cluster_replacements = 0
+         projector_kernel_cluster_groups = 0
          split_selected_attempt = 0
          ivar = 0
          constrained_sol(:) = 0.0_dp
@@ -9315,7 +9316,8 @@ CONTAINS
                                                     response_density_basis_audit, &
                                                     response_density_plateau, &
                                                     projector_fd_cluster_derivatives, &
-                                                    projector_fd_cluster_replacements, failed)
+                                                    projector_fd_cluster_replacements, &
+                                                    projector_kernel_cluster_groups, failed)
                DEALLOCATE (h_re, h_im, grad_re, grad_im)
             END DO
          END DO
@@ -18978,6 +18980,11 @@ CONTAINS
                      target_group, projector_fd_cluster_replacements, projector_fd_cluster_derivatives, &
                      REAL(projector_fd_cluster_replacements, KIND=dp)/ &
                      REAL(MAX(1, projector_fd_cluster_derivatives), KIND=dp)
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,2(1X,I8),1X,ES16.8)') &
+                     " OT Schur projector occupation fixed-N cluster groups calls avg:", &
+                     target_group, projector_kernel_cluster_groups, projector_fd_cluster_derivatives, &
+                     REAL(projector_kernel_cluster_groups, KIND=dp)/ &
+                     REAL(MAX(1, projector_fd_cluster_derivatives), KIND=dp)
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,14(1X,ES16.8))') &
                      " OT Schur projector phys direct diag parts pdelta ddelta active_ddelta hdelta cov acov "// &
                      "residual density diagref_gap offdiag_gap balance comp active_comp applied:", &
@@ -24169,6 +24176,7 @@ CONTAINS
 !> \param response_density_plateau ...
 !> \param projector_fd_cluster_derivatives ...
 !> \param projector_fd_cluster_replacements ...
+!> \param projector_kernel_cluster_groups ...
 !> \param failed ...
 ! **************************************************************************************************
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
@@ -24187,7 +24195,8 @@ CONTAINS
                                                  response_density_full_audit, &
                                                  response_density_basis_audit, &
                                                  response_density_plateau, projector_fd_cluster_derivatives, &
-                                                 projector_fd_cluster_replacements, failed)
+                                                 projector_fd_cluster_replacements, &
+                                                 projector_kernel_cluster_groups, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
@@ -24204,14 +24213,15 @@ CONTAINS
          response, response_occ, response_occ_physical, response_density_physical, &
          response_density_floor_audit, response_density_floor_safe_audit, response_density_full, &
          response_density_full_audit, response_density_basis_audit, response_density_plateau
-      INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, projector_fd_cluster_replacements
+      INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, &
+         projector_fd_cluster_replacements, projector_kernel_cluster_groups
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: base, chc, chc_m, chc_p, dchc, docc_mat, &
          docc_plateau, occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, projector_evec, u
-      INTEGER                                            :: ie, imo, jmo, r, s
+      INTEGER                                            :: ie, imo, jmo, kernel_cluster_groups, r, s
       LOGICAL                                            :: fd_cluster_used
       REAL(KIND=dp) :: channel_occ_curv_max, density_basis_response, density_global_lift_weight, &
          density_plateau_full_response, density_plateau_response, density_response, &
@@ -24372,12 +24382,15 @@ CONTAINS
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_mat)
                fd_cluster_used = .FALSE.
+               kernel_cluster_groups = 0
                CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_plateau, &
                                                                 occ_curv_channel, &
                                                                 ot_kp_projector_occupation_gauge_gap, &
-                                                                fd_cluster_used, projector_window_gap)
+                                                                fd_cluster_used, projector_window_gap, &
+                                                                kernel_cluster_groups)
                projector_fd_cluster_derivatives = projector_fd_cluster_derivatives + 1
+               projector_kernel_cluster_groups = projector_kernel_cluster_groups + kernel_cluster_groups
                IF (fd_cluster_used) &
                   projector_fd_cluster_replacements = projector_fd_cluster_replacements + 1
                ! The diagonal density response is consumed by the auxiliary-energy
@@ -24741,10 +24754,12 @@ CONTAINS
 !> \param gauge_gap ...
 !> \param fd_cluster_used ...
 !> \param projector_window_gap ...
+!> \param cluster_groups_used ...
 ! **************************************************************************************************
       SUBROUTINE dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
                                                              delta, docc_mat, occ_curv_channel, gauge_gap, &
-                                                             fd_cluster_used, projector_window_gap)
+                                                             fd_cluster_used, projector_window_gap, &
+                                                             cluster_groups_used)
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: chc, dchc
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, delta
@@ -24753,9 +24768,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: gauge_gap
       LOGICAL, INTENT(OUT), OPTIONAL                     :: fd_cluster_used
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      INTEGER, INTENT(OUT), OPTIONAL                     :: cluster_groups_used
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: evec, kernel, occ_mat_m, occ_mat_p, work
-      INTEGER                                            :: i, idx, j, n
+      INTEGER                                            :: cluster_groups, i, idx, j, n
       LOGICAL                                            :: same_gauge_cluster, use_projector_fd
       REAL(KIND=dp) :: allowed_jump, coeff, denom, diag_response_shift, gap_tol, local_gap, &
          occ_curv_max, occ_curv_sum, occ_jump, occ_tol, physical_slope, projector_fd_step, &
@@ -24765,6 +24781,7 @@ CONTAINS
          n = SIZE(chc, 1)
          docc_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          IF (PRESENT(fd_cluster_used)) fd_cluster_used = .FALSE.
+         IF (PRESENT(cluster_groups_used)) cluster_groups_used = 0
 
          projector_weight = kpoint_ot_canonical_projector_weight(delta, ot_kp_canonical_projector_max_weight)
          IF (projector_weight <= 0.0_dp) RETURN
@@ -24834,8 +24851,11 @@ CONTAINS
                ! the physical Schur curvature.
                CALL near_degenerate_occupation_plateau(evals, occ_curv_channel, gauge_gap, occ_tol, &
                                                        occ_slope, projector_window_gap)
+               cluster_groups = 0
                CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
-                                                           projector_weight, kernel, projector_window_gap)
+                                                           projector_weight, kernel, projector_window_gap, &
+                                                           cluster_groups)
+               IF (PRESENT(cluster_groups_used)) cluster_groups_used = cluster_groups
                docc_mat(:, :) = MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
                docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
                DEALLOCATE (occ_mat_p, occ_mat_m)
@@ -24912,9 +24932,12 @@ CONTAINS
             END DO
          END DO
 
-         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) &
+         IF (PRESENT(occ_curv_channel) .AND. PRESENT(gauge_gap)) THEN
+            cluster_groups = 0
             CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
-                                                        1.0_dp, kernel, projector_window_gap)
+                                                        1.0_dp, kernel, projector_window_gap, cluster_groups)
+            IF (PRESENT(cluster_groups_used)) cluster_groups_used = cluster_groups
+         END IF
 
          docc_mat(:, :) = projector_weight*MATMUL(evec, MATMUL(kernel, CONJG(TRANSPOSE(evec))))
          docc_mat(:, :) = 0.5_dp*(docc_mat(:, :) + CONJG(TRANSPOSE(docc_mat(:, :))))
@@ -25044,15 +25067,18 @@ CONTAINS
 !> \param projector_weight ...
 !> \param kernel ...
 !> \param projector_window_gap ...
+!> \param cluster_groups_used ...
 ! **************************************************************************************************
       SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv_channel, occ_slope, gauge_gap, &
-                                                        projector_weight, kernel, projector_window_gap)
+                                                        projector_weight, kernel, projector_window_gap, &
+                                                        cluster_groups_used)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: work
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel, occ_slope
       REAL(KIND=dp), INTENT(IN)                          :: gauge_gap, projector_weight
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: kernel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      INTEGER, INTENT(OUT), OPTIONAL                     :: cluster_groups_used
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
@@ -25070,6 +25096,7 @@ CONTAINS
          modal_occ_basis, modal_occ_basis_b, modal_raw_curv, occ_cluster, occ_cluster_b
 
          n = SIZE(evals)
+         IF (PRESENT(cluster_groups_used)) cluster_groups_used = 0
          IF (n <= 0) RETURN
          IF (projector_weight <= 0.0_dp) RETURN
          gap_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))
@@ -25131,6 +25158,7 @@ CONTAINS
             END DO
             m = last - first + 1
             IF (m > 1) THEN
+               IF (PRESENT(cluster_groups_used)) cluster_groups_used = cluster_groups_used + 1
                cluster_span = ABS(evals(last) - evals(first))
                cluster_response_gap = kpoint_ot_projector_cluster_response_gap(evals, occ_curv_channel, first, last, &
                                                                                gauge_gap, occ_curv_max, &

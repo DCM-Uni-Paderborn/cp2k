@@ -372,6 +372,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector thermal value window", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_thermal_no_fd_offblock( &
       "history-safe occupation-projector thermal no-fd offblock", 5.0E-8_dp, nfail)
+   CALL check_history_safe_occ_projector_cluster_group_count( &
+      "history-safe occupation-projector cluster group count", nfail)
    CALL check_history_safe_occ_projector_diagonal_cluster_fd( &
       "history-safe occupation-projector diagonal cluster finite difference", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_degenerate_physical_split( &
@@ -17148,6 +17150,61 @@ CONTAINS
    END SUBROUTINE check_history_safe_occ_projector_thermal_no_fd_offblock
 
 ! **************************************************************************************************
+!> \brief Check that fixed-N cluster diagnostics count thermal projector groups.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_history_safe_occ_projector_cluster_group_count(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+      REAL(KIND=dp), PARAMETER :: gauge_gap = 5.0E-5_dp, projector_weight = 0.37_dp, &
+         projector_window_gap = 8.0E-3_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: kernel, work
+      INTEGER                                            :: groups, groups_resolved
+      REAL(KIND=dp)                                      :: occ_tol
+      REAL(KIND=dp), DIMENSION(n)                        :: evals, evals_resolved, occ_curv, &
+                                                            occ_scale, occ_window
+
+      evals(:) = [-0.010000_dp, -0.004000_dp, 0.31_dp]
+      evals_resolved(:) = [-0.010000_dp, 0.020000_dp, 0.31_dp]
+      occ_scale(:) = [1.20_dp, 0.20_dp, 0.06_dp]
+      occ_curv(:) = [10.0_dp, 9.0_dp, 0.004_dp]
+
+      work(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      work(1, 3) = CMPLX(0.13_dp, -0.08_dp, KIND=dp)
+      work(2, 3) = CMPLX(-0.07_dp, 0.05_dp, KIND=dp)
+      work(3, 1) = CONJG(work(1, 3))
+      work(3, 2) = CONJG(work(2, 3))
+
+      occ_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(occ_scale(:))))
+      occ_window(:) = occ_scale(:)
+      CALL dense_monotone_occupation_slopes(occ_scale, occ_tol, occ_window)
+      CALL dense_near_degenerate_occupation_plateau(evals, occ_curv, gauge_gap, occ_tol, occ_window, &
+                                                    projector_window_gap)
+
+      kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_window, gauge_gap, &
+                                                  projector_weight, kernel, projector_window_gap, groups)
+
+      kernel(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dense_fixed_n_projector_cluster_kernel(evals_resolved, work, occ_curv, occ_window, gauge_gap, &
+                                                  projector_weight, kernel, projector_window_gap, groups_resolved)
+
+      IF (groups /= 1 .OR. groups_resolved /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,I0))') TRIM(label), &
+            "failed with groups/resolved", groups, groups_resolved
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,I0))') TRIM(label), &
+            "OK with groups/resolved", groups, groups_resolved
+      END IF
+
+   END SUBROUTINE check_history_safe_occ_projector_cluster_group_count
+
+! **************************************************************************************************
 !> \brief Check that diagonal splitting inside a near-degenerate cluster uses the cluster path.
 !> \param label ...
 !> \param tol ...
@@ -20279,15 +20336,18 @@ CONTAINS
 !> \param projector_weight ...
 !> \param kernel ...
 !> \param projector_window_gap ...
+!> \param cluster_groups_used ...
 ! **************************************************************************************************
    SUBROUTINE dense_fixed_n_projector_cluster_kernel(evals, work, occ_curv, occ_slope, gauge_gap, &
-                                                     projector_weight, kernel, projector_window_gap)
+                                                     projector_weight, kernel, projector_window_gap, &
+                                                     cluster_groups_used)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: work
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, occ_slope
       REAL(KIND=dp), INTENT(IN)                          :: gauge_gap, projector_weight
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(INOUT)   :: kernel
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: projector_window_gap
+      INTEGER, INTENT(OUT), OPTIONAL                     :: cluster_groups_used
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cluster_col, modal_col, response_col
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: cluster_curv, cluster_evec, &
@@ -20305,6 +20365,7 @@ CONTAINS
          modal_occ_basis, modal_occ_basis_b, modal_raw_curv, occ_cluster, occ_cluster_b
 
       n = SIZE(evals)
+      IF (PRESENT(cluster_groups_used)) cluster_groups_used = 0
       IF (n <= 0) RETURN
       IF (projector_weight <= 0.0_dp) RETURN
       gap_tol = SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, MAXVAL(ABS(evals(:))))
@@ -20362,6 +20423,7 @@ CONTAINS
          END DO
          m = last - first + 1
          IF (m > 1) THEN
+            IF (PRESENT(cluster_groups_used)) cluster_groups_used = cluster_groups_used + 1
             cluster_span = ABS(evals(last) - evals(first))
             cluster_response_gap = dense_projector_cluster_response_gap(evals, occ_curv, first, last, &
                                                                         gauge_gap, occ_curv_max, projector_window_gap)
