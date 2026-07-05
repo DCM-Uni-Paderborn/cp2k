@@ -9402,52 +9402,71 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: high_residual, low_drop, ready, &
-                                                            selected_ready, tail_without_probe, &
-                                                            trust_veto, weak_close_call
+      LOGICAL :: direct_seed_ready, direct_trust_veto, direct_weak_model, high_residual, low_drop, &
+         ready, selected_ready, tail_without_probe, trust_veto, weak_close_call
       REAL(KIND=dp)                                      :: err
 
       selected_ready = dense_density_full_global_shadow_history_ready(2.0E-4_dp, .FALSE., .TRUE., &
                                                                       .FALSE., &
+                                                                      .FALSE., &
                                                                       0.0_dp, 0.0_dp, 0.0_dp, 2.0_dp)
       ready = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                             .FALSE., &
                                                              .TRUE., &
                                                              8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, 5.0E-1_dp)
+      direct_seed_ready = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .FALSE., .FALSE., &
+                                                                         .TRUE., .FALSE., &
+                                                                         0.0_dp, 1.0E-7_dp, 8.5E-8_dp, &
+                                                                         5.0E-1_dp)
       tail_without_probe = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                          .FALSE., &
                                                                           .FALSE., &
                                                                           2.5E-8_dp, 1.0E-7_dp, 2.5E-8_dp, &
                                                                           5.0E-1_dp)
       weak_close_call = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                       .FALSE., &
                                                                        .TRUE., &
                                                                        7.9E-8_dp, 1.0E-7_dp, 7.9E-8_dp, &
                                                                        5.0E-1_dp)
+      direct_weak_model = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .FALSE., .FALSE., &
+                                                                         .TRUE., .FALSE., &
+                                                                         0.0_dp, 1.0E-7_dp, 7.9E-8_dp, &
+                                                                         5.0E-1_dp)
       high_residual = dense_density_full_global_shadow_history_ready(2.0E-4_dp, .TRUE., .FALSE., &
+                                                                     .FALSE., &
                                                                      .TRUE., &
                                                                      8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, &
                                                                      5.0E-1_dp)
       trust_veto = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                  .FALSE., &
                                                                   .TRUE., &
                                                                   8.5E-8_dp, 1.0E-7_dp, 8.5E-8_dp, 8.0E-1_dp)
+      direct_trust_veto = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .FALSE., .FALSE., &
+                                                                         .TRUE., .FALSE., &
+                                                                         0.0_dp, 1.0E-7_dp, 8.5E-8_dp, &
+                                                                         8.0E-1_dp)
       low_drop = dense_density_full_global_shadow_history_ready(5.0E-5_dp, .TRUE., .FALSE., &
+                                                                .FALSE., &
                                                                 .TRUE., &
                                                                 1.0E-13_dp, 1.0E-7_dp, 1.0E-13_dp, &
                                                                 5.0E-1_dp)
 
       err = 0.0_dp
-      IF (.NOT. selected_ready .OR. .NOT. ready .OR. tail_without_probe .OR. &
-          weak_close_call .OR. high_residual .OR. trust_veto .OR. low_drop) err = 1.0_dp
+      IF (.NOT. selected_ready .OR. .NOT. ready .OR. .NOT. direct_seed_ready .OR. &
+          tail_without_probe .OR. weak_close_call .OR. direct_weak_model .OR. &
+          high_residual .OR. trust_veto .OR. direct_trust_veto .OR. low_drop) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
-            "failed with selected/ready/tail-no-probe/weak/residual/trust/drop", &
-            selected_ready, ready, tail_without_probe, &
-            weak_close_call, high_residual, trust_veto, low_drop
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "failed with selected/ready/direct/tail-no-probe/weak/dweak/residual/trust/dtrust/drop", &
+            selected_ready, ready, direct_seed_ready, tail_without_probe, &
+            weak_close_call, direct_weak_model, high_residual, trust_veto, direct_trust_veto, low_drop
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
-            "OK with selected/ready/tail-no-probe/weak/residual/trust/drop", &
-            selected_ready, ready, tail_without_probe, &
-            weak_close_call, high_residual, trust_veto, low_drop
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "OK with selected/ready/direct/tail-no-probe/weak/dweak/residual/trust/dtrust/drop", &
+            selected_ready, ready, direct_seed_ready, tail_without_probe, &
+            weak_close_call, direct_weak_model, high_residual, trust_veto, direct_trust_veto, low_drop
       END IF
 
    END SUBROUTINE check_projector_density_global_shadow_history_gate
@@ -14443,6 +14462,7 @@ CONTAINS
 !> \param residual_delta ...
 !> \param candidate_ready ...
 !> \param candidate_selected ...
+!> \param direct_density_selected ...
 !> \param probe_ready ...
 !> \param candidate_expected_drop ...
 !> \param reference_expected_drop ...
@@ -14451,13 +14471,14 @@ CONTAINS
 !> \return ...
 ! **************************************************************************************************
    FUNCTION dense_density_full_global_shadow_history_ready(residual_delta, candidate_ready, candidate_selected, &
+                                                           direct_density_selected, &
                                                            probe_ready, &
                                                            candidate_expected_drop, reference_expected_drop, &
                                                            model_calibrated_drop, weighted_trust_ratio) &
       RESULT(history_ready)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       LOGICAL, INTENT(IN)                                :: candidate_ready, candidate_selected, &
-                                                            probe_ready
+                                                            direct_density_selected, probe_ready
       REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
                                                             reference_expected_drop, &
                                                             model_calibrated_drop, &
@@ -14473,13 +14494,21 @@ CONTAINS
       END IF
 
       IF (residual_delta > 1.0E-4_dp) RETURN
-      IF (.NOT. candidate_ready) RETURN
-      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
       IF (model_calibrated_drop <= 1.0E-12_dp) RETURN
       IF (weighted_trust_ratio > 7.5E-1_dp) RETURN
-      IF (.NOT. probe_ready) RETURN
 
       close_call_ratio = 8.0E-1_dp
+      IF (direct_density_selected) THEN
+         IF (reference_expected_drop <= 1.0E-12_dp) RETURN
+         IF (model_calibrated_drop < close_call_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+         history_ready = .TRUE.
+         RETURN
+      END IF
+
+      IF (.NOT. candidate_ready) RETURN
+      IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
+      IF (.NOT. probe_ready) RETURN
+
       IF (candidate_expected_drop < close_call_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
 
       history_ready = .TRUE.

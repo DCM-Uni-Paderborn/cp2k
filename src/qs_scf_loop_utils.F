@@ -18321,7 +18321,9 @@ CONTAINS
             density_full_global_history_ready = &
                kpoint_ot_density_full_global_shadow_history_ready( &
                residual_delta, density_full_global_candidate_ready, &
-               density_full_global_candidate_selected, density_full_global_tail_probe_ready, &
+               density_full_global_candidate_selected, &
+               projector_physical_direct_density_candidate_selected, &
+               density_full_global_tail_probe_ready, &
                density_full_global_expected_drop, accepted_model_calibrated_drop, &
                density_full_global_model_calibrated_drop, &
                density_full_global_response_weighted_trust_ratio)
@@ -21638,6 +21640,7 @@ CONTAINS
 !> \param residual_delta current OT residual
 !> \param candidate_ready prechecked global full-density candidate gate
 !> \param candidate_selected whether this candidate supplied the accepted search direction
+!> \param direct_density_selected whether an accepted Direct-density step may seed this history
 !> \param probe_ready mature residual-tail probe gate
 !> \param candidate_expected_drop calibrated global full-density Mermin drop
 !> \param reference_expected_drop accepted/reference Mermin drop for this line-search step
@@ -21646,7 +21649,8 @@ CONTAINS
 !> \return true if the response is safe enough for shadow calibration
 ! **************************************************************************************************
       FUNCTION kpoint_ot_density_full_global_shadow_history_ready(residual_delta, candidate_ready, &
-                                                                  candidate_selected, probe_ready, &
+                                                                  candidate_selected, direct_density_selected, &
+                                                                  probe_ready, &
                                                                   candidate_expected_drop, &
                                                                   reference_expected_drop, &
                                                                   model_calibrated_drop, &
@@ -21654,7 +21658,7 @@ CONTAINS
          RESULT(history_ready)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       LOGICAL, INTENT(IN)                                :: candidate_ready, candidate_selected, &
-                                                            probe_ready
+                                                            direct_density_selected, probe_ready
       REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
                                                             reference_expected_drop, &
                                                             model_calibrated_drop, &
@@ -21670,13 +21674,22 @@ CONTAINS
          END IF
 
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
-         IF (.NOT. candidate_ready) RETURN
-         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
          IF (model_calibrated_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
          IF (weighted_trust_ratio > ot_kp_schur_projector_spectral_probe_trust_fraction) RETURN
-         IF (.NOT. probe_ready) RETURN
 
          close_call_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
+         IF (direct_density_selected) THEN
+            IF (reference_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+            IF (model_calibrated_drop < close_call_ratio* &
+                MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+            history_ready = .TRUE.
+            RETURN
+         END IF
+
+         IF (.NOT. candidate_ready) RETURN
+         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (.NOT. probe_ready) RETURN
+
          IF (candidate_expected_drop < close_call_ratio* &
              MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
 
