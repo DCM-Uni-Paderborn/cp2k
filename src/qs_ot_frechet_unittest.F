@@ -338,6 +338,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector modal response negative-only floor", 5.0E-12_dp, nfail)
    CALL check_projector_negative_step_balance("complex projector negative-step balance", &
                                               5.0E-14_dp, nfail)
+   CALL check_projector_offdiag_negative_physical_support( &
+      "complex projector offdiag negative physical support", 5.0E-14_dp, nfail)
    CALL check_projector_direct_inactive_offdiag_mix( &
       "complex projector Direct inactive-offdiag mix", 5.0E-14_dp, nfail)
    CALL check_projector_tail_gauge_quality("complex projector tail gauge quality", &
@@ -12652,6 +12654,62 @@ CONTAINS
    END SUBROUTINE check_projector_negative_step_balance
 
 ! **************************************************************************************************
+!> \brief Coherent negative offdiag curvature needs accepted Mermin-drop support.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_offdiag_negative_physical_support(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
+
+      REAL(KIND=dp)                                      :: al_like, err, mismatch_limited, &
+                                                            neutral_mode, no_trust, poor_quality, &
+                                                            selected_rescue
+
+      al_like = dense_offdiag_negative_physical_support( &
+                1.25_dp, 0.999_dp, 1.0E-5_dp, 0.988_dp, 0.999_dp, 1.10_dp, &
+                response_ratio_gate)
+      mismatch_limited = dense_offdiag_negative_physical_support( &
+                         1.0_dp, 1.0_dp, 16.0_dp*response_ratio_gate, 1.0_dp, 1.0_dp, &
+                         1.0_dp, response_ratio_gate)
+      poor_quality = dense_offdiag_negative_physical_support( &
+                     0.02_dp, 1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 0.02_dp, &
+                     response_ratio_gate)
+      no_trust = dense_offdiag_negative_physical_support( &
+                 1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, response_ratio_gate)
+      neutral_mode = dense_offdiag_negative_physical_support( &
+                     0.02_dp, 0.0_dp, 16.0_dp*response_ratio_gate, 0.49_dp, 1.0_dp, &
+                     0.02_dp, response_ratio_gate)
+      selected_rescue = dense_offdiag_negative_physical_support( &
+                        0.02_dp, 1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 0.81_dp, &
+                        response_ratio_gate)
+
+      err = ABS(al_like - (1.0_dp - (2.0_dp*0.988_dp - 1.0_dp)*(1.0_dp - 0.999_dp)))
+      err = MAX(err, ABS(mismatch_limited - 0.25_dp))
+      err = MAX(err, ABS(poor_quality - 0.02_dp))
+      err = MAX(err, ABS(no_trust))
+      err = MAX(err, ABS(neutral_mode - 1.0_dp))
+      err = MAX(err, ABS(selected_rescue - 0.81_dp))
+
+      IF (err > tol .OR. al_like < 0.99_dp .OR. mismatch_limited >= al_like .OR. &
+          neutral_mode < 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed err/al/mismatch/poor/notrust/neutral/selected", &
+            err, al_like, mismatch_limited, poor_quality, no_trust, neutral_mode, selected_rescue
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK err/al/mismatch/poor/notrust/neutral/selected", &
+            err, al_like, mismatch_limited, poor_quality, no_trust, neutral_mode, selected_rescue
+      END IF
+
+   END SUBROUTINE check_projector_offdiag_negative_physical_support
+
+! **************************************************************************************************
 !> \brief Inactive offdiag Direct mixing is tail-, history-, and invariant-quality gated.
 !> \param label ...
 !> \param tol ...
@@ -13080,6 +13138,46 @@ CONTAINS
       balance = MIN(1.0_dp, MAX(0.0_dp, balance))
 
    END FUNCTION dense_projector_negative_step_balance
+
+! **************************************************************************************************
+!> \brief Dense copy of coherent negative offdiag Projector-curvature support.
+!> \param history_quality ...
+!> \param history_trust ...
+!> \param history_response_ratio ...
+!> \param mode_negative_fraction ...
+!> \param step_negative_fraction ...
+!> \param selected_quality ...
+!> \param response_ratio_gate ...
+!> \return support in [0,1]
+! **************************************************************************************************
+   FUNCTION dense_offdiag_negative_physical_support(history_quality, history_trust, &
+                                                    history_response_ratio, mode_negative_fraction, &
+                                                    step_negative_fraction, selected_quality, &
+                                                    response_ratio_gate) RESULT(support)
+      REAL(KIND=dp), INTENT(IN) :: history_quality, history_trust, history_response_ratio, &
+         mode_negative_fraction, step_negative_fraction, selected_quality, response_ratio_gate
+      REAL(KIND=dp)                                      :: support
+
+      REAL(KIND=dp)                                      :: coherent_negative, history_scale, &
+                                                            mismatch_scale, negative_overlap, &
+                                                            quality_scale, trust_scale
+
+      support = 1.0_dp
+
+      negative_overlap = MIN(1.0_dp, MAX(0.0_dp, mode_negative_fraction))
+      negative_overlap = MIN(negative_overlap, MIN(1.0_dp, MAX(0.0_dp, step_negative_fraction)))
+      coherent_negative = MAX(0.0_dp, 2.0_dp*negative_overlap - 1.0_dp)
+      IF (coherent_negative <= EPSILON(coherent_negative)) RETURN
+
+      quality_scale = MIN(1.0_dp, MAX(0.0_dp, MAX(history_quality, selected_quality)))
+      trust_scale = MIN(1.0_dp, MAX(0.0_dp, history_trust))
+      mismatch_scale = 1.0_dp/SQRT(MAX(1.0_dp, history_response_ratio/response_ratio_gate))
+      history_scale = quality_scale*trust_scale*mismatch_scale
+
+      support = 1.0_dp - coherent_negative*(1.0_dp - history_scale)
+      support = MIN(1.0_dp, MAX(0.0_dp, support))
+
+   END FUNCTION dense_offdiag_negative_physical_support
 
 ! **************************************************************************************************
 !> \brief Dense copy of inactive-offdiag Direct mix gate.
