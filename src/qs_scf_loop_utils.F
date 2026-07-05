@@ -13100,11 +13100,20 @@ CONTAINS
                            projector_inactive_offdiag_model_calibrated_drop = &
                            projector_inactive_offdiag_scale_quality* &
                            projector_inactive_offdiag_model_calibrated_drop
+                        projector_inactive_offdiag_negative_physical_support = &
+                           kpoint_ot_offdiag_negative_physical_support( &
+                           projector_inactive_offdiag_history_quality, &
+                           projector_inactive_offdiag_history_trust, &
+                           projector_inactive_offdiag_history_response_ratio, &
+                           local_ot_env(1)%schur_projector_inactive_offdiag_negative_ema, &
+                           local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema, &
+                           projector_inactive_offdiag_selected_quality_for_selection)
                         projector_inactive_offdiag_expected_drop = &
                            kpoint_ot_schur_expected_drop( &
                            projector_inactive_offdiag_model_calibrated_drop, &
                            projector_inactive_offdiag_quality_for_selection* &
-                           projector_inactive_offdiag_selected_quality_for_selection, &
+                           projector_inactive_offdiag_selected_quality_for_selection* &
+                           projector_inactive_offdiag_negative_physical_support, &
                            projector_inactive_offdiag_trust_quality)
                         projector_inactive_offdiag_candidate_ready = &
                            projector_inactive_offdiag_model_calibrated_drop > &
@@ -13326,10 +13335,18 @@ CONTAINS
                            projector_offdiag_model_calibrated_drop = &
                            projector_offdiag_scale_quality* &
                            projector_offdiag_model_calibrated_drop
+                        projector_offdiag_negative_physical_support = &
+                           kpoint_ot_offdiag_negative_physical_support( &
+                           projector_offdiag_history_quality, projector_offdiag_history_trust, &
+                           projector_offdiag_history_response_ratio, &
+                           local_ot_env(1)%schur_projector_offdiag_negative_ema, &
+                           local_ot_env(1)%schur_projector_offdiag_step_negative_ema, &
+                           projector_offdiag_selected_quality_for_selection)
                         projector_offdiag_expected_drop = &
                            kpoint_ot_schur_expected_drop( &
                            projector_offdiag_model_calibrated_drop, &
-                           projector_offdiag_quality_for_selection, &
+                           projector_offdiag_quality_for_selection* &
+                           projector_offdiag_negative_physical_support, &
                            projector_offdiag_trust_quality)
                         projector_offdiag_candidate_ready = &
                            projector_offdiag_model_calibrated_drop > &
@@ -18938,12 +18955,12 @@ CONTAINS
                      plateau_gap_mode_quad_abs_ratio, &
                      plateau_gap_mode_positive_quad, &
                      plateau_gap_mode_negative_quad
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),26(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),28(1X,ES16.8))') &
                      " OT Schur projector offdiag-dP response ready selected direct inactive iready "// &
                      "exp refdrop eratio qsel "// &
                      "hq htrust hrratio cdrop mgap "// &
                      "rratio aratio weight sneg rneg pdrop ndrop xdrop oselq oselrq oadv "// &
-                     "iqsel iselq ihq ihtrust ihrratio iexp:", &
+                     "iqsel iselq ihq ihtrust ihrratio osupp isupp iexp:", &
                      projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
                      projector_physical_direct_candidate_selected, &
                      projector_offdiag_candidate_inactive, projector_inactive_offdiag_candidate_ready, &
@@ -18966,6 +18983,8 @@ CONTAINS
                      projector_inactive_offdiag_history_quality, &
                      projector_inactive_offdiag_history_trust, &
                      projector_inactive_offdiag_history_response_ratio, &
+                     projector_offdiag_negative_physical_support, &
+                     projector_inactive_offdiag_negative_physical_support, &
                      projector_inactive_offdiag_expected_drop
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
                      " OT Schur projector physical diag-ref Hessian diag delta_diag abs_avg delta_max "// &
@@ -19100,10 +19119,10 @@ CONTAINS
                      projector_physical_response_audit_eval_abs_avg, &
                      projector_physical_response_audit_positive_weight_sum, &
                      projector_physical_response_audit_negative_weight_sum
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),20(1X,ES16.8))') &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),22(1X,ES16.8))') &
                      " OT Schur projector phys direct ready selected dgate promoted mixed tail "// &
                      "spromq exp qsel qsplit qinv pgq pgmix dq invt mixq mixw offmix cdrop mgap rratio aratio comp "// &
-                     "applied_shift invgap ioffmix:", &
+                     "applied_shift invgap ioffmix osupp isupp:", &
                      projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
                      projector_physical_direct_shadow_enabled, &
                      projector_physical_direct_promoted, &
@@ -19127,7 +19146,9 @@ CONTAINS
                      projector_physical_direct_diag_shift_avg, &
                      projector_physical_direct_direction_scale*projector_physical_direct_direction_scale* &
                      projector_physical_direct_trace_trust_gap_drop, &
-                     projector_physical_direct_inactive_offdiag_mix_weight
+                     projector_physical_direct_inactive_offdiag_mix_weight, &
+                     projector_offdiag_negative_physical_support, &
+                     projector_inactive_offdiag_negative_physical_support
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                      " OT Schur projector phys direct active-response w drop sneg rneg pdrop ndrop xdrop cpos cneg:", &
                      projector_physical_direct_response_weight, &
