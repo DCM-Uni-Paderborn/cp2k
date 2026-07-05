@@ -218,6 +218,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density selective exact floor", 5.0E-12_dp, nfail)
    CALL check_projector_density_global_exact_floor( &
       "complex projector density global exact floor", 5.0E-12_dp, nfail)
+   CALL check_projector_density_mixed_exact_floor( &
+      "complex projector density mixed exact floor", 5.0E-12_dp, nfail)
    CALL check_projector_density_floor_global_projection( &
       "complex projector density floor global projection", 5.0E-14_dp, nfail)
    CALL check_projector_density_direct_floor_response( &
@@ -8848,6 +8850,116 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_global_exact_floor
+
+! **************************************************************************************************
+!> \brief Check that mixed floor sources only apply a proportional exact-response floor.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_mixed_exact_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannels = 1, ne = 4, nrot = 2
+      REAL(KIND=dp), PARAMETER                           :: floor_fraction = 1.0E-1_dp, &
+                                                            mix_weight = 1.0E-1_dp
+
+      INTEGER                                            :: info, r
+      INTEGER, DIMENSION(nchannels)                      :: channel_nmo, e_offset
+      INTEGER, DIMENSION(ne)                             :: ipiv
+      LOGICAL                                            :: projected
+      REAL(KIND=dp)                                      :: exact_charge, low_floor_abs, &
+                                                            low_raw_abs, low_scaled_abs, rhs_gap, &
+                                                            scaled_high_gap, source_charge
+      REAL(KIND=dp), DIMENSION(ne)                       :: floor_weight_one, floor_weight_zero, &
+                                                            occ_curv, tether_curv
+      REAL(KIND=dp), DIMENSION(ne, ne)                   :: h_floor, h_raw, h_scaled
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: b_floor, b_raw, b_scaled, exact_floor, &
+                                                            exact_raw, exact_scaled, &
+                                                            projected_density, raw_density, &
+                                                            zero_tether
+
+      channel_nmo(:) = [4]
+      e_offset(:) = [1]
+      occ_curv(:) = [3.0E-1_dp, 2.0E-1_dp, 8.0E-7_dp, 6.0E-7_dp]
+      tether_curv(:) = 0.0_dp
+      floor_weight_zero(:) = 0.0_dp
+      floor_weight_one(:) = 1.0_dp
+      raw_density(:, 1) = [0.010_dp, -0.018_dp, 42.0_dp, -35.0_dp]
+      raw_density(:, 2) = [-0.015_dp, 0.012_dp, -28.0_dp, 24.0_dp]
+      zero_tether(:, :) = 0.0_dp
+
+      projected_density(:, :) = raw_density(:, :)
+      source_charge = 0.0_dp
+      DO r = 1, nrot
+         CALL dense_project_response_metric_distributed(projected_density(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         IF (.NOT. projected) source_charge = HUGE(source_charge)
+         source_charge = MAX(source_charge, ABS(DOT_PRODUCT(occ_curv(:), projected_density(:, r))))
+      END DO
+
+      CALL build_test_selective_floor_energy_block(occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                   projected_density, zero_tether, floor_fraction, &
+                                                   floor_weight_zero, h_raw, b_raw)
+      CALL build_test_selective_floor_energy_block(occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                   projected_density, zero_tether, floor_fraction, &
+                                                   floor_weight_one, h_floor, b_floor)
+      CALL build_test_selective_floor_energy_block(occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                   projected_density, zero_tether, floor_fraction*mix_weight, &
+                                                   floor_weight_one, h_scaled, b_scaled)
+      rhs_gap = MAX(MAXVAL(ABS(b_floor(:, :) - b_raw(:, :))), &
+                    MAXVAL(ABS(b_scaled(:, :) - b_raw(:, :))))
+      exact_raw(:, :) = b_raw(:, :)
+      exact_floor(:, :) = b_floor(:, :)
+      exact_scaled(:, :) = b_scaled(:, :)
+      CALL dgesv(ne, nrot, h_raw, ne, ipiv, exact_raw, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed raw dgesv", info
+         RETURN
+      END IF
+      CALL dgesv(ne, nrot, h_floor, ne, ipiv, exact_floor, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed floor dgesv", info
+         RETURN
+      END IF
+      CALL dgesv(ne, nrot, h_scaled, ne, ipiv, exact_scaled, ne, info)
+      IF (info /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,I6)') TRIM(label), "failed scaled dgesv", info
+         RETURN
+      END IF
+
+      exact_charge = 0.0_dp
+      DO r = 1, nrot
+         CALL dense_project_response_metric_distributed(exact_scaled(:, r), occ_curv, tether_curv, &
+                                                        channel_nmo, e_offset, projected)
+         exact_charge = MAX(exact_charge, ABS(DOT_PRODUCT(occ_curv(:), exact_scaled(:, r))))
+      END DO
+      low_raw_abs = MAXVAL(ABS(exact_raw(3:4, :)))
+      low_floor_abs = MAXVAL(ABS(exact_floor(3:4, :)))
+      low_scaled_abs = MAXVAL(ABS(exact_scaled(3:4, :)))
+      scaled_high_gap = MAXVAL(ABS(exact_scaled(1:2, :) - exact_raw(1:2, :)))
+
+      IF (source_charge > tol .OR. exact_charge > tol .OR. rhs_gap > tol .OR. &
+          low_floor_abs >= low_scaled_abs .OR. low_scaled_abs >= low_raw_abs .OR. &
+          low_scaled_abs <= 5.0_dp*low_floor_abs .OR. &
+          low_raw_abs <= 5.0_dp*low_scaled_abs .OR. &
+          scaled_high_gap > 0.1_dp*low_raw_abs) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with charge/rhsgap/raw/scaled/floor/hgap", exact_charge, rhs_gap, &
+            low_raw_abs, low_scaled_abs, low_floor_abs, scaled_high_gap
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with charge/rhsgap/raw/scaled/floor/hgap", exact_charge, rhs_gap, &
+            low_raw_abs, low_scaled_abs, low_floor_abs, scaled_high_gap
+      END IF
+
+   END SUBROUTINE check_projector_density_mixed_exact_floor
 
 ! **************************************************************************************************
 !> \brief Check that floor-limited density response is suitable for global fixed-N projection.

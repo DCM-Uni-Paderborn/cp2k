@@ -7325,13 +7325,13 @@ CONTAINS
          density_full_direct_trust_quality, density_full_direction_scale, &
          density_full_expected_drop, density_full_gdot_energy, density_full_gdot_rotation, &
          density_full_gdotp, density_full_global_direction_scale, &
-         density_full_global_expected_drop, density_full_global_gdot_energy, &
-         density_full_global_gdot_rotation, density_full_global_gdotp, &
-         density_full_global_history_abs_step
-      REAL(KIND=dp) :: density_full_global_history_abs_trust_ratio, &
-         density_full_global_history_drop, density_full_global_history_gap_drop, &
-         density_full_global_history_scale, density_full_global_history_trust_quality, &
-         density_full_global_history_weighted_step, &
+         density_full_global_expected_drop, density_full_global_floor_solver_fraction, &
+         density_full_global_gdot_energy, density_full_global_gdot_rotation, &
+         density_full_global_gdotp
+      REAL(KIND=dp) :: density_full_global_history_abs_step, &
+         density_full_global_history_abs_trust_ratio, density_full_global_history_drop, &
+         density_full_global_history_gap_drop, density_full_global_history_scale, &
+         density_full_global_history_trust_quality, density_full_global_history_weighted_step, &
          density_full_global_history_weighted_trust_ratio, &
          density_full_global_model_calibrated_drop, density_full_global_model_drop, &
          density_full_global_norm_energy, density_full_global_norm_rotation, &
@@ -9764,6 +9764,8 @@ CONTAINS
          projector_density_full_global_selective_mix_weight = &
             projector_density_full_global_floor_mix_weight* &
             MIN(1.0_dp, MAX(0.0_dp, projector_density_basis_selective_audit_unsupported_fraction))
+         density_full_global_floor_solver_fraction = 0.1_dp* &
+                                                     MIN(1.0_dp, MAX(0.0_dp, projector_density_full_global_floor_mix_weight))
          ! Use the active-window, gauge-safe physical density response for the
          ! global fixed-N candidate.  Once selected global-history repeatedly
          ! underpredicts accepted Mermin drops, admit a tiny piece of the
@@ -9879,8 +9881,11 @@ CONTAINS
                                                           channel_nmo, e_offset, energy_hessian, &
                                                           energy_cross_density, response_density_exact, &
                                                           z_density_trial, ipiv_energy, exact_density_response_ready, &
-                                                          energy_gauge_weight, curv_floor_fraction=0.1_dp, &
-                                                          curv_floor_weight=density_basis_selective_floor_weight)
+                                                          energy_gauge_weight, &
+                                                          curv_floor_fraction= &
+                                                          density_full_global_floor_solver_fraction, &
+                                                          curv_floor_weight= &
+                                                          density_basis_selective_floor_weight)
             ELSE IF (projector_density_full_global_floor_mix_weight > &
                      EPSILON(projector_density_full_global_floor_mix_weight)) THEN
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
@@ -9888,7 +9893,9 @@ CONTAINS
                                                           channel_nmo, e_offset, energy_hessian, &
                                                           energy_cross_density, response_density_exact, &
                                                           z_density_trial, ipiv_energy, exact_density_response_ready, &
-                                                          energy_gauge_weight, curv_floor_fraction=0.1_dp)
+                                                          energy_gauge_weight, &
+                                                          curv_floor_fraction= &
+                                                          density_full_global_floor_solver_fraction)
             ELSE
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
                                                           0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
@@ -10277,8 +10284,10 @@ CONTAINS
                                                           response_density_full_global_exact, &
                                                           z_density_full_global_trial, ipiv_energy, &
                                                           exact_density_full_audit_ready, energy_gauge_weight, &
-                                                          curv_floor_fraction=0.1_dp, &
-                                                          curv_floor_weight=density_basis_selective_floor_weight)
+                                                          curv_floor_fraction= &
+                                                          density_full_global_floor_solver_fraction, &
+                                                          curv_floor_weight= &
+                                                          density_basis_selective_floor_weight)
             ELSE IF (projector_density_full_global_floor_mix_weight > &
                      EPSILON(projector_density_full_global_floor_mix_weight)) THEN
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
@@ -10288,7 +10297,8 @@ CONTAINS
                                                           response_density_full_global_exact, &
                                                           z_density_full_global_trial, ipiv_energy, &
                                                           exact_density_full_audit_ready, energy_gauge_weight, &
-                                                          curv_floor_fraction=0.1_dp)
+                                                          curv_floor_fraction= &
+                                                          density_full_global_floor_solver_fraction)
             ELSE
                CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_density_full_global, &
                                                           0.0_dp*response_density_full_global, 0.0_dp*grad_e, &
