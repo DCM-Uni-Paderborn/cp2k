@@ -406,13 +406,29 @@ CONTAINS
    END FUNCTION kpoint_eps_scaled_tail_min
 
 ! **************************************************************************************************
+!> \brief return the fixed-N projected residual for physical k-point tail decisions
+!> \param qs_ot_env ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION kpoint_projected_tail_delta(qs_ot_env) RESULT(delta)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      REAL(KIND=dp)                                      :: delta
+
+      delta = qs_ot_env(1)%kpoint_physical_delta
+      IF (qs_ot_env(1)%kpoint_projected_delta > 0.0_dp) &
+         delta = qs_ot_env(1)%kpoint_projected_delta
+
+   END FUNCTION kpoint_projected_tail_delta
+
+! **************************************************************************************************
 !> \brief restart a k-point Mermin line search that has collapsed to a numerically zero step
 !> \param qs_ot_env ...
 ! **************************************************************************************************
    SUBROUTINE recover_collapsed_mermin_search(qs_ot_env)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
-      REAL(KIND=dp)                                      :: mermin_tail_min, step_floor
+      REAL(KIND=dp)                                      :: mermin_tail_delta, mermin_tail_min, &
+                                                            step_floor
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
@@ -425,9 +441,10 @@ CONTAINS
                         ot_cg_kp_mermin_recovery_tail_min_delta, &
                         ot_cg_kp_mermin_recovery_tail_min_eps_factor, &
                         qs_ot_env(1)%kpoint_eps_scf)
+      mermin_tail_delta = kpoint_projected_tail_delta(qs_ot_env)
       IF (qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
-          qs_ot_env(1)%kpoint_physical_delta > mermin_tail_min .AND. &
-          qs_ot_env(1)%kpoint_physical_delta < ot_cg_kp_mermin_recovery_tail_max_delta) THEN
+          mermin_tail_delta > mermin_tail_min .AND. &
+          mermin_tail_delta < ot_cg_kp_mermin_recovery_tail_max_delta) THEN
          step_floor = MAX(step_floor, ot_cg_kp_mermin_recovery_step_floor* &
                           MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min)))
       END IF
@@ -1280,12 +1297,12 @@ CONTAINS
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_metric, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, &
          matrix_gnorm_metric, mermin_tail_min, norm_weight, nvar, physical_control_delta, &
-         physical_delta, physical_gnorm_metric, raw_delta, raw_guard_delta, raw_matrix_gnorm_im, &
-         raw_matrix_gnorm_metric_im, raw_matrix_gnorm_metric_re, raw_matrix_gnorm_re, &
-         residual_spike_quality, residual_tail_min, residual_trust_quality, residual_trust_scale, &
-         sample_accepted_drop, sample_gap, sample_guard_drop, sample_quality, &
-         sample_residual_growth_ratio, test_down
-      REAL(KIND=dp) :: tmp
+         physical_delta, physical_gnorm_metric, physical_tail_delta, raw_delta, raw_guard_delta, &
+         raw_matrix_gnorm_im, raw_matrix_gnorm_metric_im, raw_matrix_gnorm_metric_re, &
+         raw_matrix_gnorm_re, residual_growth_delta, residual_spike_quality, residual_tail_min, &
+         residual_trust_quality, residual_trust_scale, sample_accepted_drop, sample_gap, &
+         sample_guard_drop, sample_quality
+      REAL(KIND=dp) :: sample_residual_growth_ratio, test_down, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -1586,16 +1603,19 @@ CONTAINS
                END IF
             END IF
          END IF
+         physical_tail_delta = kpoint_projected_tail_delta(qs_ot_env)
+         residual_growth_delta = qs_ot_env(1)%delta
+         IF (physical_tail_delta > 0.0_dp) residual_growth_delta = physical_tail_delta
          sample_residual_growth_ratio = 0.0_dp
          IF (qs_ot_env(1)%schur_model_delta > EPSILON(1.0_dp)) &
-            sample_residual_growth_ratio = qs_ot_env(1)%delta/qs_ot_env(1)%schur_model_delta
+            sample_residual_growth_ratio = residual_growth_delta/qs_ot_env(1)%schur_model_delta
          mermin_residual_growth_reset = &
             qs_ot_env(1)%settings%occupation_preconditioner .AND. &
             qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
             sample_accepted_drop > ot_cg_kp_mermin_recovery_step_floor .AND. &
             qs_ot_env(1)%schur_model_delta >= ot_cg_kp_mermin_recovery_tail_min_delta .AND. &
             qs_ot_env(1)%schur_model_delta <= ot_cg_kp_mermin_residual_growth_max_delta .AND. &
-            qs_ot_env(1)%delta > ot_cg_kp_mermin_residual_growth_ratio* &
+            residual_growth_delta > ot_cg_kp_mermin_residual_growth_ratio* &
             qs_ot_env(1)%schur_model_delta
          IF (mermin_residual_growth_reset) THEN
             qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
@@ -1603,7 +1623,7 @@ CONTAINS
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,ES16.8))') &
                   " OT Mermin LS residual growth reset prev next ratio adrop bdrop:", &
-                  qs_ot_env(1)%schur_model_delta, qs_ot_env(1)%delta, sample_residual_growth_ratio, &
+                  qs_ot_env(1)%schur_model_delta, residual_growth_delta, sample_residual_growth_ratio, &
                   sample_accepted_drop, qs_ot_env(1)%mermin_ls_best_sample_drop
             END IF
          END IF
@@ -1641,6 +1661,7 @@ CONTAINS
       negative_beta = beta_pr < 0.0_dp
       beta_pr = MAX(beta_pr, 0.0_dp) ! reset to SD
       gnorm_ratio = qs_ot_env(1)%gnorm/MAX(qs_ot_env(1)%gnorm_old, EPSILON(1.0_dp))
+      physical_tail_delta = kpoint_projected_tail_delta(qs_ot_env)
       ! Projector-like Schur flavors can validly alternate in the metallic tail.
       ! Do not carry a huge CG beta across that local response-model change.
       schur_projector_jump_reset = complex_kpoint_history .AND. &
@@ -1663,8 +1684,8 @@ CONTAINS
                                   qs_ot_env(1)%settings%occupation_preconditioner .AND. &
                                   qs_ot_env(1)%settings%do_rotation .AND. do_ener .AND. &
                                   qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
-                                  qs_ot_env(1)%kpoint_physical_delta > residual_tail_min .AND. &
-                                  qs_ot_env(1)%kpoint_physical_delta < ot_cg_kp_residual_tail_max_delta .AND. &
+                                  physical_tail_delta > residual_tail_min .AND. &
+                                  physical_tail_delta < ot_cg_kp_residual_tail_max_delta .AND. &
                                   beta_pr > ot_cg_kp_residual_tail_jump_beta .AND. &
                                   qs_ot_env(1)%gnorm > ot_cg_kp_residual_tail_jump_norm .AND. &
                                   gnorm_ratio > ot_cg_kp_residual_tail_jump_ratio
@@ -1686,9 +1707,9 @@ CONTAINS
       END IF
       residual_spike_history_reset = history_spike_reset .AND. &
                                      qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
-                                     qs_ot_env(1)%kpoint_physical_delta > &
+                                     physical_tail_delta > &
                                      mermin_tail_min .AND. &
-                                     qs_ot_env(1)%kpoint_physical_delta < &
+                                     physical_tail_delta < &
                                      ot_cg_kp_mermin_recovery_tail_max_delta .AND. &
                                      (schur_projector_tail_reset .OR. residual_tail_spike_reset)
       IF (residual_spike_history_reset) THEN
@@ -1701,7 +1722,7 @@ CONTAINS
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8),2(1X,I6))') &
                " OT CG residual spike trust reset q ratio delta rscale flavor last:", &
-               residual_spike_quality, gnorm_ratio, qs_ot_env(1)%kpoint_physical_delta, &
+               residual_spike_quality, gnorm_ratio, physical_tail_delta, &
                MAX(ot_cg_kp_residual_trust_min_scale, &
                    MIN(1.0_dp, SQRT(MAX(residual_spike_quality, &
                                         ot_cg_kp_residual_trust_quality_floor)))), &
