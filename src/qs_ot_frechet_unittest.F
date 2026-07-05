@@ -12723,9 +12723,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: max_mix = 9.5E-1_dp, quality_min = 1.0E-1_dp, &
          response_ratio_gate = 2.0E-2_dp, tail_delta = 1.0E-4_dp
 
-      REAL(KIND=dp)                                      :: above_tail, err, full_mix, low_quality, &
-                                                            no_coupling, no_trust, &
-                                                            partial_invariant, response_limited
+      REAL(KIND=dp) :: above_tail, err, full_mix, low_quality, no_coupling, no_trust, &
+         partial_invariant, response_limited, weak_coupling
 
       full_mix = dense_direct_inactive_offdiag_mix_weight( &
                  0.5_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
@@ -12755,23 +12754,28 @@ CONTAINS
                  0.5_dp*tail_delta, 0.10_dp, 1.20_dp, 1.0_dp, 1.0_dp, 0.0_dp, &
                  0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
                  response_ratio_gate)
+      weak_coupling = dense_direct_inactive_offdiag_mix_weight( &
+                      0.5_dp*tail_delta, 0.02_dp, 1.20_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+                      0.0_dp, 1.0_dp, 1.0_dp, tail_delta, quality_min, max_mix, &
+                      response_ratio_gate)
 
       err = ABS(full_mix - projector_response_negative_balance_max)
       err = MAX(err, ABS(partial_invariant - 0.4_dp*projector_response_negative_balance_max))
       err = MAX(err, ABS(response_limited - 0.25_dp))
+      err = MAX(err, ABS(weak_coupling - full_mix))
       err = MAX(err, ABS(above_tail), ABS(no_coupling), ABS(low_quality), ABS(no_trust))
 
       IF (err > tol .OR. full_mix <= partial_invariant .OR. response_limited >= full_mix) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "failed with error/full/partial/limited/tail/nocoup/lowq/notrust", &
-            err, full_mix, partial_invariant, response_limited, above_tail, no_coupling, &
-            low_quality, no_trust
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with error/full/partial/limited/weak/tail/nocoup/lowq/notrust", &
+            err, full_mix, partial_invariant, response_limited, weak_coupling, above_tail, &
+            no_coupling, low_quality, no_trust
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "OK with error/full/partial/limited/tail/nocoup/lowq/notrust", &
-            err, full_mix, partial_invariant, response_limited, above_tail, no_coupling, &
-            low_quality, no_trust
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with error/full/partial/limited/weak/tail/nocoup/lowq/notrust", &
+            err, full_mix, partial_invariant, response_limited, weak_coupling, above_tail, &
+            no_coupling, low_quality, no_trust
       END IF
 
    END SUBROUTINE check_projector_direct_inactive_offdiag_mix

@@ -12782,12 +12782,15 @@ CONTAINS
                          projector_inactive_offdiag_selected_scale > &
                          EPSILON(projector_inactive_offdiag_quality_for_selection)) THEN
                         projector_physical_direct_inactive_offdiag_balance = &
-                           kpoint_ot_projector_negative_step_balance( &
-                           projector_inactive_offdiag_history_quality* &
+                           kpoint_ot_direct_inactive_offdiag_mix_weight( &
+                           residual_delta, projector_coupled_weight, &
+                           projector_inactive_offdiag_quality_for_selection, &
                            projector_inactive_offdiag_selected_scale, &
+                           projector_inactive_offdiag_history_quality, &
                            projector_inactive_offdiag_history_trust, &
                            projector_inactive_offdiag_history_response_ratio, &
-                           local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema)
+                           local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema, &
+                           projector_physical_trace_invariant_quality_for_selection)
                         projector_inactive_offdiag_negative_physical_support = &
                            kpoint_ot_offdiag_negative_physical_support( &
                            projector_inactive_offdiag_history_quality, &
@@ -12797,17 +12800,18 @@ CONTAINS
                            local_ot_env(1)%schur_projector_inactive_offdiag_step_negative_ema, &
                            projector_inactive_offdiag_selected_quality_for_selection)
                         projector_physical_direct_inactive_offdiag_weight = &
-                           projector_coupled_weight* &
-                           projector_inactive_offdiag_selected_scale* &
                            projector_physical_direct_inactive_offdiag_balance* &
                            projector_inactive_offdiag_negative_physical_support
                      ELSE
                         projector_physical_direct_inactive_offdiag_balance = &
-                           kpoint_ot_projector_negative_step_balance( &
+                           kpoint_ot_direct_inactive_offdiag_mix_weight( &
+                           residual_delta, projector_coupled_weight, &
+                           projector_mode_history_quality, 1.0_dp, &
                            projector_mode_history_quality, &
                            local_ot_env(1)%schur_projector_mode_trust_ema, &
                            projector_mode_history_response_ratio, &
-                           local_ot_env(1)%schur_projector_mode_step_negative_ema)
+                           local_ot_env(1)%schur_projector_mode_step_negative_ema, &
+                           projector_physical_trace_invariant_quality_for_selection)
                         projector_inactive_offdiag_negative_physical_support = &
                            kpoint_ot_offdiag_negative_physical_support( &
                            projector_mode_history_quality, &
@@ -12817,7 +12821,6 @@ CONTAINS
                            local_ot_env(1)%schur_projector_mode_step_negative_ema, &
                            projector_mode_history_quality)
                         projector_physical_direct_inactive_offdiag_weight = &
-                           projector_coupled_weight* &
                            projector_physical_direct_inactive_offdiag_balance* &
                            projector_inactive_offdiag_negative_physical_support
                      END IF
