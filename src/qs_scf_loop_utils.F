@@ -11376,6 +11376,15 @@ CONTAINS
                ot_kp_schur_projector_response_quality_min_ratio .AND. &
                projector_physical_direct_density_recent_residual_quality >= &
                0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+         ELSE IF (local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples > 0) THEN
+            projector_physical_direct_density_selected_probe_ready = &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_ema >= &
+               ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema >= &
+               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_drop_sum > &
+               ot_kp_schur_projector_density_full_min_drop .AND. &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_measured_sum > 0.0_dp
          END IF
          projector_physical_direct_density_shadow_quality_for_selection = &
             projector_physical_direct_density_quality_for_selection
@@ -14551,6 +14560,15 @@ CONTAINS
                               projector_physical_direct_density_probe_expected_drop > &
                               MAX(projector_physical_direct_density_expected_drop, &
                                   ot_kp_schur_projector_density_full_min_drop)
+                           projector_physical_direct_density_tail_probe_ready = &
+                              projector_physical_direct_density_tail_probe_ready .OR. &
+                              (projector_physical_direct_density_selected_probe_ready .AND. &
+                               residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                               MAX(projector_physical_direct_density_probe_expected_drop, &
+                                   projector_physical_direct_density_expected_drop) > &
+                               ot_kp_schur_projector_density_full_min_drop .AND. &
+                               projector_physical_direct_density_trust_quality >= &
+                               ot_kp_schur_projector_response_quality_min_ratio)
                            projector_physical_direct_density_quality_ready = &
                               residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
                               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples < &
@@ -17001,7 +17019,8 @@ CONTAINS
                    (projector_physical_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    (projector_physical_direct_candidate_used .AND. &
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     projector_physical_direct_candidate_used .AND. &
                      kpoint_ot_direct_tail_close_call( &
                      residual_delta, projector_physical_expected_drop, dense_expected_drop, &
                      projector_physical_direct_quality_for_selection, projector_physical_direct_promoted, &
@@ -17597,7 +17616,8 @@ CONTAINS
                    (projector_physical_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
-                    (projector_physical_direct_candidate_used .AND. &
+                    (.NOT. projector_physical_direct_density_candidate_selected .AND. &
+                     projector_physical_direct_candidate_used .AND. &
                      kpoint_ot_direct_tail_close_call( &
                      residual_delta, projector_physical_expected_drop, dense_expected_drop, &
                      projector_physical_direct_quality_for_selection, projector_physical_direct_promoted, &
@@ -22083,8 +22103,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
       LOGICAL                                            :: do_probe
 
-      LOGICAL                                            :: stale_residual_probe
-      REAL(KIND=dp)                                      :: required_drop_ratio
+      LOGICAL                                            :: selected_bootstrap_probe, &
+                                                            stale_residual_probe
+      REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
 
          do_probe = .FALSE.
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
@@ -22092,20 +22113,32 @@ CONTAINS
          IF (quality_ema < ot_kp_schur_projector_response_quality_min_ratio) RETURN
          IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
 
+         residual_reference = MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)
+         selected_bootstrap_probe = .FALSE.
          stale_residual_probe = .FALSE.
          IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
             stale_residual_probe = &
                dense_residual_quality <= 2.0_dp*ot_kp_schur_calibrated_quality_min_ratio .AND. &
                selected_residual_quality_ema < ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-               MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio) .AND. &
+               residual_reference .AND. &
                quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
                MOD(samples, MAX(1, 2*ot_kp_schur_calibration_min_samples)) == 0
+         ELSE IF (selected_samples > 0) THEN
+            selected_bootstrap_probe = &
+               selected_residual_quality_ema >= &
+               0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+               residual_reference .AND. &
+               quality_ema >= 2.0_dp*ot_kp_schur_projector_response_quality_min_ratio
          END IF
 
          required_drop_ratio = ot_kp_schur_projector_density_fdir_probe_ratio
          IF (stale_residual_probe) &
             required_drop_ratio = MIN(required_drop_ratio, &
                                       ot_kp_schur_projector_density_fdir_refresh_ratio)
+         IF (selected_bootstrap_probe) &
+            required_drop_ratio = MIN(required_drop_ratio, &
+                                      MAX(ot_kp_schur_projector_density_fdir_refresh_ratio, &
+                                          ot_kp_schur_branch_loss_density_recovery))
          IF (candidate_expected_drop < required_drop_ratio* &
              MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
 
@@ -22113,10 +22146,10 @@ CONTAINS
             IF (.NOT. stale_residual_probe) THEN
                IF (selected_residual_quality_ema < &
                    ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                   MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+                   residual_reference) RETURN
                IF (selected_residual_quality < &
                    0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-                   MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)) RETURN
+                   residual_reference) RETURN
             END IF
          END IF
 
