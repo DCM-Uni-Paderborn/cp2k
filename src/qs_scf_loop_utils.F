@@ -7210,34 +7210,36 @@ CONTAINS
          new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
          physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
          projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, projector_offdiag_candidate_inactive, &
-         projector_offdiag_candidate_ready, projector_offdiag_candidate_selected
-      LOGICAL :: projector_physical_candidate_ready, projector_physical_candidate_selected, &
-         projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
+         projector_inactive_offdiag_candidate_ready, &
+         projector_inactive_offdiag_tail_refresh_probe, &
+         projector_inactive_offdiag_tail_refresh_ready
+      LOGICAL :: projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
+         projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
+         projector_physical_candidate_selected, projector_physical_direct_basis_tail_limited, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+         projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_density_fshadow_ready, &
-         projector_physical_direct_density_quality_ready, &
-         projector_physical_direct_density_residual_bad, &
-         projector_physical_direct_density_selected_probe_ready
-      LOGICAL :: projector_physical_direct_density_tail_probe_ready, &
+         projector_physical_direct_density_quality_ready
+      LOGICAL :: projector_physical_direct_density_residual_bad, &
+         projector_physical_direct_density_selected_probe_ready, &
+         projector_physical_direct_density_tail_probe_ready, &
          projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
          projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
          projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
-         projector_physical_direct_spectral_enabled, &
-         projector_physical_direct_spectral_probe_ready, &
-         projector_physical_direct_spectral_probe_selected
-      LOGICAL :: projector_physical_direct_spectral_ready, &
-         projector_physical_direct_tail_probe_ready, projector_physical_direct_trace_tail_limited, &
-         projector_physical_shadow_enabled, projector_plateau_gap_model_enabled, &
-         projector_response_candidate_ready, projector_response_candidate_selected, &
-         response_model_available, schur_active_subspace, solved, split_candidate_diagnostic, &
-         split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
-         split_residual_competitive, trust_rejected
+         projector_physical_direct_spectral_enabled
+      LOGICAL :: projector_physical_direct_spectral_probe_ready, &
+         projector_physical_direct_spectral_probe_selected, &
+         projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
+         projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
+         projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
+         projector_response_candidate_selected, response_model_available, schur_active_subspace, &
+         solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
+         split_candidate_selected, split_residual_competitive, trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, &
          accepted_model_gap_ratio, accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          accepted_projector_coupled_weight, accepted_projector_inactive_offdiag_abs_ratio, &
@@ -8532,6 +8534,8 @@ CONTAINS
          projector_inactive_offdiag_quality_for_selection = 0.0_dp
          projector_inactive_offdiag_selected_quality_for_selection = 1.0_dp
          projector_inactive_offdiag_selected_scale = 1.0_dp
+         projector_inactive_offdiag_tail_refresh_probe = .FALSE.
+         projector_inactive_offdiag_tail_refresh_ready = .FALSE.
          projector_inactive_offdiag_model_calibrated_drop = 0.0_dp
          projector_inactive_offdiag_model_drop = 0.0_dp
          projector_inactive_offdiag_model_gap = 0.0_dp
@@ -9218,6 +9222,8 @@ CONTAINS
          projector_offdiag_candidate_selected = .FALSE.
          projector_offdiag_candidate_inactive = .FALSE.
          projector_inactive_offdiag_candidate_ready = .FALSE.
+         projector_inactive_offdiag_tail_refresh_probe = .FALSE.
+         projector_inactive_offdiag_tail_refresh_ready = .FALSE.
          projector_response_candidate_ready = .FALSE.
          projector_response_candidate_selected = .FALSE.
          split_candidate_ready = .FALSE.
@@ -11834,6 +11840,17 @@ CONTAINS
          END IF
          projector_inactive_offdiag_selected_scale = &
             MIN(1.0_dp, MAX(0.0_dp, projector_inactive_offdiag_selected_quality_for_selection))
+         projector_inactive_offdiag_tail_refresh_ready = &
+            kpoint_ot_inactive_offdiag_tail_refresh_ready( &
+            residual_delta, projector_inactive_offdiag_history_quality, &
+            projector_inactive_offdiag_history_trust, &
+            local_ot_env(1)%schur_projector_inactive_offdiag_quality_samples, &
+            local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality, &
+            local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_ema, &
+            local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality, &
+            local_ot_env(1)%schur_projector_inactive_offdiag_selected_residual_quality_ema, &
+            local_ot_env(1)%schur_projector_inactive_offdiag_selected_quality_samples, &
+            dense_residual_quality)
          split_quality_for_selection = &
             kpoint_ot_schur_history_quality(local_ot_env(1)%schur_split_calibrated_drop_sum, &
                                             local_ot_env(1)%schur_split_measured_sum, &
@@ -13009,9 +13026,10 @@ CONTAINS
                    exact_physical_response_ready .AND. &
                    projector_physical_direct_shadow_enabled .AND. &
                    projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
-                   projector_inactive_offdiag_quality_for_selection* &
-                   projector_inactive_offdiag_selected_scale >= &
-                   ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                   (projector_inactive_offdiag_quality_for_selection* &
+                    projector_inactive_offdiag_selected_scale >= &
+                    ot_kp_schur_projector_response_quality_min_ratio .OR. &
+                    projector_inactive_offdiag_tail_refresh_ready) .AND. &
                    projector_inactive_offdiag_history_trust > &
                    EPSILON(projector_inactive_offdiag_history_trust)) THEN
                   projector_physical_direct_delta(:, :) = rot_hessian(:, :) + &
@@ -17368,13 +17386,20 @@ CONTAINS
                   projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
                   projector_offdiag_expected_drop_ratio = &
                      dense_branch_expected_drop/projector_offdiag_reference_drop
+                  IF (projector_offdiag_candidate_inactive) &
+                     projector_inactive_offdiag_tail_refresh_probe = &
+                     kpoint_ot_inactive_offdiag_tail_refresh_probe( &
+                     projector_inactive_offdiag_tail_refresh_ready, &
+                     dense_branch_expected_drop, projector_offdiag_reference_drop)
                END IF
                IF (.NOT. projector_physical_direct_candidate_selected .AND. &
                    .NOT. projector_physical_direct_spectral_candidate_selected .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
-                   dense_branch_expected_drop >= &
-                   projector_offdiag_model_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                   (dense_branch_expected_drop >= &
+                    projector_offdiag_model_advantage_ratio*MAX(dense_expected_drop, &
+                                                                EPSILON(dense_expected_drop)) .OR. &
+                    projector_inactive_offdiag_tail_refresh_probe)) THEN
                   attempt_failed = .FALSE.
                   projector_offdiag_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
@@ -17983,13 +18008,20 @@ CONTAINS
                   projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
                   projector_offdiag_expected_drop_ratio = &
                      dense_branch_expected_drop/projector_offdiag_reference_drop
+                  IF (projector_offdiag_candidate_inactive) &
+                     projector_inactive_offdiag_tail_refresh_probe = &
+                     kpoint_ot_inactive_offdiag_tail_refresh_probe( &
+                     projector_inactive_offdiag_tail_refresh_ready, &
+                     dense_branch_expected_drop, projector_offdiag_reference_drop)
                END IF
                IF (.NOT. projector_physical_direct_candidate_selected .AND. &
                    .NOT. projector_physical_direct_spectral_candidate_selected .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
-                   dense_branch_expected_drop >= &
-                   projector_offdiag_model_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
+                   (dense_branch_expected_drop >= &
+                    projector_offdiag_model_advantage_ratio*MAX(dense_expected_drop, &
+                                                                EPSILON(dense_expected_drop)) .OR. &
+                    projector_inactive_offdiag_tail_refresh_probe)) THEN
                   attempt_failed = .FALSE.
                   projector_offdiag_candidate_selected = .TRUE.
                   projector_physical_candidate_selected = .FALSE.
@@ -21360,6 +21392,96 @@ CONTAINS
          quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, quality))
 
       END FUNCTION kpoint_ot_inactive_offdiag_selected_tail_quality
+
+! **************************************************************************************************
+!> \brief whether stale inactive-offdiag selected residual history should be refreshed
+!> \param residual_delta current OT residual delta
+!> \param history_quality inactive-offdiag modal Mermin-drop history quality
+!> \param history_trust sign-aware inactive-offdiag modal trust quality
+!> \param history_samples number of inactive-offdiag modal history samples
+!> \param selected_quality latest selected inactive-offdiag Mermin quality
+!> \param selected_quality_ema EMA of selected inactive-offdiag Mermin quality
+!> \param selected_residual_quality latest selected inactive-offdiag residual quality
+!> \param selected_residual_quality_ema EMA of selected inactive-offdiag residual quality
+!> \param selected_samples number of selected inactive-offdiag samples
+!> \param dense_residual_quality dense/coupled residual-quality reference
+!> \return true if inactive-offdiag should be rebuilt to refresh stale selected residual history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_inactive_offdiag_tail_refresh_ready(residual_delta, history_quality, &
+                                                             history_trust, history_samples, &
+                                                             selected_quality, selected_quality_ema, &
+                                                             selected_residual_quality, &
+                                                             selected_residual_quality_ema, &
+                                                             selected_samples, &
+                                                             dense_residual_quality) RESULT(refresh_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
+                                                            history_trust
+      INTEGER, INTENT(IN)                                :: history_samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality, selected_quality_ema, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: refresh_ready
+
+      LOGICAL                                            :: selected_residual_stale
+      REAL(KIND=dp)                                      :: residual_reference
+
+         refresh_ready = .FALSE.
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (history_samples < ot_kp_schur_projector_response_min_samples) RETURN
+         IF (history_quality < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         IF (history_trust < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+         residual_reference = MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)
+         IF (selected_samples >= ot_kp_schur_calibration_min_samples) THEN
+            IF (selected_samples >= 2*ot_kp_schur_calibration_min_samples .AND. &
+                selected_quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+                selected_quality_ema < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+            ! A just-bootstrapped selected channel may have one bad early
+            ! Mermin-ratio sample.  Treat that as stale residual history rather
+            ! than as a permanent veto; the mature-history path above will still
+            ! reject repeatedly poor selected probes.
+            selected_residual_stale = &
+               selected_residual_quality <= EPSILON(1.0_dp) .OR. &
+               selected_residual_quality_ema <= EPSILON(1.0_dp) .OR. &
+               selected_residual_quality_ema < &
+               ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference .OR. &
+               selected_residual_quality < &
+               0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference
+         ELSE
+            selected_residual_stale = .TRUE.
+         END IF
+         IF (.NOT. selected_residual_stale) RETURN
+
+         refresh_ready = .TRUE.
+
+      END FUNCTION kpoint_ot_inactive_offdiag_tail_refresh_ready
+
+! **************************************************************************************************
+!> \brief close-call inactive-offdiag selected-history refresh probe
+!> \param refresh_ready prechecked residual-tail/history gate
+!> \param candidate_expected_drop branch-loss adjusted inactive-offdiag expected drop
+!> \param reference_expected_drop dense/coupled reference expected drop
+!> \return true if an inactive-offdiag close call may refresh selected residual history
+! **************************************************************************************************
+      FUNCTION kpoint_ot_inactive_offdiag_tail_refresh_probe(refresh_ready, candidate_expected_drop, &
+                                                             reference_expected_drop) RESULT(do_probe)
+      LOGICAL, INTENT(IN)                                :: refresh_ready
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
+                                                            reference_expected_drop
+      LOGICAL                                            :: do_probe
+
+         do_probe = .FALSE.
+         IF (.NOT. refresh_ready) RETURN
+         IF (candidate_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (candidate_expected_drop < &
+             ot_kp_schur_projector_density_fdir_refresh_ratio* &
+             MAX(reference_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         do_probe = .TRUE.
+
+      END FUNCTION kpoint_ot_inactive_offdiag_tail_refresh_probe
 
 ! **************************************************************************************************
 !> \brief residual-tail cap for offdiag projector candidate history

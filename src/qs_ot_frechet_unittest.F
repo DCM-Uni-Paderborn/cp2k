@@ -262,6 +262,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
    CALL check_projector_inactive_offdiag_selected_tail_quality( &
       "complex projector inactive-offdiag selected tail quality", 5.0E-14_dp, nfail)
+   CALL check_projector_inactive_offdiag_tail_refresh_probe( &
+      "complex projector inactive-offdiag tail refresh probe", 5.0E-14_dp, nfail)
    CALL check_projector_offdiag_tail_residual_quality( &
       "complex projector offdiag tail residual quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_underprediction_quality( &
@@ -10102,6 +10104,78 @@ CONTAINS
    END SUBROUTINE check_projector_inactive_offdiag_selected_tail_quality
 
 ! **************************************************************************************************
+!> \brief Check stale inactive-offdiag selected residual history can be refreshed by close calls.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_inactive_offdiag_tail_refresh_probe(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: cal_quality = 0.25_dp, min_drop = 1.0E-12_dp, &
+         min_quality = 0.10_dp, refresh_ratio = 0.20_dp, residual_ratio = 0.80_dp, &
+         tail_delta = 1.0E-4_dp
+
+      LOGICAL :: bootstrap_ready, close_probe, fresh_ready, immature_failed_ready, outside_ready, &
+         refresh_ready, small_probe, weak_history_ready
+      REAL(KIND=dp)                                      :: err
+
+      refresh_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                      tail_delta, 1.25_dp, 0.60_dp, 74, 0.159597264_dp, 0.0947785926_dp, &
+                      0.0_dp, 0.0561356449_dp, 8, 0.25_dp, 4, 8, tail_delta, min_quality, &
+                      cal_quality, residual_ratio)
+      bootstrap_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                        tail_delta, 1.25_dp, 0.60_dp, 74, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+                        0, 0.25_dp, 4, 8, tail_delta, min_quality, cal_quality, residual_ratio)
+      immature_failed_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                              tail_delta, 1.25_dp, 0.60_dp, 74, 2.5E-3_dp, 8.7E-4_dp, &
+                              1.0E-4_dp, 0.13_dp, 4, 0.25_dp, 4, 8, tail_delta, &
+                              min_quality, cal_quality, residual_ratio)
+      outside_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                      2.0_dp*tail_delta, 1.25_dp, 0.60_dp, 74, 0.159597264_dp, &
+                      0.0947785926_dp, 0.0_dp, 0.0561356449_dp, 8, 0.25_dp, 4, 8, &
+                      tail_delta, min_quality, cal_quality, residual_ratio)
+      weak_history_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                           tail_delta, 0.05_dp, 0.60_dp, 74, 0.159597264_dp, &
+                           0.0947785926_dp, 0.0_dp, 0.0561356449_dp, 8, 0.25_dp, 4, 8, &
+                           tail_delta, min_quality, cal_quality, residual_ratio)
+      fresh_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                    tail_delta, 1.25_dp, 0.60_dp, 74, 0.50_dp, 0.50_dp, 0.25_dp, &
+                    0.25_dp, 8, 0.25_dp, 4, 8, tail_delta, min_quality, cal_quality, &
+                    residual_ratio)
+      close_probe = dense_inactive_offdiag_tail_refresh_probe( &
+                    refresh_ready, 1.0E-7_dp, 4.0E-7_dp, refresh_ratio, min_drop)
+      small_probe = dense_inactive_offdiag_tail_refresh_probe( &
+                    refresh_ready, 5.0E-8_dp, 4.0E-7_dp, refresh_ratio, min_drop)
+
+      err = 0.0_dp
+      IF (.NOT. refresh_ready) err = 1.0_dp
+      IF (.NOT. bootstrap_ready) err = 1.0_dp
+      IF (.NOT. immature_failed_ready) err = 1.0_dp
+      IF (outside_ready) err = 1.0_dp
+      IF (weak_history_ready) err = 1.0_dp
+      IF (fresh_ready) err = 1.0_dp
+      IF (.NOT. close_probe) err = 1.0_dp
+      IF (small_probe) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "failed refresh/bootstrap/immature/outside/weak/fresh/close/small", refresh_ready, &
+            bootstrap_ready, immature_failed_ready, outside_ready, weak_history_ready, fresh_ready, &
+            close_probe, small_probe
+      ELSE
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "OK refresh/bootstrap/immature/outside/weak/fresh/close/small", refresh_ready, &
+            bootstrap_ready, immature_failed_ready, outside_ready, weak_history_ready, fresh_ready, &
+            close_probe, small_probe
+      END IF
+
+   END SUBROUTINE check_projector_inactive_offdiag_tail_refresh_probe
+
+! **************************************************************************************************
 !> \brief Check residual-tail cap for offdiag projector history quality.
 !> \param label ...
 !> \param tol ...
@@ -13796,6 +13870,104 @@ CONTAINS
       quality = MAX(0.0_dp, MIN(max_quality, quality))
 
    END FUNCTION dense_inactive_offdiag_selected_tail_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of inactive-offdiag tail refresh readiness.
+!> \param residual_delta ...
+!> \param history_quality ...
+!> \param history_trust ...
+!> \param history_samples ...
+!> \param selected_quality ...
+!> \param selected_quality_ema ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \param dense_residual_quality ...
+!> \param min_samples ...
+!> \param response_min_samples ...
+!> \param tail_delta ...
+!> \param min_quality ...
+!> \param calibrated_min_quality ...
+!> \param probe_residual_ratio ...
+!> \return true if stale inactive-offdiag selected residual history can be refreshed
+! **************************************************************************************************
+   FUNCTION dense_inactive_offdiag_tail_refresh_ready(residual_delta, history_quality, &
+                                                      history_trust, history_samples, &
+                                                      selected_quality, selected_quality_ema, &
+                                                      selected_residual_quality, &
+                                                      selected_residual_quality_ema, &
+                                                      selected_samples, dense_residual_quality, &
+                                                      min_samples, response_min_samples, tail_delta, &
+                                                      min_quality, calibrated_min_quality, &
+                                                      probe_residual_ratio) RESULT(refresh_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, history_quality, &
+                                                            history_trust
+      INTEGER, INTENT(IN)                                :: history_samples
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality, selected_quality_ema, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      INTEGER, INTENT(IN)                                :: min_samples, response_min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: tail_delta, min_quality, &
+                                                            calibrated_min_quality, &
+                                                            probe_residual_ratio
+      LOGICAL                                            :: refresh_ready
+
+      LOGICAL                                            :: selected_residual_stale
+      REAL(KIND=dp)                                      :: residual_reference
+
+      refresh_ready = .FALSE.
+      IF (residual_delta > tail_delta) RETURN
+      IF (history_samples < response_min_samples) RETURN
+      IF (history_quality < min_quality) RETURN
+      IF (history_trust < 0.5_dp*min_quality) RETURN
+
+      residual_reference = MAX(dense_residual_quality, calibrated_min_quality)
+      IF (selected_samples >= min_samples) THEN
+         IF (selected_samples >= 2*min_samples .AND. &
+             selected_quality < 0.5_dp*min_quality .AND. &
+             selected_quality_ema < 0.5_dp*min_quality) RETURN
+         selected_residual_stale = &
+            selected_residual_quality <= EPSILON(1.0_dp) .OR. &
+            selected_residual_quality_ema <= EPSILON(1.0_dp) .OR. &
+            selected_residual_quality_ema < probe_residual_ratio*residual_reference .OR. &
+            selected_residual_quality < 0.5_dp*probe_residual_ratio*residual_reference
+      ELSE
+         selected_residual_stale = .TRUE.
+      END IF
+      IF (.NOT. selected_residual_stale) RETURN
+
+      refresh_ready = .TRUE.
+
+   END FUNCTION dense_inactive_offdiag_tail_refresh_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of inactive-offdiag tail refresh close-call probe.
+!> \param refresh_ready ...
+!> \param candidate_expected_drop ...
+!> \param reference_expected_drop ...
+!> \param refresh_ratio ...
+!> \param min_drop ...
+!> \return true if an inactive-offdiag close call may refresh selected residual history
+! **************************************************************************************************
+   FUNCTION dense_inactive_offdiag_tail_refresh_probe(refresh_ready, candidate_expected_drop, &
+                                                      reference_expected_drop, refresh_ratio, min_drop) &
+      RESULT(do_probe)
+      LOGICAL, INTENT(IN)                                :: refresh_ready
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_expected_drop, &
+                                                            reference_expected_drop, &
+                                                            refresh_ratio, min_drop
+      LOGICAL                                            :: do_probe
+
+      do_probe = .FALSE.
+      IF (.NOT. refresh_ready) RETURN
+      IF (candidate_expected_drop <= min_drop) RETURN
+      IF (candidate_expected_drop < refresh_ratio*MAX(reference_expected_drop, min_drop)) RETURN
+
+      do_probe = .TRUE.
+
+   END FUNCTION dense_inactive_offdiag_tail_refresh_probe
 
 ! **************************************************************************************************
 !> \brief Dense mirror of offdiag residual-tail history cap.
