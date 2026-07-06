@@ -308,6 +308,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-14_dp, nfail)
    CALL check_projector_spectral_metric_norm_scale("complex projector spectral metric norm scale", &
                                                    5.0E-14_dp, nfail)
+   CALL check_projector_spectral_regularized_denominator( &
+      "complex projector spectral regularized denominator", 5.0E-14_dp, nfail)
    CALL check_projector_spectral_probe_history_ready( &
       "complex projector spectral probe-history retry", 5.0E-14_dp, nfail)
    CALL check_projector_spectral_selected_history_promotion( &
@@ -11644,6 +11646,44 @@ CONTAINS
    END SUBROUTINE check_projector_spectral_metric_norm_scale
 
 ! **************************************************************************************************
+!> \brief Check the finite spectral Direct-response denominator for soft metallic modes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_spectral_regularized_denominator(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err, hard_negative, hard_positive, &
+                                                            soft_negative, soft_positive, zero_mode
+
+      hard_positive = dense_spectral_regularized_denominator(4.0_dp, 0.25_dp)
+      soft_positive = dense_spectral_regularized_denominator(0.10_dp, 0.25_dp)
+      soft_negative = dense_spectral_regularized_denominator(-0.10_dp, 0.25_dp)
+      hard_negative = dense_spectral_regularized_denominator(-0.40_dp, 0.25_dp)
+      zero_mode = dense_spectral_regularized_denominator(0.0_dp, 0.25_dp)
+
+      err = ABS(hard_positive - 4.0_dp)
+      err = MAX(err, ABS(soft_positive - 0.25_dp), ABS(soft_negative - 0.25_dp), &
+                ABS(hard_negative), ABS(zero_mode - 0.25_dp))
+
+      IF (err > tol .OR. hard_negative > tol .OR. soft_positive <= 0.10_dp .OR. &
+          soft_negative <= 0.0_dp .OR. hard_positive <= soft_positive) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/hpos/spos/sneg/hneg/zero", err, hard_positive, soft_positive, &
+            soft_negative, hard_negative, zero_mode
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/hpos/spos/sneg/hneg/zero", err, hard_positive, soft_positive, &
+            soft_negative, hard_negative, zero_mode
+      END IF
+
+   END SUBROUTINE check_projector_spectral_regularized_denominator
+
+! **************************************************************************************************
 !> \brief Check selected spectral probe retries against independent shadow history.
 !> \param label ...
 !> \param tol ...
@@ -13463,6 +13503,30 @@ CONTAINS
       IF (residual_delta <= tail_delta) row_floor = MAX(row_floor, pair_floor)
 
    END FUNCTION dense_raw_tail_rotation_floor
+
+! **************************************************************************************************
+!> \brief Dense mirror of the finite spectral Direct-response denominator.
+!> \param eval ...
+!> \param row_floor ...
+!> \return positive denominator for soft modes, zero for strongly negative modes
+! **************************************************************************************************
+   FUNCTION dense_spectral_regularized_denominator(eval, row_floor) RESULT(denominator)
+      REAL(KIND=dp), INTENT(IN)                          :: eval, row_floor
+      REAL(KIND=dp)                                      :: denominator
+
+      REAL(KIND=dp)                                      :: floor_value
+
+      denominator = 0.0_dp
+      floor_value = MAX(0.0_dp, row_floor)
+      IF (eval > floor_value) THEN
+         denominator = eval
+      ELSE IF (eval > 0.0_dp) THEN
+         denominator = MAX(floor_value, SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, ABS(eval)))
+      ELSE IF (ABS(eval) <= floor_value .AND. floor_value > EPSILON(floor_value)) THEN
+         denominator = floor_value
+      END IF
+
+   END FUNCTION dense_spectral_regularized_denominator
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the physical Direct density-history curvature blend.

@@ -14066,10 +14066,12 @@ CONTAINS
                                             MAXVAL(ABS(projector_physical_direct_schur_eval))))
                         rhs(:) = 0.0_dp
                         DO r = 1, nrot
-                           IF (projector_physical_direct_schur_eval(r) <= row_floor) CYCLE
+                           diag_shift = kpoint_ot_spectral_regularized_denominator( &
+                                        projector_physical_direct_schur_eval(r), row_floor)
+                           IF (diag_shift <= EPSILON(diag_shift)) CYCLE
                            rx_shift = DOT_PRODUCT(projector_physical_direct_schur_evec(:, r), rtd)
                            rhs(:) = rhs(:) + &
-                                    (rx_shift/projector_physical_direct_schur_eval(r))* &
+                                    (rx_shift/diag_shift)* &
                                     projector_physical_direct_schur_evec(:, r)
                         END DO
                         projector_physical_direct_spectral_dot = DOT_PRODUCT(rtd, rhs)
@@ -21161,6 +21163,30 @@ CONTAINS
          row_floor = MIN(frontier_floor, row_floor)
 
       END FUNCTION kpoint_ot_physical_rotation_floor
+
+! **************************************************************************************************
+!> \brief regularized denominator for finite spectral Direct-response modes
+!> \param eval Schur eigenvalue of the finite-complex physical-response Hessian
+!> \param row_floor finite metallic frontier floor used for the physical Direct solve
+!> \return positive denominator for soft physical modes; zero for strongly indefinite modes
+! **************************************************************************************************
+      FUNCTION kpoint_ot_spectral_regularized_denominator(eval, row_floor) RESULT(denominator)
+      REAL(KIND=dp), INTENT(IN)                          :: eval, row_floor
+      REAL(KIND=dp)                                      :: denominator
+
+      REAL(KIND=dp)                                      :: floor_value
+
+         denominator = 0.0_dp
+         floor_value = MAX(0.0_dp, row_floor)
+         IF (eval > floor_value) THEN
+            denominator = eval
+         ELSE IF (eval > 0.0_dp) THEN
+            denominator = MAX(floor_value, SQRT(EPSILON(1.0_dp))*MAX(1.0_dp, ABS(eval)))
+         ELSE IF (ABS(eval) <= floor_value .AND. floor_value > EPSILON(floor_value)) THEN
+            denominator = floor_value
+         END IF
+
+      END FUNCTION kpoint_ot_spectral_regularized_denominator
 
 ! **************************************************************************************************
 !> \brief true once Direct density carries accepted-history physical response
