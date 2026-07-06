@@ -169,6 +169,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_split_tail_residual_min_ratio = 9.0E-1_dp, &
                                         ot_kp_schur_projector_response_advantage_ratio = 1.10_dp, &
                                         ot_kp_schur_branch_loss_density_recovery = 3.5E-1_dp, &
+                                        ot_kp_schur_branch_loss_physical_recovery = 1.5E-1_dp, &
                                         ot_kp_schur_projector_spectral_probe_quality_min = 1.0E-1_dp, &
                                         ot_kp_schur_projector_spectral_probe_trust_fraction = 7.5E-1_dp, &
                                         ot_kp_schur_projector_response_floor_delta = 3.0E-6_dp, &
@@ -627,7 +628,9 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: fermi_window_guarded, ref_guard_ok, &
-                                                            ref_guarded, use_real_wfn
+                                                            protect_mermin_ls_sample, ref_guarded, &
+                                                            update_ot_energy_state, &
+                                                            update_ot_energy_state_after, use_real_wfn
       REAL(KIND=dp)                                      :: ener_nondiag, maxocc, ref_guard_max, &
                                                             ref_guard_min, ref_guard_scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor, trial_mu
@@ -746,6 +749,23 @@ CONTAINS
             ener_x_old(1:SIZE(local_ot_env(local_channel)%ener_x), local_channel) = &
             local_ot_env(local_channel)%ener_x(:)
       END DO
+      protect_mermin_ls_sample = local_ot_env(1)%mermin_ls_sample_pending .AND. &
+                                 local_ot_env(1)%line_search_might_be_done .AND. &
+                                 .NOT. local_ot_env(1)%energy_only
+      update_ot_energy_state = .NOT. local_ot_env(1)%energy_only .AND. &
+                               .NOT. protect_mermin_ls_sample
+      IF (protect_mermin_ls_sample) THEN
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,4(1X,ES16.8))') &
+               " OT Mermin LS accepted-sample projection guard idx ref best bdrop bpos:", &
+               local_ot_env(1)%mermin_ls_best_sample_index, &
+               local_ot_env(1)%mermin_ls_reference_energy, &
+               local_ot_env(1)%mermin_ls_best_sample_energy, &
+               local_ot_env(1)%mermin_ls_best_sample_drop, &
+               local_ot_env(1)%mermin_ls_best_sample_pos
+         END IF
+      END IF
 
       ALLOCATE (matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im)
       CALL dbcsr_create(matrix_k_re, template=matrix_ks(1, 1)%matrix, &
@@ -811,7 +831,8 @@ CONTAINS
             CALL qs_scf_loop_project_ot_kp_energy_subproblem(local_ot_env(local_channel), &
                                                              matrix_hc(local_channel)%matrix, &
                                                              matrix_hc_im(local_channel)%matrix, &
-                                                             scf_control%smear)
+                                                             scf_control%smear, &
+                                                             update_ener_x=update_ot_energy_state)
 
             CALL cp_fm_release(hc_re)
             CALL cp_fm_release(hc_im)
@@ -821,10 +842,13 @@ CONTAINS
       CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
                                                     trial_eigenvalues, trial_occupation, trial_mu)
-      CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
-                                                      nspin_ot, kp_range, wkp, para_env_inter_kp, &
-                                                      scf_control%smear, trial_eigenvalues, &
-                                                      trial_occupation, trial_mu, fermi_window_guarded)
+      fermi_window_guarded = .FALSE.
+      IF (update_ot_energy_state) THEN
+         CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
+                                                         nspin_ot, kp_range, wkp, para_env_inter_kp, &
+                                                         scf_control%smear, trial_eigenvalues, &
+                                                         trial_occupation, trial_mu, fermi_window_guarded)
+      END IF
       IF (fermi_window_guarded) THEN
          DEALLOCATE (trial_eigenvalues, trial_occupation, trial_mu)
          CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
@@ -874,6 +898,7 @@ CONTAINS
 
       CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im, &
                    para_env_inter_kp=para_env_inter_kp)
+      update_ot_energy_state_after = .NOT. local_ot_env(1)%energy_only
       ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                             xkp, cell_to_index, sab_nl, matrix_s, &
                                                             matrix_s_re, matrix_s_im, para_env_inter_kp, &
@@ -964,7 +989,8 @@ CONTAINS
                CALL copy_fm_to_dbcsr(hc_im, density_hc_im)
                CALL qs_scf_loop_project_ot_kp_final_energies(local_ot_env(local_channel), &
                                                              density_hc_re, density_hc_im, &
-                                                             scf_control%smear)
+                                                             scf_control%smear, &
+                                                             update_ener_x=update_ot_energy_state_after)
                CALL dbcsr_release(density_hc_re)
                CALL dbcsr_release(density_hc_im)
                CALL cp_fm_release(hc_re)
@@ -980,7 +1006,7 @@ CONTAINS
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
                                     added_mos_auto_grow=added_mos_auto_grow)
-      IF (.NOT. added_mos_auto_grow) THEN
+      IF (.NOT. added_mos_auto_grow .AND. update_ot_energy_state_after) THEN
          CALL qs_scf_loop_guard_ot_kp_fermi_window(kpoints, local_ot_env, first_channel, &
                                                    nspin_ot, kp_range, wkp, para_env_inter_kp, &
                                                    scf_control%smear, fermi_window_guarded)
@@ -1703,7 +1729,7 @@ CONTAINS
                                                             local_channel, local_kpoint, ngroups, &
                                                             nkpoint, nmo
       LOGICAL                                            :: guard_group, lower_frontier, &
-                                                            upper_frontier
+                                                            upper_frontier, weak_fractional_tail
       REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
                                                             maxocc, occ_tail, outer_window, sigma
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: frac_weight, lower_dist, max_partial, &
@@ -1762,11 +1788,11 @@ CONTAINS
          CPASSERT(ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2))
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
+            weak_fractional_tail = frac_weight(group) < ot_kp_fermi_window_min_frac
             guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
                           upper_dist(group) < HUGE(1.0_dp) .AND. &
                           min_abs_eps_mu(group) > anchor_window .AND. &
-                          (min_abs_eps_mu(group) < outer_window .OR. &
-                           frac_weight(group) < ot_kp_fermi_window_min_frac)
+                          (weak_fractional_tail .OR. min_abs_eps_mu(group) > outer_window)
             IF (.NOT. guard_group) CYCLE
 
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
@@ -2754,14 +2780,18 @@ CONTAINS
 !> \param matrix_hc ...
 !> \param matrix_hc_im ...
 !> \param smear ...
+!> \param update_ener_x ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_project_ot_kp_energy_subproblem(qs_ot_env, matrix_hc, matrix_hc_im, smear)
+   SUBROUTINE qs_scf_loop_project_ot_kp_energy_subproblem(qs_ot_env, matrix_hc, matrix_hc_im, smear, &
+                                                          update_ener_x)
 
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type), POINTER                          :: matrix_hc, matrix_hc_im
       TYPE(smear_type), INTENT(IN)                       :: smear
+      LOGICAL, INTENT(IN), OPTIONAL                      :: update_ener_x
 
       INTEGER                                            :: nmo
+      LOGICAL                                            :: do_update_ener_x
       REAL(KIND=dp)                                      :: gauge_shift
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
       TYPE(dbcsr_type)                                   :: evec_im, evec_re
@@ -2808,6 +2838,10 @@ CONTAINS
       CALL dbcsr_copy(chc_re, b_re)
       CALL dbcsr_copy(chc_im, b_im)
 
+      do_update_ener_x = .TRUE.
+      IF (PRESENT(update_ener_x)) do_update_ener_x = update_ener_x
+      IF (.NOT. do_update_ener_x) RETURN
+
       nmo = SIZE(qs_ot_env%ener_x)
       ALLOCATE (canonical_energies(nmo))
       CALL dbcsr_copy(evec_re, chc_re, name="ot_kp_chc_evec_re")
@@ -2834,14 +2868,18 @@ CONTAINS
 !> \param matrix_hc ...
 !> \param matrix_hc_im ...
 !> \param smear ...
+!> \param update_ener_x ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_project_ot_kp_final_energies(qs_ot_env, matrix_hc, matrix_hc_im, smear)
+   SUBROUTINE qs_scf_loop_project_ot_kp_final_energies(qs_ot_env, matrix_hc, matrix_hc_im, smear, &
+                                                       update_ener_x)
 
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type)                                   :: matrix_hc, matrix_hc_im
       TYPE(smear_type), INTENT(IN)                       :: smear
+      LOGICAL, INTENT(IN), OPTIONAL                      :: update_ener_x
 
       INTEGER                                            :: nmo
+      LOGICAL                                            :: do_update_ener_x
       REAL(KIND=dp)                                      :: gauge_shift
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
       TYPE(dbcsr_type)                                   :: evec_im, evec_re
@@ -2885,6 +2923,10 @@ CONTAINS
 
       CALL dbcsr_copy(chc_re, b_re)
       CALL dbcsr_copy(chc_im, b_im)
+
+      do_update_ener_x = .TRUE.
+      IF (PRESENT(update_ener_x)) do_update_ener_x = update_ener_x
+      IF (.NOT. do_update_ener_x) RETURN
 
       nmo = SIZE(qs_ot_env%ener_x)
       ALLOCATE (canonical_energies(nmo))
@@ -3082,7 +3124,7 @@ CONTAINS
                                                             local_channel, local_kpoint, ngroups, &
                                                             nmo
       LOGICAL                                            :: guard_group, lower_frontier, &
-                                                            upper_frontier
+                                                            upper_frontier, weak_fractional_tail
       REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
                                                             maxocc, occ_tail, outer_window, sigma
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: frac_weight, lower_dist, max_partial, &
@@ -3167,11 +3209,11 @@ CONTAINS
          ikpoint = kp%nkpoint
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
+            weak_fractional_tail = frac_weight(group) < ot_kp_fermi_window_min_frac
             guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
                           upper_dist(group) < HUGE(1.0_dp) .AND. &
                           min_abs_eps_mu(group) > anchor_window .AND. &
-                          (min_abs_eps_mu(group) < outer_window .OR. &
-                           frac_weight(group) < ot_kp_fermi_window_min_frac)
+                          (weak_fractional_tail .OR. min_abs_eps_mu(group) > outer_window)
             IF (.NOT. guard_group) CYCLE
 
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
@@ -17121,6 +17163,9 @@ CONTAINS
                                                 density_full_direct_expected_drop)
                   dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_physical_drop( &
+                                            projector_physical_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF ((local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                     (projector_physical_direct_candidate_used .AND. &
                      (projector_physical_direct_promoted .OR. &
@@ -17130,10 +17175,10 @@ CONTAINS
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                    (.NOT. (density_full_global_candidate_selected .AND. &
                            density_full_global_tail_prefer) .OR. &
-                    projector_physical_expected_drop >= &
+                    dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio* &
                     MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
-                   (projector_physical_expected_drop >= &
+                   (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
                     (.NOT. projector_physical_direct_density_candidate_selected .AND. &
@@ -17181,8 +17226,14 @@ CONTAINS
                      rot_floor_min = projector_physical_direct_rot_floor_min
                      schur_diag_min = projector_physical_direct_schur_diag_min
                   END IF
-                  dense_expected_drop = projector_physical_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_physical_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_physical_drop( &
+                                            projector_physical_direct_spectral_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
@@ -17193,11 +17244,11 @@ CONTAINS
                    density_full_global_expected_drop) .AND. &
                    (.NOT. (density_full_global_candidate_selected .AND. &
                            density_full_global_tail_prefer) .OR. &
-                    projector_physical_direct_spectral_expected_drop >= &
+                    dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio* &
                     MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
                    ((local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
-                     projector_physical_direct_spectral_expected_drop >= &
+                     dense_branch_expected_drop >= &
                      ot_kp_schur_projector_response_advantage_ratio* &
                      MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .OR. &
                     projector_physical_direct_spectral_probe_ready)) THEN
@@ -17238,20 +17289,26 @@ CONTAINS
                   response_weighted_step = projector_physical_direct_spectral_response_weighted_step
                   response_weighted_trust_ratio = &
                      projector_physical_direct_spectral_resp_wtrust
-                  dense_expected_drop = projector_physical_direct_spectral_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_physical_direct_spectral_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_physical_drop( &
+                                            projector_offdiag_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop)) THEN
                   projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
                   projector_offdiag_expected_drop_ratio = &
-                     projector_offdiag_expected_drop/projector_offdiag_reference_drop
+                     dense_branch_expected_drop/projector_offdiag_reference_drop
                END IF
                IF (.NOT. projector_physical_direct_candidate_selected .AND. &
                    .NOT. projector_physical_direct_spectral_candidate_selected .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
-                   projector_offdiag_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    projector_offdiag_model_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
                   attempt_failed = .FALSE.
                   projector_offdiag_candidate_selected = .TRUE.
@@ -17286,7 +17343,10 @@ CONTAINS
                   response_abs_trust_ratio = projector_offdiag_response_abs_trust_ratio
                   response_weighted_step = projector_offdiag_response_weighted_step
                   response_weighted_trust_ratio = projector_offdiag_response_weighted_trust_ratio
-                  dense_expected_drop = projector_offdiag_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_offdiag_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
                split_dense_expected_ratio = 0.0_dp
                IF (dense_expected_drop > EPSILON(dense_expected_drop)) &
@@ -17718,6 +17778,9 @@ CONTAINS
                                                 density_full_direct_expected_drop)
                   dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_physical_drop( &
+                                            projector_physical_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF ((local_ot_env(1)%schur_projector_physical_candidate_enabled .OR. &
                     (projector_physical_direct_candidate_used .AND. &
                      (projector_physical_direct_promoted .OR. &
@@ -17727,10 +17790,10 @@ CONTAINS
                    projector_physical_expected_drop > EPSILON(projector_physical_expected_drop) .AND. &
                    (.NOT. (density_full_global_candidate_selected .AND. &
                            density_full_global_tail_prefer) .OR. &
-                    projector_physical_expected_drop >= &
+                    dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio* &
                     MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
-                   (projector_physical_expected_drop >= &
+                   (dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio*MAX(dense_expected_drop, &
                                                                        EPSILON(dense_expected_drop)) .OR. &
                     (.NOT. projector_physical_direct_density_candidate_selected .AND. &
@@ -17778,8 +17841,14 @@ CONTAINS
                      rot_floor_min = projector_physical_direct_rot_floor_min
                      schur_diag_min = projector_physical_direct_schur_diag_min
                   END IF
-                  dense_expected_drop = projector_physical_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_physical_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_physical_drop( &
+                                            projector_physical_direct_spectral_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (projector_physical_direct_spectral_candidate_ready .AND. &
                    projector_physical_direct_spectral_expected_drop > &
                    EPSILON(projector_physical_direct_spectral_expected_drop) .AND. &
@@ -17790,11 +17859,11 @@ CONTAINS
                    density_full_global_expected_drop) .AND. &
                    (.NOT. (density_full_global_candidate_selected .AND. &
                            density_full_global_tail_prefer) .OR. &
-                    projector_physical_direct_spectral_expected_drop >= &
+                    dense_branch_expected_drop >= &
                     ot_kp_schur_projector_response_advantage_ratio* &
                     MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .AND. &
                    ((local_ot_env(1)%schur_projector_spectral_candidate_enabled .AND. &
-                     projector_physical_direct_spectral_expected_drop >= &
+                     dense_branch_expected_drop >= &
                      ot_kp_schur_projector_response_advantage_ratio* &
                      MAX(dense_expected_drop, EPSILON(dense_expected_drop))) .OR. &
                     projector_physical_direct_spectral_probe_ready)) THEN
@@ -17835,20 +17904,26 @@ CONTAINS
                   response_weighted_step = projector_physical_direct_spectral_response_weighted_step
                   response_weighted_trust_ratio = &
                      projector_physical_direct_spectral_resp_wtrust
-                  dense_expected_drop = projector_physical_direct_spectral_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_physical_direct_spectral_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
+               dense_branch_expected_drop = kpoint_ot_branch_loss_physical_drop( &
+                                            projector_offdiag_expected_drop, &
+                                            dense_expected_drop, mermin_branch_loss_weight)
                IF (.NOT. attempt_failed .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop)) THEN
                   projector_offdiag_reference_drop = MAX(dense_expected_drop, EPSILON(dense_expected_drop))
                   projector_offdiag_expected_drop_ratio = &
-                     projector_offdiag_expected_drop/projector_offdiag_reference_drop
+                     dense_branch_expected_drop/projector_offdiag_reference_drop
                END IF
                IF (.NOT. projector_physical_direct_candidate_selected .AND. &
                    .NOT. projector_physical_direct_spectral_candidate_selected .AND. &
                    projector_offdiag_candidate_ready .AND. &
                    projector_offdiag_expected_drop > EPSILON(projector_offdiag_expected_drop) .AND. &
-                   projector_offdiag_expected_drop >= &
+                   dense_branch_expected_drop >= &
                    projector_offdiag_model_advantage_ratio*MAX(dense_expected_drop, EPSILON(dense_expected_drop))) THEN
                   attempt_failed = .FALSE.
                   projector_offdiag_candidate_selected = .TRUE.
@@ -17883,7 +17958,10 @@ CONTAINS
                   response_abs_trust_ratio = projector_offdiag_response_abs_trust_ratio
                   response_weighted_step = projector_offdiag_response_weighted_step
                   response_weighted_trust_ratio = projector_offdiag_response_weighted_trust_ratio
-                  dense_expected_drop = projector_offdiag_expected_drop
+                  mermin_branch_loss_gain = MAX(mermin_branch_loss_gain, &
+                                                dense_branch_expected_drop - &
+                                                projector_offdiag_expected_drop)
+                  dense_expected_drop = dense_branch_expected_drop
                END IF
             END IF
 
@@ -19627,7 +19705,7 @@ CONTAINS
                      constrained_gdot_rotation, constrained_norm_energy, constrained_norm_rotation, &
                      dense_direction_scale, dense_scale_quality, dense_quality_for_selection
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,5(1X,ES16.8))') &
-                     " OT Schur Mermin branch-loss density model samples weight gain qema gema dense_exp:", &
+                     " OT Schur Mermin branch-loss candidate model samples weight gain qema gema dense_exp:", &
                      local_ot_env(1)%mermin_ls_accepted_quality_samples, &
                      mermin_branch_loss_weight, mermin_branch_loss_gain, &
                      local_ot_env(1)%mermin_ls_accepted_quality_ema, &
@@ -22769,7 +22847,31 @@ CONTAINS
       END FUNCTION kpoint_ot_density_descent_incremental_history_weight
 
 ! **************************************************************************************************
-!> \brief candidate competition drop including recoverable accepted-state density branch loss
+!> \brief candidate competition drop including recoverable accepted-state Mermin branch loss
+!> \param candidate_drop expected drop of the response candidate
+!> \param reference_drop current best competition drop
+!> \param branch_loss_weight accepted-state Mermin branch-loss severity
+!> \param recovery response-specific recoverable branch-loss fraction
+!> \return expected competition drop used only for candidate selection
+! **************************************************************************************************
+      FUNCTION kpoint_ot_branch_loss_candidate_drop(candidate_drop, reference_drop, branch_loss_weight, recovery) &
+         RESULT(expected_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop, reference_drop, &
+                                                            branch_loss_weight, recovery
+      REAL(KIND=dp)                                      :: expected_drop
+
+         expected_drop = MAX(0.0_dp, candidate_drop)
+         IF (expected_drop <= EPSILON(expected_drop)) RETURN
+
+         expected_drop = expected_drop + &
+                         MAX(0.0_dp, MIN(1.0_dp, recovery))* &
+                         MAX(0.0_dp, MIN(1.0_dp, branch_loss_weight))* &
+                         MAX(expected_drop, MAX(0.0_dp, reference_drop))
+
+      END FUNCTION kpoint_ot_branch_loss_candidate_drop
+
+! **************************************************************************************************
+!> \brief density-response competition drop with recoverable accepted-state branch loss
 !> \param candidate_drop expected drop of the density-response candidate
 !> \param reference_drop current best non-density competition drop
 !> \param branch_loss_weight accepted-state Mermin branch-loss severity
@@ -22781,15 +22883,30 @@ CONTAINS
                                                             branch_loss_weight
       REAL(KIND=dp)                                      :: expected_drop
 
-         expected_drop = MAX(0.0_dp, candidate_drop)
-         IF (expected_drop <= EPSILON(expected_drop)) RETURN
-
-         expected_drop = expected_drop + &
-                         ot_kp_schur_branch_loss_density_recovery* &
-                         MAX(0.0_dp, MIN(1.0_dp, branch_loss_weight))* &
-                         MAX(expected_drop, MAX(0.0_dp, reference_drop))
+         expected_drop = kpoint_ot_branch_loss_candidate_drop( &
+                         candidate_drop, reference_drop, branch_loss_weight, &
+                         ot_kp_schur_branch_loss_density_recovery)
 
       END FUNCTION kpoint_ot_branch_loss_density_drop
+
+! **************************************************************************************************
+!> \brief physical rotation/projector competition drop with recoverable accepted-state branch loss
+!> \param candidate_drop expected drop of the physical response candidate
+!> \param reference_drop current best competition drop
+!> \param branch_loss_weight accepted-state Mermin branch-loss severity
+!> \return expected competition drop used only for candidate selection
+! **************************************************************************************************
+      FUNCTION kpoint_ot_branch_loss_physical_drop(candidate_drop, reference_drop, branch_loss_weight) &
+         RESULT(expected_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop, reference_drop, &
+                                                            branch_loss_weight
+      REAL(KIND=dp)                                      :: expected_drop
+
+         expected_drop = kpoint_ot_branch_loss_candidate_drop( &
+                         candidate_drop, reference_drop, branch_loss_weight, &
+                         ot_kp_schur_branch_loss_physical_recovery)
+
+      END FUNCTION kpoint_ot_branch_loss_physical_drop
 
 ! **************************************************************************************************
 !> \brief protect ready full-density responses from weaker projector-response overrides

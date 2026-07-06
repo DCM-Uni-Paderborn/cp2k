@@ -264,6 +264,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector offdiag tail residual quality", 5.0E-14_dp, nfail)
    CALL check_projector_response_underprediction_quality( &
       "complex projector response underprediction quality", 5.0E-14_dp, nfail)
+   CALL check_mermin_branch_loss_candidate_drop( &
+      "complex Mermin branch-loss candidate drop", 5.0E-14_dp, nfail)
    CALL check_projector_response_adverse_fraction( &
       "complex projector response adverse negative fraction", 5.0E-14_dp, nfail)
    CALL check_projector_response_residual_weight( &
@@ -10238,6 +10240,48 @@ CONTAINS
    END SUBROUTINE check_projector_response_underprediction_quality
 
 ! **************************************************************************************************
+!> \brief Check recoverable Mermin branch-loss candidate selection drops.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_mermin_branch_loss_candidate_drop(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: density_lift, err, physical_lift, physical_near, physical_weak, &
+         unchanged, zero_candidate
+
+      unchanged = dense_mermin_branch_loss_candidate_drop(0.96_dp, 1.0_dp, 0.0_dp, 0.15_dp)
+      zero_candidate = dense_mermin_branch_loss_candidate_drop(0.0_dp, 1.0_dp, 1.0_dp, 0.15_dp)
+      physical_lift = dense_mermin_branch_loss_candidate_drop(0.96_dp, 1.0_dp, 1.0_dp, 0.15_dp)
+      density_lift = dense_mermin_branch_loss_candidate_drop(0.96_dp, 1.0_dp, 1.0_dp, 0.35_dp)
+      physical_near = dense_mermin_branch_loss_candidate_drop(0.96_dp, 1.0_dp, 1.0_dp, 0.15_dp)
+      physical_weak = dense_mermin_branch_loss_candidate_drop(0.70_dp, 1.0_dp, 1.0_dp, 0.15_dp)
+
+      err = ABS(unchanged - 0.96_dp)
+      err = MAX(err, ABS(zero_candidate))
+      err = MAX(err, ABS(physical_lift - 1.11_dp))
+      err = MAX(err, ABS(density_lift - 1.31_dp))
+      err = MAX(err, ABS(physical_near - 1.11_dp))
+      err = MAX(err, ABS(physical_weak - 0.85_dp))
+
+      IF (err > tol .OR. density_lift <= physical_lift .OR. physical_near <= 1.10_dp .OR. &
+          physical_weak >= 1.10_dp .OR. zero_candidate > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed err/unchanged/zero/phys/dens/near/weak", err, unchanged, zero_candidate, &
+            physical_lift, density_lift, physical_near, physical_weak
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK err/unchanged/zero/phys/dens/near/weak", err, unchanged, zero_candidate, &
+            physical_lift, density_lift, physical_near, physical_weak
+      END IF
+
+   END SUBROUTINE check_mermin_branch_loss_candidate_drop
+
+! **************************************************************************************************
 !> \brief Check that negative Projector-response modes are only adverse when anti-descent.
 !> \param label ...
 !> \param tol ...
@@ -13997,6 +14041,29 @@ CONTAINS
       END IF
 
    END FUNCTION dense_direct_tail_probe_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of recoverable Mermin branch-loss candidate competition drop.
+!> \param candidate_drop ...
+!> \param reference_drop ...
+!> \param branch_loss_weight ...
+!> \param recovery ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_mermin_branch_loss_candidate_drop(candidate_drop, reference_drop, branch_loss_weight, &
+                                                    recovery) RESULT(expected_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop, reference_drop, &
+                                                            branch_loss_weight, recovery
+      REAL(KIND=dp)                                      :: expected_drop
+
+      expected_drop = MAX(0.0_dp, candidate_drop)
+      IF (expected_drop <= EPSILON(expected_drop)) RETURN
+
+      expected_drop = expected_drop + MAX(0.0_dp, MIN(1.0_dp, recovery))* &
+                      MAX(0.0_dp, MIN(1.0_dp, branch_loss_weight))* &
+                      MAX(expected_drop, MAX(0.0_dp, reference_drop))
+
+   END FUNCTION dense_mermin_branch_loss_candidate_drop
 
 ! **************************************************************************************************
 !> \brief Dense mirror of promoted physical Direct residual-tail close-call selection.

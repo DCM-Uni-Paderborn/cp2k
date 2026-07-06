@@ -65,8 +65,10 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_residual_growth_max_delta = 1.2E-5_dp, &
                                         ot_cg_kp_mermin_recovery_tail_min_delta = 1.5E-6_dp, &
                                         ot_cg_kp_mermin_recovery_tail_max_delta = 5.0E-6_dp, &
+                                        ot_cg_kp_mermin_recovery_active_tail_max_delta = 1.0E-4_dp, &
                                         ot_cg_kp_mermin_recovery_tail_min_eps_factor = 1.5_dp, &
                                         ot_cg_kp_mermin_recovery_step_floor = 1.0E-9_dp, &
+                                        ot_cg_kp_mermin_recovery_active_step_floor = 1.0E-5_dp, &
                                         ot_cg_kp_physical_raw_delta_floor_ratio = 1.0E-2_dp, &
                                         ot_cg_kp_physical_raw_delta_mermin_floor = 1.0E-8_dp, &
                                         ot_cg_kp_physical_control_eps_factor = 3.0_dp, &
@@ -427,34 +429,54 @@ CONTAINS
    SUBROUTINE recover_collapsed_mermin_search(qs_ot_env)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
-      REAL(KIND=dp)                                      :: mermin_tail_delta, mermin_tail_min, &
+      INTEGER                                            :: count, npos
+      LOGICAL                                            :: active_tail, collapsed_sample, collapsed_step
+      REAL(KIND=dp)                                      :: mermin_effective_delta, mermin_tail_delta, &
+                                                            mermin_tail_min, pos_floor, pos_max, &
                                                             step_floor
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
       IF (qs_ot_env(1)%line_search_count <= 0) RETURN
 
+      count = qs_ot_env(1)%line_search_count
+      npos = MIN(count + 1, SIZE(qs_ot_env(1)%ot_pos))
+      pos_max = 0.0_dp
+      IF (npos > 0) pos_max = MAXVAL(ABS(qs_ot_env(1)%ot_pos(1:npos)))
+
       step_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
                        qs_ot_env(1)%settings%eps_taylor)* &
                    MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+      pos_floor = step_floor
       mermin_tail_min = kpoint_eps_scaled_tail_min( &
                         ot_cg_kp_mermin_recovery_tail_min_delta, &
                         ot_cg_kp_mermin_recovery_tail_min_eps_factor, &
                         qs_ot_env(1)%kpoint_eps_scf)
       mermin_tail_delta = kpoint_projected_tail_delta(qs_ot_env)
-      IF (qs_ot_env(1)%kpoint_physical_delta_ready .AND. &
-          mermin_tail_delta > mermin_tail_min .AND. &
-          mermin_tail_delta < ot_cg_kp_mermin_recovery_tail_max_delta) THEN
+      mermin_effective_delta = qs_ot_env(1)%delta
+      IF (mermin_tail_delta <= 0.0_dp) mermin_tail_delta = mermin_effective_delta
+      active_tail = ((mermin_tail_delta > mermin_tail_min .AND. &
+                      mermin_tail_delta < ot_cg_kp_mermin_recovery_active_tail_max_delta) .OR. &
+                     (mermin_effective_delta > mermin_tail_min .AND. &
+                      mermin_effective_delta < ot_cg_kp_mermin_recovery_active_tail_max_delta))
+      IF (active_tail .AND. mermin_effective_delta > mermin_tail_min .AND. &
+          mermin_effective_delta < ot_cg_kp_mermin_recovery_active_tail_max_delta) &
+         mermin_tail_delta = mermin_effective_delta
+      IF (active_tail) THEN
          step_floor = MAX(step_floor, ot_cg_kp_mermin_recovery_step_floor* &
                           MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min)))
+         pos_floor = MAX(pos_floor, ot_cg_kp_mermin_recovery_active_step_floor* &
+                         MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min)))
       END IF
-      IF (ABS(qs_ot_env(1)%ds_min) > step_floor) RETURN
+      collapsed_step = ABS(qs_ot_env(1)%ds_min) <= step_floor
+      collapsed_sample = active_tail .AND. count >= 3 .AND. pos_max <= pos_floor
+      IF (.NOT. (collapsed_step .OR. collapsed_sample)) RETURN
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,ES16.8),1X,I5)') &
-            " OT Mermin LS recovery ds floor count:", &
-            qs_ot_env(1)%ds_min, step_floor, qs_ot_env(1)%line_search_count
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,2(1X,ES16.8),1X,I5,3(1X,ES16.8))') &
+            " OT Mermin LS recovery collapsed active ds floor count pos pmax delta:", &
+            active_tail, qs_ot_env(1)%ds_min, step_floor, count, pos_floor, pos_max, mermin_tail_delta
       END IF
 
       qs_ot_env(1)%ot_pos(:) = 0.0_dp
@@ -917,9 +939,29 @@ CONTAINS
             END IF
          ELSE
             ! Restarted or legacy Mermin 3-point histories can already be past the
-            ! endpoint.  Accept the current coordinates as a fresh history point
-            ! instead of replaying non-reversible auxiliary-energy trust steps.
-            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(count)
+            ! endpoint.  Accept the best sampled coordinates rather than a
+            ! potentially uphill current point.
+            best_index = 1
+            DO i = 2, count
+               IF (qs_ot_env(1)%OT_energy(i) < qs_ot_env(1)%OT_energy(best_index)) &
+                  best_index = i
+            END DO
+            best_energy = qs_ot_env(1)%OT_energy(best_index)
+            best_drop = qs_ot_env(1)%OT_energy(1) - best_energy
+            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
+            IF (best_index /= 1) THEN
+               qs_ot_env(1)%mermin_ls_sample_pending = .TRUE.
+               qs_ot_env(1)%mermin_ls_best_sample_index = best_index
+               qs_ot_env(1)%mermin_ls_reference_energy = qs_ot_env(1)%OT_energy(1)
+               qs_ot_env(1)%mermin_ls_best_sample_energy = best_energy
+               qs_ot_env(1)%mermin_ls_best_sample_drop = best_drop
+               qs_ot_env(1)%mermin_ls_model_drop = best_drop
+               qs_ot_env(1)%mermin_ls_model_quality = 1.0_dp
+               qs_ot_env(1)%mermin_ls_best_sample_pos = qs_ot_env(1)%OT_pos(best_index)
+               qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
+            ELSE
+               qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
+            END IF
          END IF
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = .TRUE.
