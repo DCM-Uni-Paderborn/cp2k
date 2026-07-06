@@ -288,6 +288,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density selected tail mix", 5.0E-14_dp, nfail)
    CALL check_projector_dense_metric_tail_bridge( &
       "complex projector dense metric tail bridge", 5.0E-14_dp, nfail)
+   CALL check_projector_dense_metric_current_bridge( &
+      "complex projector dense metric current bridge", 5.0E-14_dp, nfail)
    CALL check_projector_residual_gauge_floor( &
       "complex projector residual gauge floor", 5.0E-14_dp, nfail)
    CALL check_projector_trace_active_mix_weight("complex projector trace-active Direct mix", &
@@ -10916,6 +10918,78 @@ CONTAINS
    END SUBROUTINE check_projector_dense_metric_tail_bridge
 
 ! **************************************************************************************************
+!> \brief Check the current-candidate dense metric-response bridge gate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_dense_metric_current_bridge(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bad_curvature, bad_gap, bad_model, &
+                                                            bad_scale, low_residual, low_trust, &
+                                                            ready, tail_veto, tiny_model
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                5.0E-6_dp, 1.0E-1_dp)
+      tail_veto = dense_metric_current_bridge_ready(2.0E-4_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                    2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                    4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                    5.0E-6_dp, 1.0E-1_dp)
+      low_residual = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                       1.2E-1_dp, 7.8E-1_dp, 40, &
+                                                       4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                       5.0E-6_dp, 1.0E-1_dp)
+      low_trust = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                    2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                    2.4E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                    5.0E-6_dp, 1.0E-1_dp)
+      bad_scale = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                    2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                    4.5E-1_dp, 4.1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                    5.0E-6_dp, 1.0E-1_dp)
+      bad_curvature = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                        2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                        4.5E-1_dp, 6.0E-1_dp, 0.0_dp, 1.2E-5_dp, &
+                                                        5.0E-6_dp, 1.0E-1_dp)
+      bad_model = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                    2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                    4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                    0.0_dp, 1.0E-1_dp)
+      bad_gap = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                  2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                  4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                  5.0E-6_dp, 1.1_dp)
+      tiny_model = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
+                                                     4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                     1.0E-17_dp, 1.0E-1_dp)
+
+      err = 0.0_dp
+      IF (.NOT. ready .OR. tail_veto .OR. low_residual .OR. low_trust .OR. bad_scale .OR. &
+          bad_curvature .OR. bad_model .OR. bad_gap .OR. tiny_model) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "failed with ready/tail/residual/trust/scale/curvature/model/gap/tiny", &
+            ready, tail_veto, low_residual, low_trust, bad_scale, bad_curvature, bad_model, bad_gap, &
+            tiny_model
+      ELSE
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "OK with ready/tail/residual/trust/scale/curvature/model/gap/tiny", &
+            ready, tail_veto, low_residual, low_trust, bad_scale, bad_curvature, bad_model, bad_gap, &
+            tiny_model
+      END IF
+
+   END SUBROUTINE check_projector_dense_metric_current_bridge
+
+! **************************************************************************************************
 !> \brief Check the residual-aware gauge rotation floor.
 !> \param label ...
 !> \param tol ...
@@ -15243,6 +15317,58 @@ CONTAINS
       bridge_ready = .TRUE.
 
    END FUNCTION dense_metric_tail_bridge_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of the current-candidate dense metric-response bridge gate.
+!> \param residual_delta ...
+!> \param coupled_quality ...
+!> \param coupled_quality_ema ...
+!> \param coupled_samples ...
+!> \param dense_residual_quality ...
+!> \param mermin_quality_ema ...
+!> \param mermin_samples ...
+!> \param dense_metric_trust_scale ...
+!> \param dense_metric_scale_ratio ...
+!> \param dense_metric_normp ...
+!> \param gdotp ...
+!> \param current_model_drop ...
+!> \param current_model_gap_ratio ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_metric_current_bridge_ready(residual_delta, coupled_quality, coupled_quality_ema, &
+                                              coupled_samples, dense_residual_quality, &
+                                              mermin_quality_ema, mermin_samples, &
+                                              dense_metric_trust_scale, dense_metric_scale_ratio, &
+                                              dense_metric_normp, gdotp, current_model_drop, &
+                                              current_model_gap_ratio) RESULT(bridge_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, coupled_quality, &
+                                                            coupled_quality_ema
+      INTEGER, INTENT(IN)                                :: coupled_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality, &
+                                                            mermin_quality_ema
+      INTEGER, INTENT(IN)                                :: mermin_samples
+      REAL(KIND=dp), INTENT(IN) :: dense_metric_trust_scale, dense_metric_scale_ratio, &
+         dense_metric_normp, gdotp, current_model_drop, current_model_gap_ratio
+      LOGICAL                                            :: bridge_ready
+
+      bridge_ready = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (coupled_samples < 4) RETURN
+      IF (mermin_samples < 4) RETURN
+      IF (coupled_quality < -2.5_dp) RETURN
+      IF (coupled_quality_ema < -2.5_dp) RETURN
+      IF (mermin_quality_ema < 7.5E-1_dp) RETURN
+      IF (dense_residual_quality < 1.25E-1_dp) RETURN
+      IF (dense_metric_trust_scale < 2.5E-1_dp) RETURN
+      IF (dense_metric_scale_ratio < 5.0E-2_dp .OR. dense_metric_scale_ratio > 4.0_dp) RETURN
+      IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
+      IF (gdotp <= EPSILON(gdotp)) RETURN
+      IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
+      IF (current_model_gap_ratio > 1.0_dp) RETURN
+
+      bridge_ready = .TRUE.
+
+   END FUNCTION dense_metric_current_bridge_ready
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the residual-tail gauge rotation floor.
