@@ -11002,9 +11002,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: bad_curvature, bad_gap, bad_model, &
-                                                            bad_scale, low_residual, low_trust, &
-                                                            ready, tail_veto, tiny_model
+      LOGICAL :: bad_curvature, bad_gap, bad_model, bad_scale, low_residual, low_trust, ready, &
+         tail_veto, tiny_model, trust_limited, trust_limited_tiny_drop
       REAL(KIND=dp)                                      :: err
 
       ready = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
@@ -11021,8 +11020,16 @@ CONTAINS
                                                        5.0E-6_dp, 1.0E-1_dp)
       low_trust = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
-                                                    2.4E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
+                                                    2.4E-2_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
                                                     5.0E-6_dp, 1.0E-1_dp)
+      trust_limited = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                        2.5E-1_dp, 9.4E-1_dp, 40, &
+                                                        2.74E-2_dp, 6.0E-1_dp, 4.4E-5_dp, &
+                                                        3.0E-5_dp, 1.4E-6_dp, 4.0E-2_dp)
+      trust_limited_tiny_drop = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                                  2.5E-1_dp, 9.4E-1_dp, 40, &
+                                                                  2.74E-2_dp, 6.0E-1_dp, 4.4E-5_dp, &
+                                                                  3.0E-5_dp, 1.0E-8_dp, 4.0E-2_dp)
       bad_scale = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
                                                     4.5E-1_dp, 4.1_dp, 2.0E-5_dp, 1.2E-5_dp, &
@@ -11045,20 +11052,21 @@ CONTAINS
                                                      1.0E-17_dp, 1.0E-1_dp)
 
       err = 0.0_dp
-      IF (.NOT. ready .OR. tail_veto .OR. low_residual .OR. low_trust .OR. bad_scale .OR. &
+      IF (.NOT. ready .OR. tail_veto .OR. low_residual .OR. low_trust .OR. &
+          .NOT. trust_limited .OR. trust_limited_tiny_drop .OR. bad_scale .OR. &
           bad_curvature .OR. bad_model .OR. bad_gap .OR. tiny_model) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "failed with ready/tail/residual/trust/scale/curvature/model/gap/tiny", &
-            ready, tail_veto, low_residual, low_trust, bad_scale, bad_curvature, bad_model, bad_gap, &
-            tiny_model
+         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
+            "failed with ready/tail/residual/trust/tlim/tinyt/scale/curvature/model/gap/tiny", &
+            ready, tail_veto, low_residual, low_trust, trust_limited, trust_limited_tiny_drop, &
+            bad_scale, bad_curvature, bad_model, bad_gap, tiny_model
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "OK with ready/tail/residual/trust/scale/curvature/model/gap/tiny", &
-            ready, tail_veto, low_residual, low_trust, bad_scale, bad_curvature, bad_model, bad_gap, &
-            tiny_model
+         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
+            "OK with ready/tail/residual/trust/tlim/tinyt/scale/curvature/model/gap/tiny", &
+            ready, tail_veto, low_residual, low_trust, trust_limited, trust_limited_tiny_drop, &
+            bad_scale, bad_curvature, bad_model, bad_gap, tiny_model
       END IF
 
    END SUBROUTINE check_projector_dense_metric_current_bridge
@@ -15523,6 +15531,8 @@ CONTAINS
          dense_metric_normp, gdotp, current_model_drop, current_model_gap_ratio
       LOGICAL                                            :: bridge_ready
 
+      LOGICAL                                            :: trust_limited_ready
+
       bridge_ready = .FALSE.
       IF (residual_delta > 1.0E-4_dp) RETURN
       IF (coupled_samples < 4) RETURN
@@ -15531,12 +15541,18 @@ CONTAINS
       IF (coupled_quality_ema < -2.5_dp) RETURN
       IF (mermin_quality_ema < 7.5E-1_dp) RETURN
       IF (dense_residual_quality < 1.25E-1_dp) RETURN
-      IF (dense_metric_trust_scale < 2.5E-1_dp) RETURN
       IF (dense_metric_scale_ratio < 5.0E-2_dp .OR. dense_metric_scale_ratio > 4.0_dp) RETURN
       IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
       IF (gdotp <= EPSILON(gdotp)) RETURN
       IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
       IF (current_model_gap_ratio > 1.0_dp) RETURN
+
+      trust_limited_ready = dense_metric_trust_scale >= 2.5E-2_dp .AND. &
+                            current_model_drop >= 7.5E-7_dp .AND. &
+                            mermin_quality_ema >= 9.0E-1_dp .AND. &
+                            dense_residual_quality >= 2.5E-1_dp .AND. &
+                            current_model_gap_ratio <= 2.5E-1_dp
+      IF (dense_metric_trust_scale < 2.5E-1_dp .AND. .NOT. trust_limited_ready) RETURN
 
       bridge_ready = .TRUE.
 

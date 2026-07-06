@@ -164,6 +164,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibration_max_scale = 1.2_dp, &
                                         ot_kp_schur_calibrated_quality_max_ratio = 2.5_dp, &
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
+                                        ot_kp_schur_dense_metric_bridge_min_drop = 7.5E-7_dp, &
+                                        ot_kp_schur_dense_metric_bridge_min_scale = 2.5E-2_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
                                         ot_kp_schur_split_tail_residual_min_ratio = 9.0E-1_dp, &
@@ -22261,6 +22263,8 @@ CONTAINS
          dense_metric_normp, gdotp, current_model_drop, current_model_gap_ratio
       LOGICAL                                            :: bridge_ready
 
+      LOGICAL                                            :: trust_limited_ready
+
          bridge_ready = .FALSE.
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
          IF (coupled_samples < ot_kp_schur_calibration_min_samples) RETURN
@@ -22269,12 +22273,20 @@ CONTAINS
          IF (coupled_quality_ema < -ot_kp_schur_calibrated_quality_max_ratio) RETURN
          IF (mermin_quality_ema < 0.75_dp) RETURN
          IF (dense_residual_quality < 0.5_dp*ot_kp_schur_calibrated_quality_min_ratio) RETURN
-         IF (dense_metric_trust_scale < 0.25_dp) RETURN
          IF (dense_metric_scale_ratio < 0.05_dp .OR. dense_metric_scale_ratio > 4.0_dp) RETURN
          IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
          IF (gdotp <= EPSILON(gdotp)) RETURN
          IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
          IF (current_model_gap_ratio > 1.0_dp) RETURN
+
+         trust_limited_ready = dense_metric_trust_scale >= &
+            ot_kp_schur_dense_metric_bridge_min_scale .AND. &
+            current_model_drop >= ot_kp_schur_dense_metric_bridge_min_drop .AND. &
+            mermin_quality_ema >= 0.9_dp .AND. &
+            dense_residual_quality >= ot_kp_schur_calibrated_quality_min_ratio .AND. &
+            current_model_gap_ratio <= 0.25_dp
+         IF (dense_metric_trust_scale < ot_kp_schur_calibration_floor .AND. &
+             .NOT. trust_limited_ready) RETURN
 
          bridge_ready = .TRUE.
 
