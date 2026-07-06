@@ -244,6 +244,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density global selected-response scale", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_shadow_history_gate( &
       "complex projector density global shadow-history gate", 5.0E-14_dp, nfail)
+   CALL check_projector_density_global_tail_selection_probe( &
+      "complex projector density global tail-selection residual gate", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_history_drop_weight( &
       "complex projector density global history-drop weight", 5.0E-14_dp, nfail)
    CALL check_projector_density_global_metric_trust( &
@@ -10250,8 +10252,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: density_lift, err, physical_lift, physical_near, physical_weak, &
-         unchanged, zero_candidate
+      REAL(KIND=dp)                                      :: density_lift, err, physical_lift, &
+                                                            physical_near, physical_weak, &
+                                                            unchanged, zero_candidate
 
       unchanged = dense_mermin_branch_loss_candidate_drop(0.96_dp, 1.0_dp, 0.0_dp, 0.15_dp)
       zero_candidate = dense_mermin_branch_loss_candidate_drop(0.0_dp, 1.0_dp, 1.0_dp, 0.15_dp)
@@ -10550,6 +10553,49 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Check that global full-density tail probes use residual, not Mermin, selected history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_density_global_tail_selection_probe(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: good_residual, immature_probe, low_drop, &
+                                                            mature_bad_residual, tail_veto
+      REAL(KIND=dp)                                      :: err
+
+      immature_probe = dense_density_full_tail_selection_probe(.TRUE., 8.5E-8_dp, 1.0E-7_dp, &
+                                                               0.0_dp, 0.0_dp, 1, 0.40_dp)
+      mature_bad_residual = dense_density_full_tail_selection_probe(.TRUE., 8.5E-8_dp, 1.0E-7_dp, &
+                                                                    0.0_dp, 0.85_dp, 4, 0.40_dp)
+      good_residual = dense_density_full_tail_selection_probe(.TRUE., 8.5E-8_dp, 1.0E-7_dp, &
+                                                              0.25_dp, 0.36_dp, 4, 0.40_dp)
+      low_drop = dense_density_full_tail_selection_probe(.TRUE., 7.5E-8_dp, 1.0E-7_dp, &
+                                                         0.25_dp, 0.36_dp, 4, 0.40_dp)
+      tail_veto = dense_density_full_tail_selection_probe(.FALSE., 8.5E-8_dp, 1.0E-7_dp, &
+                                                          0.25_dp, 0.36_dp, 4, 0.40_dp)
+
+      err = 0.0_dp
+      IF (.NOT. immature_probe .OR. mature_bad_residual .OR. .NOT. good_residual .OR. &
+          low_drop .OR. tail_veto) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "failed with immature/badres/good/lowdrop/tail", immature_probe, &
+            mature_bad_residual, good_residual, low_drop, tail_veto
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "OK with immature/badres/good/lowdrop/tail", immature_probe, &
+            mature_bad_residual, good_residual, low_drop, tail_veto
+      END IF
+
+   END SUBROUTINE check_projector_density_global_tail_selection_probe
 
 ! **************************************************************************************************
 !> \brief Check that overconfident Direct-density history is capped by Direct model parity.
@@ -14488,6 +14534,44 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of the full-density global selected residual-tail gate.
+!> \param probe_ready ...
+!> \param candidate_expected_drop ...
+!> \param reference_expected_drop ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \param dense_residual_quality ...
+!> \return true if this is a calibrated residual-tail close call
+! **************************************************************************************************
+   FUNCTION dense_density_full_tail_selection_probe(probe_ready, candidate_expected_drop, &
+                                                    reference_expected_drop, selected_residual_quality, &
+                                                    selected_residual_quality_ema, selected_samples, &
+                                                    dense_residual_quality) RESULT(do_probe)
+      LOGICAL, INTENT(IN)                                :: probe_ready
+      REAL(KIND=dp), INTENT(IN) :: candidate_expected_drop, reference_expected_drop, &
+         selected_residual_quality, selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: do_probe
+
+      REAL(KIND=dp)                                      :: residual_reference
+
+      do_probe = .FALSE.
+      IF (.NOT. probe_ready) RETURN
+      IF (candidate_expected_drop < 8.0E-1_dp*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
+
+      IF (selected_samples >= 4) THEN
+         residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
+         IF (selected_residual_quality_ema < 8.0E-1_dp*residual_reference) RETURN
+         IF (selected_residual_quality < 4.0E-1_dp*residual_reference) RETURN
+      END IF
+
+      do_probe = .TRUE.
+
+   END FUNCTION dense_density_full_tail_selection_probe
 
 ! **************************************************************************************************
 !> \brief Dense mirror of Direct-density quality cap for model-parity history.

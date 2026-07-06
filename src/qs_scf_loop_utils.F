@@ -627,10 +627,8 @@ CONTAINS
          nkpoint, nlocal_channels, nmo, nspin_ot, ref_guard_attempt
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: fermi_window_guarded, ref_guard_ok, &
-                                                            protect_mermin_ls_sample, ref_guarded, &
-                                                            update_ot_energy_state, &
-                                                            update_ot_energy_state_after, use_real_wfn
+      LOGICAL :: fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, ref_guarded, &
+         update_ot_energy_state, update_ot_energy_state_after, use_real_wfn
       REAL(KIND=dp)                                      :: ener_nondiag, maxocc, ref_guard_max, &
                                                             ref_guard_min, ref_guard_scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor, trial_mu
@@ -17066,9 +17064,9 @@ CONTAINS
                      .NOT. density_descent_candidate_selected .AND. &
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
-                     local_ot_env(1)%schur_projector_density_full_global_quality, &
-                     local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
-                     local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                     local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                     local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+                     local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples, &
                      dense_residual_quality)) .OR. &
                     density_full_global_tail_prefer)) THEN
                   attempt_failed = .FALSE.
@@ -17681,9 +17679,9 @@ CONTAINS
                      .NOT. density_descent_candidate_selected .AND. &
                      kpoint_ot_density_full_tail_selection_probe( &
                      density_full_global_tail_probe_ready, density_full_global_expected_drop, dense_expected_drop, &
-                     local_ot_env(1)%schur_projector_density_full_global_quality, &
-                     local_ot_env(1)%schur_projector_density_full_global_quality_ema, &
-                     local_ot_env(1)%schur_projector_density_full_global_quality_samples, &
+                     local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality, &
+                     local_ot_env(1)%schur_projector_density_full_global_sel_resid_quality_ema, &
+                     local_ot_env(1)%schur_projector_density_full_global_sel_quality_samples, &
                      dense_residual_quality)) .OR. &
                     density_full_global_tail_prefer)) THEN
                   attempt_failed = .FALSE.
