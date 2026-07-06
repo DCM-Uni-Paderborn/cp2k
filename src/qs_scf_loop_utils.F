@@ -11308,8 +11308,11 @@ CONTAINS
                ot_kp_schur_projector_response_underpredict_max_ratio)
             IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                projector_response_quality_for_selection = projector_response_quality_for_selection* &
-                                                          MAX(0.0_dp, MIN(1.0_dp, &
-                                                            local_ot_env(1)%schur_projector_response_selected_residual_quality_ema))
+                                                          kpoint_ot_selected_tail_residual_quality( &
+                                                          local_ot_env(1)% &
+                                                          schur_projector_response_selected_residual_quality, &
+                                                          local_ot_env(1)% &
+                                                          schur_projector_response_selected_residual_quality_ema)
          END IF
          projector_diagref_quality_for_selection = &
             kpoint_ot_schur_history_quality(local_ot_env(1)%schur_projector_diagref_drop_sum, &
@@ -11402,8 +11405,9 @@ CONTAINS
             IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                projector_physical_direct_history_quality = &
                projector_physical_direct_history_quality* &
-               MAX(0.0_dp, MIN(1.0_dp, &
-                               local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema))
+               kpoint_ot_selected_tail_residual_quality( &
+               local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality, &
+               local_ot_env(1)%schur_projector_physical_direct_selected_residual_quality_ema)
             projector_physical_direct_history_scale = &
                kpoint_ot_direct_history_step_scale( &
                projector_physical_direct_history_quality, &
@@ -11647,8 +11651,9 @@ CONTAINS
             IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) &
                density_descent_quality_for_selection = &
                density_descent_quality_for_selection* &
-               MAX(0.0_dp, MIN(1.0_dp, &
-                               local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema))
+               kpoint_ot_selected_tail_residual_quality( &
+               local_ot_env(1)%schur_projector_density_descent_selected_residual_quality, &
+               local_ot_env(1)%schur_projector_density_descent_selected_residual_quality_ema)
          END IF
          density_descent_incremental_quality_for_selection = &
             MIN(density_descent_incremental_quality_for_selection, density_descent_quality_for_selection)
@@ -14917,9 +14922,11 @@ CONTAINS
                                   ot_kp_schur_projector_coupled_tail_delta) THEN
                                  density_full_quality_for_selection = &
                                     density_full_quality_for_selection* &
-                                    MAX(0.0_dp, MIN(1.0_dp, &
-                                                    local_ot_env(1)% &
-                                                    schur_projector_density_full_selected_residual_quality_ema))
+                                    kpoint_ot_selected_tail_residual_quality( &
+                                    local_ot_env(1)% &
+                                    schur_projector_density_full_selected_residual_quality, &
+                                    local_ot_env(1)% &
+                                    schur_projector_density_full_selected_residual_quality_ema)
                               END IF
                            END IF
                            IF (local_ot_env(1)%schur_projector_density_full_direct_quality_samples >= &
@@ -14979,9 +14986,11 @@ CONTAINS
                                   ot_kp_schur_projector_coupled_tail_delta) THEN
                                  density_full_direct_quality_for_selection = &
                                     density_full_direct_quality_for_selection* &
-                                    MAX(0.0_dp, MIN(1.0_dp, &
-                                                    local_ot_env(1)% &
-                                                    schur_projector_density_fdir_sel_resid_quality_ema))
+                                    kpoint_ot_selected_tail_residual_quality( &
+                                    local_ot_env(1)% &
+                                    schur_projector_density_fdir_sel_resid_quality, &
+                                    local_ot_env(1)% &
+                                    schur_projector_density_fdir_sel_resid_quality_ema)
                               END IF
                               density_full_direct_history_scale = &
                                  MIN(density_full_direct_history_scale, &

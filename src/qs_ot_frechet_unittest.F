@@ -10777,14 +10777,20 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: early_expected, early_weight, err, good_mix_quality, good_strict_quality, &
-         mature_weight, strict_zero_quality, tail_veto, weak_quality, young_history, &
-         zero_mix_quality
+      REAL(KIND=dp) :: early_expected, early_weight, err, good_history_quality, good_mix_quality, &
+         good_strict_quality, mature_weight, outside_tail_history_quality, stale_history_quality, &
+         strict_zero_quality, tail_veto, weak_quality, young_history, zero_mix_quality
 
       strict_zero_quality = dense_selected_tail_residual_quality(0.0_dp, 0.1188258236_dp)
       zero_mix_quality = dense_selected_tail_mix_residual_quality(0.0_dp, 0.1188258236_dp)
       good_strict_quality = dense_selected_tail_residual_quality(0.25_dp, 0.25_dp)
       good_mix_quality = dense_selected_tail_mix_residual_quality(0.25_dp, 0.25_dp)
+      stale_history_quality = dense_selected_tail_history_quality(0.5_dp, 5.0E-5_dp, &
+                                                                  0.0_dp, 0.1188258236_dp)
+      good_history_quality = dense_selected_tail_history_quality(0.5_dp, 5.0E-5_dp, &
+                                                                 0.25_dp, 0.25_dp)
+      outside_tail_history_quality = dense_selected_tail_history_quality(0.5_dp, 2.0E-4_dp, &
+                                                                         0.0_dp, 0.1188258236_dp)
       tail_veto = dense_direct_density_selected_mix_weight(2.0E-4_dp, 0.0267028466_dp, &
                                                            zero_mix_quality, 4)
       young_history = dense_direct_density_selected_mix_weight(2.0E-5_dp, 0.0267028466_dp, &
@@ -10801,6 +10807,9 @@ CONTAINS
       err = MAX(err, ABS(zero_mix_quality - 0.0594129118_dp))
       err = MAX(err, ABS(good_strict_quality - 0.25_dp))
       err = MAX(err, ABS(good_mix_quality - 0.5_dp))
+      err = MAX(err, ABS(stale_history_quality))
+      err = MAX(err, ABS(good_history_quality - 0.125_dp))
+      err = MAX(err, ABS(outside_tail_history_quality - 0.5_dp))
       err = MAX(err, ABS(tail_veto))
       err = MAX(err, ABS(young_history))
       err = MAX(err, ABS(weak_quality))
@@ -10809,18 +10818,42 @@ CONTAINS
 
       IF (err > tol .OR. early_weight <= 0.0_dp .OR. early_weight >= 1.0E-3_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
-            "failed err/strict0/mix0/strictg/mixg/tail/young/weak/early/expected/mature", &
+         WRITE (*, '(A,1X,A,13(1X,ES12.5))') TRIM(label), &
+            "failed err/strict0/mix0/strictg/mixg/stale/good/out/tail/young/weak/early/expected/mature", &
             err, strict_zero_quality, zero_mix_quality, good_strict_quality, good_mix_quality, &
-            tail_veto, young_history, weak_quality, early_weight, early_expected, mature_weight
+            stale_history_quality, good_history_quality, outside_tail_history_quality, tail_veto, &
+            young_history, weak_quality, early_weight, early_expected, mature_weight
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
-            "OK err/strict0/mix0/strictg/mixg/tail/young/weak/early/expected/mature", &
+         WRITE (*, '(A,1X,A,13(1X,ES12.5))') TRIM(label), &
+            "OK err/strict0/mix0/strictg/mixg/stale/good/out/tail/young/weak/early/expected/mature", &
             err, strict_zero_quality, zero_mix_quality, good_strict_quality, good_mix_quality, &
-            tail_veto, young_history, weak_quality, early_weight, early_expected, mature_weight
+            stale_history_quality, good_history_quality, outside_tail_history_quality, tail_veto, &
+            young_history, weak_quality, early_weight, early_expected, mature_weight
       END IF
 
    END SUBROUTINE check_projector_density_selected_tail_mix
+
+! **************************************************************************************************
+!> \brief Dense mirror of strict selected-history residual-tail quality capping.
+!> \param history_quality ...
+!> \param residual_delta ...
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_selected_tail_history_quality(history_quality, residual_delta, selected_residual_quality, &
+                                                selected_residual_quality_ema) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: history_quality, residual_delta, &
+                                                            selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      REAL(KIND=dp)                                      :: quality
+
+      quality = history_quality
+      IF (residual_delta <= 1.0E-4_dp) &
+         quality = quality*dense_selected_tail_residual_quality(selected_residual_quality, &
+                                                                selected_residual_quality_ema)
+
+   END FUNCTION dense_selected_tail_history_quality
 
 ! **************************************************************************************************
 !> \brief Check the residual-tail dense metric-response bridge gate.
