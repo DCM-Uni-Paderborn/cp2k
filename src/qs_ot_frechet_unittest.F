@@ -13176,9 +13176,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp)                                      :: early, err, good_residual, neutral, &
-                                                            persistent, plateau_adjusted, &
-                                                            plateau_raw, spike
+      REAL(KIND=dp) :: candidate_current, candidate_neutral, candidate_tail, early, err, &
+         good_residual, neutral, persistent, plateau_adjusted, plateau_raw, spike
 
       early = dense_schur_step_gauge_quality(38.0_dp, 0.66_dp, 0.0_dp, 0.0_dp, 3)
       spike = dense_schur_step_gauge_quality(38.0_dp, 0.66_dp, 0.0_dp, 0.005_dp, 52)
@@ -13190,6 +13189,9 @@ CONTAINS
                     4.44_dp, 3.15_dp, &
                     dense_step_gauge_residual_quality(0.0_dp, 0.25_dp), &
                     dense_step_gauge_residual_quality(0.0_dp, 0.152_dp), 104)
+      candidate_tail = dense_candidate_step_gauge_quality(26.0_dp, spike)
+      candidate_neutral = dense_candidate_step_gauge_quality(0.8_dp, spike)
+      candidate_current = dense_candidate_step_gauge_quality(26.0_dp, good_residual)
 
       err = ABS(early - 1.0_dp)
       err = MAX(err, ABS(spike - 0.35_dp))
@@ -13197,18 +13199,23 @@ CONTAINS
       err = MAX(err, ABS(neutral - 1.0_dp))
       err = MAX(err, ABS(good_residual - 1.0_dp))
       err = MAX(err, ABS(plateau_raw - 0.706_dp))
+      err = MAX(err, ABS(candidate_tail - spike), ABS(candidate_neutral - 1.0_dp), &
+                ABS(candidate_current - spike))
 
       IF (err > tol .OR. spike >= persistent .OR. spike >= neutral .OR. &
           persistent >= neutral .OR. good_residual < 1.0_dp .OR. &
-          plateau_raw >= plateau_adjusted .OR. plateau_raw > 0.75_dp) THEN
+          plateau_raw >= plateau_adjusted .OR. plateau_raw > 0.75_dp .OR. &
+          candidate_tail >= candidate_neutral .OR. candidate_current >= candidate_neutral) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with early/spike/persistent/neutral/good/padj/praw", early, spike, persistent, &
-            neutral, good_residual, plateau_adjusted, plateau_raw
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "failed with early/spike/persistent/neutral/good/padj/praw/ctail/cneu/ccur", &
+            early, spike, persistent, neutral, good_residual, plateau_adjusted, plateau_raw, &
+            candidate_tail, candidate_neutral, candidate_current
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with early/spike/persistent/neutral/good/padj/praw", early, spike, persistent, &
-            neutral, good_residual, plateau_adjusted, plateau_raw
+         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
+            "OK with early/spike/persistent/neutral/good/padj/praw/ctail/cneu/ccur", &
+            early, spike, persistent, neutral, good_residual, plateau_adjusted, plateau_raw, &
+            candidate_tail, candidate_neutral, candidate_current
       END IF
 
    END SUBROUTINE check_projector_tail_gauge_quality
@@ -13368,6 +13375,30 @@ CONTAINS
       quality = MIN(1.0_dp, MAX(0.25_dp, quality))
 
    END FUNCTION dense_schur_step_gauge_quality
+
+! **************************************************************************************************
+!> \brief Dense copy of residual-tail candidate step gauge quality.
+!> \param gauge_ratio ...
+!> \param history_gauge_quality ...
+!> \return quality for the current candidate step character
+! **************************************************************************************************
+   FUNCTION dense_candidate_step_gauge_quality(gauge_ratio, history_gauge_quality) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: gauge_ratio, history_gauge_quality
+      REAL(KIND=dp)                                      :: quality
+
+      REAL(KIND=dp)                                      :: gauge_quality, gauge_weight, &
+                                                            history_quality
+
+      history_quality = MAX(0.0_dp, MIN(1.0_dp, history_gauge_quality))
+      quality = 1.0_dp
+      IF (gauge_ratio <= 1.5_dp) RETURN
+
+      gauge_weight = MIN(1.0_dp, MAX(0.0_dp, (gauge_ratio - 1.5_dp)/6.5_dp))
+      gauge_quality = 1.0_dp - 0.65_dp*gauge_weight
+      quality = MIN(gauge_quality, 1.0_dp - gauge_weight*(1.0_dp - history_quality))
+      quality = MAX(0.25_dp, MIN(1.0_dp, quality))
+
+   END FUNCTION dense_candidate_step_gauge_quality
 
 ! **************************************************************************************************
 !> \brief Dense copy of absolute residual-tail trust for offdiag projector response.
