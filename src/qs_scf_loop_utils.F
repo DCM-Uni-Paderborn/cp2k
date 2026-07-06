@@ -15819,7 +15819,18 @@ CONTAINS
                      IF (local_ot_env(1)%schur_projector_mode_quality_samples >= &
                          ot_kp_schur_calibration_min_samples) THEN
                         response_physical_model(:, :) = response_exact_physical(:, :)
-                        IF (exact_density_full_response_ready) THEN
+                        IF (kpoint_ot_projector_modal_response_use_direct( &
+                            exact_density_direct_response_ready, &
+                            projector_physical_direct_floor_density_weight, &
+                            projector_physical_direct_density_fshadow_ready)) THEN
+                           ! Use the accepted-history calibrated density response
+                           ! for the modal finite-response correction once it is
+                           ! carrying a real Direct-density contribution.  The
+                           ! unqualified full-density model remains a shadow/audit
+                           ! source until this history is present.
+                           response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                           response_density_direct_exact(:, :)
+                        ELSE IF (exact_density_full_response_ready) THEN
                            response_physical_model(:, :) = response_physical_model(:, :) + &
                                                            response_density_full_exact(:, :)
                         ELSE IF (exact_density_direct_response_ready) THEN
@@ -21084,6 +21095,26 @@ CONTAINS
          row_floor = MIN(frontier_floor, row_floor)
 
       END FUNCTION kpoint_ot_physical_rotation_floor
+
+! **************************************************************************************************
+!> \brief use accepted-history Direct density in the modal finite-response model
+!> \param direct_response_ready whether a Direct-density response is available
+!> \param direct_floor_weight accepted-history Direct-density floor/source weight
+!> \param direct_filtered_shadow_ready whether the filtered source has been promoted
+!> \return true if Direct-density response should override the unqualified full-density shadow
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_modal_response_use_direct(direct_response_ready, direct_floor_weight, &
+                                                             direct_filtered_shadow_ready) RESULT(use_direct)
+      LOGICAL, INTENT(IN)                                :: direct_response_ready
+      REAL(KIND=dp), INTENT(IN)                          :: direct_floor_weight
+      LOGICAL, INTENT(IN)                                :: direct_filtered_shadow_ready
+      LOGICAL                                            :: use_direct
+
+         use_direct = direct_response_ready .AND. &
+                      (direct_floor_weight > EPSILON(direct_floor_weight) .OR. &
+                       direct_filtered_shadow_ready)
+
+      END FUNCTION kpoint_ot_projector_modal_response_use_direct
 
 ! **************************************************************************************************
 !> \brief active-window curvature blend driven by accepted density-response history
