@@ -7230,20 +7230,22 @@ CONTAINS
          projector_physical_direct_density_selected_probe_ready, &
          projector_physical_direct_density_tail_probe_ready, &
          projector_physical_direct_diagref_candidate_ready, &
+         projector_physical_direct_effective_response_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
          projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
          projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
-         projector_physical_direct_spectral_candidate_selected, &
-         projector_physical_direct_spectral_enabled
-      LOGICAL :: projector_physical_direct_spectral_probe_ready, &
+         projector_physical_direct_spectral_candidate_selected
+      LOGICAL :: projector_physical_direct_spectral_enabled, &
+         projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, response_model_available, schur_active_subspace, &
          solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected
+         split_candidate_selected
+      LOGICAL :: split_residual_competitive, trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, &
          accepted_model_gap_ratio, accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          accepted_projector_coupled_weight, accepted_projector_inactive_offdiag_abs_ratio, &
@@ -7920,19 +7922,19 @@ CONTAINS
          projector_physical_direct_active_lcomp, projector_physical_direct_curv_eval, &
          projector_physical_direct_density_rx_e, projector_physical_direct_density_sol, &
          projector_physical_direct_density_z_e, projector_physical_direct_diagref_rx_e, &
-         projector_physical_direct_model_e, projector_physical_direct_response_rx_e, &
-         projector_physical_direct_rx_e, projector_physical_direct_schur_eval, &
-         projector_physical_direct_sol
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_spectral_model_e, &
-         projector_physical_direct_spectral_rx_e, projector_physical_direct_spectral_sol, &
-         projector_physical_direct_spectral_z_e, projector_physical_direct_z_e, &
-         projector_physical_model_e, projector_physical_rx_e, projector_physical_sol, &
-         projector_physical_z_e, projector_response_rx_e, projector_response_sol, &
-         projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, &
-         split_sol, split_z_e, tether_curv, var_occ_gap_weight, var_projector_active_weight, &
-         var_projector_response_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_projector_weight, &
-         z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
+         projector_physical_direct_effective_rx_e, projector_physical_direct_model_e, &
+         projector_physical_direct_response_rx_e, projector_physical_direct_rx_e, &
+         projector_physical_direct_schur_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_sol, &
+         projector_physical_direct_spectral_model_e, projector_physical_direct_spectral_rx_e, &
+         projector_physical_direct_spectral_sol, projector_physical_direct_spectral_z_e, &
+         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
+         projector_physical_sol, projector_physical_z_e, projector_response_rx_e, &
+         projector_response_sol, projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, &
+         rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, var_occ_gap_weight, &
+         var_projector_active_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_projector_response_weight, &
+         var_projector_weight, z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
          z_density_basis_damped_audit_trial, z_density_basis_filtered_audit_trial, &
          z_density_basis_selective_audit_trial, z_density_floor_audit_trial, &
          z_density_floor_safe_audit_trial, z_density_full_audit_trial, &
@@ -8113,6 +8115,7 @@ CONTAINS
                    direct_pg_base_e(ne), direct_pg_rx_e(ne), &
                    projector_physical_direct_response_rx_e(ne), &
                    projector_physical_direct_diagref_rx_e(ne), &
+                   projector_physical_direct_effective_rx_e(ne), &
                    projector_physical_direct_density_rx_e(ne), &
                    projector_physical_direct_density_sol(nrot), &
                    projector_physical_direct_density_z_e(ne), &
@@ -8227,6 +8230,7 @@ CONTAINS
          projector_physical_direct_model_e(:) = 0.0_dp
          projector_physical_direct_response_rx_e(:) = 0.0_dp
          projector_physical_direct_diagref_rx_e(:) = 0.0_dp
+         projector_physical_direct_effective_rx_e(:) = 0.0_dp
          projector_physical_direct_density_rx_e(:) = 0.0_dp
          projector_physical_direct_density_z_e(:) = 0.0_dp
          density_descent_rx_e(:) = 0.0_dp
@@ -8789,6 +8793,7 @@ CONTAINS
          projector_physical_direct_mixed_consistency_scale = 0.0_dp
          projector_physical_direct_mixed_step_scale = 0.0_dp
          projector_physical_direct_mixed_weight = 0.0_dp
+         projector_physical_direct_effective_response_ready = .FALSE.
          projector_physical_direct_plateau_gap_mix_weight = 0.0_dp
          projector_physical_direct_inactive_offdiag_balance = 0.0_dp
          projector_offdiag_negative_physical_support = 1.0_dp
@@ -16012,6 +16017,28 @@ CONTAINS
                            projector_physical_direct_model_e(:) = &
                               projector_physical_direct_rx_e(:)
                         END IF
+                        projector_physical_direct_effective_response_ready = &
+                           kpoint_ot_projector_direct_model_response_ready( &
+                           exact_density_direct_response_ready, &
+                           projector_physical_direct_floor_density_weight, &
+                           projector_physical_direct_density_fshadow_ready)
+                        projector_physical_direct_effective_rx_e(:) = &
+                           projector_physical_direct_rx_e(:)
+                        IF (projector_physical_direct_effective_response_ready) &
+                           projector_physical_direct_effective_rx_e(:) = &
+                           projector_physical_direct_model_e(:)
+                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                            logger%para_env%is_source()) THEN
+                           rx_shift = MAXVAL(ABS(projector_physical_direct_model_e - &
+                                                 projector_physical_direct_rx_e))
+                           projected_term = MAXVAL(ABS(projector_physical_direct_model_e - &
+                                                       projector_physical_direct_effective_rx_e))
+                           WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,4(1X,ES16.8))') &
+                              " OT Schur projector phys direct effective response ready raw_gap eff_gap floor fprom:", &
+                              projector_physical_direct_effective_response_ready, rx_shift, projected_term, &
+                              projector_physical_direct_floor_density_weight, &
+                              projector_physical_direct_density_fshadow_promotion_weight
+                        END IF
                         IF (projector_plateau_gap_model_enabled .AND. &
                             exact_density_response_ready .AND. &
                             exact_density_full_response_ready) THEN
@@ -16050,7 +16077,7 @@ CONTAINS
                         END IF
                      END IF
                      projector_physical_direct_z_e(:) = z_exact_physical_trial(:) + &
-                                                        projector_physical_direct_rx_e(:)
+                                                        projector_physical_direct_effective_rx_e(:)
                      projector_physical_direct_gdot_base_energy = &
                         DOT_PRODUCT(grad_e, z_exact_physical_trial)
                      projector_physical_direct_gdot_raw_response = &
@@ -16140,15 +16167,16 @@ CONTAINS
                            MAX(projector_physical_direct_metric_normp, &
                                EPSILON(projector_physical_direct_metric_normp))
                         projector_physical_direct_unit_abs_step = &
-                           MAXVAL(ABS(projector_physical_direct_rx_e))
+                           MAXVAL(ABS(projector_physical_direct_effective_rx_e))
                         CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
                         projector_physical_direct_unit_weighted_step = &
-                           kpoint_ot_weighted_response_step(projector_physical_direct_rx_e, curv, &
+                           kpoint_ot_weighted_response_step(projector_physical_direct_effective_rx_e, curv, &
                                                             curv_projection_sum)
                         projector_physical_direct_unit_model_gap = &
-                           MAXVAL(ABS(projector_physical_direct_model_e - projector_physical_direct_rx_e))
+                           MAXVAL(ABS(projector_physical_direct_model_e - &
+                                      projector_physical_direct_effective_rx_e))
                         projector_physical_direct_unit_model_gap_drop = &
-                           kpoint_ot_response_mismatch_drop(projector_physical_direct_rx_e, &
+                           kpoint_ot_response_mismatch_drop(projector_physical_direct_effective_rx_e, &
                                                             projector_physical_direct_model_e, curv, &
                                                             1.0_dp)
                         projector_physical_direct_unit_trace_invariant_gap_drop = &
@@ -16348,7 +16376,7 @@ CONTAINS
                      projector_physical_candidate_ready = .TRUE.
                      projector_physical_direct_candidate_used = .TRUE.
                      projector_physical_model_e(:) = projector_physical_direct_model_e(:)
-                     projector_physical_rx_e(:) = projector_physical_direct_rx_e(:)
+                     projector_physical_rx_e(:) = projector_physical_direct_effective_rx_e(:)
                      projector_physical_z_e(:) = projector_physical_direct_z_e(:)
                      projector_physical_sol(:) = projector_physical_direct_sol(:)
                      projector_physical_direction_scale = projector_physical_direct_direction_scale
@@ -20421,6 +20449,7 @@ CONTAINS
                      projector_physical_direct_response_rx_e, &
                      projector_physical_direct_diagref_rx_e, &
                      projector_physical_direct_density_rx_e, &
+                     projector_physical_direct_effective_rx_e, &
                      projector_physical_direct_density_z_e, &
                      density_descent_rx_e, &
                      density_descent_z_e, &
@@ -21097,6 +21126,26 @@ CONTAINS
       END FUNCTION kpoint_ot_physical_rotation_floor
 
 ! **************************************************************************************************
+!> \brief true once Direct density carries accepted-history physical response
+!> \param direct_response_ready whether a Direct-density response is available
+!> \param direct_floor_weight accepted-history Direct-density floor/source weight
+!> \param direct_filtered_shadow_ready whether the filtered source has been promoted
+!> \return true if the Direct-density model should be used as a physical response source
+! **************************************************************************************************
+      FUNCTION kpoint_ot_projector_direct_model_response_ready(direct_response_ready, direct_floor_weight, &
+                                                               direct_filtered_shadow_ready) RESULT(use_direct)
+      LOGICAL, INTENT(IN)                                :: direct_response_ready
+      REAL(KIND=dp), INTENT(IN)                          :: direct_floor_weight
+      LOGICAL, INTENT(IN)                                :: direct_filtered_shadow_ready
+      LOGICAL                                            :: use_direct
+
+         use_direct = direct_response_ready .AND. &
+                      (direct_floor_weight > EPSILON(direct_floor_weight) .OR. &
+                       direct_filtered_shadow_ready)
+
+      END FUNCTION kpoint_ot_projector_direct_model_response_ready
+
+! **************************************************************************************************
 !> \brief use accepted-history Direct density in the modal finite-response model
 !> \param direct_response_ready whether a Direct-density response is available
 !> \param direct_floor_weight accepted-history Direct-density floor/source weight
@@ -21110,9 +21159,8 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: direct_filtered_shadow_ready
       LOGICAL                                            :: use_direct
 
-         use_direct = direct_response_ready .AND. &
-                      (direct_floor_weight > EPSILON(direct_floor_weight) .OR. &
-                       direct_filtered_shadow_ready)
+         use_direct = kpoint_ot_projector_direct_model_response_ready( &
+                      direct_response_ready, direct_floor_weight, direct_filtered_shadow_ready)
 
       END FUNCTION kpoint_ot_projector_modal_response_use_direct
 

@@ -316,6 +316,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector full-density override guard", 5.0E-14_dp, nfail)
    CALL check_projector_modal_density_response_source( &
       "complex projector modal density-response source", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_model_response_source( &
+      "complex projector Direct model-response source", 5.0E-14_dp, nfail)
    CALL check_projector_direct_history_consistency_scale( &
       "complex projector Direct history consistency scale", 5.0E-14_dp, nfail)
    CALL check_projector_mixed_direct_promotion("complex projector mixed Direct promotion", &
@@ -11829,6 +11831,43 @@ CONTAINS
    END SUBROUTINE check_projector_modal_density_response_source
 
 ! **************************************************************************************************
+!> \brief Check that Direct accepted-response replacement needs real Direct history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_model_response_source(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: no_direct, no_signal, uses_filtered, &
+                                                            uses_floor
+      REAL(KIND=dp)                                      :: err
+
+      uses_floor = dense_direct_model_response_ready(.TRUE., 5.0E-2_dp, .FALSE.)
+      uses_filtered = dense_direct_model_response_ready(.TRUE., 0.0_dp, .TRUE.)
+      no_direct = .NOT. dense_direct_model_response_ready(.FALSE., 5.0E-2_dp, .TRUE.)
+      no_signal = .NOT. dense_direct_model_response_ready(.TRUE., 0.0_dp, .FALSE.)
+
+      err = 0.0_dp
+      IF (.NOT. uses_floor .OR. .NOT. uses_filtered .OR. .NOT. no_direct .OR. &
+          .NOT. no_signal) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
+            "failed with floor/filtered/no-direct/no-signal", uses_floor, uses_filtered, &
+            no_direct, no_signal
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
+            "OK with floor/filtered/no-direct/no-signal", uses_floor, uses_filtered, no_direct, &
+            no_signal
+      END IF
+
+   END SUBROUTINE check_projector_direct_model_response_source
+
+! **************************************************************************************************
 !> \brief Check accepted-drop consistency scaling of mixed Direct history.
 !> \param label ...
 !> \param tol ...
@@ -14825,6 +14864,26 @@ CONTAINS
 !> \param direct_response_ready ...
 !> \param direct_floor_weight ...
 !> \param direct_filtered_shadow_ready ...
+!> \return true if the Direct-density model should be used
+! **************************************************************************************************
+   FUNCTION dense_direct_model_response_ready(direct_response_ready, direct_floor_weight, &
+                                              direct_filtered_shadow_ready) RESULT(use_direct)
+      LOGICAL, INTENT(IN)                                :: direct_response_ready
+      REAL(KIND=dp), INTENT(IN)                          :: direct_floor_weight
+      LOGICAL, INTENT(IN)                                :: direct_filtered_shadow_ready
+      LOGICAL                                            :: use_direct
+
+      use_direct = direct_response_ready .AND. &
+                   (direct_floor_weight > EPSILON(direct_floor_weight) .OR. &
+                    direct_filtered_shadow_ready)
+
+   END FUNCTION dense_direct_model_response_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of modal finite-response Direct density-source selection.
+!> \param direct_response_ready ...
+!> \param direct_floor_weight ...
+!> \param direct_filtered_shadow_ready ...
 !> \return true if the Direct-density response should be used
 ! **************************************************************************************************
    FUNCTION dense_modal_density_response_use_direct(direct_response_ready, direct_floor_weight, &
@@ -14834,9 +14893,8 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: direct_filtered_shadow_ready
       LOGICAL                                            :: use_direct
 
-      use_direct = direct_response_ready .AND. &
-                   (direct_floor_weight > EPSILON(direct_floor_weight) .OR. &
-                    direct_filtered_shadow_ready)
+      use_direct = dense_direct_model_response_ready( &
+                   direct_response_ready, direct_floor_weight, direct_filtered_shadow_ready)
 
    END FUNCTION dense_modal_density_response_use_direct
 
