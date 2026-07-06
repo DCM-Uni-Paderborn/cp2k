@@ -11002,71 +11002,92 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: bad_curvature, bad_gap, bad_model, bad_scale, low_residual, low_trust, ready, &
-         tail_veto, tiny_model, trust_limited, trust_limited_tiny_drop
+      LOGICAL :: bad_curvature, bad_gap, bad_model, bad_scale, low_residual, low_trust, &
+         mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, ready, tail_veto, &
+         tiny_model, trust_limited, trust_limited_tiny_drop
       REAL(KIND=dp)                                      :: err
 
       ready = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                 2.0E-1_dp, 7.8E-1_dp, 40, &
                                                 4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                5.0E-6_dp, 1.0E-1_dp)
+                                                5.0E-6_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       tail_veto = dense_metric_current_bridge_ready(2.0E-4_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
                                                     4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                    5.0E-6_dp, 1.0E-1_dp)
+                                                    5.0E-6_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       low_residual = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                        1.2E-1_dp, 7.8E-1_dp, 40, &
                                                        4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                       5.0E-6_dp, 1.0E-1_dp)
+                                                       5.0E-6_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       low_trust = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
                                                     2.4E-2_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                    5.0E-6_dp, 1.0E-1_dp)
+                                                    5.0E-6_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       trust_limited = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                         2.5E-1_dp, 9.4E-1_dp, 40, &
                                                         2.74E-2_dp, 6.0E-1_dp, 4.4E-5_dp, &
-                                                        3.0E-5_dp, 1.4E-6_dp, 4.0E-2_dp)
+                                                        3.0E-5_dp, 1.4E-6_dp, 5.0E-2_dp, 4.0E-2_dp, &
+                                                        4.0E-1_dp, 12)
       trust_limited_tiny_drop = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                                   2.5E-1_dp, 9.4E-1_dp, 40, &
                                                                   2.74E-2_dp, 6.0E-1_dp, 4.4E-5_dp, &
-                                                                  3.0E-5_dp, 1.0E-8_dp, 4.0E-2_dp)
+                                                                  3.0E-5_dp, 1.0E-8_dp, 5.0E-2_dp, &
+                                                                  4.0E-2_dp, 4.0E-1_dp, 12)
+      mismatch_limited = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                           7.5E-1_dp, 9.4E-1_dp, 40, &
+                                                           1.13E-1_dp, 9.8E-1_dp, 2.0E-5_dp, &
+                                                           1.5E-5_dp, 1.2E-6_dp, 1.0E-1_dp, 1.6_dp, &
+                                                           4.0E-1_dp, 12)
+      mismatch_limited_bad = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
+                                                               7.5E-1_dp, 9.4E-1_dp, 40, &
+                                                               1.13E-1_dp, 9.8E-1_dp, 2.0E-5_dp, &
+                                                               1.5E-5_dp, 1.2E-6_dp, 3.0E-1_dp, &
+                                                               1.6_dp, 4.0E-1_dp, 12)
+      mismatch_limited_bad_gauge = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, &
+                                                                     22, 7.5E-1_dp, 9.4E-1_dp, 40, &
+                                                                     1.13E-1_dp, 9.8E-1_dp, 2.0E-5_dp, &
+                                                                     1.5E-5_dp, 1.2E-6_dp, 1.0E-1_dp, &
+                                                                     1.6_dp, 1.1E-1_dp, 12)
       bad_scale = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
                                                     4.5E-1_dp, 4.1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                    5.0E-6_dp, 1.0E-1_dp)
+                                                    5.0E-6_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       bad_curvature = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                         2.0E-1_dp, 7.8E-1_dp, 40, &
                                                         4.5E-1_dp, 6.0E-1_dp, 0.0_dp, 1.2E-5_dp, &
-                                                        5.0E-6_dp, 1.0E-1_dp)
+                                                        5.0E-6_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       bad_model = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                     2.0E-1_dp, 7.8E-1_dp, 40, &
                                                     4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                    0.0_dp, 1.0E-1_dp)
+                                                    0.0_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
       bad_gap = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                   2.0E-1_dp, 7.8E-1_dp, 40, &
                                                   4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                  5.0E-6_dp, 1.1_dp)
+                                                  5.0E-6_dp, 3.0E-1_dp, 1.1_dp, 4.0E-1_dp, 12)
       tiny_model = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
                                                      2.0E-1_dp, 7.8E-1_dp, 40, &
                                                      4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
-                                                     1.0E-17_dp, 1.0E-1_dp)
+                                                     1.0E-17_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_residual .OR. low_trust .OR. &
-          .NOT. trust_limited .OR. trust_limited_tiny_drop .OR. bad_scale .OR. &
-          bad_curvature .OR. bad_model .OR. bad_gap .OR. tiny_model) err = 1.0_dp
+          .NOT. trust_limited .OR. trust_limited_tiny_drop .OR. .NOT. mismatch_limited .OR. &
+          mismatch_limited_bad .OR. mismatch_limited_bad_gauge .OR. bad_scale .OR. bad_curvature .OR. &
+          bad_model .OR. bad_gap .OR. tiny_model) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
-            "failed with ready/tail/residual/trust/tlim/tinyt/scale/curvature/model/gap/tiny", &
+         WRITE (*, '(A,1X,A,14(1X,L1))') TRIM(label), &
+            "failed with ready/tail/residual/trust/tlim/tinyt/mgap/mbad/mbgauge/scale/curv/model/gap/tiny", &
             ready, tail_veto, low_residual, low_trust, trust_limited, trust_limited_tiny_drop, &
-            bad_scale, bad_curvature, bad_model, bad_gap, tiny_model
+            mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, bad_scale, bad_curvature, &
+            bad_model, bad_gap, tiny_model
       ELSE
-         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
-            "OK with ready/tail/residual/trust/tlim/tinyt/scale/curvature/model/gap/tiny", &
+         WRITE (*, '(A,1X,A,14(1X,L1))') TRIM(label), &
+            "OK with ready/tail/residual/trust/tlim/tinyt/mgap/mbad/mbgauge/scale/curv/model/gap/tiny", &
             ready, tail_veto, low_residual, low_trust, trust_limited, trust_limited_tiny_drop, &
-            bad_scale, bad_curvature, bad_model, bad_gap, tiny_model
+            mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, bad_scale, bad_curvature, &
+            bad_model, bad_gap, tiny_model
       END IF
 
    END SUBROUTINE check_projector_dense_metric_current_bridge
@@ -15512,7 +15533,10 @@ CONTAINS
 !> \param dense_metric_normp ...
 !> \param gdotp ...
 !> \param current_model_drop ...
+!> \param current_model_gap_drop_ratio ...
 !> \param current_model_gap_ratio ...
+!> \param gauge_residual_quality ...
+!> \param gauge_samples ...
 !> \return ...
 ! **************************************************************************************************
    FUNCTION dense_metric_current_bridge_ready(residual_delta, coupled_quality, coupled_quality_ema, &
@@ -15520,7 +15544,9 @@ CONTAINS
                                               mermin_quality_ema, mermin_samples, &
                                               dense_metric_trust_scale, dense_metric_scale_ratio, &
                                               dense_metric_normp, gdotp, current_model_drop, &
-                                              current_model_gap_ratio) RESULT(bridge_ready)
+                                              current_model_gap_drop_ratio, current_model_gap_ratio, &
+                                              gauge_residual_quality, gauge_samples) &
+      RESULT(bridge_ready)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, coupled_quality, &
                                                             coupled_quality_ema
       INTEGER, INTENT(IN)                                :: coupled_samples
@@ -15528,10 +15554,14 @@ CONTAINS
                                                             mermin_quality_ema
       INTEGER, INTENT(IN)                                :: mermin_samples
       REAL(KIND=dp), INTENT(IN) :: dense_metric_trust_scale, dense_metric_scale_ratio, &
-         dense_metric_normp, gdotp, current_model_drop, current_model_gap_ratio
+         dense_metric_normp, gdotp, current_model_drop, current_model_gap_drop_ratio, &
+         current_model_gap_ratio, gauge_residual_quality
+      INTEGER, INTENT(IN)                                :: gauge_samples
       LOGICAL                                            :: bridge_ready
 
-      LOGICAL                                            :: trust_limited_ready
+      LOGICAL                                            :: gauge_history_ready, &
+                                                            mismatch_drop_ready, &
+                                                            trust_limited_ready
 
       bridge_ready = .FALSE.
       IF (residual_delta > 1.0E-4_dp) RETURN
@@ -15545,14 +15575,24 @@ CONTAINS
       IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
       IF (gdotp <= EPSILON(gdotp)) RETURN
       IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
-      IF (current_model_gap_ratio > 1.0_dp) RETURN
+
+      gauge_history_ready = gauge_samples >= 4 .AND. gauge_residual_quality >= 2.5E-1_dp
+      mismatch_drop_ready = dense_metric_trust_scale >= 2.5E-2_dp .AND. &
+                            current_model_drop >= 7.5E-7_dp .AND. &
+                            mermin_quality_ema >= 9.0E-1_dp .AND. &
+                            dense_residual_quality >= 2.5E-1_dp .AND. &
+                            gauge_history_ready .AND. &
+                            current_model_gap_drop_ratio <= 2.5E-1_dp .AND. &
+                            current_model_gap_ratio <= 2.5_dp
+      IF (current_model_gap_ratio > 1.0_dp .AND. .NOT. mismatch_drop_ready) RETURN
 
       trust_limited_ready = dense_metric_trust_scale >= 2.5E-2_dp .AND. &
                             current_model_drop >= 7.5E-7_dp .AND. &
                             mermin_quality_ema >= 9.0E-1_dp .AND. &
                             dense_residual_quality >= 2.5E-1_dp .AND. &
                             current_model_gap_ratio <= 2.5E-1_dp
-      IF (dense_metric_trust_scale < 2.5E-1_dp .AND. .NOT. trust_limited_ready) RETURN
+      IF (dense_metric_trust_scale < 2.5E-1_dp .AND. .NOT. trust_limited_ready .AND. &
+          .NOT. mismatch_drop_ready) RETURN
 
       bridge_ready = .TRUE.
 

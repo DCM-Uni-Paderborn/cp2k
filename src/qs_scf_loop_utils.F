@@ -165,6 +165,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_calibrated_quality_max_ratio = 2.5_dp, &
                                         ot_kp_schur_calibrated_quality_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_dense_metric_bridge_min_drop = 7.5E-7_dp, &
+                                        ot_kp_schur_dense_metric_bridge_max_gap = 2.5_dp, &
+                                        ot_kp_schur_dense_metric_bridge_max_gapdrop = 2.5E-1_dp, &
                                         ot_kp_schur_dense_metric_bridge_min_scale = 2.5E-2_dp, &
                                         ot_kp_schur_constrained_advantage_ratio = 1.05_dp, &
                                         ot_kp_schur_constrained_drop_advantage_ratio = 1.02_dp, &
@@ -7288,17 +7290,17 @@ CONTAINS
          dense_coupled_gate_quality, dense_coupled_gate_quality_ema, dense_direction_scale, &
          dense_expected_drop, dense_gdot_energy, dense_gdot_rotation, dense_metric_bridge_drop, &
          dense_metric_bridge_floor_drop, dense_metric_bridge_gap, dense_metric_bridge_gap_drop, &
-         dense_metric_bridge_gap_ratio
-      REAL(KIND=dp) :: dense_metric_bridge_gap_trust, dense_metric_bridge_scale, &
-         dense_metric_norm_energy, dense_metric_norm_rotation, dense_metric_normp, &
-         dense_metric_scale_ratio, dense_metric_trust_scale, dense_metric_unit_abs_step, &
-         dense_metric_unit_weighted_step, dense_model_gap, dense_model_gap_drop, &
-         dense_model_gap_ratio, dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, &
-         dense_print_model_gap, dense_print_model_gap_drop, dense_print_model_gap_ratio, &
-         dense_print_model_gap_trust, dense_projector_coupled_weight, dense_quality_for_selection, &
-         dense_residual_quality
-      REAL(KIND=dp) :: dense_residual_quality_strict, dense_scale_quality, dense_term, &
-         dense_trust_quality, density_basis_curvfloor_history_abs_step, &
+         dense_metric_bridge_gap_drop_ratio
+      REAL(KIND=dp) :: dense_metric_bridge_gap_ratio, dense_metric_bridge_gap_trust, &
+         dense_metric_bridge_scale, dense_metric_norm_energy, dense_metric_norm_rotation, &
+         dense_metric_normp, dense_metric_scale_ratio, dense_metric_trust_scale, &
+         dense_metric_unit_abs_step, dense_metric_unit_weighted_step, dense_model_gap, &
+         dense_model_gap_drop, dense_model_gap_ratio, dense_model_gap_trust, dense_norm_energy, &
+         dense_norm_rotation, dense_print_model_gap, dense_print_model_gap_drop, &
+         dense_print_model_gap_ratio, dense_print_model_gap_trust, dense_projector_coupled_weight, &
+         dense_quality_for_selection
+      REAL(KIND=dp) :: dense_residual_quality, dense_residual_quality_strict, dense_scale_quality, &
+         dense_term, dense_trust_quality, density_basis_curvfloor_history_abs_step, &
          density_basis_curvfloor_history_abs_trust_ratio, density_basis_curvfloor_history_drop, &
          density_basis_curvfloor_history_gap_drop, density_basis_curvfloor_history_quality, &
          density_basis_curvfloor_history_trust_quality, &
@@ -8700,6 +8702,7 @@ CONTAINS
          dense_metric_bridge_floor_drop = 0.0_dp
          dense_metric_bridge_gap = 0.0_dp
          dense_metric_bridge_gap_drop = 0.0_dp
+         dense_metric_bridge_gap_drop_ratio = 0.0_dp
          dense_metric_bridge_gap_ratio = 0.0_dp
          dense_metric_bridge_gap_trust = 0.0_dp
          dense_metric_bridge_scale = 0.0_dp
@@ -16507,6 +16510,11 @@ CONTAINS
                      dense_metric_bridge_drop = MAX(0.0_dp, dense_metric_bridge_drop - &
                                                     dense_metric_bridge_gap_drop - &
                                                     dense_metric_bridge_floor_drop)
+                     dense_metric_bridge_gap_drop_ratio = 0.0_dp
+                     IF (dense_metric_bridge_drop + dense_metric_bridge_gap_drop > &
+                         EPSILON(dense_metric_bridge_drop)) &
+                        dense_metric_bridge_gap_drop_ratio = &
+                        dense_metric_bridge_gap_drop/(dense_metric_bridge_drop + dense_metric_bridge_gap_drop)
                      IF (metric_attempt_tail_bridge .AND. &
                          dense_metric_bridge_drop <= EPSILON(1.0_dp)) THEN
                         metric_attempt_selectable = .FALSE.
@@ -16523,7 +16531,9 @@ CONTAINS
                            local_ot_env(1)%mermin_ls_accepted_quality_samples, &
                            dense_metric_trust_scale, dense_metric_scale_ratio, &
                            dense_metric_normp, gdotp, dense_metric_bridge_drop, &
-                           dense_metric_bridge_gap_ratio)
+                           dense_metric_bridge_gap_drop_ratio, dense_metric_bridge_gap_ratio, &
+                           local_ot_env(1)%schur_step_gauge_residual_quality_ema, &
+                           local_ot_env(1)%schur_step_gauge_quality_samples)
                         IF (metric_attempt_current_bridge) metric_attempt_selectable = .TRUE.
                      END IF
                   END IF
@@ -16687,15 +16697,15 @@ CONTAINS
                         local_ot_env(1)%schur_coupled_calibrated_quality, direction_scale, &
                         model_calibrated_drop
                      IF (metric_attempt_current_bridge) &
-                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),12(1X,ES16.8))') &
+                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),13(1X,ES16.8))') &
                         " OT Schur dense metric current bridge group att gate_q gate_ema rq mqema trust "// &
-                        "mscale mp bscale bdrop bratio scale cdrop:", &
+                        "mscale mp bscale bdrop bgdropq bratio scale cdrop:", &
                         target_group, schur_attempt, dense_coupled_gate_quality, &
                         dense_coupled_gate_quality_ema, dense_residual_quality, &
                         local_ot_env(1)%mermin_ls_accepted_quality_ema, dense_metric_trust_scale, &
                         dense_metric_scale_ratio, dense_metric_normp, dense_metric_bridge_scale, &
-                        dense_metric_bridge_drop, dense_metric_bridge_gap_ratio, direction_scale, &
-                        model_calibrated_drop
+                        dense_metric_bridge_drop, dense_metric_bridge_gap_drop_ratio, &
+                        dense_metric_bridge_gap_ratio, direction_scale, model_calibrated_drop
                   END IF
                END IF
             END IF
@@ -22241,7 +22251,10 @@ CONTAINS
 !> \param dense_metric_normp current dense metric norm of the candidate
 !> \param gdotp current search slope
 !> \param current_model_drop current model drop after mismatch and row-floor guards
+!> \param current_model_gap_drop_ratio fraction of the raw current-model drop spent on fixed-N mismatch
 !> \param current_model_gap_ratio current fixed-N response mismatch ratio
+!> \param gauge_residual_quality accepted step-gauge residual quality
+!> \param gauge_samples number of accepted step-gauge samples
 !> \return true if the current dense metric candidate is trust-safe enough to select
 ! **************************************************************************************************
       FUNCTION kpoint_ot_dense_metric_current_bridge_ready(residual_delta, coupled_quality, &
@@ -22252,7 +22265,10 @@ CONTAINS
                                                            dense_metric_scale_ratio, &
                                                            dense_metric_normp, gdotp, &
                                                            current_model_drop, &
-                                                           current_model_gap_ratio) RESULT(bridge_ready)
+                                                           current_model_gap_drop_ratio, &
+                                                           current_model_gap_ratio, &
+                                                           gauge_residual_quality, gauge_samples) &
+         RESULT(bridge_ready)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, coupled_quality, &
                                                             coupled_quality_ema
       INTEGER, INTENT(IN)                                :: coupled_samples
@@ -22260,10 +22276,14 @@ CONTAINS
                                                             mermin_quality_ema
       INTEGER, INTENT(IN)                                :: mermin_samples
       REAL(KIND=dp), INTENT(IN) :: dense_metric_trust_scale, dense_metric_scale_ratio, &
-         dense_metric_normp, gdotp, current_model_drop, current_model_gap_ratio
+         dense_metric_normp, gdotp, current_model_drop, current_model_gap_drop_ratio, &
+         current_model_gap_ratio, gauge_residual_quality
+      INTEGER, INTENT(IN)                                :: gauge_samples
       LOGICAL                                            :: bridge_ready
 
-      LOGICAL                                            :: trust_limited_ready
+      LOGICAL                                            :: gauge_history_ready, &
+                                                            mismatch_drop_ready, &
+                                                            trust_limited_ready
 
          bridge_ready = .FALSE.
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
@@ -22277,7 +22297,19 @@ CONTAINS
          IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
          IF (gdotp <= EPSILON(gdotp)) RETURN
          IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
-         IF (current_model_gap_ratio > 1.0_dp) RETURN
+
+         gauge_history_ready = gauge_samples >= ot_kp_schur_calibration_min_samples .AND. &
+                               gauge_residual_quality >= ot_kp_schur_calibrated_quality_min_ratio
+         mismatch_drop_ready = dense_metric_trust_scale >= &
+            ot_kp_schur_dense_metric_bridge_min_scale .AND. &
+            current_model_drop >= ot_kp_schur_dense_metric_bridge_min_drop .AND. &
+            mermin_quality_ema >= 0.9_dp .AND. &
+            dense_residual_quality >= ot_kp_schur_calibrated_quality_min_ratio .AND. &
+            gauge_history_ready .AND. &
+            current_model_gap_drop_ratio <= &
+            ot_kp_schur_dense_metric_bridge_max_gapdrop .AND. &
+            current_model_gap_ratio <= ot_kp_schur_dense_metric_bridge_max_gap
+         IF (current_model_gap_ratio > 1.0_dp .AND. .NOT. mismatch_drop_ready) RETURN
 
          trust_limited_ready = dense_metric_trust_scale >= &
             ot_kp_schur_dense_metric_bridge_min_scale .AND. &
@@ -22286,7 +22318,7 @@ CONTAINS
             dense_residual_quality >= ot_kp_schur_calibrated_quality_min_ratio .AND. &
             current_model_gap_ratio <= 0.25_dp
          IF (dense_metric_trust_scale < ot_kp_schur_calibration_floor .AND. &
-             .NOT. trust_limited_ready) RETURN
+             .NOT. trust_limited_ready .AND. .NOT. mismatch_drop_ready) RETURN
 
          bridge_ready = .TRUE.
 
