@@ -10866,10 +10866,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: calibrated_rescue, low_ema, low_mermin, &
-                                                            low_quality, low_residual, &
-                                                            low_samples, raw_stale, ready, &
-                                                            tail_veto
+      LOGICAL :: calibrated_rescue, low_ema, low_mermin, low_quality, low_residual, low_samples, &
+         raw_stale, ready, strong_mermin_low_residual, strong_mermin_too_low_residual, tail_veto
       REAL(KIND=dp)                                      :: err
 
       ready = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.1E-2_dp, 9.7E-2_dp, 22, &
@@ -10890,20 +10888,29 @@ CONTAINS
                                                  9.0E-1_dp, 9.9E-1_dp, 40)
       calibrated_rescue = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.0E-1_dp, 6.0E-1_dp, 22, &
                                                          9.0E-1_dp, 9.9E-1_dp, 40)
+      strong_mermin_low_residual = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.0E-1_dp, &
+                                                                  6.0E-1_dp, 22, &
+                                                                  1.5E-1_dp, 9.9E-1_dp, 40)
+      strong_mermin_too_low_residual = dense_metric_tail_bridge_ready(5.0E-5_dp, 8.0E-1_dp, &
+                                                                      6.0E-1_dp, 22, &
+                                                                      1.0E-1_dp, 9.9E-1_dp, 40)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_ema .OR. &
-          low_residual .OR. low_mermin .OR. raw_stale .OR. .NOT. calibrated_rescue) err = 1.0_dp
+          low_residual .OR. low_mermin .OR. raw_stale .OR. .NOT. calibrated_rescue .OR. &
+          .NOT. strong_mermin_low_residual .OR. strong_mermin_too_low_residual) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "failed with ready/tail/samples/quality/ema/residual/mermin/raw/cal", ready, tail_veto, &
-            low_samples, low_quality, low_ema, low_residual, low_mermin, raw_stale, calibrated_rescue
+         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/ema/residual/mermin/raw/cal/strong/too_low", &
+            ready, tail_veto, low_samples, low_quality, low_ema, low_residual, low_mermin, raw_stale, &
+            calibrated_rescue, strong_mermin_low_residual, strong_mermin_too_low_residual
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "OK with ready/tail/samples/quality/ema/residual/mermin/raw/cal", ready, tail_veto, &
-            low_samples, low_quality, low_ema, low_residual, low_mermin, raw_stale, calibrated_rescue
+         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/ema/residual/mermin/raw/cal/strong/too_low", &
+            ready, tail_veto, low_samples, low_quality, low_ema, low_residual, low_mermin, raw_stale, &
+            calibrated_rescue, strong_mermin_low_residual, strong_mermin_too_low_residual
       END IF
 
    END SUBROUTINE check_projector_dense_metric_tail_bridge
@@ -15217,14 +15224,21 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: mermin_samples
       LOGICAL                                            :: bridge_ready
 
+      REAL(KIND=dp)                                      :: residual_floor
+
       bridge_ready = .FALSE.
       IF (residual_delta > 1.0E-4_dp) RETURN
       IF (coupled_samples < 4) RETURN
       IF (mermin_samples < 4) RETURN
       IF (coupled_quality < 5.0E-2_dp) RETURN
       IF (coupled_quality_ema < 7.5E-2_dp) RETURN
-      IF (dense_residual_quality < 2.5E-1_dp) RETURN
       IF (mermin_quality_ema < 8.0E-1_dp) RETURN
+
+      residual_floor = 2.5E-1_dp
+      IF (coupled_quality >= 4.0E-1_dp .AND. coupled_quality_ema >= 4.0E-1_dp .AND. &
+          mermin_quality_ema >= 9.5E-1_dp) &
+         residual_floor = 0.5_dp*residual_floor
+      IF (dense_residual_quality < residual_floor) RETURN
 
       bridge_ready = .TRUE.
 

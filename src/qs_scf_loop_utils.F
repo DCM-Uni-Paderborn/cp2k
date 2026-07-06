@@ -22024,14 +22024,22 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: mermin_samples
       LOGICAL                                            :: bridge_ready
 
+      REAL(KIND=dp)                                      :: residual_floor
+
          bridge_ready = .FALSE.
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
          IF (coupled_samples < ot_kp_schur_calibration_min_samples) RETURN
          IF (mermin_samples < ot_kp_schur_calibration_min_samples) RETURN
          IF (coupled_quality < 0.5_dp*ot_kp_schur_quality_min_ratio) RETURN
          IF (coupled_quality_ema < 0.75_dp*ot_kp_schur_quality_min_ratio) RETURN
-         IF (dense_residual_quality < ot_kp_schur_calibrated_quality_min_ratio) RETURN
          IF (mermin_quality_ema < 0.8_dp) RETURN
+
+         residual_floor = ot_kp_schur_calibrated_quality_min_ratio
+         IF (coupled_quality >= 4.0_dp*ot_kp_schur_quality_min_ratio .AND. &
+             coupled_quality_ema >= 4.0_dp*ot_kp_schur_quality_min_ratio .AND. &
+             mermin_quality_ema >= 0.95_dp) &
+            residual_floor = 0.5_dp*residual_floor
+         IF (dense_residual_quality < residual_floor) RETURN
 
          bridge_ready = .TRUE.
 
