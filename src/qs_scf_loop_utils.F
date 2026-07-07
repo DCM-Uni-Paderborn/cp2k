@@ -22934,6 +22934,7 @@ CONTAINS
          IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
          IF (gdotp <= EPSILON(gdotp)) RETURN
          IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
+         IF (current_model_drop < ot_kp_schur_dense_metric_bridge_min_drop) RETURN
 
          gauge_history_ready = gauge_samples >= ot_kp_schur_calibration_min_samples .AND. &
                                gauge_residual_quality >= ot_kp_schur_calibrated_quality_min_ratio

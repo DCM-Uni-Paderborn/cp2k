@@ -11087,8 +11087,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: bad_curvature, bad_gap, bad_model, bad_scale, low_residual, low_trust, &
-         mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, ready, &
+      LOGICAL :: bad_curvature, bad_gap, bad_model, bad_scale, high_trust_tiny_drop, low_residual, &
+         low_trust, mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, ready, &
          shadow_limited, shadow_limited_bad, tail_veto, tiny_model, trust_limited, &
          trust_limited_tiny_drop
       REAL(KIND=dp)                                      :: err
@@ -11164,27 +11164,34 @@ CONTAINS
                                                      2.0E-1_dp, 7.8E-1_dp, 40, &
                                                      4.5E-1_dp, 6.0E-1_dp, 2.0E-5_dp, 1.2E-5_dp, &
                                                      1.0E-17_dp, 5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
+      high_trust_tiny_drop = dense_metric_current_bridge_ready(5.0E-5_dp, 8.1E-2_dp, &
+                                                               9.7E-2_dp, 22, 2.0E-1_dp, &
+                                                               9.4E-1_dp, 40, 1.0_dp, 6.0E-1_dp, &
+                                                               2.0E-5_dp, 1.2E-5_dp, 1.0E-8_dp, &
+                                                               5.0E-2_dp, 1.0E-1_dp, 4.0E-1_dp, 12)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_residual .OR. low_trust .OR. &
           .NOT. trust_limited .OR. trust_limited_tiny_drop .OR. .NOT. mismatch_limited .OR. &
           mismatch_limited_bad .OR. mismatch_limited_bad_gauge .OR. .NOT. shadow_limited .OR. &
           shadow_limited_bad .OR. bad_scale .OR. bad_curvature .OR. bad_model .OR. bad_gap .OR. &
-          tiny_model) err = 1.0_dp
+          tiny_model .OR. high_trust_tiny_drop) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,16(1X,L1))') TRIM(label), &
-            "failed with ready/tail/residual/trust/tlim/tinyt/mgap/mbad/mbgauge/shad/shbad/scale/curv/model/gap/tiny", &
+         WRITE (*, '(A,1X,A,17(1X,L1))') TRIM(label), &
+            "failed with ready/tail/residual/trust/tlim/tinyt/mgap/mbad/mbgauge/shad/shbad/scale/curv/model/gap/tiny/htiny", &
             ready, tail_veto, low_residual, low_trust, trust_limited, trust_limited_tiny_drop, &
             mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, shadow_limited, &
-            shadow_limited_bad, bad_scale, bad_curvature, bad_model, bad_gap, tiny_model
+            shadow_limited_bad, bad_scale, bad_curvature, bad_model, bad_gap, tiny_model, &
+            high_trust_tiny_drop
       ELSE
-         WRITE (*, '(A,1X,A,16(1X,L1))') TRIM(label), &
-            "OK with ready/tail/residual/trust/tlim/tinyt/mgap/mbad/mbgauge/shad/shbad/scale/curv/model/gap/tiny", &
+         WRITE (*, '(A,1X,A,17(1X,L1))') TRIM(label), &
+            "OK with ready/tail/residual/trust/tlim/tinyt/mgap/mbad/mbgauge/shad/shbad/scale/curv/model/gap/tiny/htiny", &
             ready, tail_veto, low_residual, low_trust, trust_limited, trust_limited_tiny_drop, &
             mismatch_limited, mismatch_limited_bad, mismatch_limited_bad_gauge, shadow_limited, &
-            shadow_limited_bad, bad_scale, bad_curvature, bad_model, bad_gap, tiny_model
+            shadow_limited_bad, bad_scale, bad_curvature, bad_model, bad_gap, tiny_model, &
+            high_trust_tiny_drop
       END IF
 
    END SUBROUTINE check_projector_dense_metric_current_bridge
@@ -16066,6 +16073,7 @@ CONTAINS
       IF (dense_metric_normp <= EPSILON(dense_metric_normp)) RETURN
       IF (gdotp <= EPSILON(gdotp)) RETURN
       IF (current_model_drop <= EPSILON(1.0_dp)) RETURN
+      IF (current_model_drop < 7.5E-7_dp) RETURN
 
       gauge_history_ready = gauge_samples >= 4 .AND. gauge_residual_quality >= 2.5E-1_dp
       shadow_history_ready = shadow_samples_value >= 3 .AND. &
