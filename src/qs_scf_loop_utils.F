@@ -2254,6 +2254,10 @@ CONTAINS
          safe_component = (1.0_dp - safe_blend)*projector_component + &
                           safe_blend*bounded_safe_component
          IF (globally_aligned_safe_response) THEN
+            ! Let globally coherent fixed-N occupation response enter through
+            ! the finite projector support only.  This keeps basis-gauge dP
+            ! noise out of low-curvature tails while retaining supported
+            ! occupation response.
             projector_response_weight = (1.0_dp - safe_blend)*density_shape
             safe_response_weight = safe_blend*(density_shape + &
                                                supported_lift_weight*(1.0_dp - density_shape))

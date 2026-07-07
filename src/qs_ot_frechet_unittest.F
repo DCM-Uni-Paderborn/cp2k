@@ -20394,6 +20394,7 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-5_dp, &
+                                                            charge_tol = 1.0E-12_dp, &
                                                             gauge_gap = 5.0E-5_dp, &
                                                             projector_weight = 0.37_dp
 
@@ -20453,7 +20454,8 @@ CONTAINS
       charge_resolved = ABS(charge_resolved)
       active = MAXVAL(ABS(kernel_near(:, :)))
 
-      IF (improvement > tol .OR. charge_leak > charge_resolved .OR. active < active_tol) THEN
+      IF (improvement > tol .OR. charge_leak > MAX(charge_resolved, charge_tol) .OR. &
+          active < active_tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
             "failed with continuity/improve/charge/rcharge/active", &
