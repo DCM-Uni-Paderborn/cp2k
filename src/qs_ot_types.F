@@ -272,6 +272,7 @@ MODULE qs_ot_types
       LOGICAL :: schur_projector_density_full_direct_pending = .FALSE.
       LOGICAL :: schur_projector_density_full_direct_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_density_full_global_pending = .FALSE.
+      LOGICAL :: schur_dense_metric_shadow_pending = .FALSE.
       LOGICAL :: schur_projector_phys_direct_density_fshadow_ready = .FALSE.
       LOGICAL :: schur_projector_phys_direct_density_cshadow_ready = .FALSE.
       LOGICAL :: schur_history_mixed = .FALSE., schur_split_candidate_enabled = .FALSE.
@@ -311,6 +312,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_density_fdir_sel_quality_samples = 0
       INTEGER :: schur_projector_density_full_global_quality_samples = 0
       INTEGER :: schur_projector_density_full_global_sel_quality_samples = 0
+      INTEGER :: schur_dense_metric_shadow_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
@@ -366,6 +368,11 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_coupled_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_drop_sum = 0.0_dp, schur_coupled_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_coupled_calibrated_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_dense_metric_shadow_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_dense_metric_shadow_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_dense_metric_shadow_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_dense_metric_shadow_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_dense_metric_shadow_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_response_drop = 0.0_dp
       REAL(KIND=dp) :: schur_projector_mode_step_negative = 0.0_dp
@@ -962,6 +969,7 @@ CONTAINS
       qs_ot_env%schur_projector_density_full_direct_pending = .FALSE.
       qs_ot_env%schur_projector_density_full_direct_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_density_full_global_pending = .FALSE.
+      qs_ot_env%schur_dense_metric_shadow_pending = .FALSE.
       qs_ot_env%schur_projector_phys_direct_density_fshadow_ready = .FALSE.
       qs_ot_env%schur_projector_phys_direct_density_cshadow_ready = .FALSE.
       qs_ot_env%schur_history_mixed = .FALSE.
@@ -1007,6 +1015,7 @@ CONTAINS
       qs_ot_env%schur_projector_density_fdir_sel_quality_samples = 0
       qs_ot_env%schur_projector_density_full_global_quality_samples = 0
       qs_ot_env%schur_projector_density_full_global_sel_quality_samples = 0
+      qs_ot_env%schur_dense_metric_shadow_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_calibrated_drop = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
@@ -1081,6 +1090,11 @@ CONTAINS
       qs_ot_env%schur_coupled_drop_sum = 0.0_dp
       qs_ot_env%schur_coupled_measured_sum = 0.0_dp
       qs_ot_env%schur_coupled_calibrated_drop_sum = 0.0_dp
+      qs_ot_env%schur_dense_metric_shadow_drop = 0.0_dp
+      qs_ot_env%schur_dense_metric_shadow_quality = 0.0_dp
+      qs_ot_env%schur_dense_metric_shadow_quality_ema = 0.0_dp
+      qs_ot_env%schur_dense_metric_shadow_drop_sum = 0.0_dp
+      qs_ot_env%schur_dense_metric_shadow_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_mode_drop = 0.0_dp
       qs_ot_env%schur_projector_mode_response_drop = 0.0_dp
       qs_ot_env%schur_projector_mode_step_negative = 0.0_dp
