@@ -186,6 +186,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density mixed-metric coupled Schur", 5.0E-13_dp, nfail)
    CALL check_projector_response_mixed_metric_scale( &
       "complex projector response mixed-metric scale", 5.0E-13_dp, nfail)
+   CALL check_projector_residual_energy_shadow_weight( &
+      "complex projector residual-energy shadow weight", 5.0E-13_dp, nfail)
    CALL check_projector_response_projected_linear_term( &
       "complex projector response projected linear term", 5.0E-13_dp, nfail)
    CALL check_projector_density_candidate_metric_model( &
@@ -7315,6 +7317,54 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_projector_response_mixed_metric_scale
+
+! **************************************************************************************************
+!> \brief Residual-energy shadow metric should remain diagnostic in rotation dominated tails.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_residual_energy_shadow_weight(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: min_weight = 5.0E-2_dp, &
+                                                            tail_delta = 1.0E-4_dp
+
+      REAL(KIND=dp)                                      :: al_tail, energy_tail, err, expected_al, &
+                                                            no_rotation, outside_tail, zero_energy
+
+      expected_al = SQRT(2.34E-10_dp/(2.34E-10_dp + 3.82E-8_dp + 4.81E-8_dp))
+      al_tail = dense_residual_energy_shadow_weight(2.34E-10_dp, 3.82E-8_dp, 4.81E-8_dp, &
+                                                    3.5E-6_dp, tail_delta, min_weight)
+      zero_energy = dense_residual_energy_shadow_weight(0.0_dp, 3.82E-8_dp, 4.81E-8_dp, &
+                                                        3.5E-6_dp, tail_delta, min_weight)
+      energy_tail = dense_residual_energy_shadow_weight(8.0E-8_dp, 1.0E-8_dp, 0.0_dp, &
+                                                        3.5E-6_dp, tail_delta, min_weight)
+      outside_tail = dense_residual_energy_shadow_weight(2.34E-10_dp, 3.82E-8_dp, 4.81E-8_dp, &
+                                                         2.0E-4_dp, tail_delta, min_weight)
+      no_rotation = dense_residual_energy_shadow_weight(2.34E-10_dp, 0.0_dp, 0.0_dp, &
+                                                        3.5E-6_dp, tail_delta, min_weight)
+
+      err = ABS(al_tail - expected_al)
+      err = MAX(err, ABS(zero_energy - min_weight))
+      err = MAX(err, ABS(outside_tail - 1.0_dp))
+      err = MAX(err, ABS(no_rotation - 1.0_dp))
+
+      IF (err > tol .OR. al_tail <= min_weight .OR. al_tail >= 1.0E-1_dp .OR. &
+          energy_tail <= 9.0E-1_dp .OR. outside_tail < 1.0_dp .OR. no_rotation < 1.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with err/al/zero/energy/outside/norot", err, al_tail, zero_energy, &
+            energy_tail, outside_tail, no_rotation
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with err/al/zero/energy/outside/norot", err, al_tail, zero_energy, &
+            energy_tail, outside_tail, no_rotation
+      END IF
+
+   END SUBROUTINE check_projector_residual_energy_shadow_weight
 
 ! **************************************************************************************************
 !> \brief Projector-response modal coefficients must use the projected Mermin linear term.
@@ -16012,6 +16062,41 @@ CONTAINS
       bridge_ready = .TRUE.
 
    END FUNCTION dense_metric_current_bridge_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of the residual-energy shadow metric weight.
+!> \param energy_residual ...
+!> \param rotation_residual ...
+!> \param gauge_residual ...
+!> \param residual_delta ...
+!> \param tail_delta ...
+!> \param min_weight ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_residual_energy_shadow_weight(energy_residual, rotation_residual, gauge_residual, &
+                                                residual_delta, tail_delta, min_weight) RESULT(weight)
+      REAL(KIND=dp), INTENT(IN)                          :: energy_residual, rotation_residual, &
+                                                            gauge_residual, residual_delta, &
+                                                            tail_delta, min_weight
+      REAL(KIND=dp)                                      :: weight
+
+      REAL(KIND=dp)                                      :: energy_signal, rotation_signal, &
+                                                            total_signal
+
+      weight = 1.0_dp
+      IF (residual_delta > tail_delta) RETURN
+
+      energy_signal = MAX(0.0_dp, energy_residual)
+      rotation_signal = MAX(0.0_dp, rotation_residual) + MAX(0.0_dp, gauge_residual)
+      IF (rotation_signal <= EPSILON(rotation_signal)) RETURN
+
+      total_signal = energy_signal + rotation_signal
+      IF (total_signal <= EPSILON(total_signal)) RETURN
+
+      weight = SQRT(energy_signal/total_signal)
+      weight = MAX(min_weight, MIN(1.0_dp, weight))
+
+   END FUNCTION dense_residual_energy_shadow_weight
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the residual-tail gauge rotation floor.
