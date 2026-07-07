@@ -2181,11 +2181,11 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, bounded_safe_component, density_shape, &
-         density_shape_full, density_shape_geometric, global_cap_lift, global_response_support, global_safe_cap, &
-         lift_support, lift_weight, projector_abs, projector_component, projector_response_weight, &
-         response_root, response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, &
-         safe_component, safe_response_weight, sign_projector_response, sign_safe_response, &
-         supported_lift_weight
+         density_shape_full, density_shape_geometric, global_cap_lift, global_response_support, &
+         global_safe_cap, lift_support, lift_weight, projector_abs, projector_component, &
+         projector_response_weight, response_root, response_shape, safe_abs, safe_blend, &
+         safe_blend_floor, safe_cap, safe_component, safe_response_weight, &
+         sign_projector_response, sign_safe_response, supported_lift_weight
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2304,9 +2304,9 @@ CONTAINS
 
       LOGICAL                                            :: globally_supported_response, &
                                                             locally_supported_response
-      REAL(KIND=dp) :: active_fraction, alignment, damping, finite_support, global_response_support, &
-         global_support, projector_abs, residual_weight, response_root, response_shape, response_support, &
-         safe_abs, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, finite_support, &
+         global_response_support, global_support, projector_abs, residual_weight, response_root, &
+         response_shape, response_support, safe_abs, sign_projector_response, sign_safe_response
 
       filtered_response = density_response
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2693,6 +2693,40 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION kpoint_ot_direct_tail_close_call
+
+! **************************************************************************************************
+!> \brief whether a norm-limited Direct tail step may replace the over-norm raw Direct step
+!> \param normcap_ready normcap shadow is finite and response-trust safe
+!> \param promoted accepted Direct shadow history is mature enough for production use
+!> \param residual_delta current OT residual
+!> \param normcap_norm_ratio norm ratio of the capped step
+!> \param max_norm_ratio active norm-ratio limit
+!> \param normcap_scale scale applied to the raw Direct step
+!> \param min_scale minimum line-search scale considered useful
+!> \param density_audit_quality consistency of the density-response audit
+!> \return true if the norm-limited step may enter the Direct candidate path
+! **************************************************************************************************
+   FUNCTION kpoint_ot_direct_normcap_tail_ready(normcap_ready, promoted, residual_delta, &
+                                                normcap_norm_ratio, max_norm_ratio, normcap_scale, &
+                                                min_scale, density_audit_quality) RESULT(use_step)
+      LOGICAL, INTENT(IN)                                :: normcap_ready, promoted
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, normcap_norm_ratio, &
+                                                            max_norm_ratio, normcap_scale, &
+                                                            min_scale, density_audit_quality
+      LOGICAL                                            :: use_step
+
+      use_step = .FALSE.
+      IF (.NOT. normcap_ready) RETURN
+      IF (.NOT. promoted) RETURN
+      IF (residual_delta > 0.25_dp*ot_kp_schur_projector_coupled_tail_delta) RETURN
+      IF (max_norm_ratio <= 0.0_dp) RETURN
+      IF (normcap_norm_ratio > max_norm_ratio) RETURN
+      IF (normcap_scale < min_scale) RETURN
+      IF (density_audit_quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+
+      use_step = .TRUE.
+
+   END FUNCTION kpoint_ot_direct_normcap_tail_ready
 
 ! **************************************************************************************************
 !> \brief shared pair slope for near-degenerate occupation-gauge filtering
@@ -16652,8 +16686,10 @@ CONTAINS
                            projector_physical_direct_normcap_response_weighted_step = &
                               projector_physical_direct_normcap_scale* &
                               projector_physical_direct_unit_weighted_step
-                           ! Audit only: accepted-drop history promoted these
-                           ! norm-limited soft-mode steps too eagerly for Al.
+                           ! Keep the raw norm-limited soft-mode step as an
+                           ! audit unless the promoted Direct model is already
+                           ! deep in the residual tail and the capped step is
+                           ! itself inside the same response trust used below.
                            projector_physical_direct_normcap_shadow_ready = &
                               projector_physical_direct_normcap_model_calibrated_drop > &
                               EPSILON(projector_physical_direct_normcap_model_drop) .AND. &
@@ -16663,6 +16699,14 @@ CONTAINS
                               response_trust .AND. &
                               projector_physical_direct_normcap_response_abs_step <= &
                               response_abs_trust
+                        END IF
+                        IF (kpoint_ot_direct_normcap_tail_ready( &
+                            projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
+                            residual_delta, projector_physical_direct_normcap_norm_ratio, max_norm_ratio, &
+                            projector_physical_direct_normcap_scale, schur_min_coupled_scale, &
+                            projector_physical_direct_density_audit_quality)) THEN
+                           direction_scale = projector_physical_direct_normcap_scale
+                           projector_physical_direct_norm_ratio = projector_physical_direct_normcap_norm_ratio
                         END IF
                         IF (direction_scale > 0.0_dp .AND. &
                             projector_physical_direct_norm_ratio <= max_norm_ratio) THEN

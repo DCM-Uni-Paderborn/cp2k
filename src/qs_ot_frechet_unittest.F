@@ -284,6 +284,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct tail-probe bootstrap", 5.0E-14_dp, nfail)
    CALL check_projector_direct_tail_close_call( &
       "complex projector Direct tail close-call", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_normcap_tail_ready( &
+      "complex projector Direct normcap tail ready", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_tail_probe( &
@@ -5299,9 +5301,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
       REAL(KIND=dp) :: aligned_response, base_response, damped_response, err, global_low_expected, &
-         global_low_response, global_sign_response, global_sign_expected, global_sign_support, good_response, &
-         low_active_fraction, low_occ_curv, low_response_root, low_response_shape, occ_curv, occ_curv_max, &
-         partial_response
+         global_low_response, global_sign_expected, global_sign_response, global_sign_support, &
+         good_response, low_active_fraction, low_occ_curv, low_response_root, low_response_shape, &
+         occ_curv, occ_curv_max, partial_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-4_dp
@@ -5335,8 +5337,8 @@ CONTAINS
          (1.0_dp - (1.0_dp - 0.80_dp*global_sign_support)* &
           (1.0_dp - low_active_fraction)**2)*base_response
       global_sign_response = residual_gauge_density_response(base_response, -1.0E-5_dp, 0.10_dp, &
-                                                            low_occ_curv, occ_curv_max, response_ratio_gate, &
-                                                            0.0_dp, -1.0E-5_dp, 0.10_dp, 0.80_dp)
+                                                             low_occ_curv, occ_curv_max, response_ratio_gate, &
+                                                             0.0_dp, -1.0E-5_dp, 0.10_dp, 0.80_dp)
 
       err = ABS(good_response - base_response)
       err = MAX(err, ABS(damped_response - 0.75_dp*base_response))
@@ -5505,13 +5507,13 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp) :: active_fraction, full_lifted_response, full_safe_cap, &
-         full_shape, geometric_lifted_response, geometric_response, geometric_safe_cap, &
-         geometric_shape, global_response, global_response_support, half_lifted_response, half_response, &
+      REAL(KIND=dp) :: active_fraction, full_lifted_response, full_safe_cap, full_shape, &
+         geometric_lifted_response, geometric_response, geometric_safe_cap, geometric_shape, &
+         global_response, global_response_support, half_lifted_response, half_response, &
          half_safe_cap, half_shape, lift_support, local_response, occ_curv, occ_curv_max, &
-         old_component_response, old_expected_response, old_global_response, old_safe_blend, old_shape, &
-         raw_response, response_root, response_shape, safe_blend, safe_blend_floor, safe_response, &
-         supported_global_response, supported_lift_weight, supported_raw_response
+         old_component_response, old_expected_response, old_global_response, old_safe_blend, &
+         old_shape, raw_response, response_root, response_shape, safe_blend, safe_blend_floor, &
+         safe_response, supported_global_response, supported_lift_weight, supported_raw_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5604,10 +5606,10 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
-      REAL(KIND=dp) :: active_fraction, bounded_safe_component, density_shape, err, expected_response, &
-         lift_support, local_response, occ_curv, occ_curv_max, old_response, old_safe_blend, &
-         old_shape, raw_response, response, response_root, response_shape, safe_blend, safe_blend_floor, &
-         safe_response, supported_response, support
+      REAL(KIND=dp) :: active_fraction, bounded_safe_component, density_shape, err, &
+         expected_response, lift_support, local_response, occ_curv, occ_curv_max, old_response, &
+         old_safe_blend, old_shape, raw_response, response, response_root, response_shape, &
+         safe_blend, safe_blend_floor, safe_response, support, supported_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -10742,6 +10744,53 @@ CONTAINS
    END SUBROUTINE check_projector_direct_tail_close_call
 
 ! **************************************************************************************************
+!> \brief Check the narrow late-tail gate for using norm-limited Direct steps.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_normcap_tail_ready(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bad_quality, high_norm, low_scale, &
+                                                            no_promote, not_ready, outside_tail, &
+                                                            ready
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_direct_normcap_tail_ready(.TRUE., .TRUE., 2.0E-5_dp, 0.95_dp, &
+                                              1.0_dp, 0.60_dp, 0.10_dp, 0.20_dp)
+      not_ready = dense_direct_normcap_tail_ready(.FALSE., .TRUE., 2.0E-5_dp, 0.95_dp, &
+                                                  1.0_dp, 0.60_dp, 0.10_dp, 0.20_dp)
+      no_promote = dense_direct_normcap_tail_ready(.TRUE., .FALSE., 2.0E-5_dp, 0.95_dp, &
+                                                   1.0_dp, 0.60_dp, 0.10_dp, 0.20_dp)
+      outside_tail = dense_direct_normcap_tail_ready(.TRUE., .TRUE., 4.0E-5_dp, 0.95_dp, &
+                                                     1.0_dp, 0.60_dp, 0.10_dp, 0.20_dp)
+      high_norm = dense_direct_normcap_tail_ready(.TRUE., .TRUE., 2.0E-5_dp, 1.01_dp, &
+                                                  1.0_dp, 0.60_dp, 0.10_dp, 0.20_dp)
+      low_scale = dense_direct_normcap_tail_ready(.TRUE., .TRUE., 2.0E-5_dp, 0.95_dp, &
+                                                  1.0_dp, 0.05_dp, 0.10_dp, 0.20_dp)
+      bad_quality = dense_direct_normcap_tail_ready(.TRUE., .TRUE., 2.0E-5_dp, 0.95_dp, &
+                                                    1.0_dp, 0.60_dp, 0.10_dp, 0.04_dp)
+      err = 0.0_dp
+      IF (.NOT. ready .OR. not_ready .OR. no_promote .OR. outside_tail .OR. high_norm .OR. &
+          low_scale .OR. bad_quality) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "failed with ready/not/prom/tail/norm/scale/quality", ready, not_ready, no_promote, &
+            outside_tail, high_norm, low_scale, bad_quality
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,L1))') TRIM(label), &
+            "OK with ready/not/prom/tail/norm/scale/quality", ready, not_ready, no_promote, &
+            outside_tail, high_norm, low_scale, bad_quality
+      END IF
+
+   END SUBROUTINE check_projector_direct_normcap_tail_ready
+
+! **************************************************************************************************
 !> \brief Check that full-density Direct candidates can collect close-call tail history.
 !> \param label ...
 !> \param tol ...
@@ -11355,8 +11404,9 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: active_trace = -4.0E-3_dp, history_weight = 0.25_dp, &
          poor_quality = 0.05_dp, quality = 1.20_dp, raw_trace = -1.0_dp
 
-      REAL(KIND=dp) :: err, expected_gauge, gauge_mix, mature_mix, no_raw_mix, poor_mix, &
-         saturated_mix, selected_poor_mix, shadow_only_mix, young_mix
+      REAL(KIND=dp) :: err, expected_gauge, expected_mid_quality, gauge_mix, mature_mix, &
+         mid_quality_mix, no_raw_mix, poor_mix, saturated_mix, selected_poor_mix, shadow_only_mix, &
+         young_mix
 
       young_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
                                                 quality, 2, quality, 16)
@@ -11368,6 +11418,8 @@ CONTAINS
                                                       quality, 16, 0.0_dp, 0)
       gauge_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
                                                 quality, 16, quality, 16)
+      mid_quality_mix = dense_trace_active_mix_weight(raw_trace, active_trace, history_weight, &
+                                                      0.25_dp, 16, 0.25_dp, 16)
       mature_mix = dense_trace_active_mix_weight(raw_trace, raw_trace, history_weight, &
                                                  quality, 16, quality, 16)
       saturated_mix = dense_trace_active_mix_weight(raw_trace, 0.0_dp, 0.90_dp, &
@@ -11376,24 +11428,27 @@ CONTAINS
                                                  quality, 16, quality, 16)
 
       expected_gauge = 0.95_dp*(1.0_dp - ABS(active_trace/raw_trace))
-      err = ABS(young_mix - history_weight)
-      err = MAX(err, ABS(poor_mix - history_weight))
+      expected_mid_quality = expected_gauge*0.25_dp
+      err = ABS(young_mix)
+      err = MAX(err, ABS(poor_mix))
       err = MAX(err, ABS(selected_poor_mix - history_weight))
       err = MAX(err, ABS(shadow_only_mix - history_weight))
       err = MAX(err, ABS(gauge_mix - expected_gauge))
+      err = MAX(err, ABS(mid_quality_mix - expected_mid_quality))
       err = MAX(err, ABS(mature_mix - history_weight))
       err = MAX(err, ABS(saturated_mix - 0.95_dp))
       err = MAX(err, ABS(no_raw_mix - history_weight))
 
-      IF (err > tol .OR. gauge_mix <= history_weight .OR. saturated_mix > 0.95_dp) THEN
+      IF (err > tol .OR. gauge_mix <= history_weight .OR. mid_quality_mix >= history_weight .OR. &
+          saturated_mix > 0.95_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/young/poor/selpoor/gauge/mature/saturated", err, young_mix, poor_mix, &
-            selected_poor_mix, gauge_mix, mature_mix, saturated_mix
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/young/poor/selpoor/gauge/midq/mature/saturated", err, young_mix, &
+            poor_mix, selected_poor_mix, gauge_mix, mid_quality_mix, mature_mix, saturated_mix
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/young/poor/selpoor/gauge/mature/saturated", err, young_mix, poor_mix, &
-            selected_poor_mix, gauge_mix, mature_mix, saturated_mix
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/young/poor/selpoor/gauge/midq/mature/saturated", err, young_mix, &
+            poor_mix, selected_poor_mix, gauge_mix, mid_quality_mix, mature_mix, saturated_mix
       END IF
 
    END SUBROUTINE check_projector_trace_active_mix_weight
@@ -14926,6 +14981,40 @@ CONTAINS
    END FUNCTION dense_direct_tail_close_call
 
 ! **************************************************************************************************
+!> \brief Dense mirror of the late-tail Direct normcap gate.
+!> \param normcap_ready ...
+!> \param promoted ...
+!> \param residual_delta ...
+!> \param normcap_norm_ratio ...
+!> \param max_norm_ratio ...
+!> \param normcap_scale ...
+!> \param min_scale ...
+!> \param density_audit_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_normcap_tail_ready(normcap_ready, promoted, residual_delta, normcap_norm_ratio, &
+                                            max_norm_ratio, normcap_scale, min_scale, &
+                                            density_audit_quality) RESULT(use_step)
+      LOGICAL, INTENT(IN)                                :: normcap_ready, promoted
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, normcap_norm_ratio, &
+                                                            max_norm_ratio, normcap_scale, &
+                                                            min_scale, density_audit_quality
+      LOGICAL                                            :: use_step
+
+      use_step = .FALSE.
+      IF (.NOT. normcap_ready) RETURN
+      IF (.NOT. promoted) RETURN
+      IF (residual_delta > 0.25_dp*1.0E-4_dp) RETURN
+      IF (max_norm_ratio <= 0.0_dp) RETURN
+      IF (normcap_norm_ratio > max_norm_ratio) RETURN
+      IF (normcap_scale < min_scale) RETURN
+      IF (density_audit_quality < 0.5_dp*1.0E-1_dp) RETURN
+
+      use_step = .TRUE.
+
+   END FUNCTION dense_direct_normcap_tail_ready
+
+! **************************************************************************************************
 !> \brief Dense mirror of the selected spectral probe-history retry gate.
 !> \param selected_failures ...
 !> \param selected_quality_ema ...
@@ -16335,9 +16424,9 @@ CONTAINS
 
       LOGICAL                                            :: globally_supported_response, &
                                                             locally_supported_response
-      REAL(KIND=dp) :: active_fraction, alignment, damping, finite_support, global_response_support, &
-         global_support, projector_abs, residual_weight, response_root, response_shape, response_support, &
-         safe_abs, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, finite_support, &
+         global_response_support, global_support, projector_abs, residual_weight, response_root, &
+         response_shape, response_support, safe_abs, sign_projector_response, sign_safe_response
 
       filtered_response = density_response
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -16420,9 +16509,11 @@ CONTAINS
       REAL(KIND=dp)                                      :: active_fraction, gauge_fraction, &
                                                             quality_weight, raw_abs
 
-      mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight))
+      mix_weight = 0.0_dp
       IF (samples < 8) RETURN
       IF (history_quality < 0.10_dp) RETURN
+      quality_weight = MIN(1.0_dp, MAX(0.0_dp, history_quality))
+      mix_weight = MIN(0.75_dp, MAX(0.0_dp, history_weight)*quality_weight)
       IF (selected_samples < 8) RETURN
       IF (selected_quality < 0.10_dp) RETURN
 
@@ -16432,7 +16523,6 @@ CONTAINS
       active_fraction = ABS(active_trace_ema)/raw_abs
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
       gauge_fraction = 1.0_dp - active_fraction
-      quality_weight = MIN(1.0_dp, MAX(0.0_dp, history_quality))
 
       mix_weight = MAX(mix_weight, 0.95_dp*gauge_fraction*quality_weight)
       mix_weight = MIN(0.95_dp, MAX(0.0_dp, mix_weight))
@@ -21148,11 +21238,11 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, bounded_safe_component, density_shape, &
-         density_shape_full, density_shape_geometric, global_cap_lift, global_response_support, global_safe_cap, &
-         lift_support, lift_weight, projector_abs, projector_component, projector_response_weight, &
-         response_root, response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, &
-         safe_component, safe_response_weight, sign_projector_response, sign_safe_response, &
-         supported_lift_weight
+         density_shape_full, density_shape_geometric, global_cap_lift, global_response_support, &
+         global_safe_cap, lift_support, lift_weight, projector_abs, projector_component, &
+         projector_response_weight, response_root, response_shape, safe_abs, safe_blend, &
+         safe_blend_floor, safe_cap, safe_component, safe_response_weight, &
+         sign_projector_response, sign_safe_response, supported_lift_weight
 
       density_response = 0.0_dp
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
