@@ -57,9 +57,10 @@
 # AUTO-exhausted warning, or "Unsupported content type" signature is printed.
 # Current optional 3-k-point HIGH companion references after the projected
 # fixed-N residual-tail update: both the Sym3 and full-grid paths grow to 8
-# and 16.  The Sym3 path converges in 61 final SCF steps with Mermin free
-# energy -8.15998642458646 Ha.  The full-grid companion converges in 50 final
-# SCF steps with Mermin free energy -8.15998697483554 Ha.  The two optional
+# and 16.  The checked-in Sym3 companion, rechecked from a fresh temporary
+# directory with OMP_NUM_THREADS=1, converges in 103 final SCF steps with
+# Mermin free energy -8.15998649337130 Ha.  The full-grid companion converges
+# in 50 final SCF steps with Mermin free energy -8.15998697483554 Ha.  The two optional
 # 3-k-point paths agree within the requested 1E-6 Ha path, and no first/last-band,
 # AUTO-exhausted, or "Unsupported content type" signature is printed.  Exact
 # SCF step counts are intentionally not part of these optional 3-k-point
