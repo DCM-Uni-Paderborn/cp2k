@@ -1421,9 +1421,9 @@ CONTAINS
       INTEGER :: accepted_response_support_i, base_nmo, current_added, edge_start, edge_width, &
          ikpoint, imo, ispin, local_kpoint, nmo, nonedge_probe_limit, trigger_step
       LOGICAL :: accepted_response_tail_support, active_tail, basis_limited, basis_probe_limited, &
-         edge_limited, expandable, fractional_tail_limited, nonedge_bootstrap_probe, &
-         nonedge_residual_probe, nonedge_tail_supported, residual_ready, residual_spike, &
-         residual_tail_limited, strong_tail_limited
+         coherent_fractional_tail, edge_limited, expandable, fractional_tail_limited, &
+         nonedge_bootstrap_probe, nonedge_residual_probe, nonedge_tail_supported, residual_ready, &
+         residual_spike, residual_tail_limited, strong_tail_limited
       REAL(KIND=dp) :: accepted_response_quality, accepted_response_residual_gap, basis_signal, &
          edge_fractional_weight, edge_grow_limit, edge_tail_occ_min, &
          fractional_tail_residual_limit, fractional_weight, grow_limit, max_edge_fractional, &
@@ -1528,6 +1528,8 @@ CONTAINS
       active_tail = fractional_weight > ot_kp_fermi_window_min_frac .OR. max_fractional > tail_occ_min
       edge_limited = edge_fractional_weight > ot_kp_fermi_window_min_frac .OR. &
                      max_edge_fractional > edge_tail_occ_min
+      coherent_fractional_tail = fractional_weight >= ot_kp_fermi_window_tail_fraction .AND. &
+                                 max_fractional >= ot_kp_fermi_window_tail_fraction
       basis_probe_limited = basis_signal >= 0.6_dp*ot_kp_added_mos_auto_basis_signal_min .AND. &
                             scf_env%iter_delta <= edge_grow_limit
       nonedge_tail_supported = nonedge_bootstrap_probe .OR. accepted_response_tail_support .OR. &
@@ -1536,7 +1538,8 @@ CONTAINS
       fractional_tail_limited = nonedge_residual_probe .AND. &
                                 nonedge_tail_supported .AND. &
                                 max_fractional >= ot_kp_fermi_window_tail_fraction .AND. &
-                                max_fractional >= ot_kp_added_mos_auto_fractional_tail_peak_frac .AND. &
+                                (max_fractional >= ot_kp_added_mos_auto_fractional_tail_peak_frac .OR. &
+                                 coherent_fractional_tail) .AND. &
                                 basis_signal >= ot_kp_added_mos_auto_fractional_tail_basis_frac* &
                                 ot_kp_added_mos_auto_basis_signal_min
       fractional_tail_residual_limit = ot_kp_added_mos_auto_fractional_tail_residual_factor*edge_grow_limit

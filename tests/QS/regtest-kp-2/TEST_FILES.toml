@@ -55,15 +55,15 @@
 # 110 steps after the rebuild, 276 inner k-point OT calls overall, and
 # E_total = Mermin = -8.14585274623606 Ha.  No first/last-band warning,
 # AUTO-exhausted warning, or "Unsupported content type" signature is printed.
-# Current optional 3-k-point HIGH companion references after the fixed-N
-# projector-cluster audit and mixed Direct-metric calibration: the Sym3 path
-# grows to 8 and 16, converges in 77 SCF steps, and has E_total = Mermin =
-# -8.15998649981716 Ha.  The full-grid companion follows the same AUTO growth
-# sequence, converges in 28 final SCF steps after the grow to 16, and has
-# E_total = Mermin = -8.15998706036526 Ha.  The two optional 3-k-point paths
-# agree within 6E-7 Ha, and no first/last-band, AUTO-exhausted, or
-# "Unsupported content type" signature is printed.  Exact SCF step counts are
-# intentionally not part of these optional 3-k-point companion references.
+# Current optional 3-k-point HIGH companion references after the coherent
+# k-weighted AUTO tail update: both the Sym3 and full-grid paths grow to 8
+# and 16.  The Sym3 path converges in 119 final SCF steps with Mermin free
+# energy -8.15998700694058 Ha.  The full-grid companion converges in 50 final
+# SCF steps with Mermin free energy -8.15998697467240 Ha.  The two optional
+# 3-k-point paths agree within 4E-8 Ha, and no first/last-band,
+# AUTO-exhausted, or "Unsupported content type" signature is printed.  Exact
+# SCF step counts are intentionally not part of these optional 3-k-point
+# companion references.
 # Use ADDED_MOS_AUTO_GROW_SEQUENCE = "8,16" and the NO_TEXT first/last-band
 # smearing guards for the long optional physics checks.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.63303359769477},
