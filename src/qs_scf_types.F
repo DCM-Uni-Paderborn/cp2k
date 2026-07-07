@@ -143,6 +143,7 @@ MODULE qs_scf_types
       INTEGER :: density_full_global_quality_samples = 0
       INTEGER :: density_full_global_sel_quality_samples = 0
       INTEGER :: physical_quality_samples = 0
+      INTEGER :: physical_selected_quality_samples = 0
       INTEGER :: physical_direct_quality_samples = 0
       INTEGER :: physical_direct_selected_quality_samples = 0
       INTEGER :: phys_direct_density_sel_quality_samples = 0
@@ -220,6 +221,12 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: density_full_global_sel_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_quality = 0.0_dp, physical_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_drop_sum = 0.0_dp, physical_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_trace_actual_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_raw_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_ema = 0.0_dp
@@ -310,6 +317,7 @@ MODULE qs_scf_types
       INTEGER :: density_full_global_quality_samples = 0
       INTEGER :: density_full_global_sel_quality_samples = 0
       INTEGER :: mermin_ls_accepted_quality_samples = 0
+      INTEGER :: physical_selected_quality_samples = 0
       REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
       REAL(KIND=dp) :: density_lowcurv_ema = 0.0_dp, density_lowcurv_quality_ema = 0.0_dp
@@ -357,6 +365,12 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: density_full_global_sel_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_quality = 0.0_dp, physical_quality_ema = 0.0_dp
       REAL(KIND=dp) :: physical_drop_sum = 0.0_dp, physical_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: physical_trace_actual_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_raw_ema = 0.0_dp
       REAL(KIND=dp) :: physical_trace_active_ema = 0.0_dp

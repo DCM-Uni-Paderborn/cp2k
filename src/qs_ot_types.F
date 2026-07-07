@@ -289,6 +289,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_response_selected_quality_samples = 0
       INTEGER :: schur_projector_plateau_gap_quality_samples = 0
       INTEGER :: schur_projector_physical_quality_samples = 0
+      INTEGER :: schur_projector_physical_selected_quality_samples = 0
       INTEGER :: schur_projector_physical_direct_quality_samples = 0
       INTEGER :: schur_projector_physical_direct_selected_quality_samples = 0
       INTEGER :: schur_projector_phys_direct_density_sel_quality_samples = 0
@@ -603,6 +604,12 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_phys_direct_density_cshadow_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_selected = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_selected_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_quality_line_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_physical_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_shift = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_shift_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_physical_trace_actual = 0.0_dp
@@ -978,6 +985,7 @@ CONTAINS
       qs_ot_env%schur_projector_response_selected_quality_samples = 0
       qs_ot_env%schur_projector_plateau_gap_quality_samples = 0
       qs_ot_env%schur_projector_physical_quality_samples = 0
+      qs_ot_env%schur_projector_physical_selected_quality_samples = 0
       qs_ot_env%schur_projector_physical_direct_quality_samples = 0
       qs_ot_env%schur_projector_physical_direct_selected_quality_samples = 0
       qs_ot_env%schur_projector_phys_direct_density_sel_quality_samples = 0
@@ -1311,6 +1319,12 @@ CONTAINS
       qs_ot_env%schur_projector_phys_direct_density_cshadow_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_physical_selected = 0.0_dp
       qs_ot_env%schur_projector_physical_selected_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_quality = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_quality_line_ema = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_residual_quality = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_residual_quality_ema = 1.0_dp
+      qs_ot_env%schur_projector_physical_selected_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_physical_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_physical_shift = 0.0_dp
       qs_ot_env%schur_projector_physical_shift_ema = 0.0_dp
       qs_ot_env%schur_projector_physical_trace_actual = 0.0_dp
