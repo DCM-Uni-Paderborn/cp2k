@@ -264,6 +264,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector invariant-trace Direct trust", 5.0E-14_dp, nfail)
    CALL check_projector_direct_selected_history_quality( &
       "complex projector Direct selected-history quality", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_selected_bridge_drop( &
+      "complex projector Direct selected bridge drop", 5.0E-14_dp, nfail)
    CALL check_projector_inactive_offdiag_selected_tail_quality( &
       "complex projector inactive-offdiag selected tail quality", 5.0E-14_dp, nfail)
    CALL check_projector_inactive_offdiag_tail_refresh_probe( &
@@ -10201,6 +10203,65 @@ CONTAINS
    END SUBROUTINE check_projector_direct_selected_history_quality
 
 ! **************************************************************************************************
+!> \brief Check conservative Direct selected-history bridges from neighbouring accepted candidates.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_selected_bridge_drop(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp) :: accepted_cap, direct_cap, err, good_drop, no_accepted, no_direct, &
+         no_source, no_src_ready, no_src_selected, ratio_fail, source_cap
+
+      good_drop = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                    9.0E-7_dp, 1.0E-6_dp, 1.2E-6_dp, 0.5_dp)
+      accepted_cap = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                       9.0E-7_dp, 1.0E-6_dp, 8.0E-7_dp, 0.5_dp)
+      direct_cap = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                     7.0E-7_dp, 1.0E-6_dp, 9.0E-7_dp, 0.5_dp)
+      source_cap = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                     9.0E-7_dp, 6.0E-7_dp, 1.0E-6_dp, 0.5_dp)
+      no_src_selected = dense_direct_selected_bridge_drop(.FALSE., .TRUE., .TRUE., &
+                                                          9.0E-7_dp, 1.0E-6_dp, 1.2E-6_dp, 0.5_dp)
+      no_src_ready = dense_direct_selected_bridge_drop(.TRUE., .FALSE., .TRUE., &
+                                                       9.0E-7_dp, 1.0E-6_dp, 1.2E-6_dp, 0.5_dp)
+      no_direct = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .FALSE., &
+                                                    9.0E-7_dp, 1.0E-6_dp, 1.2E-6_dp, 0.5_dp)
+      no_source = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                    9.0E-7_dp, 0.0_dp, 1.2E-6_dp, 0.5_dp)
+      no_accepted = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                      9.0E-7_dp, 1.0E-6_dp, 0.0_dp, 0.5_dp)
+      ratio_fail = dense_direct_selected_bridge_drop(.TRUE., .TRUE., .TRUE., &
+                                                     2.0E-7_dp, 1.0E-6_dp, 1.2E-6_dp, 0.5_dp)
+
+      err = ABS(good_drop - 9.0E-7_dp)
+      err = MAX(err, ABS(accepted_cap - 8.0E-7_dp))
+      err = MAX(err, ABS(direct_cap - 7.0E-7_dp))
+      err = MAX(err, ABS(source_cap - 6.0E-7_dp))
+      err = MAX(err, ABS(no_src_selected))
+      err = MAX(err, ABS(no_src_ready))
+      err = MAX(err, ABS(no_direct))
+      err = MAX(err, ABS(no_source))
+      err = MAX(err, ABS(no_accepted))
+      err = MAX(err, ABS(ratio_fail))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with error/good/acap/dcap/scap/ratio", err, good_drop, accepted_cap, &
+            direct_cap, source_cap, ratio_fail
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with error/good/acap/dcap/scap/ratio", err, good_drop, accepted_cap, &
+            direct_cap, source_cap, ratio_fail
+      END IF
+
+   END SUBROUTINE check_projector_direct_selected_bridge_drop
+
+! **************************************************************************************************
 !> \brief Check mature inactive-offdiag selected history can lose the residual-tail floor.
 !> \param label ...
 !> \param tol ...
@@ -14699,6 +14760,42 @@ CONTAINS
       quality = MAX(min_quality, MIN(max_quality, quality))
 
    END FUNCTION dense_direct_selected_history_quality
+
+! **************************************************************************************************
+!> \brief Dense mirror of accepted neighbouring-candidate bridges into Direct selected history.
+!> \param source_selected ...
+!> \param source_ready ...
+!> \param direct_ready ...
+!> \param direct_drop ...
+!> \param source_drop ...
+!> \param accepted_drop ...
+!> \param min_ratio ...
+!> \return conservative bridged Direct selected-history drop
+! **************************************************************************************************
+   FUNCTION dense_direct_selected_bridge_drop(source_selected, source_ready, direct_ready, direct_drop, &
+                                              source_drop, accepted_drop, min_ratio) RESULT(bridge_drop)
+      LOGICAL, INTENT(IN)                                :: source_selected, source_ready, &
+                                                            direct_ready
+      REAL(KIND=dp), INTENT(IN)                          :: direct_drop, source_drop, accepted_drop, &
+                                                            min_ratio
+      REAL(KIND=dp)                                      :: bridge_drop
+
+      REAL(KIND=dp)                                      :: overlap_ratio
+
+      bridge_drop = 0.0_dp
+      IF (.NOT. source_selected) RETURN
+      IF (.NOT. source_ready) RETURN
+      IF (.NOT. direct_ready) RETURN
+      IF (direct_drop <= EPSILON(direct_drop)) RETURN
+      IF (source_drop <= EPSILON(source_drop)) RETURN
+      IF (accepted_drop <= EPSILON(accepted_drop)) RETURN
+
+      overlap_ratio = MIN(direct_drop, source_drop)/MAX(direct_drop, source_drop)
+      IF (overlap_ratio < min_ratio) RETURN
+
+      bridge_drop = MIN(accepted_drop, direct_drop, source_drop)
+
+   END FUNCTION dense_direct_selected_bridge_drop
 
 ! **************************************************************************************************
 !> \brief Dense mirror of selected-history Direct probe quality.

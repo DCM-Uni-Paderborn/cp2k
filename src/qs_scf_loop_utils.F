@@ -188,6 +188,7 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_response_underpredict_max_ratio = 2.0E1_dp, &
                                         ot_kp_schur_projector_response_quality_min_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_projector_response_max_weight = 1.0E-1_dp, &
+                                        ot_kp_schur_projector_direct_bridge_min_ratio = 5.0E-1_dp, &
                                         ot_kp_schur_projector_plateau_gap_mix_max_weight = 3.0E-2_dp, &
                                         ot_kp_schur_projector_negative_balance_floor = 1.5E-1_dp, &
                                         ot_kp_schur_projector_negative_balance_max = 5.0E-1_dp, &
@@ -2727,6 +2728,43 @@ CONTAINS
       use_step = .TRUE.
 
    END FUNCTION kpoint_ot_direct_normcap_tail_ready
+
+! **************************************************************************************************
+!> \brief selected-history drop for accepted neighbouring candidates sharing the Direct rotation
+!> \param source_selected accepted neighbouring candidate used this step
+!> \param source_ready neighbouring candidate was ready before selection
+!> \param direct_ready physical Direct candidate was ready before selection
+!> \param direct_drop physical Direct calibrated drop for the same search point
+!> \param source_drop neighbouring calibrated drop tied to the same Direct rotation
+!> \param accepted_drop calibrated drop of the actually accepted step
+!> \param min_ratio minimum overlap between Direct and source model drops
+!> \return conservative drop that may seed Direct selected-history
+! **************************************************************************************************
+   FUNCTION kpoint_ot_direct_selected_bridge_drop(source_selected, source_ready, direct_ready, &
+                                                  direct_drop, source_drop, accepted_drop, &
+                                                  min_ratio) RESULT(bridge_drop)
+      LOGICAL, INTENT(IN)                                :: source_selected, source_ready, &
+                                                            direct_ready
+      REAL(KIND=dp), INTENT(IN)                          :: direct_drop, source_drop, accepted_drop, &
+                                                            min_ratio
+      REAL(KIND=dp)                                      :: bridge_drop
+
+      REAL(KIND=dp)                                      :: overlap_ratio
+
+      bridge_drop = 0.0_dp
+      IF (.NOT. source_selected) RETURN
+      IF (.NOT. source_ready) RETURN
+      IF (.NOT. direct_ready) RETURN
+      IF (direct_drop <= EPSILON(direct_drop)) RETURN
+      IF (source_drop <= EPSILON(source_drop)) RETURN
+      IF (accepted_drop <= EPSILON(accepted_drop)) RETURN
+
+      overlap_ratio = MIN(direct_drop, source_drop)/MAX(direct_drop, source_drop)
+      IF (overlap_ratio < min_ratio) RETURN
+
+      bridge_drop = MIN(accepted_drop, direct_drop, source_drop)
+
+   END FUNCTION kpoint_ot_direct_selected_bridge_drop
 
 ! **************************************************************************************************
 !> \brief shared pair slope for near-degenerate occupation-gauge filtering
@@ -8002,16 +8040,17 @@ CONTAINS
          projector_physical_direct_schur_diag_min, projector_physical_direct_schur_eval_max, &
          projector_physical_direct_schur_eval_min, &
          projector_physical_direct_schur_negative_fraction
-      REAL(KIND=dp) :: projector_physical_direct_shadow_quality_for_promotion, &
+      REAL(KIND=dp) :: projector_physical_direct_selected_bridge_drop, &
+         projector_physical_direct_shadow_quality_for_promotion, &
          projector_physical_direct_shadow_weight, projector_physical_direct_soft_cut, &
          projector_physical_direct_soft_metric_fraction, &
          projector_physical_direct_soft_norm_fraction, &
          projector_physical_direct_spectral_direction_scale, &
          projector_physical_direct_spectral_dot, projector_physical_direct_spectral_drop, &
          projector_physical_direct_spectral_expected_drop, &
-         projector_physical_direct_spectral_floor, projector_physical_direct_spectral_gdot_energy, &
-         projector_physical_direct_spectral_gdot_rotation
-      REAL(KIND=dp) :: projector_physical_direct_spectral_gdotp, &
+         projector_physical_direct_spectral_floor, projector_physical_direct_spectral_gdot_energy
+      REAL(KIND=dp) :: projector_physical_direct_spectral_gdot_rotation, &
+         projector_physical_direct_spectral_gdotp, &
          projector_physical_direct_spectral_metric_norm_energy, &
          projector_physical_direct_spectral_metric_norm_rotation, &
          projector_physical_direct_spectral_metric_normp, &
@@ -8020,9 +8059,9 @@ CONTAINS
          projector_physical_direct_spectral_model_gap, &
          projector_physical_direct_spectral_model_gap_drop, &
          projector_physical_direct_spectral_model_gap_ratio, &
-         projector_physical_direct_spectral_model_gap_trust, &
-         projector_physical_direct_spectral_norm
-      REAL(KIND=dp) :: projector_physical_direct_spectral_norm_energy, &
+         projector_physical_direct_spectral_model_gap_trust
+      REAL(KIND=dp) :: projector_physical_direct_spectral_norm, &
+         projector_physical_direct_spectral_norm_energy, &
          projector_physical_direct_spectral_norm_ratio, &
          projector_physical_direct_spectral_norm_rotation, &
          projector_physical_direct_spectral_normp, &
@@ -8031,9 +8070,9 @@ CONTAINS
          projector_physical_direct_spectral_resp_atrust, &
          projector_physical_direct_spectral_resp_wtrust, &
          projector_physical_direct_spectral_response_abs_step, &
-         projector_physical_direct_spectral_response_weighted_step, &
-         projector_physical_direct_spectral_scale_quality
-      REAL(KIND=dp) :: projector_physical_direct_spectral_shadow_quality_for_probe, &
+         projector_physical_direct_spectral_response_weighted_step
+      REAL(KIND=dp) :: projector_physical_direct_spectral_scale_quality, &
+         projector_physical_direct_spectral_shadow_quality_for_probe, &
          projector_physical_direct_spectral_shift_avg, &
          projector_physical_direct_spectral_shift_max, &
          projector_physical_direct_spectral_trust_quality, &
@@ -8042,9 +8081,9 @@ CONTAINS
          projector_physical_direct_spectral_unit_model_gap_drop, &
          projector_physical_direct_spectral_unit_weighted_step, &
          projector_physical_direct_step_negative_fraction, &
-         projector_physical_direct_tail_history_quality, &
-         projector_physical_direct_tail_history_scale
-      REAL(KIND=dp) :: projector_physical_direct_tail_residual_quality, &
+         projector_physical_direct_tail_history_quality
+      REAL(KIND=dp) :: projector_physical_direct_tail_history_scale, &
+         projector_physical_direct_tail_residual_quality, &
          projector_physical_direct_trace_active_actual_ratio, &
          projector_physical_direct_trace_active_basis_weight, &
          projector_physical_direct_trace_active_diag_quad, &
@@ -9174,6 +9213,7 @@ CONTAINS
          projector_physical_direct_response_weighted_step = 0.0_dp
          projector_physical_direct_response_weighted_trust_ratio = 0.0_dp
          projector_physical_direct_scale_quality = 0.0_dp
+         projector_physical_direct_selected_bridge_drop = 0.0_dp
          projector_physical_direct_schur_negative_fraction = 0.0_dp
          projector_physical_direct_spectral_floor = 0.0_dp
          projector_physical_direct_spectral_shift_avg = 0.0_dp
@@ -19474,6 +19514,32 @@ CONTAINS
                local_ot_env(1)%schur_projector_phys_direct_density_sel = &
                   local_ot_env(1)%schur_projector_phys_direct_density_sel + &
                   accepted_model_calibrated_drop
+            END IF
+            IF (.NOT. projector_physical_direct_candidate_selected .AND. &
+                .NOT. projector_physical_direct_density_candidate_selected) THEN
+               projector_physical_direct_selected_bridge_drop = MAX( &
+                                                                kpoint_ot_direct_selected_bridge_drop( &
+                                                      density_full_direct_candidate_selected, density_full_direct_candidate_ready, &
+                                       projector_physical_direct_candidate_ready, projector_physical_direct_model_calibrated_drop, &
+                                                        density_full_direct_model_calibrated_drop, accepted_model_calibrated_drop, &
+                                                                ot_kp_schur_projector_direct_bridge_min_ratio), &
+                                                                kpoint_ot_direct_selected_bridge_drop( &
+                                                              density_descent_candidate_selected, density_descent_candidate_ready, &
+                                       projector_physical_direct_candidate_ready, projector_physical_direct_model_calibrated_drop, &
+                                                            density_descent_model_calibrated_drop, accepted_model_calibrated_drop, &
+                                                                ot_kp_schur_projector_direct_bridge_min_ratio))
+               projector_physical_direct_selected_bridge_drop = MAX( &
+                                                                projector_physical_direct_selected_bridge_drop, &
+                                                                kpoint_ot_direct_selected_bridge_drop( &
+                                                             density_full_candidate_selected, density_full_direct_candidate_ready, &
+                                       projector_physical_direct_candidate_ready, projector_physical_direct_model_calibrated_drop, &
+                                                        density_full_direct_model_calibrated_drop, accepted_model_calibrated_drop, &
+                                                                ot_kp_schur_projector_direct_bridge_min_ratio))
+               IF (projector_physical_direct_selected_bridge_drop > &
+                   EPSILON(projector_physical_direct_selected_bridge_drop)) &
+                  local_ot_env(1)%schur_projector_physical_direct_selected = &
+                  local_ot_env(1)%schur_projector_physical_direct_selected + &
+                  projector_physical_direct_selected_bridge_drop
             END IF
          END IF
 
