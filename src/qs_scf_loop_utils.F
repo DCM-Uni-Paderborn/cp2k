@@ -2453,6 +2453,100 @@ CONTAINS
    END FUNCTION kpoint_ot_spectral_probe_history_ready
 
 ! **************************************************************************************************
+!> \brief quality gate for conservative but mature spectral-shadow probe bootstrap
+!> \param shadow_quality current independent shadow accepted-drop quality
+!> \param shadow_quality_ema independent shadow accepted-drop quality EMA
+!> \param shadow_samples number of accepted shadow-history samples
+!> \param shadow_drop_sum accumulated shadow predicted Mermin drop
+!> \param shadow_measured_sum accumulated shadow measured Mermin drop
+!> \param shadow_dot_ema independent shadow linear response signal EMA
+!> \param shadow_norm_ema independent shadow metric response signal EMA
+!> \param shadow_floor_ema independent shadow finite spectral floor EMA
+!> \return true if mature spectral shadow history may collect selected probe history
+! **************************************************************************************************
+   FUNCTION kpoint_ot_spectral_shadow_probe_quality_ready(shadow_quality, shadow_quality_ema, &
+                                                          shadow_samples, shadow_drop_sum, &
+                                                          shadow_measured_sum, shadow_dot_ema, &
+                                                          shadow_norm_ema, shadow_floor_ema) &
+      RESULT(quality_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: shadow_quality, shadow_quality_ema
+      INTEGER, INTENT(IN)                                :: shadow_samples
+      REAL(KIND=dp), INTENT(IN)                          :: shadow_drop_sum, shadow_measured_sum, &
+                                                            shadow_dot_ema, shadow_norm_ema, &
+                                                            shadow_floor_ema
+      LOGICAL                                            :: quality_ready
+
+      REAL(KIND=dp)                                      :: quality_floor, quality_total_floor, &
+                                                            shadow_signal_ratio, total_quality
+
+      quality_ready = .FALSE.
+      IF (shadow_samples < ot_kp_schur_projector_response_min_samples) RETURN
+      IF (shadow_drop_sum <= EPSILON(shadow_drop_sum)) RETURN
+      IF (shadow_measured_sum <= 0.0_dp) RETURN
+      IF (shadow_dot_ema <= 0.0_dp) RETURN
+      IF (shadow_norm_ema <= EPSILON(shadow_norm_ema)) RETURN
+      IF (shadow_floor_ema <= EPSILON(shadow_floor_ema)) RETURN
+
+      total_quality = shadow_measured_sum/shadow_drop_sum
+      quality_floor = 0.5_dp*ot_kp_schur_projector_spectral_probe_quality_min
+      quality_total_floor = 0.5_dp*quality_floor
+      IF (shadow_quality_ema >= ot_kp_schur_projector_spectral_probe_quality_min .AND. &
+          shadow_quality >= quality_floor) THEN
+         quality_ready = .TRUE.
+         RETURN
+      END IF
+
+      shadow_signal_ratio = shadow_dot_ema/MAX(shadow_norm_ema, EPSILON(shadow_norm_ema))
+      quality_ready = shadow_quality_ema >= quality_floor .AND. &
+                      shadow_quality >= quality_floor .AND. &
+                      total_quality >= quality_total_floor .AND. &
+                      shadow_signal_ratio >= shadow_floor_ema
+
+   END FUNCTION kpoint_ot_spectral_shadow_probe_quality_ready
+
+! **************************************************************************************************
+!> \brief update selected spectral-probe failure count from Mermin and residual quality
+!> \param selected_failures current selected-probe failure count
+!> \param selected_quality accepted Mermin-drop quality of the selected spectral probe
+!> \param residual_quality physical residual quality of the accepted spectral probe
+!> \return updated selected-probe failure count
+! **************************************************************************************************
+   FUNCTION kpoint_ot_spectral_selected_failure_count(selected_failures, selected_quality, residual_quality) &
+      RESULT(updated_failures)
+      INTEGER, INTENT(IN)                                :: selected_failures
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality, residual_quality
+      INTEGER                                            :: updated_failures
+
+      updated_failures = selected_failures
+      IF (residual_quality < 0.25_dp*ot_kp_schur_projector_response_quality_min_ratio) THEN
+         updated_failures = ot_kp_schur_projector_spectral_probe_max_failures
+      ELSE IF (selected_quality < &
+               0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
+               residual_quality < ot_kp_schur_projector_response_quality_min_ratio) THEN
+         updated_failures = MIN(selected_failures + 1, HUGE(updated_failures) - 1)
+      END IF
+
+   END FUNCTION kpoint_ot_spectral_selected_failure_count
+
+! **************************************************************************************************
+!> \brief residual-aware bootstrap gate for selected spectral probes from shadow history
+!> \param shadow_quality_ready true if independent spectral-shadow quality is mature
+!> \param residual_quality physical residual quality of the latest accepted step
+!> \return true if spectral shadow history may bootstrap a selected probe
+! **************************************************************************************************
+   FUNCTION kpoint_ot_spectral_shadow_probe_bootstrap_ready(shadow_quality_ready, residual_quality) &
+      RESULT(bootstrap_ready)
+      LOGICAL, INTENT(IN)                                :: shadow_quality_ready
+      REAL(KIND=dp), INTENT(IN)                          :: residual_quality
+      LOGICAL                                            :: bootstrap_ready
+
+      bootstrap_ready = shadow_quality_ready .AND. &
+                        residual_quality >= &
+                        0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
+
+   END FUNCTION kpoint_ot_spectral_shadow_probe_bootstrap_ready
+
+! **************************************************************************************************
 !> \brief tail bootstrap gate for the physical Direct k-point Schur candidate
 !> \param candidate_used ...
 !> \param promoted ...
@@ -4078,8 +4172,8 @@ CONTAINS
       SUBROUTINE update_kpoint_ot_schur_line_search_quality()
 
       INTEGER                                            :: local_channel, samples
-      LOGICAL                                            :: mermin_search, spectral_selected_ema_ok, &
-                                                            spectral_selected_recent_ok
+      LOGICAL :: mermin_search, spectral_selected_ema_ok, spectral_selected_recent_ok, &
+         spectral_shadow_probe_quality_ready
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          constrained_calibrated_predicted_drop, constrained_calibrated_quality_ratio, &
          constrained_predicted_drop, constrained_quality_ratio, gauge_residual_quality_ratio, &
@@ -6194,20 +6288,16 @@ CONTAINS
                   projector_spectral_selected_predicted_drop
                local_ot_env(1)%schur_projector_spectral_selected_measured_sum = &
                   local_ot_env(1)%schur_projector_spectral_selected_measured_sum + measured_drop
-               ! A positive but badly overpredicted spectral probe is only
-               ! damaging in the tail if it also fails to reduce the physical
-               ! residual. Keep residual-good directions alive even when the
-               ! local Mermin drop model is temporarily pessimistic.
-               IF (projector_spectral_selected_quality_ratio < &
-                   0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
-                   residual_quality_ratio < ot_kp_schur_projector_response_quality_min_ratio) &
-                  local_ot_env(1)%schur_projector_spectral_selected_failure_samples = &
-                  MIN(local_ot_env(1)%schur_projector_spectral_selected_failure_samples + 1, &
-                      HUGE(samples) - 1)
+               ! Mermin-drop quality alone is not enough in the residual tail:
+               ! a severe residual miss disables selected spectral probes until
+               ! the independent shadow path rebuilds evidence.
+               local_ot_env(1)%schur_projector_spectral_selected_failure_samples = &
+                  kpoint_ot_spectral_selected_failure_count( &
+                  local_ot_env(1)%schur_projector_spectral_selected_failure_samples, &
+                  projector_spectral_selected_quality_ratio, residual_quality_ratio)
             ELSE
                local_ot_env(1)%schur_projector_spectral_selected_failure_samples = &
-                  MIN(local_ot_env(1)%schur_projector_spectral_selected_failure_samples + 1, &
-                      HUGE(samples) - 1)
+                  ot_kp_schur_projector_spectral_probe_max_failures
                local_ot_env(1)%schur_projector_spectral_selected_quality = 0.0_dp
                local_ot_env(1)%schur_projector_spectral_selected_quality_ema = 0.0_dp
                local_ot_env(1)%schur_projector_spectral_selected_residual_quality = 0.0_dp
@@ -6224,8 +6314,22 @@ CONTAINS
             ot_kp_schur_projector_response_quality_min_ratio .AND. &
             local_ot_env(1)%schur_projector_physical_quality >= &
             0.5_dp*ot_kp_schur_projector_response_quality_min_ratio
-         ! Let robust spectral shadow history promote the candidate early,
-         ! but do not make one positive, overpredicted probe a permanent veto.
+         ! Keep the independent spectral shadow diagnostic separate from
+         ! active candidate promotion; the Al residual tail shows that
+         ! shadow-only promotion can be Mermin-positive but residual-bad.
+         spectral_shadow_probe_quality_ready = &
+            kpoint_ot_spectral_shadow_probe_quality_ready( &
+            local_ot_env(1)%schur_projector_spectral_quality, &
+            local_ot_env(1)%schur_projector_spectral_quality_ema, &
+            local_ot_env(1)%schur_projector_spectral_quality_samples, &
+            local_ot_env(1)%schur_projector_spectral_drop_sum, &
+            local_ot_env(1)%schur_projector_spectral_measured_sum, &
+            local_ot_env(1)%schur_projector_spectral_dot_ema, &
+            local_ot_env(1)%schur_projector_spectral_norm_ema, &
+            local_ot_env(1)%schur_projector_spectral_floor_ema)
+         spectral_shadow_probe_quality_ready = &
+            kpoint_ot_spectral_shadow_probe_bootstrap_ready( &
+            spectral_shadow_probe_quality_ready, residual_quality_ratio)
          spectral_selected_ema_ok = &
             local_ot_env(1)%schur_projector_spectral_selected_quality_ema >= &
             ot_kp_schur_projector_response_quality_min_ratio .OR. &
@@ -6740,9 +6844,9 @@ CONTAINS
                projector_mixed_direct_predicted_drop, &
                local_ot_env(1)%schur_projector_mixed_direct_weight, &
                local_ot_env(1)%schur_projector_mixed_direct_weight_ema
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,13(1X,ES16.8),1X,L1)') &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,13(1X,ES16.8),2(1X,L1))') &
                " OT Schur LS projector spectral shadow n ratio ema pred meas latest dot dotema "// &
-               "norm normema floor floorema emin eminema selected_enabled:", &
+               "norm normema floor floorema emin eminema selected_enabled shadow_probe:", &
                local_ot_env(1)%schur_projector_spectral_quality_samples, &
                local_ot_env(1)%schur_projector_spectral_quality, &
                local_ot_env(1)%schur_projector_spectral_quality_ema, &
@@ -6756,7 +6860,8 @@ CONTAINS
                local_ot_env(1)%schur_projector_spectral_floor_ema, &
                local_ot_env(1)%schur_projector_spectral_emin, &
                local_ot_env(1)%schur_projector_spectral_emin_ema, &
-               local_ot_env(1)%schur_projector_spectral_candidate_enabled
+               local_ot_env(1)%schur_projector_spectral_candidate_enabled, &
+               spectral_shadow_probe_quality_ready
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),7(1X,ES16.8))') &
                " OT Schur LS projector spectral selected history n fail ratio ema rq rqema pred meas latest:", &
                local_ot_env(1)%schur_projector_spectral_selected_quality_samples, &
@@ -7237,15 +7342,16 @@ CONTAINS
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected
       LOGICAL :: projector_physical_direct_spectral_enabled, &
+         projector_physical_direct_spectral_probe_quality_ready, &
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, response_model_available, schur_active_subspace, &
-         solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected
-      LOGICAL :: split_residual_competitive, trust_rejected
+         solved, split_candidate_diagnostic
+      LOGICAL :: split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
+         split_residual_competitive, trust_rejected
       REAL(KIND=dp) :: accepted_model_calibrated_drop, accepted_model_drop, &
          accepted_model_gap_ratio, accepted_occgap_shadow_drop, accepted_occgap_shadow_gap_ratio, &
          accepted_projector_coupled_weight, accepted_projector_inactive_offdiag_abs_ratio, &
@@ -7756,11 +7862,12 @@ CONTAINS
          projector_physical_direct_spectral_norm_ratio, &
          projector_physical_direct_spectral_norm_rotation, &
          projector_physical_direct_spectral_normp, &
+         projector_physical_direct_spectral_probe_signal_ratio, &
          projector_physical_direct_spectral_quality_for_selection, &
          projector_physical_direct_spectral_resp_atrust, &
-         projector_physical_direct_spectral_resp_wtrust, &
-         projector_physical_direct_spectral_response_abs_step
-      REAL(KIND=dp) :: projector_physical_direct_spectral_response_weighted_step, &
+         projector_physical_direct_spectral_resp_wtrust
+      REAL(KIND=dp) :: projector_physical_direct_spectral_response_abs_step, &
+         projector_physical_direct_spectral_response_weighted_step, &
          projector_physical_direct_spectral_scale_quality, &
          projector_physical_direct_spectral_shadow_quality_for_probe, &
          projector_physical_direct_spectral_shift_avg, &
@@ -7769,9 +7876,9 @@ CONTAINS
          projector_physical_direct_spectral_trust_scale, &
          projector_physical_direct_spectral_unit_abs_step, &
          projector_physical_direct_spectral_unit_model_gap_drop, &
-         projector_physical_direct_spectral_unit_weighted_step, &
-         projector_physical_direct_step_negative_fraction
-      REAL(KIND=dp) :: projector_physical_direct_tail_history_quality, &
+         projector_physical_direct_spectral_unit_weighted_step
+      REAL(KIND=dp) :: projector_physical_direct_step_negative_fraction, &
+         projector_physical_direct_tail_history_quality, &
          projector_physical_direct_tail_history_scale, &
          projector_physical_direct_tail_residual_quality, &
          projector_physical_direct_trace_active_actual_ratio, &
@@ -7779,19 +7886,18 @@ CONTAINS
          projector_physical_direct_trace_active_diag_quad, &
          projector_physical_direct_trace_active_free_quad, &
          projector_physical_direct_trace_active_norm, projector_physical_direct_trace_active_quad, &
-         projector_physical_direct_trace_actual_diag_quad, &
-         projector_physical_direct_trace_actual_free_quad
-      REAL(KIND=dp) :: projector_physical_direct_trace_actual_norm, &
-         projector_physical_direct_trace_actual_quad, &
+         projector_physical_direct_trace_actual_diag_quad
+      REAL(KIND=dp) :: projector_physical_direct_trace_actual_free_quad, &
+         projector_physical_direct_trace_actual_norm, projector_physical_direct_trace_actual_quad, &
          projector_physical_direct_trace_base_diag_avg, &
          projector_physical_direct_trace_diag_scale, projector_physical_direct_trace_excess_quad, &
          projector_physical_direct_trace_free_scale, &
          projector_physical_direct_trace_full_diag_quad, &
          projector_physical_direct_trace_full_free_quad, &
          projector_physical_direct_trace_full_norm, projector_physical_direct_trace_full_quad, &
-         projector_physical_direct_trace_invariant_diag_quad, &
-         projector_physical_direct_trace_invariant_free_quad
-      REAL(KIND=dp) :: projector_physical_direct_trace_invariant_gap_quad, &
+         projector_physical_direct_trace_invariant_diag_quad
+      REAL(KIND=dp) :: projector_physical_direct_trace_invariant_free_quad, &
+         projector_physical_direct_trace_invariant_gap_quad, &
          projector_physical_direct_trace_invariant_norm, &
          projector_physical_direct_trace_invariant_quad, &
          projector_physical_direct_trace_invariant_ratio, &
@@ -7799,125 +7905,125 @@ CONTAINS
          projector_physical_direct_trace_invariant_trust_quality, &
          projector_physical_direct_trace_local_separate_weight, &
          projector_physical_direct_trace_ratio, projector_physical_direct_trace_residual_support, &
-         projector_physical_direct_trace_scale_diag_avg, &
-         projector_physical_direct_trace_selected_quality
-      REAL(KIND=dp) :: projector_physical_direct_trace_trust_gap_drop, &
-         projector_physical_direct_trust_quality, projector_physical_direct_trust_scale, &
-         projector_physical_direct_unit_abs_step, projector_physical_direct_unit_model_gap, &
-         projector_physical_direct_unit_model_gap_drop, &
+         projector_physical_direct_trace_scale_diag_avg
+      REAL(KIND=dp) :: projector_physical_direct_trace_selected_quality, &
+         projector_physical_direct_trace_trust_gap_drop, projector_physical_direct_trust_quality, &
+         projector_physical_direct_trust_scale, projector_physical_direct_unit_abs_step, &
+         projector_physical_direct_unit_model_gap, projector_physical_direct_unit_model_gap_drop, &
          projector_physical_direct_unit_trace_gap_drop, &
          projector_physical_direct_unit_trace_invariant_gap_drop, &
          projector_physical_direct_unit_weighted_step, projector_physical_direction_scale, &
-         projector_physical_expected_drop, projector_physical_gdot_energy, &
-         projector_physical_gdot_rotation, projector_physical_gdotp
-      REAL(KIND=dp) :: projector_physical_model_calibrated_drop, projector_physical_model_drop, &
+         projector_physical_expected_drop, projector_physical_gdot_energy
+      REAL(KIND=dp) :: projector_physical_gdot_rotation, projector_physical_gdotp, &
+         projector_physical_model_calibrated_drop, projector_physical_model_drop, &
          projector_physical_model_gap, projector_physical_model_gap_drop, &
          projector_physical_model_gap_ratio, projector_physical_model_gap_trust, &
          projector_physical_norm_energy, projector_physical_norm_ratio, &
          projector_physical_norm_rotation, projector_physical_normp, &
          projector_physical_offdiag_abs_avg, projector_physical_offdiag_abs_ratio, &
-         projector_physical_offdiag_active_abs_avg, projector_physical_offdiag_delta_max, &
-         projector_physical_offdiag_diag_avg, projector_physical_offdiag_inactive_abs_avg
-      REAL(KIND=dp) :: projector_physical_offdiag_mode_abs_quad, &
+         projector_physical_offdiag_active_abs_avg, projector_physical_offdiag_delta_max
+      REAL(KIND=dp) :: projector_physical_offdiag_diag_avg, &
+         projector_physical_offdiag_inactive_abs_avg, projector_physical_offdiag_mode_abs_quad, &
          projector_physical_offdiag_mode_eval_max, projector_physical_offdiag_mode_eval_min, &
          projector_physical_offdiag_mode_negative_fraction, &
          projector_physical_offdiag_mode_negative_quad, &
          projector_physical_offdiag_mode_positive_quad, projector_physical_offdiag_mode_quad, &
          projector_physical_offdiag_mode_quad_abs_ratio, &
          projector_physical_offdiag_mode_quad_signed_ratio, &
-         projector_physical_offdiag_mode_step_negative_fraction, &
-         projector_physical_offdiag_plateau_abs_avg, projector_physical_offdiag_plateau_delta_max
-      REAL(KIND=dp) :: projector_physical_offdiag_plateau_diag_avg, &
+         projector_physical_offdiag_mode_step_negative_fraction
+      REAL(KIND=dp) :: projector_physical_offdiag_plateau_abs_avg, &
+         projector_physical_offdiag_plateau_delta_max, &
+         projector_physical_offdiag_plateau_diag_avg, &
          projector_physical_offdiag_plateau_gap_abs_avg, &
          projector_physical_offdiag_plateau_gap_active_abs_avg, &
          projector_physical_offdiag_plateau_gap_delta_max, &
          projector_physical_offdiag_plateau_gap_diag_avg, &
          projector_physical_offdiag_plateau_gap_inactive_abs_avg, &
          projector_physical_quality_for_selection, projector_physical_residual_abs_avg, &
-         projector_physical_residual_delta, projector_physical_residual_delta_max, &
-         projector_physical_residual_diag_avg, projector_physical_response_abs_step, &
-         projector_physical_response_abs_trust_ratio
-      REAL(KIND=dp) :: projector_physical_response_audit_base_weight, &
+         projector_physical_residual_delta, projector_physical_residual_delta_max
+      REAL(KIND=dp) :: projector_physical_residual_diag_avg, projector_physical_response_abs_step, &
+         projector_physical_response_abs_trust_ratio, &
+         projector_physical_response_audit_base_weight, &
          projector_physical_response_audit_eval_abs_avg, &
          projector_physical_response_audit_negative_weight_sum, &
          projector_physical_response_audit_positive_weight_sum, &
          projector_physical_response_audit_response_total_sum, &
          projector_physical_response_audit_step_weight_sum, &
          projector_physical_response_correction_drop, &
-         projector_physical_response_correction_negative, projector_physical_response_cross_drop, &
-         projector_physical_response_negative_coeff, projector_physical_response_negative_drop, &
-         projector_physical_response_positive_coeff
-      REAL(KIND=dp) :: projector_physical_response_positive_drop, &
+         projector_physical_response_correction_negative, projector_physical_response_cross_drop
+      REAL(KIND=dp) :: projector_physical_response_negative_coeff, &
+         projector_physical_response_negative_drop, projector_physical_response_positive_coeff, &
+         projector_physical_response_positive_drop, &
          projector_physical_response_raw_negative_fraction, projector_physical_response_weight, &
          projector_physical_response_weighted_step, &
          projector_physical_response_weighted_trust_ratio, projector_physical_scale_quality, &
          projector_physical_trace_balance, &
          projector_physical_trace_invariant_quality_for_selection, &
-         projector_physical_trace_split_quality, projector_physical_trust_quality, &
-         projector_physical_trust_scale, projector_physical_unit_abs_step, &
-         projector_physical_unit_weighted_step, projector_plateau_gap_delta_diag_avg
-      REAL(KIND=dp) :: projector_plateau_gap_delta_weight, &
-         projector_plateau_gap_quality_for_selection, projector_response_character_abs_avg, &
-         projector_response_character_fraction, projector_response_character_max, &
-         projector_response_direction_scale, projector_response_expected_drop, &
-         projector_response_gap_avg, projector_response_gap_max, projector_response_gap_norm, &
-         projector_response_gdot_energy, projector_response_gdot_rotation, &
-         projector_response_gdotp, projector_response_metric_norm_energy, &
-         projector_response_metric_norm_rotation, projector_response_metric_normp
-      REAL(KIND=dp) :: projector_response_model_calibrated_drop, projector_response_model_drop, &
+         projector_physical_trace_split_quality, projector_physical_trust_quality
+      REAL(KIND=dp) :: projector_physical_trust_scale, projector_physical_unit_abs_step, &
+         projector_physical_unit_weighted_step, projector_plateau_gap_delta_diag_avg, &
+         projector_plateau_gap_delta_weight, projector_plateau_gap_quality_for_selection, &
+         projector_response_character_abs_avg, projector_response_character_fraction, &
+         projector_response_character_max, projector_response_direction_scale, &
+         projector_response_expected_drop, projector_response_gap_avg, projector_response_gap_max, &
+         projector_response_gap_norm, projector_response_gdot_energy, &
+         projector_response_gdot_rotation
+      REAL(KIND=dp) :: projector_response_gdotp, projector_response_metric_norm_energy, &
+         projector_response_metric_norm_rotation, projector_response_metric_normp, &
+         projector_response_model_calibrated_drop, projector_response_model_drop, &
          projector_response_model_gap, projector_response_model_gap_drop, &
          projector_response_model_gap_ratio, projector_response_model_gap_trust, &
          projector_response_norm_energy, projector_response_norm_ratio, &
          projector_response_norm_rotation, projector_response_normp, &
-         projector_response_quality_for_selection, projector_response_response_abs_step, &
-         projector_response_response_abs_trust_ratio, projector_response_response_weighted_step, &
-         projector_response_response_weighted_trust_ratio
-      REAL(KIND=dp) :: projector_response_scale_quality, projector_response_signal, &
-         projector_response_signal_count, projector_response_signal_max, &
-         projector_response_signal_mean, projector_response_signal_ref, &
-         projector_response_signal_sum, projector_response_signal_weight, &
-         projector_response_trust_quality, projector_response_trust_scale, &
-         projector_response_unit_abs_step, projector_response_unit_weighted_step, &
-         projector_step_fermi_norm, projector_step_gap_norm, projector_step_gauge_norm, &
+         projector_response_quality_for_selection, projector_response_response_abs_step
+      REAL(KIND=dp) :: projector_response_response_abs_trust_ratio, &
+         projector_response_response_weighted_step, &
+         projector_response_response_weighted_trust_ratio, projector_response_scale_quality, &
+         projector_response_signal, projector_response_signal_count, &
+         projector_response_signal_max, projector_response_signal_mean, &
+         projector_response_signal_ref, projector_response_signal_sum, &
+         projector_response_signal_weight, projector_response_trust_quality, &
+         projector_response_trust_scale, projector_response_unit_abs_step, &
+         projector_response_unit_weighted_step, projector_step_fermi_norm
+      REAL(KIND=dp) :: projector_step_gap_norm, projector_step_gauge_norm, &
          projector_step_gauge_quality, projector_step_gauge_ratio, &
-         projector_tail_active_delta_diag_avg
-      REAL(KIND=dp) :: projector_tail_active_delta_weight, projector_tail_delta_diag_avg, &
-         rayleigh_edge_gap, residual_delta, residual_reference_quality, response_abs_step, &
-         response_abs_trust, response_abs_trust_ratio, response_mixed_diag_avg, &
-         response_penalty_diag_sum, response_penalty_term, response_shift, response_step_max, &
-         response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
-         response_weighted_step, response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, &
+         projector_tail_active_delta_diag_avg, projector_tail_active_delta_weight, &
+         projector_tail_delta_diag_avg, rayleigh_edge_gap, residual_delta, &
+         residual_reference_quality, response_abs_step, response_abs_trust, &
+         response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
+         response_penalty_term, response_shift, response_step_max, response_trust, &
+         response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step
+      REAL(KIND=dp) :: response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, &
          rot_grad_active_fraction_avg, rot_grad_active_fraction_max, rot_grad_active_im, &
-         rot_grad_active_re
-      REAL(KIND=dp) :: rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, &
-         rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
-         rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, rot_grad_gauge_weight, &
-         rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
-         rot_grad_norm_weight, rot_grad_pair_fraction, rot_grad_physical_norm, &
-         rot_grad_rest_fraction, rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, &
-         row_floor_avg, row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
-         row_floor_shifted_step
-      REAL(KIND=dp) :: row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, &
-         scale_quality, schur_active_occ_min, schur_diag_min, schur_energy_window, &
-         spectral_resp_correction_drop, spectral_resp_correction_negative, &
-         spectral_resp_cross_drop, spectral_resp_negative_coeff, spectral_resp_negative_drop, &
-         spectral_resp_positive_coeff, spectral_resp_positive_drop, &
-         spectral_resp_raw_negative_fraction, spectral_resp_weight, split_curvature_scale, &
-         split_dense_expected_ratio, split_density_projector_fraction, split_diag_shift_max, &
-         split_diag_shift_sum, split_direction_scale
-      REAL(KIND=dp) :: split_expected_drop, split_gdot_energy, split_gdot_rotation, split_gdotp, &
-         split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, split_norm_energy, &
-         split_norm_ratio, split_norm_rotation, split_normp, split_occgap_shadow_drop, &
+         rot_grad_active_re, rot_grad_active_weight_sum, rot_grad_energy_norm, &
+         rot_grad_fermi_weight, rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, &
+         rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
+         rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
+         rot_grad_inactive_weight_sum, rot_grad_norm_weight, rot_grad_pair_fraction, &
+         rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq
+      REAL(KIND=dp) :: rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, &
+         row_floor_max, row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
+         row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
+         schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
+         spectral_resp_correction_negative, spectral_resp_cross_drop, &
+         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff, &
+         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
+         split_curvature_scale
+      REAL(KIND=dp) :: split_dense_expected_ratio, split_density_projector_fraction, &
+         split_diag_shift_max, split_diag_shift_sum, split_direction_scale, split_expected_drop, &
+         split_gdot_energy, split_gdot_rotation, split_gdotp, split_model_calibrated_drop, &
+         split_model_drop, split_model_gap_ratio, split_norm_energy, split_norm_ratio, &
+         split_norm_rotation, split_normp, split_occgap_shadow_drop, &
          split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
          split_quality_for_selection, split_residual_delta, split_residual_quality, &
-         split_response_abs_step, split_response_abs_trust, split_response_abs_trust_ratio, &
-         split_response_step, split_response_trust, split_response_trust_factor, &
-         split_response_weighted_step
-      REAL(KIND=dp) :: split_response_weighted_trust_ratio, split_rot_floor_min, &
-         split_scale_quality, split_schur_diag_min, split_trust_quality, step_gauge_quality, &
-         tether_curv_diag_max, tether_curv_diag_sum, tether_projected_term, tether_response, &
-         tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max, &
-         total_curv_diag_sum, z_shift, z_weight
+         split_response_abs_step, split_response_abs_trust
+      REAL(KIND=dp) :: split_response_abs_trust_ratio, split_response_step, split_response_trust, &
+         split_response_trust_factor, split_response_weighted_step, &
+         split_response_weighted_trust_ratio, split_rot_floor_min, split_scale_quality, &
+         split_schur_diag_min, split_trust_quality, step_gauge_quality, tether_curv_diag_max, &
+         tether_curv_diag_sum, tether_projected_term, tether_response, tether_response_diag_sum, &
+         tether_strength, tether_weight, total_curv_diag_max, total_curv_diag_sum, z_shift, &
+         z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, constrained_sol, &
          constrained_z_e, curv, density_basis_selective_floor_weight, density_descent_rx_e, &
          density_descent_z_e, density_full_global_rx_e, density_full_global_sol, &
@@ -8912,6 +9018,7 @@ CONTAINS
          projector_physical_direct_spectral_norm_rotation = 0.0_dp
          projector_physical_direct_spectral_normp = 0.0_dp
          projector_physical_direct_spectral_norm_ratio = 0.0_dp
+         projector_physical_direct_spectral_probe_signal_ratio = 0.0_dp
          projector_physical_direct_spectral_quality_for_selection = 0.0_dp
          projector_physical_direct_spectral_shadow_quality_for_probe = 0.0_dp
          projector_physical_direct_spectral_response_abs_step = 0.0_dp
@@ -8927,6 +9034,7 @@ CONTAINS
          projector_physical_direct_spectral_ready = .FALSE.
          projector_physical_direct_spectral_candidate_ready = .FALSE.
          projector_physical_direct_spectral_candidate_selected = .FALSE.
+         projector_physical_direct_spectral_probe_quality_ready = .FALSE.
          projector_physical_direct_spectral_probe_ready = .FALSE.
          projector_physical_direct_spectral_probe_selected = .FALSE.
          projector_physical_direct_trust_scale = HUGE(1.0_dp)
@@ -14585,8 +14693,26 @@ CONTAINS
                               projector_physical_direct_spectral_model_calibrated_drop, &
                               projector_physical_direct_spectral_quality_for_selection, &
                               projector_physical_direct_spectral_trust_quality)
+                           projector_physical_direct_spectral_probe_signal_ratio = 0.0_dp
+                           IF (local_ot_env(1)%schur_projector_spectral_norm_ema > &
+                               EPSILON(local_ot_env(1)%schur_projector_spectral_norm_ema)) &
+                              projector_physical_direct_spectral_probe_signal_ratio = &
+                              local_ot_env(1)%schur_projector_spectral_dot_ema/ &
+                              local_ot_env(1)%schur_projector_spectral_norm_ema
+                           projector_physical_direct_spectral_probe_quality_ready = &
+                              kpoint_ot_spectral_shadow_probe_quality_ready( &
+                              local_ot_env(1)%schur_projector_spectral_quality, &
+                              local_ot_env(1)%schur_projector_spectral_quality_ema, &
+                              local_ot_env(1)%schur_projector_spectral_quality_samples, &
+                              local_ot_env(1)%schur_projector_spectral_drop_sum, &
+                              local_ot_env(1)%schur_projector_spectral_measured_sum, &
+                              local_ot_env(1)%schur_projector_spectral_dot_ema, &
+                              local_ot_env(1)%schur_projector_spectral_norm_ema, &
+                              local_ot_env(1)%schur_projector_spectral_floor_ema)
                            projector_physical_direct_spectral_probe_ready = &
                               .NOT. local_ot_env(1)%schur_projector_spectral_candidate_enabled &
+                              .AND. &
+                              local_ot_env(1)%schur_projector_spectral_selected_quality_samples > 0 &
                               .AND. &
                               local_ot_env(1)%schur_projector_spectral_selected_quality_samples < &
                               ot_kp_schur_projector_response_min_samples .AND. &
@@ -14599,18 +14725,7 @@ CONTAINS
                               local_ot_env(1)%schur_projector_spectral_dot_ema, &
                               local_ot_env(1)%schur_projector_spectral_norm_ema, &
                               local_ot_env(1)%schur_projector_spectral_floor_ema) .AND. &
-                              local_ot_env(1)%schur_projector_spectral_quality_samples >= &
-                              ot_kp_schur_projector_response_min_samples .AND. &
-                              projector_physical_direct_spectral_shadow_quality_for_probe >= &
-                              ot_kp_schur_projector_spectral_probe_quality_min .AND. &
-                              local_ot_env(1)%schur_projector_spectral_quality_ema >= &
-                              ot_kp_schur_projector_spectral_probe_quality_min .AND. &
-                              local_ot_env(1)%schur_projector_spectral_quality >= &
-                              0.5_dp*ot_kp_schur_projector_spectral_probe_quality_min .AND. &
-                              local_ot_env(1)%schur_projector_spectral_dot_ema > 0.0_dp .AND. &
-                              local_ot_env(1)%schur_projector_spectral_norm_ema > 0.0_dp .AND. &
-                              local_ot_env(1)%schur_projector_spectral_floor_ema > &
-                              EPSILON(local_ot_env(1)%schur_projector_spectral_floor_ema) .AND. &
+                              projector_physical_direct_spectral_probe_quality_ready .AND. &
                               projector_physical_direct_spectral_response_weighted_step <= &
                               ot_kp_schur_projector_spectral_probe_trust_fraction*response_trust .AND. &
                               projector_physical_direct_spectral_response_abs_step <= &
@@ -19829,14 +19944,15 @@ CONTAINS
                      projector_physical_direct_spectral_shift_max, &
                      projector_physical_direct_schur_negative_fraction, &
                      projector_physical_direct_schur_eval_min, projector_physical_direct_schur_eval_max
-                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),10(1X,ES16.8))') &
-                     " OT Schur projector phys direct spectral response ready selected enabled probe psel "// &
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),11(1X,ES16.8))') &
+                     " OT Schur projector phys direct spectral response ready selected enabled probe qready psel "// &
                      "exp qsel qprobe "// &
-                     "drop mdot mnorm gap rstep astep scale:", &
+                     "drop mdot mnorm gap rstep astep scale sratio:", &
                      projector_physical_direct_spectral_candidate_ready, &
                      projector_physical_direct_spectral_candidate_selected, &
                      local_ot_env(1)%schur_projector_spectral_candidate_enabled, &
                      projector_physical_direct_spectral_probe_ready, &
+                     projector_physical_direct_spectral_probe_quality_ready, &
                      projector_physical_direct_spectral_probe_selected, &
                      projector_physical_direct_spectral_expected_drop, &
                      projector_physical_direct_spectral_quality_for_selection, &
@@ -19847,7 +19963,8 @@ CONTAINS
                      projector_physical_direct_spectral_model_gap_drop, &
                      projector_physical_direct_spectral_response_weighted_step, &
                      projector_physical_direct_spectral_response_abs_step, &
-                     projector_physical_direct_spectral_direction_scale
+                     projector_physical_direct_spectral_direction_scale, &
+                     projector_physical_direct_spectral_probe_signal_ratio
                   WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I6),10(1X,ES16.8),1X,L1)') &
                      " OT Schur projector phys direct spectral enable history n fail sq sqema srq srqema "// &
                      "shq shqema dotema normema floorema eminema enabled:", &

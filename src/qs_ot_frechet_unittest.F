@@ -11694,9 +11694,10 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: failure_veto, first_probe, &
-                                                            selected_retry, shadow_retry, &
-                                                            tiny_shadow_veto, weak_shadow_veto
+      LOGICAL :: bootstrap_ready, bootstrap_residual_veto, failure_veto, first_probe, &
+         joint_soft_failure, marginal_total, mature_conservative, poor_signal_veto, &
+         residual_failfast, residual_good_survives, selected_retry, shadow_retry, &
+         tiny_shadow_veto, weak_shadow_veto, weak_total_veto
       REAL(KIND=dp)                                      :: err
 
       first_probe = dense_spectral_probe_history_ready(0, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
@@ -11711,20 +11712,47 @@ CONTAINS
                                                             1.0E-9_dp, 1.0E-9_dp, 3.0E-4_dp)
       failure_veto = dense_spectral_probe_history_ready(2, 0.67_dp, 0.67_dp, 0.31_dp, 0.31_dp, &
                                                         0.2_dp, 0.2_dp, 0.1_dp)
+      mature_conservative = dense_spectral_shadow_probe_quality_ready( &
+                            0.080_dp, 0.075_dp, 15, 3.0E-5_dp, 2.2E-6_dp, &
+                            6.2E-6_dp, 6.0E-6_dp, 3.2E-4_dp)
+      poor_signal_veto = dense_spectral_shadow_probe_quality_ready( &
+                         0.080_dp, 0.075_dp, 15, 3.0E-5_dp, 2.2E-6_dp, &
+                         1.0E-10_dp, 6.0E-6_dp, 3.2E-4_dp)
+      weak_total_veto = dense_spectral_shadow_probe_quality_ready( &
+                        0.080_dp, 0.075_dp, 15, 3.0E-5_dp, 1.0E-7_dp, &
+                        6.2E-6_dp, 6.0E-6_dp, 3.2E-4_dp)
+      marginal_total = dense_spectral_shadow_probe_quality_ready( &
+                       0.080_dp, 0.075_dp, 15, 3.0E-5_dp, 1.3E-6_dp, &
+                       6.2E-6_dp, 6.0E-6_dp, 3.2E-4_dp)
+      residual_failfast = dense_spectral_selected_failure_count(0, 0.074_dp, 0.0_dp) >= 2
+      joint_soft_failure = dense_spectral_selected_failure_count(0, 0.020_dp, 0.040_dp) == 1
+      residual_good_survives = dense_spectral_selected_failure_count(0, 0.020_dp, 0.120_dp) == 0
+      bootstrap_residual_veto = .NOT. dense_spectral_shadow_probe_bootstrap_ready(.TRUE., 0.015_dp)
+      bootstrap_ready = dense_spectral_shadow_probe_bootstrap_ready(.TRUE., 0.080_dp)
 
       err = 0.0_dp
       IF (.NOT. first_probe .OR. weak_shadow_veto .OR. .NOT. shadow_retry .OR. &
-          .NOT. selected_retry .OR. tiny_shadow_veto .OR. failure_veto) err = 1.0_dp
+          .NOT. selected_retry .OR. tiny_shadow_veto .OR. failure_veto .OR. &
+          .NOT. mature_conservative .OR. poor_signal_veto .OR. weak_total_veto .OR. &
+          .NOT. marginal_total .OR. .NOT. residual_failfast .OR. .NOT. joint_soft_failure .OR. &
+          .NOT. residual_good_survives .OR. .NOT. bootstrap_residual_veto .OR. &
+          .NOT. bootstrap_ready) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
-            "failed with first/weak-shadow/shadow/selected/tiny/failure", first_probe, &
-            weak_shadow_veto, shadow_retry, selected_retry, tiny_shadow_veto, failure_veto
+         WRITE (*, '(A,1X,A,15(1X,L1))') TRIM(label), &
+            "failed with first/weak-shadow/shadow/selected/tiny/failure/mature/psig/wtotal/marginal/rfail/jfail/rgood/bveto/boot", &
+            first_probe, weak_shadow_veto, shadow_retry, selected_retry, tiny_shadow_veto, &
+            failure_veto, mature_conservative, poor_signal_veto, weak_total_veto, marginal_total, &
+            residual_failfast, joint_soft_failure, residual_good_survives, bootstrap_residual_veto, &
+            bootstrap_ready
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
-            "OK with first/weak-shadow/shadow/selected/tiny/failure", first_probe, &
-            weak_shadow_veto, shadow_retry, selected_retry, tiny_shadow_veto, failure_veto
+         WRITE (*, '(A,1X,A,15(1X,L1))') TRIM(label), &
+            "OK with first/weak-shadow/shadow/selected/tiny/failure/mature/psig/wtotal/marginal/rfail/jfail/rgood/bveto/boot", &
+            first_probe, weak_shadow_veto, shadow_retry, selected_retry, tiny_shadow_veto, &
+            failure_veto, mature_conservative, poor_signal_veto, weak_total_veto, marginal_total, &
+            residual_failfast, joint_soft_failure, residual_good_survives, bootstrap_residual_veto, &
+            bootstrap_ready
       END IF
 
    END SUBROUTINE check_projector_spectral_probe_history_ready
@@ -14689,6 +14717,93 @@ CONTAINS
                       shadow_quality >= 1.0E-1_dp .AND. shadow_quality_ema >= 1.0E-1_dp
 
    END FUNCTION dense_spectral_probe_history_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of the conservative spectral-shadow probe quality gate.
+!> \param shadow_quality ...
+!> \param shadow_quality_ema ...
+!> \param shadow_samples ...
+!> \param shadow_drop_sum ...
+!> \param shadow_measured_sum ...
+!> \param shadow_dot_ema ...
+!> \param shadow_norm_ema ...
+!> \param shadow_floor_ema ...
+!> \return true if mature spectral shadow history may collect selected probe history
+! **************************************************************************************************
+   FUNCTION dense_spectral_shadow_probe_quality_ready(shadow_quality, shadow_quality_ema, shadow_samples, &
+                                                      shadow_drop_sum, shadow_measured_sum, shadow_dot_ema, &
+                                                      shadow_norm_ema, shadow_floor_ema) RESULT(quality_ready)
+      REAL(KIND=dp), INTENT(IN)                          :: shadow_quality, shadow_quality_ema
+      INTEGER, INTENT(IN)                                :: shadow_samples
+      REAL(KIND=dp), INTENT(IN)                          :: shadow_drop_sum, shadow_measured_sum, &
+                                                            shadow_dot_ema, shadow_norm_ema, &
+                                                            shadow_floor_ema
+      LOGICAL                                            :: quality_ready
+
+      REAL(KIND=dp)                                      :: quality_floor, quality_total_floor, &
+                                                            shadow_signal_ratio, total_quality
+
+      quality_ready = .FALSE.
+      IF (shadow_samples < 8) RETURN
+      IF (shadow_drop_sum <= EPSILON(shadow_drop_sum)) RETURN
+      IF (shadow_measured_sum <= 0.0_dp) RETURN
+      IF (shadow_dot_ema <= 0.0_dp) RETURN
+      IF (shadow_norm_ema <= EPSILON(shadow_norm_ema)) RETURN
+      IF (shadow_floor_ema <= EPSILON(shadow_floor_ema)) RETURN
+
+      total_quality = shadow_measured_sum/shadow_drop_sum
+      quality_floor = 5.0E-2_dp
+      quality_total_floor = 0.5_dp*quality_floor
+      IF (shadow_quality_ema >= 1.0E-1_dp .AND. shadow_quality >= quality_floor) THEN
+         quality_ready = .TRUE.
+         RETURN
+      END IF
+
+      shadow_signal_ratio = shadow_dot_ema/MAX(shadow_norm_ema, EPSILON(shadow_norm_ema))
+      quality_ready = shadow_quality_ema >= quality_floor .AND. &
+                      shadow_quality >= quality_floor .AND. &
+                      total_quality >= quality_total_floor .AND. &
+                      shadow_signal_ratio >= shadow_floor_ema
+
+   END FUNCTION dense_spectral_shadow_probe_quality_ready
+
+! **************************************************************************************************
+!> \brief Dense mirror of selected spectral-probe failure accounting.
+!> \param selected_failures ...
+!> \param selected_quality ...
+!> \param residual_quality ...
+!> \return updated selected-probe failure count
+! **************************************************************************************************
+   FUNCTION dense_spectral_selected_failure_count(selected_failures, selected_quality, residual_quality) &
+      RESULT(updated_failures)
+      INTEGER, INTENT(IN)                                :: selected_failures
+      REAL(KIND=dp), INTENT(IN)                          :: selected_quality, residual_quality
+      INTEGER                                            :: updated_failures
+
+      updated_failures = selected_failures
+      IF (residual_quality < 2.5E-2_dp) THEN
+         updated_failures = 2
+      ELSE IF (selected_quality < 5.0E-2_dp .AND. residual_quality < 1.0E-1_dp) THEN
+         updated_failures = MIN(selected_failures + 1, HUGE(updated_failures) - 1)
+      END IF
+
+   END FUNCTION dense_spectral_selected_failure_count
+
+! **************************************************************************************************
+!> \brief Dense mirror of residual-aware spectral-shadow bootstrap gating.
+!> \param shadow_quality_ready ...
+!> \param residual_quality ...
+!> \return true if spectral shadow history may bootstrap a selected probe
+! **************************************************************************************************
+   FUNCTION dense_spectral_shadow_probe_bootstrap_ready(shadow_quality_ready, residual_quality) &
+      RESULT(bootstrap_ready)
+      LOGICAL, INTENT(IN)                                :: shadow_quality_ready
+      REAL(KIND=dp), INTENT(IN)                          :: residual_quality
+      LOGICAL                                            :: bootstrap_ready
+
+      bootstrap_ready = shadow_quality_ready .AND. residual_quality >= 5.0E-2_dp
+
+   END FUNCTION dense_spectral_shadow_probe_bootstrap_ready
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the spectral selected-history candidate promotion gate.
