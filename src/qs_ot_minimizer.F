@@ -71,6 +71,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_recovery_active_step_floor = 1.0E-5_dp, &
                                         ot_cg_kp_physical_raw_delta_floor_ratio = 1.0E-2_dp, &
                                         ot_cg_kp_physical_raw_delta_mermin_floor = 1.0E-8_dp, &
+                                        ot_cg_kp_physical_raw_delta_tail_quality = 9.9E-1_dp, &
+                                        ot_cg_kp_physical_raw_delta_tail_gap = 1.0E-2_dp, &
                                         ot_cg_kp_physical_control_eps_factor = 3.0_dp, &
                                         ot_cg_kp_physical_control_quality = 8.0E-1_dp, &
                                         ot_cg_kp_physical_control_gap = 5.0E-2_dp, &
@@ -430,10 +432,11 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
 
       INTEGER                                            :: count, npos
-      LOGICAL                                            :: active_tail, collapsed_sample, collapsed_step
-      REAL(KIND=dp)                                      :: mermin_effective_delta, mermin_tail_delta, &
-                                                            mermin_tail_min, pos_floor, pos_max, &
-                                                            step_floor
+      LOGICAL                                            :: active_tail, collapsed_sample, &
+                                                            collapsed_step
+      REAL(KIND=dp)                                      :: mermin_effective_delta, &
+                                                            mermin_tail_delta, mermin_tail_min, &
+                                                            pos_floor, pos_max, step_floor
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
@@ -1332,10 +1335,10 @@ CONTAINS
                                                             schur_flavor, schur_last_attempt, &
                                                             schur_last_flavor
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, &
-         mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, reset_to_sd, &
-         residual_history_reset, residual_spike_history_reset, residual_tail_spike_reset, &
-         schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
-         schur_projector_tail_reset
+         mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, &
+         projected_raw_tail_release, reset_to_sd, residual_history_reset, &
+         residual_spike_history_reset, residual_tail_spike_reset, schur_history_change, &
+         schur_history_mixed, schur_projector_jump_reset, schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_metric, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, &
          matrix_gnorm_metric, mermin_tail_min, norm_weight, nvar, physical_control_delta, &
@@ -1632,6 +1635,21 @@ CONTAINS
                                   sample_guard_drop > ot_cg_kp_physical_raw_delta_mermin_floor
          IF (physical_raw_gap_guard) THEN
             raw_guard_delta = ot_cg_kp_physical_raw_delta_floor_ratio*qs_ot_env(1)%kpoint_raw_delta
+            ! Release the raw preconditioned floor only in the calibrated tail,
+            ! where the fixed-N projected Mermin residual already satisfies
+            ! EPS_SCF and accepted line-search samples remain predictive.
+            projected_raw_tail_release = qs_ot_env(1)%kpoint_eps_scf > 0.0_dp .AND. &
+                                         qs_ot_env(1)%kpoint_projected_delta > 0.0_dp .AND. &
+                                         qs_ot_env(1)%kpoint_projected_delta <= &
+                                         qs_ot_env(1)%kpoint_eps_scf .AND. &
+                                         qs_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                         ot_cg_kp_physical_control_min_samples .AND. &
+                                         qs_ot_env(1)%mermin_ls_accepted_quality_ema >= &
+                                         ot_cg_kp_physical_raw_delta_tail_quality .AND. &
+                                         qs_ot_env(1)%mermin_ls_accepted_gap_ema <= &
+                                         ot_cg_kp_physical_raw_delta_tail_gap
+            IF (projected_raw_tail_release) &
+               raw_guard_delta = MIN(raw_guard_delta, qs_ot_env(1)%kpoint_projected_delta)
             IF (raw_guard_delta > qs_ot_env(1)%delta) THEN
                qs_ot_env(1)%delta = raw_guard_delta
                qs_ot_env(1)%kpoint_physical_delta = MAX(qs_ot_env(1)%kpoint_physical_delta, raw_guard_delta)

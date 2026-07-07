@@ -9,8 +9,8 @@
 "Al_1_4.inp"                            = [{matcher="E_total", tol=4.0E-12, ref=-8.27931596571888}]
 "Al_1_4_mp.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27878772972890}]
 "Al_1_4_mv.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27916163440613}]
-"Al_kp_ot_added_auto.inp"               = [{matcher="E_total", tol=1.0E-10, ref=-7.25845979194131},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.25845979194131},
+"Al_kp_ot_added_auto.inp"               = [{matcher="E_total", tol=1.0E-10, ref=-7.25849643731084},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.25849643731084},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-5.4203103898E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
@@ -19,21 +19,21 @@
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_added_auto_sym3.inp"          = [{matcher="E_total", tol=1.0E-10, ref=-7.18816428132115},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.18816428132115},
+"Al_kp_ot_added_auto_sym3.inp"          = [{matcher="E_total", tol=1.0E-10, ref=-7.23993027694012},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.23993027694012},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-2.5505891957E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-7, ref=6.874432E-2},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-7, ref=6.953218E-2},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_added_auto_full3.inp"         = [{matcher="E_total", tol=1.0E-10, ref=-7.49890252356782},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.49890252356782},
+"Al_kp_ot_added_auto_full3.inp"         = [{matcher="E_total", tol=1.0E-10, ref=-7.49890893197400},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.49890893197400},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.8067701299E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=3},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.33333},
@@ -55,12 +55,12 @@
 # 110 steps after the rebuild, 276 inner k-point OT calls overall, and
 # E_total = Mermin = -8.14585274623606 Ha.  No first/last-band warning,
 # AUTO-exhausted warning, or "Unsupported content type" signature is printed.
-# Current optional 3-k-point HIGH companion references after the coherent
-# k-weighted AUTO tail update: both the Sym3 and full-grid paths grow to 8
-# and 16.  The Sym3 path converges in 119 final SCF steps with Mermin free
-# energy -8.15998700694058 Ha.  The full-grid companion converges in 50 final
-# SCF steps with Mermin free energy -8.15998697467240 Ha.  The two optional
-# 3-k-point paths agree within 4E-8 Ha, and no first/last-band,
+# Current optional 3-k-point HIGH companion references after the projected
+# fixed-N residual-tail update: both the Sym3 and full-grid paths grow to 8
+# and 16.  The Sym3 path converges in 61 final SCF steps with Mermin free
+# energy -8.15998642458646 Ha.  The full-grid companion converges in 50 final
+# SCF steps with Mermin free energy -8.15998697483554 Ha.  The two optional
+# 3-k-point paths agree within the requested 1E-6 Ha path, and no first/last-band,
 # AUTO-exhausted, or "Unsupported content type" signature is printed.  Exact
 # SCF step counts are intentionally not part of these optional 3-k-point
 # companion references.
