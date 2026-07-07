@@ -2181,7 +2181,7 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, bounded_safe_component, density_shape, &
-         density_shape_full, density_shape_geometric, global_cap_lift, global_safe_cap, &
+         density_shape_full, density_shape_geometric, global_cap_lift, global_response_support, global_safe_cap, &
          lift_support, lift_weight, projector_abs, projector_component, projector_response_weight, &
          response_root, response_shape, safe_abs, safe_blend, safe_blend_floor, safe_cap, &
          safe_component, safe_response_weight, sign_projector_response, sign_safe_response, &
@@ -2235,6 +2235,7 @@ CONTAINS
             lift_support = MIN(1.0_dp, MAX(0.0_dp, lift_support))
             supported_lift_weight = lift_weight*lift_support
             global_cap_lift = supported_lift_weight
+            global_response_support = response_root + lift_support*(1.0_dp - response_root)
             global_safe_cap = (response_root + global_cap_lift*(1.0_dp - response_root))*safe_abs
             safe_cap = MAX(4.0_dp*projector_abs, global_safe_cap)
          ELSE
@@ -2245,6 +2246,8 @@ CONTAINS
          safe_blend = active_fraction
          IF (globally_aligned_safe_response) THEN
             safe_blend_floor = MIN(1.0_dp, alignment)*response_root
+            IF (sign_projector_response*sign_safe_response <= 0.0_dp) &
+               safe_blend_floor = safe_blend_floor*global_response_support
             safe_blend = MAX(safe_blend, safe_blend_floor)
             density_shape_geometric = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
             density_shape_full = MAX(density_shape, safe_blend_floor)
