@@ -21683,6 +21683,12 @@ CONTAINS
 
          quality = MAX(0.0_dp, MIN(ot_kp_schur_projector_response_quality_max_ratio, base_quality))
          IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (selected_quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
+             selected_residual_quality <= EPSILON(1.0_dp) .AND. &
+             selected_residual_quality_ema <= EPSILON(1.0_dp)) THEN
+            quality = 0.0_dp
+            RETURN
+         END IF
          IF (selected_quality_samples < 2*ot_kp_schur_calibration_min_samples) RETURN
 
          mermin_quality = quality
@@ -21745,7 +21751,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
       LOGICAL                                            :: refresh_ready
 
-      LOGICAL                                            :: selected_residual_stale
+      LOGICAL                                            :: selected_residual_failed, &
+                                                            selected_residual_stale
       REAL(KIND=dp)                                      :: residual_reference
 
          refresh_ready = .FALSE.
@@ -21759,6 +21766,12 @@ CONTAINS
             IF (selected_samples >= 2*ot_kp_schur_calibration_min_samples .AND. &
                 selected_quality < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio .AND. &
                 selected_quality_ema < 0.5_dp*ot_kp_schur_projector_response_quality_min_ratio) RETURN
+            selected_residual_failed = selected_samples >= ot_kp_schur_calibration_min_samples .AND. &
+                                       selected_residual_quality <= EPSILON(1.0_dp) .AND. &
+                                       selected_residual_quality_ema < &
+                                       0.25_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
+                                       residual_reference
+            IF (selected_residual_failed) RETURN
             ! A just-bootstrapped selected channel may have one bad early
             ! Mermin-ratio sample.  Treat that as stale residual history rather
             ! than as a permanent veto; the mature-history path above will still

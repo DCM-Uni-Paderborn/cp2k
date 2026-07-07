@@ -10058,8 +10058,9 @@ CONTAINS
                                                             max_quality = 1.25_dp, &
                                                             tail_delta = 1.0E-4_dp
 
-      REAL(KIND=dp) :: al_tail_quality, err, expected_al_tail, good_tail_quality, &
-         immature_quality, outside_tail_quality, weak_tail_quality, zero_tail_quality
+      REAL(KIND=dp) :: al_tail_quality, calibrated_zero_quality, err, expected_al_tail, &
+         good_tail_quality, immature_quality, outside_tail_quality, weak_tail_quality, &
+         zero_tail_quality
 
       immature_quality = dense_inactive_offdiag_selected_tail_quality( &
                          0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.02_dp, 0.02_dp, 0.25_dp, 4, 4, &
@@ -10074,6 +10075,9 @@ CONTAINS
                         0.120821737_dp, 0.120821737_dp, 2.38717371E-4_dp, 2.84589460E-5_dp, &
                         0.276863603_dp, 0.169491253_dp, 0.10_dp, 50, 4, tail_delta, tail_delta, &
                         cal_quality, max_quality)
+      calibrated_zero_quality = dense_inactive_offdiag_selected_tail_quality( &
+                                0.75_dp, 0.75_dp, 1.0_dp, 0.75_dp, 0.0_dp, 0.0_dp, &
+                                0.25_dp, 4, 4, tail_delta, tail_delta, cal_quality, max_quality)
       weak_tail_quality = dense_inactive_offdiag_selected_tail_quality( &
                           0.10_dp, 0.064148488_dp, 2.11544262E-4_dp, 2.03786650E-5_dp, &
                           0.240690437_dp, 0.274936610_dp, 0.10_dp, 21, 4, tail_delta, tail_delta, &
@@ -10090,21 +10094,22 @@ CONTAINS
       err = MAX(err, ABS(outside_tail_quality - 0.75_dp))
       err = MAX(err, ABS(good_tail_quality - 0.75_dp))
       err = MAX(err, ABS(al_tail_quality - expected_al_tail))
+      err = MAX(err, ABS(calibrated_zero_quality))
       err = MAX(err, ABS(weak_tail_quality))
       err = MAX(err, ABS(zero_tail_quality))
 
       IF (err > tol .OR. al_tail_quality >= 0.10_dp .OR. weak_tail_quality > tol .OR. &
-          zero_tail_quality > tol) THEN
+          calibrated_zero_quality > tol .OR. zero_tail_quality > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed err/immature/outside/good/al/weak/zero", err, immature_quality, &
-            outside_tail_quality, good_tail_quality, al_tail_quality, weak_tail_quality, &
-            zero_tail_quality
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed err/immature/outside/good/al/calzero/weak/zero", err, &
+            immature_quality, outside_tail_quality, good_tail_quality, al_tail_quality, &
+            calibrated_zero_quality, weak_tail_quality, zero_tail_quality
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK err/immature/outside/good/al/weak/zero", err, immature_quality, &
-            outside_tail_quality, good_tail_quality, al_tail_quality, weak_tail_quality, &
-            zero_tail_quality
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK err/immature/outside/good/al/calzero/weak/zero", err, &
+            immature_quality, outside_tail_quality, good_tail_quality, al_tail_quality, &
+            calibrated_zero_quality, weak_tail_quality, zero_tail_quality
       END IF
 
    END SUBROUTINE check_projector_inactive_offdiag_selected_tail_quality
@@ -10124,8 +10129,9 @@ CONTAINS
          min_quality = 0.10_dp, refresh_ratio = 0.20_dp, residual_ratio = 0.80_dp, &
          tail_delta = 1.0E-4_dp
 
-      LOGICAL :: bootstrap_ready, close_probe, fresh_ready, immature_failed_ready, outside_ready, &
-         refresh_ready, small_probe, weak_history_ready
+      LOGICAL :: bootstrap_ready, calibrated_failed_ready, close_probe, fresh_ready, &
+         immature_failed_ready, outside_ready, refresh_ready, repeated_failed_ready, small_probe, &
+         weak_history_ready
       REAL(KIND=dp)                                      :: err
 
       refresh_ready = dense_inactive_offdiag_tail_refresh_ready( &
@@ -10139,6 +10145,14 @@ CONTAINS
                               tail_delta, 1.25_dp, 0.60_dp, 74, 2.5E-3_dp, 8.7E-4_dp, &
                               1.0E-4_dp, 0.13_dp, 4, 0.25_dp, 4, 8, tail_delta, &
                               min_quality, cal_quality, residual_ratio)
+      calibrated_failed_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                                tail_delta, 1.25_dp, 0.60_dp, 74, 2.56264004_dp, &
+                                2.93474736_dp, 0.0_dp, 0.0_dp, 4, 0.25_dp, 4, 8, &
+                                tail_delta, min_quality, cal_quality, residual_ratio)
+      repeated_failed_ready = dense_inactive_offdiag_tail_refresh_ready( &
+                              tail_delta, 1.25_dp, 0.60_dp, 74, 2.56264004_dp, &
+                              2.93474736_dp, 0.0_dp, 0.0_dp, 8, 0.25_dp, 4, 8, &
+                              tail_delta, min_quality, cal_quality, residual_ratio)
       outside_ready = dense_inactive_offdiag_tail_refresh_ready( &
                       2.0_dp*tail_delta, 1.25_dp, 0.60_dp, 74, 0.159597264_dp, &
                       0.0947785926_dp, 0.0_dp, 0.0561356449_dp, 8, 0.25_dp, 4, 8, &
@@ -10160,6 +10174,8 @@ CONTAINS
       IF (.NOT. refresh_ready) err = 1.0_dp
       IF (.NOT. bootstrap_ready) err = 1.0_dp
       IF (.NOT. immature_failed_ready) err = 1.0_dp
+      IF (calibrated_failed_ready) err = 1.0_dp
+      IF (repeated_failed_ready) err = 1.0_dp
       IF (outside_ready) err = 1.0_dp
       IF (weak_history_ready) err = 1.0_dp
       IF (fresh_ready) err = 1.0_dp
@@ -10168,15 +10184,17 @@ CONTAINS
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
-            "failed refresh/bootstrap/immature/outside/weak/fresh/close/small", refresh_ready, &
-            bootstrap_ready, immature_failed_ready, outside_ready, weak_history_ready, fresh_ready, &
-            close_probe, small_probe
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "failed refresh/bootstrap/immature/calfailed/repeated/outside/weak/fresh/close/small", &
+            refresh_ready, bootstrap_ready, immature_failed_ready, calibrated_failed_ready, &
+            repeated_failed_ready, outside_ready, weak_history_ready, fresh_ready, close_probe, &
+            small_probe
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
-            "OK refresh/bootstrap/immature/outside/weak/fresh/close/small", refresh_ready, &
-            bootstrap_ready, immature_failed_ready, outside_ready, weak_history_ready, fresh_ready, &
-            close_probe, small_probe
+         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
+            "OK refresh/bootstrap/immature/calfailed/repeated/outside/weak/fresh/close/small", &
+            refresh_ready, bootstrap_ready, immature_failed_ready, calibrated_failed_ready, &
+            repeated_failed_ready, outside_ready, weak_history_ready, fresh_ready, close_probe, &
+            small_probe
       END IF
 
    END SUBROUTINE check_projector_inactive_offdiag_tail_refresh_probe
@@ -14072,6 +14090,12 @@ CONTAINS
 
       quality = MAX(0.0_dp, MIN(max_quality, base_quality))
       IF (residual_delta > tail_delta) RETURN
+      IF (selected_quality_samples >= min_samples .AND. &
+          selected_residual_quality <= EPSILON(1.0_dp) .AND. &
+          selected_residual_quality_ema <= EPSILON(1.0_dp)) THEN
+         quality = 0.0_dp
+         RETURN
+      END IF
       IF (selected_quality_samples < 2*min_samples) RETURN
 
       mermin_quality = quality
@@ -14144,7 +14168,8 @@ CONTAINS
                                                             probe_residual_ratio
       LOGICAL                                            :: refresh_ready
 
-      LOGICAL                                            :: selected_residual_stale
+      LOGICAL                                            :: selected_residual_failed, &
+                                                            selected_residual_stale
       REAL(KIND=dp)                                      :: residual_reference
 
       refresh_ready = .FALSE.
@@ -14158,6 +14183,11 @@ CONTAINS
          IF (selected_samples >= 2*min_samples .AND. &
              selected_quality < 0.5_dp*min_quality .AND. &
              selected_quality_ema < 0.5_dp*min_quality) RETURN
+         selected_residual_failed = selected_samples >= min_samples .AND. &
+                                    selected_residual_quality <= EPSILON(1.0_dp) .AND. &
+                                    selected_residual_quality_ema < &
+                                    0.25_dp*probe_residual_ratio*residual_reference
+         IF (selected_residual_failed) RETURN
          selected_residual_stale = &
             selected_residual_quality <= EPSILON(1.0_dp) .OR. &
             selected_residual_quality_ema <= EPSILON(1.0_dp) .OR. &
