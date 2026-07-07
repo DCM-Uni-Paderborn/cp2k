@@ -2245,9 +2245,7 @@ CONTAINS
          safe_component = bounded_safe_component
          safe_blend = active_fraction
          IF (globally_aligned_safe_response) THEN
-            safe_blend_floor = MIN(1.0_dp, alignment)*response_root
-            IF (sign_projector_response*sign_safe_response <= 0.0_dp) &
-               safe_blend_floor = safe_blend_floor*global_response_support
+            safe_blend_floor = MIN(1.0_dp, alignment)*response_root*global_response_support
             safe_blend = MAX(safe_blend, safe_blend_floor)
             density_shape_geometric = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
             density_shape_full = MAX(density_shape, safe_blend_floor)
@@ -2306,8 +2304,9 @@ CONTAINS
 
       LOGICAL                                            :: globally_supported_response, &
                                                             locally_supported_response
-      REAL(KIND=dp) :: active_fraction, alignment, damping, global_support, projector_abs, &
-         residual_weight, response_support, safe_abs, sign_projector_response, sign_safe_response
+      REAL(KIND=dp) :: active_fraction, alignment, damping, finite_support, global_response_support, &
+         global_support, projector_abs, residual_weight, response_root, response_shape, response_support, &
+         safe_abs, sign_projector_response, sign_safe_response
 
       filtered_response = density_response
       IF (occ_curv <= EPSILON(occ_curv)) RETURN
@@ -2319,6 +2318,8 @@ CONTAINS
       active_fraction = occ_curv/MAX(occ_curv, &
                                      ot_kp_schur_projector_response_ratio_gate*occ_curv_max)
       active_fraction = MIN(1.0_dp, MAX(0.0_dp, active_fraction))
+      response_shape = 2.0_dp*active_fraction - active_fraction*active_fraction
+      response_root = SQRT(MAX(0.0_dp, response_shape))
       sign_projector_response = density_projector_response
       sign_safe_response = density_safe_response
       IF (PRESENT(density_projector_centered_response)) &
@@ -2339,13 +2340,22 @@ CONTAINS
                                      projector_abs <= alignment*safe_abs)
       response_support = 0.0_dp
       IF (locally_supported_response .OR. globally_supported_response) THEN
-         IF (projector_abs > EPSILON(projector_abs)) THEN
-            response_support = MIN(1.0_dp, safe_abs/projector_abs)
-         ELSE
-            response_support = 1.0_dp
+         IF (locally_supported_response) THEN
+            IF (projector_abs > EPSILON(projector_abs)) THEN
+               response_support = MIN(1.0_dp, safe_abs/projector_abs)
+            ELSE
+               response_support = 1.0_dp
+            END IF
          END IF
          IF (globally_supported_response) THEN
             global_support = MIN(1.0_dp, MAX(0.0_dp, alignment))
+            IF (sign_projector_response*sign_safe_response <= 0.0_dp .AND. &
+                safe_abs > EPSILON(safe_abs) .AND. response_root > EPSILON(response_root)) THEN
+               finite_support = projector_abs/(response_root*safe_abs)
+               finite_support = MIN(1.0_dp, MAX(0.0_dp, finite_support))
+               global_response_support = response_root + finite_support*(1.0_dp - response_root)
+               global_support = global_support*global_response_support
+            END IF
             response_support = MAX(response_support, global_support)
          END IF
       END IF
