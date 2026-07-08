@@ -4,9 +4,9 @@
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-07 HIGH reference after the Direct selected-history bridge,
 ! rechecked from a fresh temporary directory:
-! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 83 final
-! SCF steps. Mermin free energy = -8.15998661345622 Ha and total energy without
-! entropy = -8.15907802714768 Ha, with no first/last-band warnings, no
+! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 103 final
+! SCF steps. Mermin free energy = -8.15998649318263 Ha and total energy without
+! entropy = -8.15907790782466 Ha, with no first/last-band warnings, no
 ! AUTO-exhausted warning, and no "Unsupported content type" signature.
 &GLOBAL
   PRINT_LEVEL HIGH
