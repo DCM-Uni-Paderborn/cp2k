@@ -8233,31 +8233,34 @@ CONTAINS
          density_descent_z_e, density_full_global_rx_e, density_full_global_sol, &
          density_full_rx_e, density_full_sol, density_full_z_e, density_gap_projected_e, &
          density_gap_rx_e, density_gap_trial_basis_e, density_gap_trial_projected_e, &
-         density_plateau_rx_e, density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, grad_e, &
-         grad_rot, occ_curv, projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_inactive_offdiag_z_e, &
-         projector_offdiag_rx_e, projector_offdiag_sol, projector_offdiag_z_e, &
-         projector_physical_direct_active_lcomp, projector_physical_direct_curv_eval, &
-         projector_physical_direct_density_rx_e, projector_physical_direct_density_sol, &
-         projector_physical_direct_density_z_e, projector_physical_direct_diagref_rx_e, &
-         projector_physical_direct_effective_rx_e, projector_physical_direct_model_e, &
-         projector_physical_direct_response_rx_e, projector_physical_direct_rx_e, &
-         projector_physical_direct_schur_eval
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_sol, &
-         projector_physical_direct_spectral_model_e, projector_physical_direct_spectral_rx_e, &
-         projector_physical_direct_spectral_sol, projector_physical_direct_spectral_z_e, &
-         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
-         projector_physical_sol, projector_physical_z_e, projector_response_rx_e, &
-         projector_response_sol, projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, &
-         rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, var_occ_gap_weight, &
-         var_projector_active_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_projector_response_weight, &
-         var_projector_weight, z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
+         density_plateau_rx_e, density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, &
+         energy_grad_metric_weight, energy_step_weight, grad_e, grad_rot, occ_curv, &
+         projector_inactive_offdiag_rx_e
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_inactive_offdiag_sol, &
+         projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
+         projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
+         projector_physical_direct_curv_eval, projector_physical_direct_density_rx_e, &
+         projector_physical_direct_density_sol, projector_physical_direct_density_z_e, &
+         projector_physical_direct_diagref_rx_e, projector_physical_direct_effective_rx_e, &
+         projector_physical_direct_model_e, projector_physical_direct_response_rx_e, &
+         projector_physical_direct_rx_e
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_schur_eval, &
+         projector_physical_direct_sol, projector_physical_direct_spectral_model_e, &
+         projector_physical_direct_spectral_rx_e, projector_physical_direct_spectral_sol, &
+         projector_physical_direct_spectral_z_e, projector_physical_direct_z_e, &
+         projector_physical_model_e, projector_physical_rx_e, projector_physical_sol, &
+         projector_physical_z_e, projector_response_rx_e, projector_response_sol, &
+         projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, &
+         split_sol, split_z_e, tether_curv
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_grad_metric_weight, var_occ_gap_weight, &
+         var_projector_active_weight, var_projector_response_weight, var_projector_weight, &
+         var_step_weight, z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
          z_density_basis_damped_audit_trial, z_density_basis_filtered_audit_trial, &
          z_density_basis_selective_audit_trial, z_density_floor_audit_trial, &
          z_density_floor_safe_audit_trial, z_density_full_audit_trial, &
          z_density_full_global_trial, z_density_full_trial, z_density_plateau_trial, &
-         z_density_trial, z_e, z_exact_physical_trial, z_exact_raw_trial, z_exact_trial, z_trial
+         z_density_trial, z_e, z_exact_physical_trial
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_exact_raw_trial, z_exact_trial, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross, energy_cross_density, &
          energy_cross_density_basis_audit, energy_cross_density_basis_curvfloor_audit, &
          energy_cross_density_basis_damped_audit, energy_cross_density_basis_filtered_audit, &
@@ -8426,7 +8429,8 @@ CONTAINS
             target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_occ_min, schur_energy_window
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), accepted_z_e(ne), &
-                   density_basis_selective_floor_weight(ne), z_exact_raw_trial(ne), &
+                   density_basis_selective_floor_weight(ne), energy_grad_metric_weight(ne), &
+                   energy_step_weight(ne), z_exact_raw_trial(ne), &
                    z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
                    constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                    projector_physical_direct_model_e(ne), &
@@ -8474,8 +8478,9 @@ CONTAINS
                    projector_physical_direct_spectral_sol(nrot), &
                    projector_offdiag_sol(nrot), projector_inactive_offdiag_sol(nrot), &
                    projector_response_sol(nrot), split_sol(nrot), &
-                   var_occ_gap_weight(nrot), var_projector_active_weight(nrot), &
-                   var_projector_response_weight(nrot), var_projector_weight(nrot))
+                   var_grad_metric_weight(nrot), var_occ_gap_weight(nrot), &
+                   var_projector_active_weight(nrot), var_projector_response_weight(nrot), &
+                   var_projector_weight(nrot), var_step_weight(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot), projector_physical_direct_active_lcomp(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
@@ -8593,10 +8598,14 @@ CONTAINS
          projector_physical_z_e(:) = 0.0_dp
          projector_response_rx_e(:) = 0.0_dp
          projector_response_z_e(:) = 0.0_dp
+         energy_grad_metric_weight(:) = 0.0_dp
+         energy_step_weight(:) = 0.0_dp
+         var_grad_metric_weight(:) = 0.0_dp
          var_projector_active_weight(:) = 0.0_dp
          var_projector_response_weight(:) = 0.0_dp
          var_occ_gap_weight(:) = 0.0_dp
          var_projector_weight(:) = 0.0_dp
+         var_step_weight(:) = 0.0_dp
          grad_rot(:) = 0.0_dp
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
@@ -9620,6 +9629,8 @@ CONTAINS
                CALL local_ot_env(local_channel)%para_env%sum(h_im)
                CALL local_ot_env(local_channel)%para_env%sum(grad_re)
                CALL local_ot_env(local_channel)%para_env%sum(grad_im)
+               rot_grad_norm_weight = 1.0_dp/ &
+                                      REAL(MAX(1, local_ot_env(local_channel)%kpoint_multiplicity), KIND=dp)
 
                tether_strength = 0.0_dp
                IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
@@ -9649,6 +9660,8 @@ CONTAINS
                   tether_curv(ie) = tether_weight
                   curv(ie) = occ_curv(ie) + tether_curv(ie)
                   grad_e(ie) = local_ot_env(local_channel)%ener_gx(imo)
+                  energy_grad_metric_weight(ie) = rot_grad_norm_weight
+                  energy_step_weight(ie) = 1.0_dp/rot_grad_norm_weight
                END DO
                channel_occ_curv_max = MAXVAL(occ_curv(e_offset(local_channel): &
                                                       e_offset(local_channel) + nmo - 1))
@@ -9686,6 +9699,8 @@ CONTAINS
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
                      var_occ_gap_weight(ivar) = pair_occ_gap
+                     var_grad_metric_weight(ivar) = rot_grad_norm_weight
+                     var_step_weight(ivar) = 1.0_dp/rot_grad_norm_weight
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
@@ -9703,6 +9718,8 @@ CONTAINS
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
                      var_occ_gap_weight(ivar) = pair_occ_gap
+                     var_grad_metric_weight(ivar) = rot_grad_norm_weight
+                     var_step_weight(ivar) = 1.0_dp/rot_grad_norm_weight
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
@@ -9904,7 +9921,8 @@ CONTAINS
             ot_kp_schur_physical_tail_eps_factor*eps_scf_channel, &
             local_ot_env(1)%mermin_ls_accepted_quality_samples
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, z_e, accepted_z_e, z_density_plateau_trial, &
+            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, energy_grad_metric_weight, &
+                        energy_step_weight, z_e, accepted_z_e, z_density_plateau_trial, &
                         z_density_floor_audit_trial, z_density_floor_safe_audit_trial, &
                         z_density_full_audit_trial, &
                         z_density_full_global_trial, &
@@ -9940,7 +9958,8 @@ CONTAINS
                         projector_physical_direct_sol, &
                         projector_physical_sol, projector_offdiag_sol, &
                         projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
-                        var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
+                        var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
+                        var_projector_weight, var_step_weight)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
                         energy_cross, energy_cross_density, &
@@ -13010,7 +13029,7 @@ CONTAINS
             IF (.NOT. attempt_failed) THEN
                row_floor_shift_quad = 0.0_dp
                row_floor_shifted_step = 0.0_dp
-               row_floor_step_norm = DOT_PRODUCT(sol, sol)
+               row_floor_step_norm = kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                DO r = 1, nrot
                   row_floor_shift_quad = row_floor_shift_quad + row_floor_shift(r)*sol(r)*sol(r)
                   IF (row_floor_shift(r) > 0.0_dp) &
@@ -13064,7 +13083,8 @@ CONTAINS
                   CALL project_kpoint_ot_schur_response(rx_model, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
                END IF
-               gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
+               gnorm = kpoint_ot_weighted_vector_dot(grad_e, grad_e, energy_grad_metric_weight) + &
+                       kpoint_ot_weighted_vector_dot(grad_rot, grad_rot, var_grad_metric_weight)
                IF (schur_attempt == 3 .AND. exact_attempt_response .AND. &
                    projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
                    (local_ot_env(1)%schur_projector_mode_quality_samples >= &
@@ -13105,8 +13125,11 @@ CONTAINS
                      projector_response_z_e(:) = z_e(:) + projector_response_rx_e(:)
                      projector_response_gdot_energy = DOT_PRODUCT(grad_e, projector_response_z_e)
                      projector_response_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-                     projector_response_norm_energy = DOT_PRODUCT(projector_response_z_e, projector_response_z_e)
-                     projector_response_norm_rotation = DOT_PRODUCT(sol, sol)
+                     projector_response_norm_energy = &
+                        kpoint_ot_weighted_vector_dot(projector_response_z_e, projector_response_z_e, &
+                                                      energy_step_weight)
+                     projector_response_norm_rotation = &
+                        kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                      CALL kpoint_ot_mixed_projected_term(projector_response_z_e, projector_response_z_e, &
                                                          occ_curv, tether_curv, occ_curv_projection_sum, &
                                                          channel_nmo, e_offset, &
@@ -13318,8 +13341,11 @@ CONTAINS
                      projector_physical_z_e(:) = z_e(:) + projector_physical_rx_e(:)
                      projector_physical_gdot_energy = DOT_PRODUCT(grad_e, projector_physical_z_e)
                      projector_physical_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-                     projector_physical_norm_energy = DOT_PRODUCT(projector_physical_z_e, projector_physical_z_e)
-                     projector_physical_norm_rotation = DOT_PRODUCT(sol, sol)
+                     projector_physical_norm_energy = &
+                        kpoint_ot_weighted_vector_dot(projector_physical_z_e, projector_physical_z_e, &
+                                                      energy_step_weight)
+                     projector_physical_norm_rotation = &
+                        kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                      projector_physical_gdotp = projector_physical_gdot_energy + projector_physical_gdot_rotation
                      projector_physical_normp = projector_physical_norm_energy + projector_physical_norm_rotation
                      projector_physical_norm_ratio = projector_physical_normp/MAX(gnorm, EPSILON(1.0_dp))
@@ -13486,9 +13512,11 @@ CONTAINS
                         DOT_PRODUCT(grad_e, projector_inactive_offdiag_z_e)
                      projector_inactive_offdiag_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
                      projector_inactive_offdiag_norm_energy = &
-                        DOT_PRODUCT(projector_inactive_offdiag_z_e, &
-                                    projector_inactive_offdiag_z_e)
-                     projector_inactive_offdiag_norm_rotation = DOT_PRODUCT(sol, sol)
+                        kpoint_ot_weighted_vector_dot(projector_inactive_offdiag_z_e, &
+                                                      projector_inactive_offdiag_z_e, &
+                                                      energy_step_weight)
+                     projector_inactive_offdiag_norm_rotation = &
+                        kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                      projector_inactive_offdiag_gdotp = &
                         projector_inactive_offdiag_gdot_energy + &
                         projector_inactive_offdiag_gdot_rotation
@@ -13769,9 +13797,11 @@ CONTAINS
                      projector_offdiag_z_e(:) = z_e(:) + projector_offdiag_rx_e(:)
                      projector_offdiag_gdot_energy = DOT_PRODUCT(grad_e, projector_offdiag_z_e)
                      projector_offdiag_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-                     projector_offdiag_norm_energy = DOT_PRODUCT(projector_offdiag_z_e, &
-                                                                 projector_offdiag_z_e)
-                     projector_offdiag_norm_rotation = DOT_PRODUCT(sol, sol)
+                     projector_offdiag_norm_energy = &
+                        kpoint_ot_weighted_vector_dot(projector_offdiag_z_e, &
+                                                      projector_offdiag_z_e, energy_step_weight)
+                     projector_offdiag_norm_rotation = &
+                        kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                      projector_offdiag_gdotp = projector_offdiag_gdot_energy + &
                                                projector_offdiag_gdot_rotation
                      projector_offdiag_normp = projector_offdiag_norm_energy + &
@@ -15349,7 +15379,9 @@ CONTAINS
                            density_full_norm_rotation = &
                               ABS(DOT_PRODUCT(rtd, density_full_sol))
                            IF (density_full_norm_rotation <= EPSILON(density_full_norm_rotation)) &
-                              density_full_norm_rotation = DOT_PRODUCT(density_full_sol, density_full_sol)
+                              density_full_norm_rotation = &
+                              kpoint_ot_weighted_vector_dot(density_full_sol, density_full_sol, &
+                                                            var_step_weight)
                            density_full_normp = density_full_norm_energy + density_full_norm_rotation
                         END IF
                         IF (info == 0 .AND. density_full_gdotp > 0.0_dp .AND. &
@@ -15767,7 +15799,8 @@ CONTAINS
                            IF (density_full_global_norm_rotation <= &
                                EPSILON(density_full_global_norm_rotation)) &
                               density_full_global_norm_rotation = &
-                              DOT_PRODUCT(density_full_global_sol, density_full_global_sol)
+                              kpoint_ot_weighted_vector_dot(density_full_global_sol, &
+                                                            density_full_global_sol, var_step_weight)
                            density_full_global_normp = density_full_global_norm_energy + &
                                                        density_full_global_norm_rotation
                         END IF
@@ -16251,8 +16284,9 @@ CONTAINS
                                                             channel_nmo, e_offset, density_plateau_norm_energy)
                         density_plateau_norm_energy = MAX(0.0_dp, density_plateau_norm_energy)
                         density_plateau_norm_rotation = &
-                           DOT_PRODUCT(projector_physical_direct_sol, &
-                                       projector_physical_direct_sol)
+                           kpoint_ot_weighted_vector_dot(projector_physical_direct_sol, &
+                                                         projector_physical_direct_sol, &
+                                                         var_step_weight)
                         density_plateau_normp = density_plateau_norm_energy + &
                                                 density_plateau_norm_rotation
                         IF (density_plateau_gdotp > 0.0_dp .AND. &
@@ -16373,13 +16407,14 @@ CONTAINS
                            projector_physical_direct_diagref_gdot_rotation = &
                               DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
                            projector_physical_direct_diagref_norm_energy = &
-                              DOT_PRODUCT(z_exact_physical_trial + &
-                                          projector_physical_direct_diagref_rx_e, &
-                                          z_exact_physical_trial + &
-                                          projector_physical_direct_diagref_rx_e)
+                              kpoint_ot_weighted_vector_dot( &
+                              z_exact_physical_trial + projector_physical_direct_diagref_rx_e, &
+                              z_exact_physical_trial + projector_physical_direct_diagref_rx_e, &
+                              energy_step_weight)
                            projector_physical_direct_diagref_norm_rotation = &
-                              DOT_PRODUCT(projector_physical_direct_sol, &
-                                          projector_physical_direct_sol)
+                              kpoint_ot_weighted_vector_dot(projector_physical_direct_sol, &
+                                                            projector_physical_direct_sol, &
+                                                            var_step_weight)
                            projector_physical_direct_diagref_gdotp = &
                               projector_physical_direct_diagref_gdot_energy + &
                               projector_physical_direct_diagref_gdot_rotation
@@ -16563,10 +16598,12 @@ CONTAINS
                         DOT_PRODUCT(grad_e, projector_physical_direct_z_e)
                      projector_physical_direct_gdot_rotation = &
                         DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
-                     projector_physical_direct_norm_energy = DOT_PRODUCT(projector_physical_direct_z_e, &
-                                                                         projector_physical_direct_z_e)
-                     projector_physical_direct_norm_rotation = DOT_PRODUCT(projector_physical_direct_sol, &
-                                                                           projector_physical_direct_sol)
+                     projector_physical_direct_norm_energy = &
+                        kpoint_ot_weighted_vector_dot(projector_physical_direct_z_e, &
+                                                      projector_physical_direct_z_e, energy_step_weight)
+                     projector_physical_direct_norm_rotation = &
+                        kpoint_ot_weighted_vector_dot(projector_physical_direct_sol, &
+                                                      projector_physical_direct_sol, var_step_weight)
                      CALL kpoint_ot_mixed_projected_term(projector_physical_direct_z_e, &
                                                          projector_physical_direct_z_e, occ_curv, tether_curv, &
                                                          occ_curv_projection_sum, channel_nmo, e_offset, &
@@ -16940,10 +16977,11 @@ CONTAINS
 
                gdot_energy = DOT_PRODUCT(grad_e, z_e)
                gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-               norm_energy = DOT_PRODUCT(z_e, z_e)
-               norm_rotation = DOT_PRODUCT(sol, sol)
+               norm_energy = kpoint_ot_weighted_vector_dot(z_e, z_e, energy_step_weight)
+               norm_rotation = kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                gdotp = gdot_energy + gdot_rotation
-               gnorm = DOT_PRODUCT(grad_e, grad_e) + DOT_PRODUCT(grad_rot, grad_rot)
+               gnorm = kpoint_ot_weighted_vector_dot(grad_e, grad_e, energy_grad_metric_weight) + &
+                       kpoint_ot_weighted_vector_dot(grad_rot, grad_rot, var_grad_metric_weight)
                normp = norm_energy + norm_rotation
                norm_ratio = normp/MAX(gnorm, EPSILON(1.0_dp))
                metric_attempt_response = schur_attempt == 3 .AND. exact_attempt_response .AND. &
@@ -20549,8 +20587,8 @@ CONTAINS
                         z_e(:) = z_exact_physical_trial(:) + rx_e(:)
                         gdot_energy = DOT_PRODUCT(grad_e, z_e)
                         gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-                        norm_energy = DOT_PRODUCT(z_e, z_e)
-                        norm_rotation = DOT_PRODUCT(sol, sol)
+                        norm_energy = kpoint_ot_weighted_vector_dot(z_e, z_e, energy_step_weight)
+                        norm_rotation = kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                         gdotp = gdot_energy + gdot_rotation
                         normp = norm_energy + norm_rotation
                         CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
@@ -20699,8 +20737,8 @@ CONTAINS
                         z_e(:) = z_exact_physical_trial(:) + rx_e(:)
                         gdot_energy = DOT_PRODUCT(grad_e, z_e)
                         gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-                        norm_energy = DOT_PRODUCT(z_e, z_e)
-                        norm_rotation = DOT_PRODUCT(sol, sol)
+                        norm_energy = kpoint_ot_weighted_vector_dot(z_e, z_e, energy_step_weight)
+                        norm_rotation = kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                         gdotp = gdot_energy + gdot_rotation
                         normp = norm_energy + norm_rotation
                         CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
@@ -20857,8 +20895,8 @@ CONTAINS
                            z_e(:) = z_exact_physical_trial(:) + rx_e(:)
                            gdot_energy = DOT_PRODUCT(grad_e, z_e)
                            gdot_rotation = DOT_PRODUCT(grad_rot, sol)
-                           norm_energy = DOT_PRODUCT(z_e, z_e)
-                           norm_rotation = DOT_PRODUCT(sol, sol)
+                           norm_energy = kpoint_ot_weighted_vector_dot(z_e, z_e, energy_step_weight)
+                           norm_rotation = kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
                            gdotp = gdot_energy + gdot_rotation
                            normp = norm_energy + norm_rotation
                            CALL kpoint_ot_mixed_projected_term(z_e, z_e, occ_curv, tether_curv, &
@@ -21051,6 +21089,7 @@ CONTAINS
          END IF
 
          DEALLOCATE (curv, grad_e, occ_curv, tether_curv, density_basis_selective_floor_weight, &
+                     energy_grad_metric_weight, energy_step_weight, &
                      z_e, accepted_z_e, z_density_plateau_trial, &
                      z_density_floor_audit_trial, z_density_floor_safe_audit_trial, &
                      z_density_full_audit_trial, &
@@ -21097,7 +21136,8 @@ CONTAINS
                      projector_physical_direct_spectral_sol, &
                      projector_physical_sol, projector_offdiag_sol, &
                      projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
-                     var_occ_gap_weight, var_projector_active_weight, var_projector_weight)
+                     var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
+                     var_projector_weight, var_step_weight)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
                      energy_cross, energy_cross_density, &
@@ -21716,6 +21756,23 @@ CONTAINS
          END IF
 
       END FUNCTION kpoint_ot_weighted_response_step
+
+! **************************************************************************************************
+!> \brief weighted Euclidean dot product for full-grid-equivalent Schur norms
+!> \param vector_left ...
+!> \param vector_right ...
+!> \param weights ...
+!> \return ...
+! **************************************************************************************************
+      FUNCTION kpoint_ot_weighted_vector_dot(vector_left, vector_right, weights) RESULT(dot_value)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: vector_left, vector_right, weights
+      REAL(KIND=dp)                                      :: dot_value
+
+         CPASSERT(SIZE(vector_left) == SIZE(vector_right))
+         CPASSERT(SIZE(vector_left) == SIZE(weights))
+         dot_value = DOT_PRODUCT(weights(:)*vector_left(:), vector_right(:))
+
+      END FUNCTION kpoint_ot_weighted_vector_dot
 
 ! **************************************************************************************************
 !> \brief shadow weight for auditing dependent energy response in rotation-dominated tails

@@ -3,10 +3,10 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It checks the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-07 HIGH reference after the projected fixed-N residual-tail update:
-! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 50 final
-! SCF steps. Mermin free energy = -8.15998697483554 Ha and total energy without
-! entropy = -8.15907871601346 Ha, with no first/last-band warnings, no
+! Local 2026-07 HIGH reference after the k-point Schur norm-weight update:
+! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 41 final
+! SCF steps. Mermin free energy = -8.15998683701745 Ha and total energy without
+! entropy = -8.15907858379687 Ha, with no first/last-band warnings, no
 ! AUTO-exhausted warning, and no "Unsupported content type" signature, matching
 ! the symmetry-reduced companion within the requested 1E-6 Ha path.
 &GLOBAL
