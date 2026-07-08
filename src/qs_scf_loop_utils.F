@@ -13140,7 +13140,8 @@ CONTAINS
                      projector_response_metric_norm_rotation = ABS(kpoint_ot_symmetric_quad(schur_metric, sol))
                      IF (projector_response_metric_norm_rotation <= &
                          EPSILON(projector_response_metric_norm_rotation)) &
-                        projector_response_metric_norm_rotation = kpoint_ot_symmetric_abs_quad(schur_metric, sol)
+                        projector_response_metric_norm_rotation = &
+                        kpoint_ot_symmetric_abs_quad(schur_metric, sol, var_step_weight)
                      projector_response_gdotp = projector_response_gdot_energy + projector_response_gdot_rotation
                      projector_response_normp = projector_response_norm_energy + projector_response_norm_rotation
                      projector_response_metric_normp = projector_response_metric_norm_energy + &
@@ -14934,7 +14935,8 @@ CONTAINS
                             EPSILON(projector_physical_direct_spectral_metric_norm_rotation)) &
                            projector_physical_direct_spectral_metric_norm_rotation = &
                            kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_spectral_sol)
+                                                        projector_physical_direct_spectral_sol, &
+                                                        var_step_weight)
                         projector_physical_direct_spectral_metric_normp = &
                            projector_physical_direct_spectral_metric_norm_energy + &
                            projector_physical_direct_spectral_metric_norm_rotation
@@ -15161,7 +15163,8 @@ CONTAINS
                             EPSILON(projector_physical_direct_density_norm_rotation)) &
                            projector_physical_direct_density_norm_rotation = &
                            kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_sol)
+                                                        projector_physical_direct_sol, &
+                                                        var_step_weight)
                         projector_physical_direct_density_normp = &
                            projector_physical_direct_density_norm_energy + &
                            projector_physical_direct_density_norm_rotation
@@ -15650,7 +15653,8 @@ CONTAINS
                                EPSILON(density_full_direct_norm_rotation)) &
                               density_full_direct_norm_rotation = &
                               kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                           projector_physical_direct_sol)
+                                                           projector_physical_direct_sol, &
+                                                           var_step_weight)
                            density_full_direct_normp = density_full_direct_norm_energy + &
                                                        density_full_direct_norm_rotation
                            IF (density_full_direct_gdotp > 0.0_dp .AND. &
@@ -16104,7 +16108,8 @@ CONTAINS
                         IF (density_descent_norm_rotation <= EPSILON(density_descent_norm_rotation)) &
                            density_descent_norm_rotation = &
                            kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_sol)
+                                                        projector_physical_direct_sol, &
+                                                        var_step_weight)
                         density_descent_normp = density_descent_norm_energy + &
                                                 density_descent_norm_rotation
                         IF (density_descent_gdotp > 0.0_dp .AND. &
@@ -16632,7 +16637,8 @@ CONTAINS
                          EPSILON(projector_physical_direct_metric_norm_rotation)) &
                         projector_physical_direct_metric_norm_rotation = &
                         kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                     projector_physical_direct_sol)
+                                                     projector_physical_direct_sol, &
+                                                     var_step_weight)
                      projector_physical_direct_metric_normp = &
                         projector_physical_direct_metric_norm_energy + &
                         projector_physical_direct_metric_norm_rotation
@@ -17035,7 +17041,7 @@ CONTAINS
                      IF (dense_metric_norm_energy < EPSILON(1.0_dp)) dense_metric_norm_energy = 0.0_dp
                      dense_metric_norm_rotation = ABS(kpoint_ot_symmetric_quad(schur_metric, sol))
                      IF (dense_metric_norm_rotation <= EPSILON(dense_metric_norm_rotation)) &
-                        dense_metric_norm_rotation = kpoint_ot_symmetric_abs_quad(schur_metric, sol)
+                        dense_metric_norm_rotation = kpoint_ot_symmetric_abs_quad(schur_metric, sol, var_step_weight)
                      dense_metric_normp = dense_metric_norm_energy + dense_metric_norm_rotation
                      dense_metric_shadow_weight = kpoint_ot_residual_energy_shadow_weight( &
                                                   rot_grad_energy_norm, rot_grad_physical_norm, &
@@ -17227,7 +17233,8 @@ CONTAINS
                                                                 projector_mode_response_negative_fraction, &
                                                                 projector_mode_response_drop, &
                                                                 projector_mode_response_drop_ratio, &
-                                                                projector_mode_trust_quality)
+                                                                projector_mode_trust_quality, &
+                                                                step_metric_weight=var_step_weight)
                            model_calibrated_drop = projector_mode_trust_quality*model_calibrated_drop
                         END IF
                      END IF
@@ -18779,7 +18786,8 @@ CONTAINS
                                                            projector_physical_offdiag_mode_positive_quad, &
                                                            projector_physical_offdiag_mode_negative_quad, &
                                                            projector_physical_offdiag_mode_quad_signed_ratio, &
-                                                           projector_physical_offdiag_mode_quad_abs_ratio)
+                                                           projector_physical_offdiag_mode_quad_abs_ratio, &
+                                                           step_metric_weight=var_step_weight)
                   CALL audit_kpoint_ot_hessian_delta_modes( &
                      rot_hessian_projector_physical_offdiag_plateau_active - &
                      rot_hessian_projector_physical_offdiag_active, sol, model_calibrated_drop, &
@@ -18792,7 +18800,8 @@ CONTAINS
                      plateau_gap_mode_positive_quad, &
                      plateau_gap_mode_negative_quad, &
                      plateau_gap_mode_quad_signed_ratio, &
-                     plateau_gap_mode_quad_abs_ratio)
+                     plateau_gap_mode_quad_abs_ratio, &
+                     step_metric_weight=var_step_weight)
                   CALL audit_kpoint_ot_hessian_delta_modes( &
                      rot_hessian_projector_physical_offdiag - &
                      rot_hessian_projector_physical_offdiag_active, sol, model_calibrated_drop, &
@@ -18805,7 +18814,8 @@ CONTAINS
                      inactive_offdiag_mode_positive_quad, &
                      inactive_offdiag_mode_negative_quad, &
                      inactive_offdiag_mode_quad_signed_ratio, &
-                     inactive_offdiag_mode_quad_abs_ratio)
+                     inactive_offdiag_mode_quad_abs_ratio, &
+                     step_metric_weight=var_step_weight)
                END IF
                IF (projector_physical_shadow_enabled .AND. &
                    projector_physical_offdiag_mode_abs_quad > &
@@ -25353,6 +25363,7 @@ CONTAINS
 !> \param mode_response_drop total mode-decomposed response-mismatch drop
 !> \param mode_response_drop_ratio response-mismatch drop relative to candidate drop
 !> \param mode_trust_quality conservative quality factor for candidate expected drop
+!> \param step_metric_weight optional positive step metric for symmetry-reduced k-point variables
 ! **************************************************************************************************
       SUBROUTINE audit_kpoint_ot_projector_modes(rot_hessian, rot_hessian_projector, step_rot, &
                                                  response_actual, response_model, curv, candidate_drop, projector_weight, &
@@ -25360,7 +25371,7 @@ CONTAINS
                                                  mode_negative_fraction, mode_damped_abs_avg, &
                                                  mode_eval_min, mode_eval_max, mode_step_negative_fraction, &
                                                  mode_response_negative_fraction, mode_response_drop, &
-                                                 mode_response_drop_ratio, mode_trust_quality)
+                                                 mode_response_drop_ratio, mode_trust_quality, step_metric_weight)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_rot
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_actual, response_model
@@ -25371,12 +25382,15 @@ CONTAINS
          mode_eval_min, mode_eval_max, mode_step_negative_fraction, &
          mode_response_negative_fraction, mode_response_drop, mode_response_drop_ratio, &
          mode_trust_quality
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: step_metric_weight
 
-      INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp) :: damped_abs_sum, filtered_eval, mode_response_norm, mode_risk, &
-         mode_soft_shift, negative_count, response_negative_sum, response_total_sum, &
-         step_negative_sum, step_total_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_rx
+      INTEGER                                            :: imode, jmode, nrot_local
+      REAL(KIND=dp) :: damped_abs_sum, filtered_eval, inv_weight_i, inv_weight_j, &
+         mode_response_norm, mode_risk, mode_soft_shift, negative_count, response_negative_sum, &
+         response_total_sum, step_negative_sum, step_total_sum, weight_i
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: inv_sqrt_step_weight, mode_coeff, &
+                                                            mode_eval, mode_rx, mode_step, &
+                                                            sqrt_step_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
 
          mode_quality = 0.0_dp
@@ -25394,10 +25408,28 @@ CONTAINS
          nrot_local = SIZE(rot_hessian, 1)
          IF (nrot_local <= 0) RETURN
 
-         ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_rx(SIZE(curv)), &
+         ALLOCATE (inv_sqrt_step_weight(nrot_local), mode_coeff(nrot_local), mode_eval(nrot_local), &
+                   mode_rx(SIZE(curv)), mode_step(nrot_local), sqrt_step_weight(nrot_local), &
                    mode_vec(nrot_local, nrot_local))
-         mode_vec(:, :) = 0.5_dp*((rot_hessian_projector(:, :) - rot_hessian(:, :)) + &
-                                  TRANSPOSE(rot_hessian_projector(:, :) - rot_hessian(:, :)))
+         sqrt_step_weight(:) = 1.0_dp
+         inv_sqrt_step_weight(:) = 1.0_dp
+         IF (PRESENT(step_metric_weight)) THEN
+            CPASSERT(SIZE(step_metric_weight) == nrot_local)
+            DO imode = 1, nrot_local
+               weight_i = MAX(step_metric_weight(imode), EPSILON(1.0_dp))
+               sqrt_step_weight(imode) = SQRT(weight_i)
+               inv_sqrt_step_weight(imode) = 1.0_dp/sqrt_step_weight(imode)
+            END DO
+         END IF
+         DO imode = 1, nrot_local
+            inv_weight_i = inv_sqrt_step_weight(imode)
+            DO jmode = 1, nrot_local
+               inv_weight_j = inv_sqrt_step_weight(jmode)
+               mode_vec(imode, jmode) = inv_weight_i*inv_weight_j*0.5_dp* &
+                                        ((rot_hessian_projector(imode, jmode) - rot_hessian(imode, jmode)) + &
+                                         (rot_hessian_projector(jmode, imode) - rot_hessian(jmode, imode)))
+            END DO
+         END DO
          CALL diamat_all(mode_vec, mode_eval)
          mode_eval_min = MINVAL(mode_eval)
          mode_eval_max = MAXVAL(mode_eval)
@@ -25410,7 +25442,7 @@ CONTAINS
          response_negative_sum = 0.0_dp
          response_total_sum = 0.0_dp
          step_negative_sum = 0.0_dp
-         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), sqrt_step_weight(:)*step_rot(:))
          step_total_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
          DO imode = 1, nrot_local
             filtered_eval = mode_eval(imode) + mode_soft_shift
@@ -25419,7 +25451,8 @@ CONTAINS
                step_negative_sum = step_negative_sum + mode_coeff(imode)*mode_coeff(imode)
             END IF
             damped_abs_sum = damped_abs_sum + ABS(mode_eval(imode) - filtered_eval)
-            mode_rx(:) = mode_coeff(imode)*MATMUL(response_model - response_actual, mode_vec(:, imode))
+            mode_step(:) = mode_coeff(imode)*inv_sqrt_step_weight(:)*mode_vec(:, imode)
+            mode_rx(:) = MATMUL(response_model - response_actual, mode_step)
             mode_response_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
             CALL para_env_inter_kp%sum(mode_response_norm)
             response_total_sum = response_total_sum + mode_response_norm
@@ -25441,7 +25474,7 @@ CONTAINS
                               projector_weight*MAX(0.0_dp, mode_risk)
          mode_trust_quality = MAX(1.0_dp - ot_kp_schur_projector_mode_trust_max_penalty*projector_weight, &
                                   MIN(1.0_dp, mode_trust_quality))
-         DEALLOCATE (mode_coeff, mode_eval, mode_rx, mode_vec)
+         DEALLOCATE (inv_sqrt_step_weight, mode_coeff, mode_eval, mode_rx, mode_step, sqrt_step_weight, mode_vec)
 
       END SUBROUTINE audit_kpoint_ot_projector_modes
 
@@ -25459,23 +25492,27 @@ CONTAINS
 !> \param mode_negative_quad absolute negative-mode quadratic contribution
 !> \param mode_quad_signed_ratio signed half-quadratic over candidate_drop
 !> \param mode_quad_abs_ratio absolute half-quadratic over candidate_drop
+!> \param step_metric_weight optional positive step metric for symmetry-reduced k-point variables
 ! **************************************************************************************************
       SUBROUTINE audit_kpoint_ot_hessian_delta_modes(hessian_delta, step_rot, candidate_drop, &
                                                      mode_negative_fraction, mode_eval_min, mode_eval_max, &
                                                      mode_step_negative_fraction, mode_quad, mode_abs_quad, &
                                                      mode_positive_quad, mode_negative_quad, &
-                                                     mode_quad_signed_ratio, mode_quad_abs_ratio)
+                                                     mode_quad_signed_ratio, mode_quad_abs_ratio, step_metric_weight)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian_delta
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_rot
       REAL(KIND=dp), INTENT(IN)                          :: candidate_drop
       REAL(KIND=dp), INTENT(OUT) :: mode_negative_fraction, mode_eval_min, mode_eval_max, &
          mode_step_negative_fraction, mode_quad, mode_abs_quad, mode_positive_quad, &
          mode_negative_quad, mode_quad_signed_ratio, mode_quad_abs_ratio
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: step_metric_weight
 
-      INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp)                                      :: coeff2, negative_count, &
-                                                            step_negative_sum, step_total_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval
+      INTEGER                                            :: imode, jmode, nrot_local
+      REAL(KIND=dp)                                      :: coeff2, inv_weight_i, inv_weight_j, &
+                                                            negative_count, step_negative_sum, &
+                                                            step_total_sum, weight_i
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: inv_sqrt_step_weight, mode_coeff, &
+                                                            mode_eval, sqrt_step_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
 
          mode_abs_quad = 0.0_dp
@@ -25494,12 +25531,30 @@ CONTAINS
          IF (SIZE(hessian_delta, 2) /= nrot_local) RETURN
          IF (SIZE(step_rot) /= nrot_local) RETURN
 
-         ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_vec(nrot_local, nrot_local))
-         mode_vec(:, :) = 0.5_dp*(hessian_delta(:, :) + TRANSPOSE(hessian_delta(:, :)))
+         ALLOCATE (inv_sqrt_step_weight(nrot_local), mode_coeff(nrot_local), mode_eval(nrot_local), &
+                   sqrt_step_weight(nrot_local), mode_vec(nrot_local, nrot_local))
+         sqrt_step_weight(:) = 1.0_dp
+         inv_sqrt_step_weight(:) = 1.0_dp
+         IF (PRESENT(step_metric_weight)) THEN
+            CPASSERT(SIZE(step_metric_weight) == nrot_local)
+            DO imode = 1, nrot_local
+               weight_i = MAX(step_metric_weight(imode), EPSILON(1.0_dp))
+               sqrt_step_weight(imode) = SQRT(weight_i)
+               inv_sqrt_step_weight(imode) = 1.0_dp/sqrt_step_weight(imode)
+            END DO
+         END IF
+         DO imode = 1, nrot_local
+            inv_weight_i = inv_sqrt_step_weight(imode)
+            DO jmode = 1, nrot_local
+               inv_weight_j = inv_sqrt_step_weight(jmode)
+               mode_vec(imode, jmode) = inv_weight_i*inv_weight_j*0.5_dp* &
+                                        (hessian_delta(imode, jmode) + hessian_delta(jmode, imode))
+            END DO
+         END DO
          CALL diamat_all(mode_vec, mode_eval)
          mode_eval_min = MINVAL(mode_eval)
          mode_eval_max = MAXVAL(mode_eval)
-         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), sqrt_step_weight(:)*step_rot(:))
          step_total_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
          step_negative_sum = 0.0_dp
          negative_count = 0.0_dp
@@ -25522,7 +25577,7 @@ CONTAINS
             mode_quad_signed_ratio = 0.5_dp*mode_quad/candidate_drop
             mode_quad_abs_ratio = 0.5_dp*mode_abs_quad/candidate_drop
          END IF
-         DEALLOCATE (mode_coeff, mode_eval, mode_vec)
+         DEALLOCATE (inv_sqrt_step_weight, mode_coeff, mode_eval, sqrt_step_weight, mode_vec)
 
       END SUBROUTINE audit_kpoint_ot_hessian_delta_modes
 
@@ -25576,16 +25631,20 @@ CONTAINS
 !> \brief ...
 !> \param hessian ...
 !> \param step_vec ...
+!> \param step_metric_weight optional positive step metric for symmetry-reduced k-point variables
 !> \return ...
 ! **************************************************************************************************
-      FUNCTION kpoint_ot_symmetric_abs_quad(hessian, step_vec) RESULT(abs_quad)
+      FUNCTION kpoint_ot_symmetric_abs_quad(hessian, step_vec, step_metric_weight) RESULT(abs_quad)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_vec
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: step_metric_weight
       REAL(KIND=dp)                                      :: abs_quad
 
-      INTEGER                                            :: imode, nrot_local
-      REAL(KIND=dp)                                      :: coeff
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_eval
+      INTEGER                                            :: imode, jmode, nrot_local
+      REAL(KIND=dp)                                      :: coeff, inv_weight_i, inv_weight_j, &
+                                                            weight_i
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: inv_sqrt_step_weight, metric_step, &
+                                                            mode_eval, sqrt_step_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
 
          abs_quad = 0.0_dp
@@ -25594,14 +25653,33 @@ CONTAINS
          IF (SIZE(hessian, 2) /= nrot_local) RETURN
          IF (SIZE(step_vec) /= nrot_local) RETURN
 
-         ALLOCATE (mode_eval(nrot_local), mode_vec(nrot_local, nrot_local))
-         mode_vec(:, :) = 0.5_dp*(hessian(:, :) + TRANSPOSE(hessian(:, :)))
+         ALLOCATE (inv_sqrt_step_weight(nrot_local), metric_step(nrot_local), mode_eval(nrot_local), &
+                   sqrt_step_weight(nrot_local), mode_vec(nrot_local, nrot_local))
+         sqrt_step_weight(:) = 1.0_dp
+         inv_sqrt_step_weight(:) = 1.0_dp
+         IF (PRESENT(step_metric_weight)) THEN
+            CPASSERT(SIZE(step_metric_weight) == nrot_local)
+            DO imode = 1, nrot_local
+               weight_i = MAX(step_metric_weight(imode), EPSILON(1.0_dp))
+               sqrt_step_weight(imode) = SQRT(weight_i)
+               inv_sqrt_step_weight(imode) = 1.0_dp/sqrt_step_weight(imode)
+            END DO
+         END IF
+         metric_step(:) = sqrt_step_weight(:)*step_vec(:)
+         DO imode = 1, nrot_local
+            inv_weight_i = inv_sqrt_step_weight(imode)
+            DO jmode = 1, nrot_local
+               inv_weight_j = inv_sqrt_step_weight(jmode)
+               mode_vec(imode, jmode) = inv_weight_i*inv_weight_j*0.5_dp* &
+                                        (hessian(imode, jmode) + hessian(jmode, imode))
+            END DO
+         END DO
          CALL diamat_all(mode_vec, mode_eval)
          DO imode = 1, nrot_local
-            coeff = DOT_PRODUCT(mode_vec(:, imode), step_vec)
+            coeff = DOT_PRODUCT(mode_vec(:, imode), metric_step)
             abs_quad = abs_quad + ABS(mode_eval(imode))*coeff*coeff
          END DO
-         DEALLOCATE (mode_eval, mode_vec)
+         DEALLOCATE (inv_sqrt_step_weight, metric_step, mode_eval, sqrt_step_weight, mode_vec)
 
       END FUNCTION kpoint_ot_symmetric_abs_quad
 
