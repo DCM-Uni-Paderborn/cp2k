@@ -13120,7 +13120,8 @@ CONTAINS
                                                                 projector_mode_response_audit_positive_weight_sum, &
                                                                 diag_negative_weight_sum= &
                                                                 projector_mode_response_audit_negative_weight_sum, &
-                                                                raw_residual_delta=response_raw_delta)
+                                                                raw_residual_delta=response_raw_delta, &
+                                                                step_metric_weight=var_step_weight)
                   IF (projector_mode_response_weight > EPSILON(projector_mode_response_weight)) THEN
                      projector_response_z_e(:) = z_e(:) + projector_response_rx_e(:)
                      projector_response_gdot_energy = DOT_PRODUCT(grad_e, projector_response_z_e)
@@ -13336,7 +13337,8 @@ CONTAINS
                                                                 projector_physical_response_audit_positive_weight_sum, &
                                                                 diag_negative_weight_sum= &
                                                                 projector_physical_response_audit_negative_weight_sum, &
-                                                                raw_residual_delta=response_raw_delta)
+                                                                raw_residual_delta=response_raw_delta, &
+                                                                step_metric_weight=var_step_weight)
                   IF (projector_physical_response_weight > EPSILON(projector_physical_response_weight)) THEN
                      projector_physical_z_e(:) = z_e(:) + projector_physical_rx_e(:)
                      projector_physical_gdot_energy = DOT_PRODUCT(grad_e, projector_physical_z_e)
@@ -13503,7 +13505,8 @@ CONTAINS
                                                                 projector_inactive_offdiag_response_cross_drop, &
                                                                 projector_inactive_offdiag_response_positive_coeff, &
                                                                 projector_inactive_offdiag_response_negative_coeff, &
-                                                                raw_residual_delta=response_raw_delta)
+                                                                raw_residual_delta=response_raw_delta, &
+                                                                step_metric_weight=var_step_weight)
                   IF (projector_inactive_offdiag_response_weight > &
                       EPSILON(projector_inactive_offdiag_response_weight)) THEN
                      projector_inactive_offdiag_z_e(:) = &
@@ -13791,7 +13794,8 @@ CONTAINS
                                                                 projector_offdiag_response_cross_drop, &
                                                                 projector_offdiag_response_positive_coeff, &
                                                                 projector_offdiag_response_negative_coeff, &
-                                                                raw_residual_delta=response_raw_delta)
+                                                                raw_residual_delta=response_raw_delta, &
+                                                                step_metric_weight=var_step_weight)
                   IF (projector_offdiag_response_weight > &
                       EPSILON(projector_offdiag_response_weight)) THEN
                      projector_offdiag_z_e(:) = z_e(:) + projector_offdiag_rx_e(:)
@@ -14894,7 +14898,8 @@ CONTAINS
                                                                          spectral_resp_cross_drop, &
                                                                          spectral_resp_positive_coeff, &
                                                                          spectral_resp_negative_coeff, &
-                                                                         raw_residual_delta=response_raw_delta)
+                                                                         raw_residual_delta=response_raw_delta, &
+                                                                         step_metric_weight=var_step_weight)
                            IF (spectral_resp_weight > &
                                EPSILON(spectral_resp_weight)) THEN
                               projector_physical_direct_spectral_rx_e(:) = rx_model(:)
@@ -16372,7 +16377,8 @@ CONTAINS
                                                                       projector_physical_direct_response_cross_drop, &
                                                                       projector_physical_direct_response_positive_coeff, &
                                                                       projector_physical_direct_response_negative_coeff, &
-                                                                      raw_residual_delta=response_raw_delta)
+                                                                      raw_residual_delta=response_raw_delta, &
+                                                                      step_metric_weight=var_step_weight)
                         IF (projector_physical_direct_shadow_enabled) &
                            CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
                                                                          rot_hessian_projector_physical_diagref, &
@@ -16395,7 +16401,8 @@ CONTAINS
                                                                          projector_physical_direct_diagref_cross_drop, &
                                                                          projector_physical_direct_diagref_positive_coeff, &
                                                                          projector_physical_direct_diagref_negative_coeff, &
-                                                                         raw_residual_delta=response_raw_delta)
+                                                                         raw_residual_delta=response_raw_delta, &
+                                                                         step_metric_weight=var_step_weight)
                         IF (projector_physical_direct_diagref_weight > &
                             EPSILON(projector_physical_direct_diagref_weight)) THEN
                            CALL project_kpoint_ot_schur_response( &
@@ -16505,7 +16512,8 @@ CONTAINS
                               projector_physical_direct_actual_response_cross_drop, &
                               projector_physical_direct_actual_response_positive_coeff, &
                               projector_physical_direct_actual_response_negative_coeff, &
-                              raw_residual_delta=response_raw_delta)
+                              raw_residual_delta=response_raw_delta, &
+                              step_metric_weight=var_step_weight)
                            WRITE (cp_logger_get_default_unit_nr(logger), '(A,9(1X,ES16.8))') &
                               " OT Schur projector phys direct actual-response w cdrop cneg rneg pdrop ndrop xdrop cpos ncoeff:", &
                               projector_physical_direct_actual_response_weight, &
@@ -16569,7 +16577,8 @@ CONTAINS
                               direct_pg_raw_negative_fraction, direct_pg_positive_drop, &
                               direct_pg_negative_drop, direct_pg_cross_drop, &
                               direct_pg_positive_coeff, direct_pg_negative_coeff, &
-                              raw_residual_delta=response_raw_delta)
+                              raw_residual_delta=response_raw_delta, &
+                              step_metric_weight=var_step_weight)
                            CALL project_kpoint_ot_schur_response(direct_pg_rx_e, occ_curv, &
                                                                  tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                            direct_pg_base_e(:) = direct_pg_rx_e(:) - direct_pg_base_e(:)
@@ -25062,6 +25071,7 @@ CONTAINS
 !> \param diag_positive_weight_sum step-weighted positive-mode response weight
 !> \param diag_negative_weight_sum step-weighted negative-mode response weight
 !> \param raw_residual_delta optional unprojected OT residual for tail response weighting
+!> \param step_metric_weight optional positive step metric for symmetry-reduced k-point variables
 !> \note Below the nominal response floor the correction is softly tapered, not
 !>       disabled.  The late metallic tail still needs accepted-history feedback
 !>       to calibrate finite Projector/Occupation response toward 1e-6.
@@ -25078,7 +25088,8 @@ CONTAINS
                                                           negative_coeff, diag_base_weight, &
                                                           diag_response_total_sum, diag_step_weight_sum, &
                                                           diag_eval_abs_avg, diag_positive_weight_sum, &
-                                                          diag_negative_weight_sum, raw_residual_delta)
+                                                          diag_negative_weight_sum, raw_residual_delta, &
+                                                          step_metric_weight)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, rot_hessian_projector
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step_rot
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response_raw, response_exact
@@ -25098,17 +25109,19 @@ CONTAINS
          diag_step_weight_sum, diag_eval_abs_avg, diag_positive_weight_sum, &
          diag_negative_weight_sum
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: raw_residual_delta
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: step_metric_weight
 
-      INTEGER                                            :: imode, nrot_local
+      INTEGER                                            :: imode, jmode, nrot_local
       REAL(KIND=dp) :: base_projected_neg, base_projected_pos, base_weight, coeff_det, &
-         coeff_negative, coeff_positive, eval_abs_avg, g1, g2, h11, h12, h22, mode_norm, &
-         mode_sign, mode_weight, negative_balance, negative_gdot, negative_norm, &
-         negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
-         residual_weight, response_total_sum, spectral_weight, step_weight, step_weight_sum
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mode_coeff, mode_eval, mode_norms, &
-                                                            mode_rx, response_corr, response_neg, &
-                                                            response_pos
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_vec
+         coeff_negative, coeff_positive, eval_abs_avg, g1, g2, h11, h12, h22, inv_weight_i, &
+         inv_weight_j, mode_norm, mode_sign, mode_weight, negative_balance, negative_gdot, &
+         negative_norm, negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
+         residual_weight, response_total_sum, spectral_weight, step_weight, step_weight_sum, &
+         weight_i
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: inv_sqrt_step_weight, mode_coeff, mode_eval, &
+         mode_norms, mode_rx, mode_step, response_corr, response_neg, response_pos, &
+         sqrt_step_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: mode_delta
 
          applied_weight = 0.0_dp
          correction_drop = 0.0_dp
@@ -25146,23 +25159,42 @@ CONTAINS
          IF (PRESENT(diag_base_weight)) diag_base_weight = base_weight
          IF (base_weight <= EPSILON(base_weight)) RETURN
 
-         ALLOCATE (mode_coeff(nrot_local), mode_eval(nrot_local), mode_norms(nrot_local), &
-                   mode_rx(SIZE(curv)), response_corr(SIZE(curv)), response_neg(SIZE(curv)), &
-                   response_pos(SIZE(curv)), mode_vec(nrot_local, nrot_local))
+         ALLOCATE (inv_sqrt_step_weight(nrot_local), mode_coeff(nrot_local), mode_eval(nrot_local), &
+                   mode_norms(nrot_local), mode_rx(SIZE(curv)), mode_step(nrot_local), &
+                   response_corr(SIZE(curv)), response_neg(SIZE(curv)), response_pos(SIZE(curv)), &
+                   sqrt_step_weight(nrot_local), mode_delta(nrot_local, nrot_local))
+         sqrt_step_weight(:) = 1.0_dp
+         inv_sqrt_step_weight(:) = 1.0_dp
+         IF (PRESENT(step_metric_weight)) THEN
+            CPASSERT(SIZE(step_metric_weight) == nrot_local)
+            DO imode = 1, nrot_local
+               weight_i = MAX(step_metric_weight(imode), EPSILON(1.0_dp))
+               sqrt_step_weight(imode) = SQRT(weight_i)
+               inv_sqrt_step_weight(imode) = 1.0_dp/sqrt_step_weight(imode)
+            END DO
+         END IF
          response_corr(:) = 0.0_dp
          response_neg(:) = 0.0_dp
          response_pos(:) = 0.0_dp
-         mode_vec(:, :) = 0.5_dp*((rot_hessian_projector(:, :) - rot_hessian(:, :)) + &
-                                  TRANSPOSE(rot_hessian_projector(:, :) - rot_hessian(:, :)))
-         CALL diamat_all(mode_vec, mode_eval)
-         mode_coeff(:) = MATMUL(TRANSPOSE(mode_vec), step_rot)
+         DO imode = 1, nrot_local
+            inv_weight_i = inv_sqrt_step_weight(imode)
+            DO jmode = 1, nrot_local
+               inv_weight_j = inv_sqrt_step_weight(jmode)
+               mode_delta(imode, jmode) = inv_weight_i*inv_weight_j*0.5_dp* &
+                                          ((rot_hessian_projector(imode, jmode) - rot_hessian(imode, jmode)) + &
+                                           (rot_hessian_projector(jmode, imode) - rot_hessian(jmode, imode)))
+            END DO
+         END DO
+         CALL diamat_all(mode_delta, mode_eval)
+         mode_coeff(:) = MATMUL(TRANSPOSE(mode_delta), sqrt_step_weight(:)*step_rot(:))
          eval_abs_avg = SUM(ABS(mode_eval))/REAL(MAX(1, nrot_local), KIND=dp)
          response_total_sum = 0.0_dp
          raw_negative_sum = 0.0_dp
          mode_norms(:) = 0.0_dp
          DO imode = 1, nrot_local
             IF (ABS(mode_coeff(imode)) <= EPSILON(mode_coeff(imode))) CYCLE
-            mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
+            mode_step(:) = mode_coeff(imode)*inv_sqrt_step_weight(:)*mode_delta(:, imode)
+            mode_rx(:) = MATMUL(response_exact - response_raw, mode_step)
             IF (use_projected_metric) THEN
                CALL kpoint_ot_mixed_projected_term(mode_rx, mode_rx, occ_curv, tether_curv, &
                                                    occ_curv_projection_sum, channel_nmo, e_offset, &
@@ -25200,7 +25232,8 @@ CONTAINS
             END IF
             mode_weight = base_weight*MAX(0.0_dp, MIN(1.0_dp, spectral_weight))
             IF (mode_weight <= EPSILON(mode_weight)) CYCLE
-            mode_rx(:) = mode_coeff(imode)*MATMUL(response_exact - response_raw, mode_vec(:, imode))
+            mode_step(:) = mode_coeff(imode)*inv_sqrt_step_weight(:)*mode_delta(:, imode)
+            mode_rx(:) = MATMUL(response_exact - response_raw, mode_step)
             step_weight = mode_coeff(imode)*mode_coeff(imode)
             IF (mode_sign > 0.0_dp) THEN
                response_pos(:) = response_pos(:) + mode_weight*mode_rx(:)
@@ -25294,7 +25327,8 @@ CONTAINS
          IF (correction_drop > EPSILON(correction_drop)) &
             correction_negative_fraction = kpoint_ot_projector_response_adverse_fraction( &
                                            negative_norm, 2.0_dp*correction_drop, negative_gdot)
-         DEALLOCATE (mode_coeff, mode_eval, mode_norms, mode_rx, response_corr, response_neg, response_pos, mode_vec)
+         DEALLOCATE (inv_sqrt_step_weight, mode_coeff, mode_eval, mode_norms, mode_rx, mode_step, &
+                     response_corr, response_neg, response_pos, sqrt_step_weight, mode_delta)
 
       END SUBROUTINE audit_kpoint_ot_projector_response_modes
 
