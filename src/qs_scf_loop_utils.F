@@ -17810,6 +17810,15 @@ CONTAINS
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
                   dense_residual_quality)
+               IF (kpoint_ot_direct_density_fshadow_tail_protect( &
+                   residual_delta, projector_physical_direct_density_candidate_selected, &
+                   projector_physical_direct_density_fshadow_ready, &
+                   projector_physical_direct_density_residual_bad, &
+                   projector_physical_direct_density_expected_drop, density_full_global_expected_drop, &
+                   density_full_global_tail_prefer, &
+                   projector_physical_direct_density_response_weighted_trust_ratio, &
+                   projector_physical_direct_density_response_abs_trust_ratio)) &
+                  density_full_global_tail_prefer = .FALSE.
                IF (density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
@@ -18432,6 +18441,15 @@ CONTAINS
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
                   local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
                   dense_residual_quality)
+               IF (kpoint_ot_direct_density_fshadow_tail_protect( &
+                   residual_delta, projector_physical_direct_density_candidate_selected, &
+                   projector_physical_direct_density_fshadow_ready, &
+                   projector_physical_direct_density_residual_bad, &
+                   projector_physical_direct_density_expected_drop, density_full_global_expected_drop, &
+                   density_full_global_tail_prefer, &
+                   projector_physical_direct_density_response_weighted_trust_ratio, &
+                   projector_physical_direct_density_response_abs_trust_ratio)) &
+                  density_full_global_tail_prefer = .FALSE.
                IF (density_full_global_candidate_ready .AND. &
                    density_full_global_expected_drop > EPSILON(density_full_global_expected_drop) .AND. &
                    (dense_branch_expected_drop >= &
@@ -23338,6 +23356,54 @@ CONTAINS
          prefer = .TRUE.
 
       END FUNCTION kpoint_ot_density_full_global_tail_prefer
+
+! **************************************************************************************************
+!> \brief protect fshadow-calibrated Direct-density bootstrap from global tail-prefer override
+!> \param residual_delta current OT residual
+!> \param direct_selected whether Direct-density already won the current candidate comparison
+!> \param direct_fshadow_ready whether filtered-source Direct-density history is calibrated
+!> \param direct_residual_bad whether selected Direct-density residual history is known bad
+!> \param direct_expected_drop calibrated Direct-density Mermin drop
+!> \param global_expected_drop calibrated global full-density Mermin drop
+!> \param global_tail_prefer whether global full-density is selected only by tail preference
+!> \param direct_weighted_trust_ratio curvature-weighted Direct-density response trust ratio
+!> \param direct_abs_trust_ratio absolute Direct-density response trust ratio
+!> \return true if global tail-prefer should yield one bootstrap step to Direct-density
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_density_fshadow_tail_protect(residual_delta, direct_selected, &
+                                                             direct_fshadow_ready, direct_residual_bad, &
+                                                             direct_expected_drop, global_expected_drop, &
+                                                             global_tail_prefer, &
+                                                             direct_weighted_trust_ratio, &
+                                                             direct_abs_trust_ratio) RESULT(protect)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+      LOGICAL, INTENT(IN)                                :: direct_selected, direct_fshadow_ready, &
+                                                            direct_residual_bad
+      REAL(KIND=dp), INTENT(IN)                          :: direct_expected_drop, &
+                                                            global_expected_drop
+      LOGICAL, INTENT(IN)                                :: global_tail_prefer
+      REAL(KIND=dp), INTENT(IN)                          :: direct_weighted_trust_ratio, &
+                                                            direct_abs_trust_ratio
+      LOGICAL                                            :: protect
+
+         protect = .FALSE.
+         IF (residual_delta > ot_kp_schur_projector_coupled_tail_delta) RETURN
+         IF (.NOT. global_tail_prefer) RETURN
+         IF (.NOT. direct_selected) RETURN
+         IF (.NOT. direct_fshadow_ready) RETURN
+         IF (direct_residual_bad) RETURN
+         IF (direct_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (global_expected_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+         IF (direct_weighted_trust_ratio > 1.0_dp) RETURN
+         IF (direct_abs_trust_ratio > 1.0_dp) RETURN
+         IF (direct_expected_drop < ot_kp_schur_projector_density_fdir_refresh_ratio* &
+             MAX(global_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+         IF (global_expected_drop >= ot_kp_schur_projector_response_advantage_ratio* &
+             MAX(direct_expected_drop, ot_kp_schur_projector_density_full_min_drop)) RETURN
+
+         protect = .TRUE.
+
+      END FUNCTION kpoint_ot_direct_density_fshadow_tail_protect
 
 ! **************************************************************************************************
 !> \brief periodic refresh probe for stale full-density selected residual history

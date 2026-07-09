@@ -290,6 +290,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector Direct normcap tail ready", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_tail_probe( &
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_density_fshadow_tail_protect( &
+      "complex projector Direct-density fshadow tail protect", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_tail_probe( &
       "complex projector density-descent tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_probe_drop( &
@@ -10946,6 +10948,68 @@ CONTAINS
    END SUBROUTINE check_projector_density_full_direct_tail_probe
 
 ! **************************************************************************************************
+!> \brief Check that calibrated Direct-density fshadow can bootstrap against global tail-prefer.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_density_fshadow_tail_protect(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL :: advantage_veto, direct_not_selected, global_not_prefer, low_drop, ready, &
+         residual_bad, tail_veto, trust_veto, weak_direct
+      REAL(KIND=dp)                                      :: err
+
+      ready = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
+                                                        1.05E-8_dp, 1.0E-8_dp, .TRUE., &
+                                                        1.0E-3_dp, 1.0E-3_dp)
+      tail_veto = dense_direct_density_fshadow_tail_protect(2.0E-4_dp, .TRUE., .TRUE., .FALSE., &
+                                                            1.05E-8_dp, 1.0E-8_dp, .TRUE., &
+                                                            1.0E-3_dp, 1.0E-3_dp)
+      global_not_prefer = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
+                                                                    1.05E-8_dp, 1.0E-8_dp, .FALSE., &
+                                                                    1.0E-3_dp, 1.0E-3_dp)
+      direct_not_selected = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .FALSE., .TRUE., .FALSE., &
+                                                                      1.05E-8_dp, 1.0E-8_dp, .TRUE., &
+                                                                      1.0E-3_dp, 1.0E-3_dp)
+      residual_bad = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .TRUE., &
+                                                               1.05E-8_dp, 1.0E-8_dp, .TRUE., &
+                                                               1.0E-3_dp, 1.0E-3_dp)
+      low_drop = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
+                                                           1.0E-13_dp, 1.0E-8_dp, .TRUE., &
+                                                           1.0E-3_dp, 1.0E-3_dp)
+      weak_direct = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
+                                                              1.9E-9_dp, 1.0E-8_dp, .TRUE., &
+                                                              1.0E-3_dp, 1.0E-3_dp)
+      advantage_veto = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
+                                                                 1.0E-8_dp, 1.11E-8_dp, .TRUE., &
+                                                                 1.0E-3_dp, 1.0E-3_dp)
+      trust_veto = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
+                                                             1.05E-8_dp, 1.0E-8_dp, .TRUE., &
+                                                             1.01_dp, 1.0E-3_dp)
+
+      err = 0.0_dp
+      IF (.NOT. ready .OR. tail_veto .OR. global_not_prefer .OR. direct_not_selected .OR. &
+          residual_bad .OR. low_drop .OR. weak_direct .OR. advantage_veto .OR. trust_veto) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "failed with ready/tail/gpref/dsel/res/drop/weak/adv/trust", ready, tail_veto, &
+            global_not_prefer, direct_not_selected, residual_bad, low_drop, weak_direct, &
+            advantage_veto, trust_veto
+      ELSE
+         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
+            "OK with ready/tail/gpref/dsel/res/drop/weak/adv/trust", ready, tail_veto, &
+            global_not_prefer, direct_not_selected, residual_bad, low_drop, weak_direct, &
+            advantage_veto, trust_veto
+      END IF
+
+   END SUBROUTINE check_projector_direct_density_fshadow_tail_protect
+
+! **************************************************************************************************
 !> \brief Check that global full-density tail probes use residual, not Mermin, selected history.
 !> \param label ...
 !> \param tol ...
@@ -15652,6 +15716,51 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of the Direct-density fshadow global-tail-prefer protection.
+!> \param residual_delta ...
+!> \param direct_selected ...
+!> \param direct_fshadow_ready ...
+!> \param direct_residual_bad ...
+!> \param direct_expected_drop ...
+!> \param global_expected_drop ...
+!> \param global_tail_prefer ...
+!> \param direct_weighted_trust_ratio ...
+!> \param direct_abs_trust_ratio ...
+!> \return true if global tail-prefer should yield to Direct-density
+! **************************************************************************************************
+   FUNCTION dense_direct_density_fshadow_tail_protect(residual_delta, direct_selected, &
+                                                      direct_fshadow_ready, direct_residual_bad, &
+                                                      direct_expected_drop, global_expected_drop, &
+                                                      global_tail_prefer, direct_weighted_trust_ratio, &
+                                                      direct_abs_trust_ratio) RESULT(protect)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+      LOGICAL, INTENT(IN)                                :: direct_selected, direct_fshadow_ready, &
+                                                            direct_residual_bad
+      REAL(KIND=dp), INTENT(IN)                          :: direct_expected_drop, &
+                                                            global_expected_drop
+      LOGICAL, INTENT(IN)                                :: global_tail_prefer
+      REAL(KIND=dp), INTENT(IN)                          :: direct_weighted_trust_ratio, &
+                                                            direct_abs_trust_ratio
+      LOGICAL                                            :: protect
+
+      protect = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (.NOT. global_tail_prefer) RETURN
+      IF (.NOT. direct_selected) RETURN
+      IF (.NOT. direct_fshadow_ready) RETURN
+      IF (direct_residual_bad) RETURN
+      IF (direct_expected_drop <= 1.0E-12_dp) RETURN
+      IF (global_expected_drop <= 1.0E-12_dp) RETURN
+      IF (direct_weighted_trust_ratio > 1.0_dp) RETURN
+      IF (direct_abs_trust_ratio > 1.0_dp) RETURN
+      IF (direct_expected_drop < 2.0E-1_dp*MAX(global_expected_drop, 1.0E-12_dp)) RETURN
+      IF (global_expected_drop >= 1.10_dp*MAX(direct_expected_drop, 1.0E-12_dp)) RETURN
+
+      protect = .TRUE.
+
+   END FUNCTION dense_direct_density_fshadow_tail_protect
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density global selected residual-tail gate.
