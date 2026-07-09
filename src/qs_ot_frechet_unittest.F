@@ -5511,11 +5511,12 @@ CONTAINS
 
       REAL(KIND=dp) :: active_fraction, full_lifted_response, full_safe_cap, full_shape, &
          geometric_lifted_response, geometric_response, geometric_safe_cap, geometric_shape, &
-         global_response, global_response_support, half_lifted_response, half_response, &
-         half_safe_cap, half_shape, lift_support, local_response, occ_curv, occ_curv_max, &
-         old_component_response, old_expected_response, old_global_response, old_safe_blend, &
-         old_shape, raw_response, response_root, response_shape, safe_blend, safe_blend_floor, &
-         safe_response, supported_global_response, supported_lift_weight, supported_raw_response
+         global_response, global_response_shape, global_response_support, half_lifted_response, &
+         half_response, half_safe_cap, half_shape, lift_support, local_response, occ_curv, &
+         occ_curv_max, old_component_response, old_expected_response, old_global_response, &
+         old_safe_blend, old_safe_cap, old_shape, raw_response, response_root, response_shape, &
+         safe_blend, safe_blend_floor, safe_response, supported_global_response
+      REAL(KIND=dp) :: supported_lift_weight, supported_raw_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5528,16 +5529,19 @@ CONTAINS
       response_root = SQRT(response_shape)
       lift_support = raw_response/(response_root*safe_response)
       lift_support = MIN(1.0_dp, MAX(0.0_dp, lift_support))
-      global_response_support = response_root + lift_support*(1.0_dp - response_root)
-      safe_blend_floor = 0.80_dp*response_root*global_response_support
+      global_response_shape = response_shape + lift_support*(response_root - response_shape)
+      global_response_support = global_response_shape + lift_support*(1.0_dp - global_response_shape)
+      safe_blend_floor = 0.80_dp*global_response_shape*global_response_support
       safe_blend = MAX(active_fraction, safe_blend_floor)
-      geometric_safe_cap = response_root*safe_response
+      geometric_safe_cap = global_response_shape*safe_response
       supported_lift_weight = 0.5_dp*lift_support
-      half_safe_cap = (response_root + supported_lift_weight*(1.0_dp - response_root))*safe_response
-      full_safe_cap = (response_root + lift_support*(1.0_dp - response_root))*safe_response
+      half_safe_cap = (global_response_shape + supported_lift_weight*(1.0_dp - global_response_shape))* &
+                      safe_response
+      full_safe_cap = (global_response_shape + lift_support*(1.0_dp - global_response_shape))*safe_response
       old_safe_blend = MAX(active_fraction, 0.80_dp*response_root)
+      old_safe_cap = response_root*safe_response
       old_component_response = (1.0_dp - old_safe_blend)*raw_response + &
-                               old_safe_blend*geometric_safe_cap
+                               old_safe_blend*old_safe_cap
       old_expected_response = response_shape*old_component_response
       old_shape = MAX(response_shape, SQRT(response_shape*0.80_dp*response_root))
       old_global_response = old_shape*(1.0_dp - old_safe_blend)*raw_response + &
@@ -5575,7 +5579,7 @@ CONTAINS
       IF (ABS(geometric_response - geometric_lifted_response) > tol .OR. &
           ABS(half_response - half_lifted_response) > tol .OR. &
           ABS(global_response - full_lifted_response) > tol .OR. &
-          global_response <= 4.0_dp*local_response .OR. &
+          global_response <= local_response .OR. &
           global_response >= 0.75_dp*old_global_response .OR. &
           half_response <= geometric_response .OR. &
           global_response <= half_response .OR. &
@@ -5609,9 +5613,10 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: response_ratio_gate = 2.0E-2_dp
 
       REAL(KIND=dp) :: active_fraction, bounded_safe_component, density_shape, err, &
-         expected_response, lift_support, local_response, occ_curv, occ_curv_max, old_response, &
-         old_safe_blend, old_shape, raw_response, response, response_root, response_shape, &
-         safe_blend, safe_blend_floor, safe_response, support, supported_response
+         expected_response, global_response_shape, lift_support, local_response, occ_curv, &
+         occ_curv_max, old_bounded_safe_component, old_response, old_safe_blend, old_shape, &
+         raw_response, response, response_root, response_shape, safe_blend, safe_blend_floor, &
+         safe_response, support, supported_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-5_dp
@@ -5624,18 +5629,20 @@ CONTAINS
       response_root = SQRT(response_shape)
       lift_support = ABS(raw_response)/(response_root*ABS(safe_response))
       lift_support = MIN(1.0_dp, MAX(0.0_dp, lift_support))
-      support = response_root + lift_support*(1.0_dp - response_root)
-      safe_blend_floor = 0.80_dp*response_root*support
+      global_response_shape = response_shape + lift_support*(response_root - response_shape)
+      support = global_response_shape + lift_support*(1.0_dp - global_response_shape)
+      safe_blend_floor = 0.80_dp*global_response_shape*support
       safe_blend = MAX(active_fraction, safe_blend_floor)
       density_shape = MAX(response_shape, SQRT(response_shape*safe_blend_floor))
-      bounded_safe_component = response_root*safe_response
+      bounded_safe_component = global_response_shape*safe_response
       expected_response = density_shape*((1.0_dp - safe_blend)*raw_response + &
                                          safe_blend*bounded_safe_component)
 
       old_safe_blend = MAX(active_fraction, 0.80_dp*response_root)
       old_shape = MAX(response_shape, SQRT(response_shape*0.80_dp*response_root))
+      old_bounded_safe_component = response_root*safe_response
       old_response = old_shape*((1.0_dp - old_safe_blend)*raw_response + &
-                                old_safe_blend*bounded_safe_component)
+                                old_safe_blend*old_bounded_safe_component)
 
       local_response = dense_physical_density_response(raw_response, safe_response, &
                                                        occ_curv, occ_curv_max, response_ratio_gate)
@@ -21357,10 +21364,10 @@ CONTAINS
                                                             globally_aligned_safe_response, &
                                                             locally_aligned_safe_response
       REAL(KIND=dp) :: active_fraction, alignment, bounded_safe_component, density_shape, &
-         density_shape_full, density_shape_geometric, global_cap_lift, global_response_support, &
-         global_safe_cap, lift_support, lift_weight, projector_abs, projector_component, &
-         projector_response_weight, response_root, response_shape, safe_abs, safe_blend, &
-         safe_blend_floor, safe_cap, safe_component, safe_response_weight, &
+         density_shape_full, density_shape_geometric, global_cap_lift, global_response_shape, &
+         global_response_support, global_safe_cap, lift_support, lift_weight, projector_abs, &
+         projector_component, projector_response_weight, response_root, response_shape, safe_abs, &
+         safe_blend, safe_blend_floor, safe_cap, safe_component, safe_response_weight, &
          sign_projector_response, sign_safe_response, supported_lift_weight
 
       density_response = 0.0_dp
@@ -21410,8 +21417,10 @@ CONTAINS
             lift_support = MIN(1.0_dp, MAX(0.0_dp, lift_support))
             supported_lift_weight = lift_weight*lift_support
             global_cap_lift = supported_lift_weight
-            global_response_support = response_root + lift_support*(1.0_dp - response_root)
-            global_safe_cap = (response_root + global_cap_lift*(1.0_dp - response_root))*safe_abs
+            global_response_shape = response_shape + lift_support*(response_root - response_shape)
+            global_response_support = global_response_shape + lift_support*(1.0_dp - global_response_shape)
+            global_safe_cap = (global_response_shape + &
+                               global_cap_lift*(1.0_dp - global_response_shape))*safe_abs
             safe_cap = MAX(4.0_dp*projector_abs, global_safe_cap)
          ELSE
             safe_cap = MAX(4.0_dp*projector_abs, response_shape*safe_abs)
@@ -21420,7 +21429,7 @@ CONTAINS
          safe_component = bounded_safe_component
          safe_blend = active_fraction
          IF (globally_aligned_safe_response) THEN
-            safe_blend_floor = MIN(1.0_dp, alignment)*response_root*global_response_support
+            safe_blend_floor = MIN(1.0_dp, alignment)*global_response_shape*global_response_support
             safe_blend = MAX(safe_blend, safe_blend_floor)
             density_shape_geometric = MAX(density_shape, SQRT(response_shape*safe_blend_floor))
             density_shape_full = MAX(density_shape, safe_blend_floor)
