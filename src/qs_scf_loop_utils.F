@@ -2335,21 +2335,15 @@ CONTAINS
 
       projector_abs = ABS(sign_projector_response)
       safe_abs = ABS(sign_safe_response)
-      locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
-                                   projector_abs <= EPSILON(projector_abs)
+      locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp
       globally_supported_response = alignment > 0.25_dp .AND. &
                                     safe_abs > EPSILON(safe_abs) .AND. &
                                     (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
                                      projector_abs <= alignment*safe_abs)
       response_support = 0.0_dp
       IF (locally_supported_response .OR. globally_supported_response) THEN
-         IF (locally_supported_response) THEN
-            IF (projector_abs > EPSILON(projector_abs)) THEN
-               response_support = MIN(1.0_dp, safe_abs/projector_abs)
-            ELSE
-               response_support = 1.0_dp
-            END IF
-         END IF
+         IF (locally_supported_response) &
+            response_support = MIN(1.0_dp, safe_abs/MAX(projector_abs, EPSILON(1.0_dp)))
          IF (globally_supported_response) THEN
             global_support = MIN(1.0_dp, MAX(0.0_dp, alignment))
             IF (sign_projector_response*sign_safe_response <= 0.0_dp .AND. &
@@ -2357,7 +2351,7 @@ CONTAINS
                finite_support = projector_abs/(response_root*safe_abs)
                finite_support = MIN(1.0_dp, MAX(0.0_dp, finite_support))
                global_response_support = response_root + finite_support*(1.0_dp - response_root)
-               global_support = global_support*global_response_support
+               global_support = global_support*finite_support*global_response_support
             END IF
             response_support = MAX(response_support, global_support)
          END IF

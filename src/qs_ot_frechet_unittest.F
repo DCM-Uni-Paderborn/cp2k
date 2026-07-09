@@ -5305,7 +5305,7 @@ CONTAINS
       REAL(KIND=dp) :: aligned_response, base_response, damped_response, err, global_low_expected, &
          global_low_response, global_sign_expected, global_sign_response, global_sign_support, &
          good_response, low_active_fraction, low_occ_curv, low_response_root, low_response_shape, &
-         occ_curv, occ_curv_max, partial_response
+         occ_curv, occ_curv_max, partial_response, zero_projector_expected, zero_projector_response
 
       occ_curv_max = 4.0E-2_dp
       occ_curv = 4.0E-4_dp
@@ -5332,15 +5332,20 @@ CONTAINS
       low_active_fraction = MIN(1.0_dp, MAX(0.0_dp, low_active_fraction))
       low_response_shape = 2.0_dp*low_active_fraction - low_active_fraction*low_active_fraction
       low_response_root = SQRT(MAX(0.0_dp, low_response_shape))
-      global_sign_support = low_response_root + &
-                            MIN(1.0_dp, 1.0E-5_dp/(low_response_root*0.10_dp))* &
-                            (1.0_dp - low_response_root)
+      global_sign_support = MIN(1.0_dp, 1.0E-5_dp/(low_response_root*0.10_dp))* &
+                            (low_response_root + &
+                             MIN(1.0_dp, 1.0E-5_dp/(low_response_root*0.10_dp))* &
+                             (1.0_dp - low_response_root))
       global_sign_expected = &
          (1.0_dp - (1.0_dp - 0.80_dp*global_sign_support)* &
           (1.0_dp - low_active_fraction)**2)*base_response
       global_sign_response = residual_gauge_density_response(base_response, -1.0E-5_dp, 0.10_dp, &
                                                              low_occ_curv, occ_curv_max, response_ratio_gate, &
                                                              0.0_dp, -1.0E-5_dp, 0.10_dp, 0.80_dp)
+      zero_projector_expected = low_response_shape*base_response
+      zero_projector_response = residual_gauge_density_response(base_response, 0.0_dp, 0.10_dp, &
+                                                                low_occ_curv, occ_curv_max, response_ratio_gate, &
+                                                                0.0_dp, 0.0_dp, 0.10_dp, 0.80_dp)
 
       err = ABS(good_response - base_response)
       err = MAX(err, ABS(damped_response - 0.75_dp*base_response))
@@ -5348,20 +5353,24 @@ CONTAINS
       err = MAX(err, ABS(aligned_response - base_response))
       err = MAX(err, ABS(global_low_response - global_low_expected))
       err = MAX(err, ABS(global_sign_response - global_sign_expected))
+      err = MAX(err, ABS(zero_projector_response - zero_projector_expected))
 
       IF (err > tol .OR. ABS(damped_response) >= ABS(good_response) .OR. &
           ABS(partial_response) <= ABS(damped_response) .OR. &
           ABS(partial_response) >= ABS(good_response) .OR. &
           ABS(global_low_response) <= ABS(partial_response) .OR. &
-          ABS(global_sign_response) >= ABS(global_low_response)) THEN
+          ABS(global_sign_response) >= ABS(global_low_response) .OR. &
+          ABS(zero_projector_response) >= ABS(global_sign_response)) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/base/good/damped/partial/global/sign", err, base_response, good_response, &
-            damped_response, partial_response, global_low_response, global_sign_response
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/base/good/damped/partial/global/sign/zero", err, base_response, good_response, &
+            damped_response, partial_response, global_low_response, global_sign_response, &
+            zero_projector_response
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/base/good/damped/partial/global/sign", err, base_response, good_response, &
-            damped_response, partial_response, global_low_response, global_sign_response
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/base/good/damped/partial/global/sign/zero", err, base_response, good_response, &
+            damped_response, partial_response, global_low_response, global_sign_response, &
+            zero_projector_response
       END IF
 
    END SUBROUTINE check_projector_residual_gauge_density_response
@@ -16563,21 +16572,15 @@ CONTAINS
 
       projector_abs = ABS(sign_projector_response)
       safe_abs = ABS(sign_safe_response)
-      locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp .OR. &
-                                   projector_abs <= EPSILON(projector_abs)
+      locally_supported_response = sign_projector_response*sign_safe_response > 0.0_dp
       globally_supported_response = alignment > 0.25_dp .AND. &
                                     safe_abs > EPSILON(safe_abs) .AND. &
                                     (sign_projector_response*sign_safe_response > 0.0_dp .OR. &
                                      projector_abs <= alignment*safe_abs)
       response_support = 0.0_dp
       IF (locally_supported_response .OR. globally_supported_response) THEN
-         IF (locally_supported_response) THEN
-            IF (projector_abs > EPSILON(projector_abs)) THEN
-               response_support = MIN(1.0_dp, safe_abs/projector_abs)
-            ELSE
-               response_support = 1.0_dp
-            END IF
-         END IF
+         IF (locally_supported_response) &
+            response_support = MIN(1.0_dp, safe_abs/MAX(projector_abs, EPSILON(1.0_dp)))
          IF (globally_supported_response) THEN
             global_support = MIN(1.0_dp, MAX(0.0_dp, alignment))
             IF (sign_projector_response*sign_safe_response <= 0.0_dp .AND. &
@@ -16585,7 +16588,7 @@ CONTAINS
                finite_support = projector_abs/(response_root*safe_abs)
                finite_support = MIN(1.0_dp, MAX(0.0_dp, finite_support))
                global_response_support = response_root + finite_support*(1.0_dp - response_root)
-               global_support = global_support*global_response_support
+               global_support = global_support*finite_support*global_response_support
             END IF
             response_support = MAX(response_support, global_support)
          END IF
