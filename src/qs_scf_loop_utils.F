@@ -22065,7 +22065,8 @@ CONTAINS
 
       INTEGER                                            :: maturity_samples
       REAL(KIND=dp)                                      :: coverage_signal, maturity, &
-                                                            mermin_signal, residual_signal
+                                                            mermin_signal, residual_signal, &
+                                                            underpredict_lift
 
          weight = 0.0_dp
          IF (shadow_weight <= EPSILON(shadow_weight)) RETURN
@@ -22089,6 +22090,8 @@ CONTAINS
          mermin_signal = MIN(MAX(0.0_dp, MIN(1.0_dp, quality)), &
                              MAX(0.0_dp, MIN(1.0_dp, quality_ema)))
          IF (mermin_signal < ot_kp_schur_projector_response_quality_min_ratio) RETURN
+         underpredict_lift = SQRT(MAX(1.0_dp, MIN(quality, quality_ema, &
+                                                  ot_kp_schur_projector_response_underpredict_max_ratio)))
 
          maturity_samples = MAX(1, ot_kp_schur_projector_response_min_samples)
          maturity = REAL(MAX(0, samples - ot_kp_schur_projector_response_min_samples + 1), KIND=dp)/ &
@@ -22096,7 +22099,8 @@ CONTAINS
          maturity = MAX(0.0_dp, MIN(1.0_dp, maturity))
 
          weight = MAX(0.0_dp, shadow_weight)*maturity*SQRT(coverage_signal)* &
-                  SQRT(residual_signal)*mermin_signal
+                  SQRT(residual_signal)*mermin_signal*underpredict_lift
+         weight = MIN(MAX(0.0_dp, shadow_weight), weight)
 
       END FUNCTION kp_ot_phys_dir_den_fshadow_prom_weight
 

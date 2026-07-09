@@ -9622,8 +9622,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: active_weight, err, expected_weight, high_underpredict, immature, &
-         low_coverage, low_residual, no_shadow, weak_coverage_ema
+      REAL(KIND=dp) :: active_weight, calibrated_underpredict, err, expected_weight, &
+         high_underpredict, immature, low_coverage, low_residual, no_shadow, weak_coverage_ema
 
       active_weight = dense_physical_direct_density_filtered_shadow_promotion_weight( &
                       1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
@@ -9633,6 +9633,8 @@ CONTAINS
                           1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.04_dp)
       high_underpredict = dense_physical_direct_density_filtered_shadow_promotion_weight( &
                           1.0E-3_dp, 12, 1.10E4_dp, 9.9E3_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
+      calibrated_underpredict = dense_physical_direct_density_filtered_shadow_promotion_weight( &
+                                1.0E-3_dp, 16, 4.0_dp, 5.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp)
       low_residual = dense_physical_direct_density_filtered_shadow_promotion_weight( &
                      1.0E-3_dp, 12, 1.10_dp, 1.20_dp, 0.02_dp, 0.03_dp, 0.25_dp, 0.20_dp)
       immature = dense_physical_direct_density_filtered_shadow_promotion_weight( &
@@ -9640,20 +9642,23 @@ CONTAINS
       no_shadow = dense_physical_direct_density_filtered_shadow_promotion_weight( &
                   0.0_dp, 12, 1.10_dp, 1.20_dp, 0.25_dp, 0.30_dp, 0.25_dp, 0.20_dp)
 
-      expected_weight = 1.0E-3_dp*(5.0_dp/8.0_dp)*SQRT(0.20_dp)*SQRT(0.25_dp)
+      expected_weight = 1.0E-3_dp*(5.0_dp/8.0_dp)*SQRT(0.20_dp)*SQRT(0.25_dp)*SQRT(1.10_dp)
       err = ABS(active_weight - expected_weight)
 
       IF (err > tol .OR. active_weight <= 0.0_dp .OR. low_coverage > tol .OR. &
           weak_coverage_ema > tol .OR. high_underpredict > tol .OR. low_residual > tol .OR. &
-          immature > tol .OR. no_shadow > tol) THEN
+          immature > tol .OR. no_shadow > tol .OR. &
+          ABS(calibrated_underpredict - 1.0E-3_dp) > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "failed with err/active/lcov/wcov/hunder/lres/imm/nosh", err, active_weight, &
-            low_coverage, weak_coverage_ema, high_underpredict, low_residual, immature, no_shadow
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/lcov/wcov/hunder/cunder/lres/imm/nosh", err, active_weight, &
+            low_coverage, weak_coverage_ema, high_underpredict, calibrated_underpredict, &
+            low_residual, immature, no_shadow
       ELSE
-         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
-            "OK with err/active/lcov/wcov/hunder/lres/imm/nosh", err, active_weight, low_coverage, &
-            weak_coverage_ema, high_underpredict, low_residual, immature, no_shadow
+         WRITE (*, '(A,1X,A,9(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/lcov/wcov/hunder/cunder/lres/imm/nosh", err, active_weight, &
+            low_coverage, weak_coverage_ema, high_underpredict, calibrated_underpredict, &
+            low_residual, immature, no_shadow
       END IF
 
    END SUBROUTINE check_projector_density_direct_filtered_shadow_promotion
@@ -16099,7 +16104,8 @@ CONTAINS
 
       INTEGER                                            :: maturity_samples
       REAL(KIND=dp)                                      :: coverage_signal, maturity, &
-                                                            mermin_signal, residual_signal
+                                                            mermin_signal, residual_signal, &
+                                                            underpredict_lift
 
       weight = 0.0_dp
       IF (shadow_weight <= EPSILON(shadow_weight)) RETURN
@@ -16123,13 +16129,15 @@ CONTAINS
       mermin_signal = MIN(MAX(0.0_dp, MIN(1.0_dp, quality)), &
                           MAX(0.0_dp, MIN(1.0_dp, quality_ema)))
       IF (mermin_signal < 1.0E-1_dp) RETURN
+      underpredict_lift = SQRT(MAX(1.0_dp, MIN(quality, quality_ema, 20.0_dp)))
 
       maturity_samples = 8
       maturity = REAL(MAX(0, samples - 8 + 1), KIND=dp)/REAL(maturity_samples, KIND=dp)
       maturity = MAX(0.0_dp, MIN(1.0_dp, maturity))
 
       weight = MAX(0.0_dp, shadow_weight)*maturity*SQRT(coverage_signal)* &
-               SQRT(residual_signal)*mermin_signal
+               SQRT(residual_signal)*mermin_signal*underpredict_lift
+      weight = MIN(MAX(0.0_dp, shadow_weight), weight)
 
    END FUNCTION dense_physical_direct_density_filtered_shadow_promotion_weight
 
