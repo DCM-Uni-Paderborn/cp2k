@@ -24572,9 +24572,10 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: samples
       REAL(KIND=dp)                                      :: component_scale
 
-      REAL(KIND=dp)                                      :: balance_scale, diag_abs, diag_quality, &
-                                                            free_abs, free_quality, quality_ratio, &
-                                                            trace_balance, trace_norm
+      LOGICAL                                            :: fixed_n_cancellation
+      REAL(KIND=dp) :: balance_scale, cancellation_support, component_fraction, diag_abs, &
+         diag_quality, diag_support, free_abs, free_quality, free_support, quality_ratio, &
+         quality_support, trace_balance, trace_norm
 
          component_scale = 1.0_dp
          IF (samples < ot_kp_schur_projector_response_min_samples) RETURN
@@ -24600,8 +24601,23 @@ CONTAINS
             RETURN
          END IF
          trace_norm = diag_abs + free_abs
+         component_fraction = MIN(diag_abs, free_abs)/trace_norm
          trace_balance = ABS(trace_diag_ema + trace_free_ema)/MAX(trace_norm, EPSILON(trace_norm))
          trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
+         fixed_n_cancellation = trace_diag_ema*trace_free_ema < 0.0_dp
+         IF (fixed_n_cancellation .AND. &
+             diag_quality >= ot_kp_schur_projector_response_quality_min_ratio .AND. &
+             free_quality >= ot_kp_schur_projector_response_quality_min_ratio) THEN
+            diag_support = MIN(1.0_dp, MAX(0.0_dp, diag_quality))
+            free_support = MIN(1.0_dp, MAX(0.0_dp, free_quality))
+            quality_support = MIN(diag_support, free_support)
+            quality_ratio = quality_support/MAX(MAX(diag_support, free_support), EPSILON(1.0_dp))
+            component_fraction = 2.0_dp*component_fraction
+            component_fraction = MIN(1.0_dp, MAX(0.0_dp, component_fraction))
+            cancellation_support = 0.25_dp*component_fraction*quality_support*quality_ratio
+            trace_balance = trace_balance + (1.0_dp - trace_balance)*cancellation_support
+            trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
+         END IF
          balance_scale = SQRT(MAX(ot_kp_schur_projector_response_quality_min_ratio, trace_balance))
          component_scale = MIN(component_scale, balance_scale)
          IF (diag_quality >= free_quality) RETURN

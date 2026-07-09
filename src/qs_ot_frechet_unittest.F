@@ -11588,35 +11588,43 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp) :: balanced_scale, err, expected_gauge, gauge_scale, no_samples_scale, &
-         poor_diag_scale, zero_free_poor_scale, zero_free_scale
+      REAL(KIND=dp) :: balanced_scale, err, expected_gauge, expected_physical_cancel, gauge_scale, &
+         no_samples_scale, physical_cancel_scale, poor_diag_scale, zero_free_poor_scale, &
+         zero_free_scale
 
       no_samples_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 1.0_dp, 2)
       zero_free_scale = dense_trace_diag_component_scale(-1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 16)
       zero_free_poor_scale = dense_trace_diag_component_scale(-1.0_dp, 0.0_dp, 0.04_dp, 1.0_dp, 16)
       balanced_scale = dense_trace_diag_component_scale(0.75_dp, 0.25_dp, 1.0_dp, 0.1_dp, 16)
-      gauge_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 0.8_dp, 16)
+      physical_cancel_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 0.8_dp, 16)
+      gauge_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 1.0_dp, 0.02_dp, 16)
       poor_diag_scale = dense_trace_diag_component_scale(-1.0_dp, 0.75_dp, 0.08_dp, 0.8_dp, 16)
 
       expected_gauge = SQRT(0.25_dp/1.75_dp)
       expected_gauge = SQRT(MAX(0.10_dp, expected_gauge*expected_gauge))
+      expected_physical_cancel = SQRT(0.25_dp/1.75_dp + &
+                                      (1.0_dp - 0.25_dp/1.75_dp)*0.25_dp*(1.5_dp/1.75_dp))
       err = ABS(no_samples_scale - 1.0_dp)
       err = MAX(err, ABS(zero_free_scale - 1.0_dp))
       err = MAX(err, ABS(zero_free_poor_scale - SQRT(0.10_dp)))
       err = MAX(err, ABS(balanced_scale - 1.0_dp))
+      err = MAX(err, ABS(physical_cancel_scale - expected_physical_cancel))
       err = MAX(err, ABS(gauge_scale - expected_gauge))
       err = MAX(err, ABS(poor_diag_scale - SQRT(0.10_dp)))
 
       IF (err > tol .OR. gauge_scale >= balanced_scale .OR. &
+          physical_cancel_scale <= gauge_scale .OR. physical_cancel_scale >= balanced_scale .OR. &
           poor_diag_scale > gauge_scale .OR. zero_free_poor_scale >= zero_free_scale) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "failed with error/no/free/zpoor/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
-            zero_free_poor_scale, balanced_scale, gauge_scale, poor_diag_scale
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with error/no/free/zpoor/bal/phys/gauge/poor", err, no_samples_scale, &
+            zero_free_scale, zero_free_poor_scale, balanced_scale, physical_cancel_scale, &
+            gauge_scale, poor_diag_scale
       ELSE
-         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
-            "OK with error/no/free/zpoor/bal/gauge/poor", err, no_samples_scale, zero_free_scale, &
-            zero_free_poor_scale, balanced_scale, gauge_scale, poor_diag_scale
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with error/no/free/zpoor/bal/phys/gauge/poor", err, no_samples_scale, &
+            zero_free_scale, zero_free_poor_scale, balanced_scale, physical_cancel_scale, &
+            gauge_scale, poor_diag_scale
       END IF
 
    END SUBROUTINE check_projector_trace_diag_component_scale
@@ -16677,9 +16685,10 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: samples
       REAL(KIND=dp)                                      :: component_scale
 
-      REAL(KIND=dp)                                      :: balance_scale, diag_abs, diag_quality, &
-                                                            free_abs, free_quality, quality_ratio, &
-                                                            trace_balance, trace_norm
+      LOGICAL                                            :: fixed_n_cancellation
+      REAL(KIND=dp) :: balance_scale, cancellation_support, component_fraction, diag_abs, &
+         diag_quality, diag_support, free_abs, free_quality, free_support, quality_ratio, &
+         quality_support, trace_balance, trace_norm
 
       component_scale = 1.0_dp
       IF (samples < 8) RETURN
@@ -16699,8 +16708,21 @@ CONTAINS
          RETURN
       END IF
       trace_norm = diag_abs + free_abs
+      component_fraction = MIN(diag_abs, free_abs)/trace_norm
       trace_balance = ABS(trace_diag_ema + trace_free_ema)/MAX(trace_norm, EPSILON(trace_norm))
       trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
+      fixed_n_cancellation = trace_diag_ema*trace_free_ema < 0.0_dp
+      IF (fixed_n_cancellation .AND. diag_quality >= 0.10_dp .AND. free_quality >= 0.10_dp) THEN
+         diag_support = MIN(1.0_dp, MAX(0.0_dp, diag_quality))
+         free_support = MIN(1.0_dp, MAX(0.0_dp, free_quality))
+         quality_support = MIN(diag_support, free_support)
+         quality_ratio = quality_support/MAX(MAX(diag_support, free_support), EPSILON(1.0_dp))
+         component_fraction = 2.0_dp*component_fraction
+         component_fraction = MIN(1.0_dp, MAX(0.0_dp, component_fraction))
+         cancellation_support = 0.25_dp*component_fraction*quality_support*quality_ratio
+         trace_balance = trace_balance + (1.0_dp - trace_balance)*cancellation_support
+         trace_balance = MIN(1.0_dp, MAX(0.0_dp, trace_balance))
+      END IF
       balance_scale = SQRT(MAX(0.10_dp, trace_balance))
       component_scale = MIN(component_scale, balance_scale)
       IF (diag_quality >= free_quality) RETURN

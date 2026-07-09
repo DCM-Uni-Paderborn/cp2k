@@ -2,11 +2,11 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 HIGH reference after the k-point Schur norm-weight update,
+! Local 2026-07 HIGH reference after the fixed-N trace-cancellation update,
 ! rechecked from a fresh temporary directory:
-! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 76 final
-! SCF steps. Mermin free energy = -8.15998649620842 Ha and total energy without
-! entropy = -8.15907740665510 Ha, with no first/last-band warnings, no
+! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 67 final
+! SCF steps. Mermin free energy = -8.15998651423126 Ha and total energy without
+! entropy = -8.15907800861353 Ha, with no first/last-band warnings, no
 ! AUTO-exhausted warning, and no "Unsupported content type" signature.
 &GLOBAL
   PRINT_LEVEL HIGH
