@@ -9537,24 +9537,29 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp)                                      :: active_drop, err, expected_drop, &
-                                                            low_drop, low_trust, no_shadow
+                                                            low_drop, low_trust, no_shadow, &
+                                                            unweighted_drop
 
       active_drop = dense_physical_direct_density_filtered_shadow_drop(1.0E-3_dp, 4.0E-6_dp, 0.75_dp)
       no_shadow = dense_physical_direct_density_filtered_shadow_drop(0.0_dp, 4.0E-6_dp, 0.75_dp)
       low_drop = dense_physical_direct_density_filtered_shadow_drop(1.0E-3_dp, 1.0E-13_dp, 0.75_dp)
       low_trust = dense_physical_direct_density_filtered_shadow_drop(1.0E-3_dp, 4.0E-6_dp, 1.0E-2_dp)
+      unweighted_drop = dense_physical_direct_density_filtered_shadow_drop(1.0_dp, 4.0E-6_dp, 0.75_dp)
 
       expected_drop = 1.0E-3_dp*4.0E-6_dp*0.75_dp
       err = ABS(active_drop - expected_drop)
+      err = MAX(err, ABS(unweighted_drop - 4.0E-6_dp*0.75_dp))
 
       IF (err > tol .OR. active_drop <= 0.0_dp .OR. no_shadow > tol .OR. &
-          low_drop > tol .OR. low_trust > tol) THEN
+          low_drop > tol .OR. low_trust > tol .OR. unweighted_drop <= active_drop) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "failed with err/active/ns/ld/lt", err, active_drop, no_shadow, low_drop, low_trust
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with err/active/ns/ld/lt/unw", err, active_drop, no_shadow, low_drop, &
+            low_trust, unweighted_drop
       ELSE
-         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
-            "OK with err/active/ns/ld/lt", err, active_drop, no_shadow, low_drop, low_trust
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with err/active/ns/ld/lt/unw", err, active_drop, no_shadow, low_drop, low_trust, &
+            unweighted_drop
       END IF
 
    END SUBROUTINE check_projector_density_direct_filtered_shadow_drop

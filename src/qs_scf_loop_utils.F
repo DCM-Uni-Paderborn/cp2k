@@ -19213,10 +19213,15 @@ CONTAINS
                IF (accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) &
                   density_basis_filtered_history_quality = &
                   density_basis_filtered_history_drop/accepted_model_calibrated_drop
+               ! Calibrate the filtered fixed-N source against the accepted step
+               ! before applying the conservative source blend.  Scaling this
+               ! history drop by the tiny blend weight makes the source look like
+               ! a pathological under-predictor and prevents the physical
+               ! response signal from ever being promoted in the metallic tail.
                projector_physical_direct_density_fshadow_history_drop = &
                   kpoint_ot_physical_direct_density_filtered_shadow_drop( &
-                  projector_physical_direct_density_filtered_shadow_weight, &
-                  density_basis_filtered_history_drop, density_basis_filtered_history_trust_quality)
+                  1.0_dp, density_basis_filtered_history_drop, &
+                  density_basis_filtered_history_trust_quality)
                IF (projector_physical_direct_density_fshadow_history_drop > &
                    EPSILON(projector_physical_direct_density_fshadow_history_drop)) THEN
                   local_ot_env(1)%schur_projector_phys_direct_density_fshadow = &
