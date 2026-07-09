@@ -11819,9 +11819,9 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       REAL(KIND=dp) :: err, expected_shadow, expected_stale, no_history, product_collapse, &
-         residual_cap_quality, residual_floor_quality, residual_no_history_quality, &
-         residual_veto_quality, shadow_floor, shadow_quality, stale_floor, stale_selected_quality, &
-         trace_quality
+         residual_cap_quality, residual_damp_quality, residual_floor_quality, &
+         residual_no_history_quality, residual_veto_quality, shadow_floor, shadow_quality, &
+         stale_floor, stale_selected_quality, trace_quality
 
       trace_quality = 7.55E-2_dp
       shadow_quality = 7.53E-2_dp
@@ -11843,6 +11843,9 @@ CONTAINS
       residual_veto_quality = dense_direct_tail_residual_selection_quality( &
                               1.90E-1_dp, 5.00E-1_dp, 2.00E-2_dp, 4.00E-2_dp, &
                               4.83E-1_dp, 2.58E-1_dp, 10, 4)
+      residual_damp_quality = dense_direct_tail_residual_selection_quality( &
+                              1.90E-1_dp, 5.00E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
+                              1.00E-2_dp, 4.00E-2_dp, 10, 4)
       residual_no_history_quality = dense_direct_tail_residual_selection_quality( &
                                     1.90E-1_dp, 5.00E-1_dp, 1.51E-1_dp, 6.38E-1_dp, &
                                     4.83E-1_dp, 2.58E-1_dp, 3, 4)
@@ -11853,6 +11856,7 @@ CONTAINS
       err = MAX(err, ABS(residual_floor_quality - 2.58E-1_dp))
       err = MAX(err, ABS(residual_cap_quality - 2.20E-1_dp))
       err = MAX(err, ABS(residual_veto_quality - 1.90E-1_dp))
+      err = MAX(err, ABS(residual_damp_quality - SQRT(1.90E-1_dp*8.00E-3_dp)))
       err = MAX(err, ABS(residual_no_history_quality - 1.90E-1_dp))
 
       IF (err > tol .OR. stale_floor <= 100.0_dp*product_collapse .OR. &
@@ -11860,17 +11864,18 @@ CONTAINS
           residual_floor_quality <= 1.90E-1_dp .OR. &
           residual_cap_quality > 2.20E-1_dp + tol .OR. &
           residual_veto_quality > 1.90E-1_dp + tol .OR. &
+          residual_damp_quality >= residual_veto_quality .OR. &
           residual_no_history_quality > 1.90E-1_dp + tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
-            "failed err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rno", err, trace_quality, &
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
+            "failed err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rdamp/rno", err, trace_quality, &
             shadow_floor, stale_floor, stale_selected_quality, product_collapse, residual_floor_quality, &
-            residual_cap_quality, residual_veto_quality, residual_no_history_quality
+            residual_cap_quality, residual_veto_quality, residual_damp_quality, residual_no_history_quality
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,ES12.5))') TRIM(label), &
-            "OK err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rno", err, trace_quality, &
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
+            "OK err/trace/shadow/stale/staleq/prod/rfloor/rcap/rveto/rdamp/rno", err, trace_quality, &
             shadow_floor, stale_floor, stale_selected_quality, product_collapse, residual_floor_quality, &
-            residual_cap_quality, residual_veto_quality, residual_no_history_quality
+            residual_cap_quality, residual_veto_quality, residual_damp_quality, residual_no_history_quality
       END IF
 
    END SUBROUTINE check_projector_direct_tail_selection_quality
@@ -16870,8 +16875,13 @@ CONTAINS
                                                               selected_residual_quality_ema)
       IF (residual_support <= EPSILON(residual_support)) RETURN
 
-      trace_cap = MAX(1.0E-1_dp, MAX(0.0_dp, MIN(1.0_dp, trace_quality)))
-      quality = MAX(quality, MIN(trace_cap, residual_support))
+      trace_cap = MAX(0.0_dp, MIN(1.0_dp, trace_quality))
+      trace_cap = MAX(trace_cap, 1.0E-1_dp)
+      IF (residual_support < quality) THEN
+         quality = MIN(quality, SQRT(MAX(0.0_dp, quality*residual_support)))
+      ELSE
+         quality = MAX(quality, MIN(trace_cap, residual_support))
+      END IF
       quality = MAX(0.0_dp, MIN(1.0_dp, quality))
 
    END FUNCTION dense_direct_tail_residual_selection_quality

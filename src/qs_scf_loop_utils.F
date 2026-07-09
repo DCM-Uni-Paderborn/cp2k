@@ -22473,7 +22473,7 @@ CONTAINS
       END FUNCTION kpoint_ot_direct_tail_selection_quality
 
 ! **************************************************************************************************
-!> \brief residual-aware selected Direct quality for the metallic tail
+!> \brief residual-calibrated selected Direct quality for the metallic tail
 !> \param current_quality Mermin-calibrated Direct quality used for selection
 !> \param trace_quality invariant-trace cap for the physical Direct channel
 !> \param selected_quality latest selected Direct Mermin measured/predicted quality
@@ -22482,7 +22482,7 @@ CONTAINS
 !> \param selected_residual_quality_ema selected Direct residual quality EMA
 !> \param samples selected Direct accepted samples
 !> \param min_samples minimum selected samples before residual history contributes
-!> \return Direct quality with residual-tail support but bounded by trace quality
+!> \return Direct quality capped by mature residual-tail support and bounded by trace quality
 ! **************************************************************************************************
       FUNCTION kpoint_ot_direct_tail_residual_selection_quality(current_quality, trace_quality, &
                                                                 selected_quality, selected_quality_ema, &
@@ -22510,9 +22510,13 @@ CONTAINS
                             selected_residual_quality, selected_residual_quality_ema)
          IF (residual_support <= EPSILON(residual_support)) RETURN
 
-         trace_cap = MAX(ot_kp_schur_projector_response_quality_min_ratio, &
-                         MAX(0.0_dp, MIN(1.0_dp, trace_quality)))
-         quality = MAX(quality, MIN(trace_cap, residual_support))
+         trace_cap = MAX(0.0_dp, MIN(1.0_dp, trace_quality))
+         trace_cap = MAX(trace_cap, ot_kp_schur_projector_response_quality_min_ratio)
+         IF (residual_support < quality) THEN
+            quality = MIN(quality, SQRT(MAX(0.0_dp, quality*residual_support)))
+         ELSE
+            quality = MAX(quality, MIN(trace_cap, residual_support))
+         END IF
          quality = MAX(0.0_dp, MIN(1.0_dp, quality))
 
       END FUNCTION kpoint_ot_direct_tail_residual_selection_quality
