@@ -7413,7 +7413,8 @@ CONTAINS
             local_ot_env(1)%schur_projector_physical_direct = 0.0_dp
             local_ot_env(1)%schur_projector_physical_direct_selected = 0.0_dp
             local_ot_env(1)%schur_projector_phys_direct_density_sel = 0.0_dp
-            local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality = 0.0_dp
+            ! This is accepted history, not a trial payload. Keep it until the
+            ! next selected Direct-density step replaces it.
             local_ot_env(1)%schur_projector_phys_direct_density_fshadow = 0.0_dp
             local_ot_env(1)%schur_projector_phys_direct_density_fshadow_resid_quality = 0.0_dp
             local_ot_env(1)%schur_projector_phys_direct_density_cshadow = 0.0_dp
@@ -12302,9 +12303,11 @@ CONTAINS
              local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples >= &
              ot_kp_schur_calibration_min_samples) THEN
             projector_physical_direct_density_residual_bad = &
-               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality < &
-               0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio* &
-               MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)
+               kpoint_ot_direct_density_selected_residual_bad( &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_resid_quality_ema, &
+               local_ot_env(1)%schur_projector_phys_direct_density_sel_quality_samples, &
+               dense_residual_quality)
          END IF
          dense_exact_scale_ready = residual_delta > ot_kp_schur_projector_coupled_tail_delta
          IF (.NOT. dense_exact_scale_ready .AND. &
@@ -23356,6 +23359,37 @@ CONTAINS
          prefer = .TRUE.
 
       END FUNCTION kpoint_ot_density_full_global_tail_prefer
+
+! **************************************************************************************************
+!> \brief whether mature selected Direct-density residual history is weaker than the baseline
+!> \param selected_residual_quality latest accepted selected Direct-density residual quality
+!> \param selected_residual_quality_ema selected Direct-density residual-quality EMA
+!> \param selected_samples number of accepted selected Direct-density samples
+!> \param dense_residual_quality residual quality of the dense-coupled baseline
+!> \return true if either recent or accumulated selected residual history is weak
+! **************************************************************************************************
+      FUNCTION kpoint_ot_direct_density_selected_residual_bad(selected_residual_quality, &
+                                                              selected_residual_quality_ema, &
+                                                              selected_samples, &
+                                                              dense_residual_quality) RESULT(bad)
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: bad
+
+      REAL(KIND=dp)                                      :: residual_reference
+
+         bad = .FALSE.
+         IF (selected_samples < ot_kp_schur_calibration_min_samples) RETURN
+
+         residual_reference = MAX(dense_residual_quality, ot_kp_schur_calibrated_quality_min_ratio)
+         bad = selected_residual_quality_ema < &
+               ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference .OR. &
+               selected_residual_quality < &
+               0.5_dp*ot_kp_schur_projector_density_fdir_probe_residual_ratio*residual_reference
+
+      END FUNCTION kpoint_ot_direct_density_selected_residual_bad
 
 ! **************************************************************************************************
 !> \brief protect fshadow-calibrated Direct-density bootstrap from global tail-prefer override

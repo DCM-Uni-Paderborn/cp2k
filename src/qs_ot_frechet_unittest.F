@@ -292,6 +292,8 @@ PROGRAM qs_ot_frechet_unittest
       "complex projector density full-Direct tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_direct_density_fshadow_tail_protect( &
       "complex projector Direct-density fshadow tail protect", 5.0E-14_dp, nfail)
+   CALL check_projector_direct_density_selected_residual_bad( &
+      "complex projector Direct-density selected residual history", 5.0E-14_dp, nfail)
    CALL check_projector_density_descent_tail_probe( &
       "complex projector density-descent tail probe", 5.0E-14_dp, nfail)
    CALL check_projector_density_full_direct_probe_drop( &
@@ -11010,6 +11012,39 @@ CONTAINS
    END SUBROUTINE check_projector_direct_density_fshadow_tail_protect
 
 ! **************************************************************************************************
+!> \brief Check recent and accumulated Direct-density selected residual history together.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_projector_direct_density_selected_residual_bad(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bad_ema, bad_recent, good, immature
+      REAL(KIND=dp)                                      :: err
+
+      good = dense_direct_density_selected_residual_bad(0.25_dp, 0.20_dp, 4, 0.25_dp)
+      immature = dense_direct_density_selected_residual_bad(0.0_dp, 0.0_dp, 3, 0.25_dp)
+      bad_recent = dense_direct_density_selected_residual_bad(0.05_dp, 0.25_dp, 4, 0.25_dp)
+      bad_ema = dense_direct_density_selected_residual_bad(0.25_dp, 0.19_dp, 4, 0.25_dp)
+
+      err = 0.0_dp
+      IF (good .OR. immature .OR. .NOT. bad_recent .OR. .NOT. bad_ema) err = 1.0_dp
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
+            "failed with good/immature/recent/ema", good, immature, bad_recent, bad_ema
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
+            "OK with good/immature/recent/ema", good, immature, bad_recent, bad_ema
+      END IF
+
+   END SUBROUTINE check_projector_direct_density_selected_residual_bad
+
+! **************************************************************************************************
 !> \brief Check that global full-density tail probes use residual, not Mermin, selected history.
 !> \param label ...
 !> \param tol ...
@@ -15761,6 +15796,35 @@ CONTAINS
       protect = .TRUE.
 
    END FUNCTION dense_direct_density_fshadow_tail_protect
+
+! **************************************************************************************************
+!> \brief Dense mirror of mature selected Direct-density residual-history classification.
+!> \param selected_residual_quality ...
+!> \param selected_residual_quality_ema ...
+!> \param selected_samples ...
+!> \param dense_residual_quality ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_direct_density_selected_residual_bad(selected_residual_quality, &
+                                                       selected_residual_quality_ema, &
+                                                       selected_samples, &
+                                                       dense_residual_quality) RESULT(bad)
+      REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
+                                                            selected_residual_quality_ema
+      INTEGER, INTENT(IN)                                :: selected_samples
+      REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
+      LOGICAL                                            :: bad
+
+      REAL(KIND=dp)                                      :: residual_reference
+
+      bad = .FALSE.
+      IF (selected_samples < 4) RETURN
+
+      residual_reference = MAX(dense_residual_quality, 0.25_dp)
+      bad = selected_residual_quality_ema < 0.8_dp*residual_reference .OR. &
+            selected_residual_quality < 0.4_dp*residual_reference
+
+   END FUNCTION dense_direct_density_selected_residual_bad
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the full-density global selected residual-tail gate.
