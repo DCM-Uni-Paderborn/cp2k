@@ -135,6 +135,7 @@ MODULE qs_scf_loop_utils
    INTEGER, PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_min_steps = 80, &
                                   ot_kp_added_mos_auto_tail_probe_steps = 20, &
                                   ot_kp_added_mos_auto_direct_veto_max_added = 4, &
+                                  ot_kp_subspace_refresh_min_steps = 12, &
                                   ot_kp_schur_quality_min_samples = 3
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
@@ -228,7 +229,8 @@ MODULE qs_scf_loop_utils
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
              qs_scf_kp_added_mos_auto_post_resize_steps, &
              qs_scf_kp_decouple_inactive_gauge, &
-             qs_scf_kp_fermi_guard_transition
+             qs_scf_kp_fermi_guard_transition, &
+             qs_scf_kp_subspace_refresh_gate
 
 CONTAINS
 
@@ -288,6 +290,36 @@ CONTAINS
       nsteps = ot_kp_added_mos_auto_tail_probe_steps
 
    END FUNCTION qs_scf_kp_added_mos_auto_post_resize_steps
+
+! **************************************************************************************************
+!> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
+!> \param allow_refresh whether this SCF invocation may still refresh once
+!> \param fermi_window_guarded whether the current state is a projected Fermi-window sample
+!> \param collapsed whether no represented band has a significant fractional occupation
+!> \param residual_delta current physical/global OT residual
+!> \param eps_scf requested SCF threshold
+!> \param step_ready whether enough history or a restart is available
+!> \param base_state whether the sample is an accepted/base line-search state
+!> \return true only inside the residual tail where a full subspace rebuild is warranted
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
+                                                  residual_delta, eps_scf, step_ready, base_state) &
+      RESULT(refresh)
+
+      LOGICAL, INTENT(IN)                               :: allow_refresh, fermi_window_guarded, collapsed, &
+                                                            step_ready, base_state
+      REAL(KIND=dp), INTENT(IN)                         :: residual_delta, eps_scf
+      LOGICAL                                           :: refresh
+
+      REAL(KIND=dp)                                     :: eps, residual_upper
+
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      residual_upper = SQRT(eps)
+      refresh = allow_refresh .AND. .NOT. fermi_window_guarded .AND. collapsed .AND. &
+                residual_delta > 10.0_dp*eps .AND. residual_delta <= residual_upper .AND. &
+                step_ready .AND. base_state
+
+   END FUNCTION qs_scf_kp_subspace_refresh_gate
 
 ! **************************************************************************************************
 !> \brief computes properties for a given hamiltonian using the current wfn
@@ -529,8 +561,13 @@ CONTAINS
 !> \param diis_step ...
 !> \param probe ...
 !> \param added_mos_auto_grow ...
+!> \param ot_kp_subspace_refresh ...
+!> \param allow_ot_kp_subspace_refresh ...
+!> \param settle_ot_kp_subspace ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, probe, added_mos_auto_grow)
+   SUBROUTINE qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, probe, added_mos_auto_grow, &
+                                ot_kp_subspace_refresh, allow_ot_kp_subspace_refresh, &
+                                settle_ot_kp_subspace)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -538,12 +575,15 @@ CONTAINS
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
       LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: ot_kp_subspace_refresh
+      LOGICAL, INTENT(IN), OPTIONAL                      :: allow_ot_kp_subspace_refresh
+      LOGICAL, INTENT(IN), OPTIONAL                      :: settle_ot_kp_subspace
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_scf_new_mos_kp'
 
       INTEGER                                            :: handle, ispin
-      LOGICAL                                            :: disable_diis, has_unit_metric, &
-                                                            my_added_mos_auto_grow
+      LOGICAL :: allow_subspace_refresh, disable_diis, has_unit_metric, my_added_mos_auto_grow, &
+         my_ot_kp_subspace_refresh, settle_subspace
       REAL(dp)                                           :: diis_error, old_kTS, saved_eps_diis
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -555,7 +595,14 @@ CONTAINS
 
       NULLIFY (dft_control, kpoints, matrix_ks, matrix_s)
       my_added_mos_auto_grow = .FALSE.
+      my_ot_kp_subspace_refresh = .FALSE.
+      allow_subspace_refresh = .TRUE.
+      settle_subspace = .FALSE.
+      IF (PRESENT(allow_ot_kp_subspace_refresh)) &
+         allow_subspace_refresh = allow_ot_kp_subspace_refresh
+      IF (PRESENT(settle_ot_kp_subspace)) settle_subspace = settle_ot_kp_subspace
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
+      IF (PRESENT(ot_kp_subspace_refresh)) ot_kp_subspace_refresh = .FALSE.
 
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, kpoints=kpoints)
       scf_env%iter_param = 0.0_dp
@@ -622,7 +669,16 @@ CONTAINS
       CASE (ot_method_nr)
          CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, matrix_s_kp=matrix_s)
          CALL qs_scf_loop_do_ot_kp(qs_env, scf_env, scf_control, matrix_ks, matrix_s, &
-                                   added_mos_auto_grow=my_added_mos_auto_grow)
+                                   added_mos_auto_grow=my_added_mos_auto_grow, &
+                                   ot_kp_subspace_refresh=my_ot_kp_subspace_refresh, &
+                                   allow_ot_kp_subspace_refresh=allow_subspace_refresh, &
+                                   settle_ot_kp_subspace=settle_subspace)
+         IF (my_ot_kp_subspace_refresh) THEN
+            IF (PRESENT(ot_kp_subspace_refresh)) ot_kp_subspace_refresh = .TRUE.
+            IF (disable_diis) scf_control%eps_diis = saved_eps_diis
+            CALL timestop(handle)
+            RETURN
+         END IF
          IF (my_added_mos_auto_grow) THEN
             IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .TRUE.
             IF (disable_diis) scf_control%eps_diis = saved_eps_diis
@@ -669,15 +725,22 @@ CONTAINS
 !> \param matrix_ks ...
 !> \param matrix_s ...
 !> \param added_mos_auto_grow ...
+!> \param ot_kp_subspace_refresh ...
+!> \param allow_ot_kp_subspace_refresh ...
+!> \param settle_ot_kp_subspace ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_do_ot_kp(qs_env, scf_env, scf_control, matrix_ks, matrix_s, &
-                                   added_mos_auto_grow)
+                                   added_mos_auto_grow, ot_kp_subspace_refresh, &
+                                   allow_ot_kp_subspace_refresh, settle_ot_kp_subspace)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       LOGICAL, INTENT(OUT)                               :: added_mos_auto_grow
+      LOGICAL, INTENT(OUT)                               :: ot_kp_subspace_refresh
+      LOGICAL, INTENT(IN)                                :: allow_ot_kp_subspace_refresh
+      LOGICAL, INTENT(IN)                                :: settle_ot_kp_subspace
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_loop_do_ot_kp'
 
@@ -685,9 +748,9 @@ CONTAINS
          nkpoint, nlocal_channels, nmo, nspin_ot, ref_guard_attempt
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL :: fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, ref_guarded, &
-         update_ot_energy_state, update_ot_energy_state_after, use_real_wfn
-      REAL(KIND=dp) :: ener_nondiag, maxocc, occupation_floor, occupation_floor_fraction, &
+      LOGICAL :: fermi_window_guarded, initial_density_reference, protect_mermin_ls_sample, &
+         ref_guard_ok, ref_guarded, update_ot_energy_state, update_ot_energy_state_after, use_real_wfn
+      REAL(KIND=dp) :: ener_nondiag, maxocc, occupation_floor, occupation_floor_fraction, trial_kTS, &
          ref_guard_max, ref_guard_min, ref_guard_scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor, trial_mu
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ener_x_old
@@ -724,6 +787,7 @@ CONTAINS
                mo_coeff_im, para_env_inter_kp, rho, rho_ao_kp, sab_nl, wkp, xkp)
       NULLIFY (rot_mat_x_old, rot_mat_x_old_im)
       added_mos_auto_grow = .FALSE.
+      ot_kp_subspace_refresh = .FALSE.
 
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints, rho=rho)
@@ -896,7 +960,7 @@ CONTAINS
 
       CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
-                                                    trial_eigenvalues, trial_occupation, trial_mu)
+                                                    trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
       fermi_window_guarded = .FALSE.
       IF (update_ot_energy_state .OR. protect_mermin_ls_sample) THEN
          CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
@@ -906,8 +970,14 @@ CONTAINS
       END IF
       IF (fermi_window_guarded) THEN
          CALL qs_scf_loop_smear_ot_kp_trial_eigenvalues(kpoints, nspin_ot, wkp, scf_control%smear, &
-                                                        trial_eigenvalues, trial_occupation, trial_mu)
+                                                        trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
       END IF
+      ot_kp_subspace_refresh = qs_scf_loop_ot_kp_subspace_refresh_needed( &
+         kpoints, local_ot_env, nspin_ot, wkp, para_env_inter_kp, scf_control%smear, &
+         trial_occupation, scf_env%iter_count, scf_env%iter_delta, scf_control%eps_scf, &
+         scf_env%qs_ot_restart%valid, protect_mermin_ls_sample, fermi_window_guarded, &
+         allow_ot_kp_subspace_refresh)
+      IF (ot_kp_subspace_refresh) GOTO 900
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -956,7 +1026,19 @@ CONTAINS
       END DO
 
       CALL para_env_inter_kp%sum(ener_nondiag)
-      local_ot_env(1)%etotal = energy%total + ener_nondiag
+      initial_density_reference = scf_env%iter_count <= 1 .AND. &
+                                  .NOT. scf_env%qs_ot_restart%valid .AND. &
+                                  local_ot_env(1)%OT_count == 0
+      IF (initial_density_reference) THEN
+         ! The first energy belongs to the supplied atomic/restart density, not
+         ! yet to the orbitals just diagonalized in that Hamiltonian.  Replacing
+         ! only its entropy would create a mixed, non-variational reference.
+         local_ot_env(1)%etotal = energy%total + ener_nondiag
+      ELSE
+         ! All rebased and ordinary samples compare the current fixed-N Mermin
+         ! state, including the entropy solved from the trial auxiliary energies.
+         local_ot_env(1)%etotal = energy%total - energy%kTS + trial_kTS + ener_nondiag
+      END IF
 
       CALL qs_scf_loop_prepare_ot_kp_energy_gradient(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                      kp_range, wkp, para_env_inter_kp, scf_control%smear, &
@@ -967,7 +1049,19 @@ CONTAINS
                                                   wkp, scf_control%smear, &
                                                   trial_eigenvalues, trial_occupation, trial_mu)
 
-      IF (fermi_window_guarded) THEN
+      IF (settle_ot_kp_subspace) THEN
+         ! A full diagonalization changes the density by a finite amount.  Build
+         ! that density once before starting a line search, so H[rho] response is
+         ! not misidentified as curvature along the first OT direction.
+         DO local_channel = 1, SIZE(local_ot_env)
+            local_ot_env(local_channel)%OT_METHOD_FULL = "OT SUB"
+            local_ot_env(local_channel)%delta = &
+               MAX(local_ot_env(local_channel)%delta, 10.0_dp*scf_control%eps_scf)
+            local_ot_env(local_channel)%energy_only = .FALSE.
+         END DO
+         protect_mermin_ls_sample = .FALSE.
+         update_ot_energy_state_after = .TRUE.
+      ELSE IF (fermi_window_guarded) THEN
          ! A frontier projection is not an affine step along the current OT
          ! direction.  Evaluate its density and Hamiltonian as a separate base
          ! point instead of mixing it into an accepted line-search endpoint.
@@ -1122,6 +1216,7 @@ CONTAINS
          qs_env%broyden_adaptive_sigma = scf_env%qs_ot_env(first_channel)%broyden_adaptive_sigma
       END IF
 
+900   CONTINUE
       IF (ALLOCATED(trial_eigenvalues)) DEALLOCATE (trial_eigenvalues)
       IF (ALLOCATED(trial_occupation)) DEALLOCATE (trial_occupation)
       IF (ALLOCATED(trial_mu)) DEALLOCATE (trial_mu)
@@ -1501,6 +1596,93 @@ CONTAINS
    END SUBROUTINE qs_scf_loop_reset_ot_kp_guard_state
 
 ! **************************************************************************************************
+!> \brief request one full-kernel subspace refresh after metallic occupations have collapsed
+!> \param kpoints ...
+!> \param local_ot_env ...
+!> \param nspin_ot ...
+!> \param wkp ...
+!> \param para_env_inter_kp ...
+!> \param smear ...
+!> \param trial_occupation ...
+!> \param scf_iteration ...
+!> \param scf_residual ...
+!> \param eps_scf ...
+!> \param restart_valid ...
+!> \param accepted_sample ...
+!> \param fermi_window_guarded ...
+!> \param allow_refresh ...
+!> \return true when the current OT virtual subspace must be rebuilt by diagonalization
+! **************************************************************************************************
+   FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed( &
+         kpoints, local_ot_env, nspin_ot, wkp, para_env_inter_kp, smear, trial_occupation, &
+         scf_iteration, scf_residual, eps_scf, restart_valid, accepted_sample, &
+         fermi_window_guarded, allow_refresh) RESULT(refresh)
+
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      INTEGER, INTENT(IN)                                :: nspin_ot, scf_iteration
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_occupation
+      REAL(KIND=dp), INTENT(IN)                          :: scf_residual, eps_scf
+      LOGICAL, INTENT(IN) :: restart_valid, accepted_sample, fermi_window_guarded, allow_refresh
+      LOGICAL                                            :: refresh
+
+      INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo
+      LOGICAL                                            :: base_state, collapsed, step_ready
+      REAL(KIND=dp) :: fractional_weight, max_partial_fraction, maxocc, occ_tail, residual_delta, &
+         weight
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      refresh = .FALSE.
+      IF (.NOT. allow_refresh .OR. fermi_window_guarded) RETURN
+      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+      IF (smear%electronic_temperature <= 1.0E-14_dp) RETURN
+      IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(1), smear)) RETURN
+      IF (local_ot_env(1)%energy_only) RETURN
+
+      fractional_weight = 0.0_dp
+      max_partial_fraction = 0.0_dp
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         ikpoint = kp%nkpoint
+         DO ispin = 1, nspin_ot
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+            IF (maxocc <= EPSILON(maxocc)) CYCLE
+            weight = ABS(wkp(ikpoint))
+            DO imo = 1, MIN(nmo, SIZE(trial_occupation, 1))
+               occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
+                                          maxocc - trial_occupation(imo, ikpoint, ispin)))
+               fractional_weight = fractional_weight + weight*occ_tail/maxocc
+               max_partial_fraction = MAX(max_partial_fraction, occ_tail/maxocc)
+            END DO
+         END DO
+      END DO
+      CALL para_env_inter_kp%sum(fractional_weight)
+      CALL para_env_inter_kp%max(max_partial_fraction)
+
+      collapsed = max_partial_fraction < ot_kp_fermi_window_min_frac
+      residual_delta = MAX(scf_residual, local_ot_env(1)%delta)
+      step_ready = restart_valid .OR. local_ot_env(1)%OT_count >= ot_kp_subspace_refresh_min_steps .OR. &
+                   scf_iteration >= ot_kp_subspace_refresh_min_steps
+      base_state = local_ot_env(1)%line_search_count == 0 .OR. accepted_sample .OR. &
+                   (restart_valid .AND. scf_iteration <= 1)
+      refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
+                                                residual_delta, eps_scf, step_ready, base_state)
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
+          collapsed .AND. step_ready) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,L1,1X,I6,3(1X,ES16.8))') &
+            " OT k-point subspace refresh ready restart step residual frac max:", &
+            refresh, restart_valid, local_ot_env(1)%OT_count, residual_delta, &
+            fractional_weight, max_partial_fraction
+
+   END FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed
+
+! **************************************************************************************************
 !> \brief request ADDED_MOS AUTO growth for a stalled metallic k-point OT tail
 !> \param kpoints ...
 !> \param scf_env ...
@@ -1708,10 +1890,11 @@ CONTAINS
 !> \param trial_eigenvalues ...
 !> \param trial_occupation ...
 !> \param trial_mu ...
+!> \param trial_kTS ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                        kp_range, wkp, para_env_inter_kp, smear, &
-                                                       trial_eigenvalues, trial_occupation, trial_mu)
+                                                       trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
@@ -1724,6 +1907,7 @@ CONTAINS
          INTENT(OUT)                                     :: trial_eigenvalues, trial_occupation
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
          INTENT(OUT)                                     :: trial_mu
+      REAL(KIND=dp), INTENT(OUT)                         :: trial_kTS
 
       INTEGER                                            :: ikpoint, ispin, local_channel, &
                                                             local_kpoint, nkpoint, nmo
@@ -1760,7 +1944,7 @@ CONTAINS
       CALL para_env_inter_kp%sum(trial_eigenvalues)
 
       CALL qs_scf_loop_smear_ot_kp_trial_eigenvalues(kpoints, nspin_ot, wkp, smear, &
-                                                     trial_eigenvalues, trial_occupation, trial_mu)
+                                                     trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
 
    END SUBROUTINE qs_scf_loop_collect_ot_kp_trial_smearing
 
@@ -1773,9 +1957,10 @@ CONTAINS
 !> \param trial_eigenvalues ...
 !> \param trial_occupation ...
 !> \param trial_mu ...
+!> \param trial_kTS ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_smear_ot_kp_trial_eigenvalues(kpoints, nspin_ot, wkp, smear, &
-                                                        trial_eigenvalues, trial_occupation, trial_mu)
+                                                        trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       INTEGER, INTENT(IN)                                :: nspin_ot
@@ -1784,9 +1969,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_eigenvalues
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(OUT)     :: trial_occupation
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: trial_mu
+      REAL(KIND=dp), INTENT(OUT)                         :: trial_kTS
 
       INTEGER                                            :: method, ne_a, ne_b, nelectron
-      REAL(KIND=dp)                                      :: kTS, mu, nel, sigma
+      REAL(KIND=dp)                                      :: kTS, kTS_total, mu, nel, sigma
       REAL(KIND=dp), DIMENSION(2)                        :: mus
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -1805,6 +1991,7 @@ CONTAINS
       trial_occupation(:, :, :) = 0.0_dp
       trial_mu(:) = 0.0_dp
       mus(:) = 0.0_dp
+      kTS_total = 0.0_dp
 
       IF (smear%do_smear) THEN
          SELECT CASE (smear%method)
@@ -1826,20 +2013,25 @@ CONTAINS
          nel = REAL(nelectron, KIND=dp)
          CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, trial_eigenvalues(:, :, 1), nel, wkp, &
                       sigma, 2.0_dp, method)
+         kTS_total = kTS
       ELSE IF (smear%fixed_mag_mom > 0.0_dp .OR. .NOT. smear%do_smear) THEN
          nel = REAL(ne_a, KIND=dp)
          CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, trial_eigenvalues(:, :, 1), nel, wkp, &
                       sigma, 1.0_dp, method)
+         kTS_total = kTS_total + kTS
          nel = REAL(ne_b, KIND=dp)
          CALL Smearkp(trial_occupation(:, :, 2), mus(2), kTS, trial_eigenvalues(:, :, 2), nel, wkp, &
                       sigma, 1.0_dp, method)
+         kTS_total = kTS_total + kTS
       ELSE
          nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
          CALL Smearkp2(trial_occupation(:, :, :), mu, kTS, trial_eigenvalues(:, :, :), nel, wkp, &
                        sigma, method)
          mus(1:2) = mu
+         kTS_total = kTS
       END IF
       trial_mu(:) = mus(1:nspin_ot)
+      trial_kTS = kTS_total
 
    END SUBROUTINE qs_scf_loop_smear_ot_kp_trial_eigenvalues
 

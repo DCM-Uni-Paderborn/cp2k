@@ -2,14 +2,13 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 HIGH reference after the fixed-N trace-cancellation update,
-! rechecked from a fresh temporary directory:
-! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 67 final
-! SCF steps. With the Direct-density fshadow tail-protect bootstrap, Flavor 32
-! collects selected history in the residual tail. Mermin free energy =
-! -8.15998649548303 Ha and total energy without entropy =
-! -8.15907799312874 Ha, with no first/last-band warnings, no AUTO-exhausted
-! warning, and no "Unsupported content type" signature.
+! Historical 2026-07 endpoint before trial-Mermin consistency work:
+! AUTO grew to 8 and 16 and reached -8.15998649548303 Ha below 1E-6.
+! The current corrected trial-entropy path does not yet reproduce that result:
+! both AUTO and fixed ADDED_MOS 12 enter a high-residual rotation/line-search
+! cycle before the AUTO tail gate.  Keep this input as the non-default target
+! for the outstanding weighted multi-k-point minimizer fix; do not refresh the
+! historical endpoint from a nonconverged run.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge

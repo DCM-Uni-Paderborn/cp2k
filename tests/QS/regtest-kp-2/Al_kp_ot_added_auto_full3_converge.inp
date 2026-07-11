@@ -1,14 +1,14 @@
 ! Slow/manual full-grid companion to the cheap explicit 3-k-point ADDED_MOS
 ! AUTO k-point OT smoke test. This input is intentionally not listed in
-! TEST_FILES.toml so the default regtest stays cheap. It checks the converged
+! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-07 HIGH reference after the fixed-N trace-cancellation update:
-! AUTO grows to 8 and 16, then converges on the 1E-6 Mermin path in 50 final
-! SCF steps. Mermin free energy = -8.15998697481138 Ha and total energy without
-! entropy = -8.15907871599435 Ha, with no first/last-band warnings, no
-! AUTO-exhausted warning, and no "Unsupported content type" signature, matching
-! the symmetry-reduced companion within the requested 1E-6 Ha path.
+! Historical 2026-07 endpoint before trial-Mermin consistency work:
+! AUTO grew to 8 and 16 and reached -8.15998697481138 Ha below 1E-6.
+! The current corrected trial-entropy path enters a nonconvergent residual and
+! line-search cycle here as well; fixed ADDED_MOS 12 does not remove it.  Keep
+! this input as the full-grid control for the outstanding weighted minimizer
+! fix and retain the historical endpoint only as a physical target.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge

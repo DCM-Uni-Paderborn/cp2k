@@ -197,7 +197,7 @@ MODULE qs_scf
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_scf_types,                    ONLY: &
         block_davidson_diag_method_nr, block_krylov_diag_method_nr, filter_matrix_diag_method_nr, &
-        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
+        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, qs_scf_ot_restart_clear, &
         smeagol_method_nr, special_diag_method_nr
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
                                               wfi_update
@@ -388,11 +388,13 @@ CONTAINS
 
       CHARACTER(LEN=default_string_length)               :: description, name
       INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, output_unit, &
-         post_added_mos_auto_resize_steps, scf_energy_message_tag, total_steps
+         ot_kp_subspace_refresh_iter_count, post_added_mos_auto_resize_steps, &
+         post_ot_kp_subspace_refresh_steps, &
+         scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
          exit_inner_loop, exit_outer_loop, inner_loop_converged, &
          internal_tblite_density_full_step, internal_tblite_mixer, just_energy, &
-         outer_loop_converged, tblite_native_mixer
+         ot_kp_subspace_refresh, ot_kp_subspace_refresh_done, outer_loop_converged, tblite_native_mixer
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -505,6 +507,9 @@ CONTAINS
       scf_env%outer_scf%iter_count = 0
       iter_count = 0
       post_added_mos_auto_resize_steps = 0
+      ot_kp_subspace_refresh_iter_count = 0
+      post_ot_kp_subspace_refresh_steps = 0
+      ot_kp_subspace_refresh_done = .FALSE.
       total_steps = 0
       energy%tot_old = 0.0_dp
 
@@ -515,6 +520,8 @@ CONTAINS
 
          CALL qs_scf_set_loop_flags(scf_env, diis_step, &
                                     energy_only, just_energy, exit_inner_loop)
+         IF (post_ot_kp_subspace_refresh_steps > 0) &
+            scf_env%iter_count = ot_kp_subspace_refresh_iter_count
 
          ! decide whether to switch off dipole correction for convergence purposes
          dft_control%surf_dip_correct_switch = dft_control%correct_surf_dip
@@ -547,6 +554,7 @@ CONTAINS
             CALL qs_scf_loop_print(qs_env, scf_env, para_env)
 
             added_mos_auto_grow = .FALSE.
+            ot_kp_subspace_refresh = .FALSE.
             IF (do_kpoints) THEN
                ! kpoints
                IF (dft_control%hairy_probes .EQV. .TRUE.) THEN
@@ -554,7 +562,10 @@ CONTAINS
                   CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, dft_control%probe)
                ELSE
                   CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, &
-                                         added_mos_auto_grow=added_mos_auto_grow)
+                                         added_mos_auto_grow=added_mos_auto_grow, &
+                                         ot_kp_subspace_refresh=ot_kp_subspace_refresh, &
+                                         allow_ot_kp_subspace_refresh=.NOT. ot_kp_subspace_refresh_done, &
+                                         settle_ot_kp_subspace=post_ot_kp_subspace_refresh_steps > 0)
                END IF
             ELSE
                ! Gamma points only
@@ -567,6 +578,21 @@ CONTAINS
                                       added_mos_auto_grow=added_mos_auto_grow)
                END IF
             END IF
+
+            IF (ot_kp_subspace_refresh) THEN
+               CALL qs_scf_refresh_ot_kp_subspace(qs_env, scf_env, output_unit)
+               ot_kp_subspace_refresh_done = .TRUE.
+               post_ot_kp_subspace_refresh_steps = 1
+               total_steps = MAX(0, total_steps - 1)
+               iter_count = MAX(0, iter_count - 1)
+               IF (.NOT. just_energy) scf_env%iter_count = MAX(0, scf_env%iter_count - 1)
+               ot_kp_subspace_refresh_iter_count = scf_env%iter_count
+               CALL timestop(handle2)
+               CYCLE scf_outer_loop
+            END IF
+
+            IF (post_ot_kp_subspace_refresh_steps > 0) &
+               post_ot_kp_subspace_refresh_steps = post_ot_kp_subspace_refresh_steps - 1
 
             IF (added_mos_auto_grow) THEN
                IF (do_kpoints) THEN
@@ -986,6 +1012,51 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_grow_added_mos_auto
+
+! **************************************************************************************************
+!> \brief discard a collapsed k-point OT subspace before rebuilding it by full diagonalization
+!> \param qs_env ...
+!> \param scf_env ...
+!> \param output_unit ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_refresh_ot_kp_subspace(qs_env, scf_env, output_unit)
+
+      TYPE(qs_environment_type), POINTER                :: qs_env
+      TYPE(qs_scf_env_type), POINTER                    :: scf_env
+      INTEGER, INTENT(IN)                               :: output_unit
+
+      INTEGER                                           :: ot_channel
+      TYPE(kpoint_type), POINTER                        :: kpoints
+
+      CPASSERT(ASSOCIATED(qs_env))
+      CPASSERT(ASSOCIATED(scf_env))
+      NULLIFY (kpoints)
+      CALL get_qs_env(qs_env=qs_env, kpoints=kpoints)
+
+      IF (output_unit > 0) &
+         WRITE (UNIT=output_unit, FMT="(T2,A)") &
+            "K-point OT: refreshing collapsed virtual subspace by full KS diagonalization."
+
+      ! The next outer-loop initialization performs do_general_diag_kp on the
+      ! current Hamiltonian before allocating new channel-local OT state.  Old
+      ! line-search/history and restart data refer to the collapsed subspace and
+      ! must not be applied to the refreshed eigenvectors.
+      IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
+         DO ot_channel = 1, SIZE(scf_env%qs_ot_env)
+            CALL ot_scf_destroy(scf_env%qs_ot_env(ot_channel))
+         END DO
+         DEALLOCATE (scf_env%qs_ot_env)
+         NULLIFY (scf_env%qs_ot_env)
+      END IF
+      IF (ASSOCIATED(kpoints)) THEN
+         IF (ASSOCIATED(kpoints%scf_diis_buffer)) &
+            CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+      END IF
+      CALL qs_scf_ot_restart_clear(scf_env)
+      CALL qs_scf_clear_kpoint_ot_density_calibration(scf_env)
+      reuse_precond = .FALSE.
+
+   END SUBROUTINE qs_scf_refresh_ot_kp_subspace
 
 ! **************************************************************************************************
 !> \brief grow the automatic k-point smearing virtual space and reset k-point objects

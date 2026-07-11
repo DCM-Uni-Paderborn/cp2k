@@ -2,18 +2,13 @@
 ! Run repeatedly after Al_kp_ot_restart_write/read/continue.inp; this input is
 ! not listed in TEST_FILES.toml so the default restart/smearing regtest stays
 ! cheap.
-! A late-tail 2026-07 HIGH run reached OT residual 9.96E-7 in 201 further SCF
-! steps with Mermin free energy -8.14585265951153 Ha.  That timing must not be
-! attributed to a fresh write/read/continue chain: a clean reproduction at
-! 83a57634a4 reached -8.14564233907172 Ha after continue and remained at
-! residual 2.21E-5 after two further 320-step companions.  Treat the 1E-6
-! result as a physical endpoint reference for an already advanced tail restart.
-! Its final-restart guard reconverged in one SCF step at -8.14585265981938 Ha.
-! No first/last-band warning or "Unsupported content type" signature occurred.
-! This is still intentionally a continuation companion, not a default
-! converged regtest.
-! Keep this as a manual physics companion until the fresh write/read/continue
-! chain is fast enough for a non-default converged 1E-6 regtest.
+! The fresh write/read/continue chain now reaches the physical finite-entropy
+! branch after one residual-tail subspace refresh and converges below 1E-6.
+! Keep this HIGH-print input as a manual diagnostic/restart guard for that
+! endpoint.  A fresh OMP_NUM_THREADS=1 chain converged after 106 pre-refresh
+! and 44 post-refresh OT calls with Mermin free energy -8.14585320653867 Ha;
+! its final restart reconverged in one step.  No first/last-band warning or
+! "Unsupported content type" signature occurred.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_restart
@@ -42,7 +37,7 @@
       ! companion is intentionally not part of the default regtest list.
       EPS_SCF 1.0E-6
       IGNORE_CONVERGENCE_FAILURE
-      MAX_SCF 320
+      MAX_SCF 180
       SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC

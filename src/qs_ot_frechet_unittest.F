@@ -23,7 +23,8 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel
    USE qs_scf_loop_utils,               ONLY: qs_scf_kp_decouple_inactive_gauge,&
-                                              qs_scf_kp_fermi_guard_transition
+                                              qs_scf_kp_fermi_guard_transition,&
+                                              qs_scf_kp_subspace_refresh_gate
 
    IMPLICIT NONE
 
@@ -97,6 +98,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_inactive_gauge_decoupling("inactive k-point gauge decoupling", &
                                         5.0E-14_dp, nfail)
    CALL check_fermi_guard_transition("k-point Fermi guard transition", nfail)
+   CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -3425,6 +3427,43 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fermi_guard_transition
+
+! **************************************************************************************************
+!> \brief Check that collapsed-subspace recovery is confined to accepted residual-tail states.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_subspace_refresh_gate(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp
+
+      failed = .NOT. qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                                      5.0E-4_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.FALSE., .FALSE., .TRUE., &
+                                                5.0E-4_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .TRUE., .TRUE., &
+                                                5.0E-4_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .FALSE., &
+                                                5.0E-4_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                                5.0E-6_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                                1.1E-3_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                                5.0E-4_dp, eps_scf, .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                                5.0E-4_dp, eps_scf, .TRUE., .FALSE.)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_subspace_refresh_gate
 
 ! **************************************************************************************************
 !> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.
