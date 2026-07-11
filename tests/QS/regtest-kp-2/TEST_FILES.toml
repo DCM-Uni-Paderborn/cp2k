@@ -117,14 +117,14 @@
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Slow/manual residual-tail companion: run Al_kp_ot_restart_converge.inp after
 # the write/read/continue chain. It is intentionally not listed here, so the
-# default restart/smearing regtest stays cheap. With density-norm occupation-gap
-# weighting plus selected spectral residual history, the current HIGH companion
-# reaches OT_SCF_convergence = 9.96E-7 after 201 SCF steps with E_total =
-# Mermin = -8.14585265951153 Ha. A final-restart guard reads the resulting
-# k-point OT payload and converges in one SCF step with E_total = Mermin =
-# -8.14585265981938 Ha. No first/last-band smearing warning, AUTO-exhausted
-# warning, or previously reported "Unsupported content type" signature is
-# printed.
+# default restart/smearing regtest stays cheap. A late-tail HIGH run reached
+# OT_SCF_convergence = 9.96E-7 after 201 further steps with E_total = Mermin =
+# -8.14585265951153 Ha, but it started from an already advanced tail restart.
+# A clean 83a57634a4 write/read/continue reproduction remained at 2.21E-5 after
+# two additional 320-step companions. The 1E-6 result is therefore an endpoint
+# reference, not a fresh-chain iteration reference. Its final-restart guard
+# converged in one step at -8.14585265981938 Ha. No first/last-band smearing,
+# AUTO-exhausted, or "Unsupported content type" warning was printed.
 # Keep this manual until the fresh write/read/continue chain is fast enough for
 # a non-default converged 1E-6 physics companion.
 "H_sym.inp"                             = []
