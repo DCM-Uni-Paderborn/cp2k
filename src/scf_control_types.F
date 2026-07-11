@@ -665,13 +665,13 @@ CONTAINS
                   WRITE (UNIT=output_unit, FMT="(T25,A,T71,ES10.2)") &
                      "Electronic temperature [a.u.]:", scf_control%smear%electronic_temperature, &
                      "Accuracy threshold:", scf_control%smear%eps_fermi_dirac
-                  IF (scf_control%smear%fixed_mag_mom > 0.0_dp) WRITE (UNIT=output_unit, FMT="(T25,A,T61,F20.1)") &
+                  IF (scf_control%smear%fixed_mag_mom >= 0.0_dp) WRITE (UNIT=output_unit, FMT="(T25,A,T61,F20.1)") &
                      "Fixed magnetic moment set to:", scf_control%smear%fixed_mag_mom
                CASE (smear_gaussian, smear_mp, smear_mv)
                   WRITE (UNIT=output_unit, FMT="(T25,A,T71,ES10.2)") &
                      "Smearing width (sigma) [a.u.]:", scf_control%smear%smearing_width, &
                      "Accuracy threshold:", scf_control%smear%eps_fermi_dirac
-                  IF (scf_control%smear%fixed_mag_mom > 0.0_dp) &
+                  IF (scf_control%smear%fixed_mag_mom >= 0.0_dp) &
                      WRITE (UNIT=output_unit, FMT="(T25,A,T61,F20.1)") &
                      "Fixed magnetic moment set to:", scf_control%smear%fixed_mag_mom
                CASE (smear_energy_window)

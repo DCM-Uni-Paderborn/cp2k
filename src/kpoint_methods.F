@@ -105,6 +105,7 @@ MODULE kpoint_methods
    PUBLIC :: kpoint_initialize, kpoint_env_initialize, kpoint_initialize_mos, kpoint_initialize_mo_set
    PUBLIC :: kpoint_init_cell_index, kpoint_set_mo_occupation
    PUBLIC :: kpoint_density_matrices, kpoint_density_transform
+   PUBLIC :: kpoint_fixed_spin_targets
    PUBLIC :: rskp_transform, lowdin_kp_trans
 
 ! **************************************************************************************************
@@ -1074,6 +1075,23 @@ CONTAINS
    END SUBROUTINE rskp_transform
 
 ! **************************************************************************************************
+!> \brief electron targets for separately smeared fixed-spin channels
+!> \param nelectron total electron number
+!> \param fixed_mag_mom prescribed N_alpha-N_beta
+!> \param nel_a alpha target
+!> \param nel_b beta target
+! **************************************************************************************************
+   PURE SUBROUTINE kpoint_fixed_spin_targets(nelectron, fixed_mag_mom, nel_a, nel_b)
+
+      REAL(KIND=dp), INTENT(IN)                          :: nelectron, fixed_mag_mom
+      REAL(KIND=dp), INTENT(OUT)                         :: nel_a, nel_b
+
+      nel_a = 0.5_dp*(nelectron + fixed_mag_mom)
+      nel_b = nelectron - nel_a
+
+   END SUBROUTINE kpoint_fixed_spin_targets
+
+! **************************************************************************************************
 !> \brief Given the eigenvalues of all kpoints, calculates the occupation numbers
 !> \param kpoint  Kpoint environment
 !> \param smear   Smearing information
@@ -1097,7 +1115,8 @@ CONTAINS
                                                             nelectron, nkp, nmo, nrow_global, nspin
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL                                            :: my_added_mos_auto_grow
-      REAL(KIND=dp)                                      :: kTS, mu, mus(2), nel
+      REAL(KIND=dp)                                      :: kTS, kTS_spin(2), mu, mus(2), nel, &
+                                                            nel_a_target, nel_b_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: smatrix
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: weig, wocc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :)  :: icoeff, rcoeff
@@ -1111,6 +1130,7 @@ CONTAINS
 
       my_added_mos_auto_grow = .FALSE.
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
+      kTS_spin(:) = 0.0_dp
 
       ! first collect all the eigenvalues
       CALL get_kpoint_info(kpoint, nkp=nkp)
@@ -1123,6 +1143,11 @@ CONTAINS
          CALL get_mo_set(kp%mos(1, 2), nmo=nb, nelectron=ne_b)
          CPASSERT(nmo == nb)
       END IF
+      nel_a_target = REAL(ne_a, KIND=dp)
+      nel_b_target = REAL(ne_b, KIND=dp)
+      IF (nspin == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) &
+         CALL kpoint_fixed_spin_targets(REAL(ne_a + ne_b, KIND=dp), smear%fixed_mag_mom, &
+                                        nel_a_target, nel_b_target)
       ALLOCATE (weig(nmo, nkp, nspin), wocc(nmo, nkp, nspin))
       weig = 0.0_dp
       wocc = 0.0_dp
@@ -1185,13 +1210,14 @@ CONTAINS
 
          IF (nspin == 1) THEN
             nel = REAL(nelectron, KIND=dp)
-            CALL probe_occupancy_kp(wocc(:, :, :), mus(1), kTS, weig(:, :, :), rcoeff(:, :, :, :), icoeff(:, :, :, :), 2.0d0, &
+            CALL probe_occupancy_kp(wocc(:, :, :), mus(1), kTS_spin(1), weig(:, :, :), &
+                                    rcoeff(:, :, :, :), icoeff(:, :, :, :), 2.0d0, &
                                     probe, nel, wkp)
          ELSE
             nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
             CALL probe_occupancy_kp(wocc(:, :, :), mu, kTS, weig(:, :, :), rcoeff(:, :, :, :), icoeff(:, :, :, :), 1.0d0, &
                                     probe, nel, wkp)
-            kTS = kTS/2._dp
+            kTS_spin(1:2) = 0.5_dp*kTS
             mus(1:2) = mu
          END IF
 
@@ -1203,7 +1229,7 @@ CONTAINS
                CALL get_mo_set(mo_set, eigenvalues=eigenvalues, occupation_numbers=occupation)
                eigenvalues(1:nmo) = weig(1:nmo, ik, ispin)
                occupation(1:nmo) = wocc(1:nmo, ik, ispin)
-               mo_set%kTS = kTS
+               mo_set%kTS = kTS_spin(ispin)
                mo_set%mu = mus(ispin)
 
                CALL get_mo_set(mo_set, mo_coeff=mo_coeff)
@@ -1246,39 +1272,39 @@ CONTAINS
                ! finite electronic temperature
                IF (nspin == 1) THEN
                   nel = REAL(nelectron, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%electronic_temperature, 2.0_dp, smear_fermi_dirac)
-               ELSE IF (smear%fixed_mag_mom > 0.0_dp) THEN
-                  nel = REAL(ne_a, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               ELSE IF (smear%fixed_mag_mom >= 0.0_dp) THEN
+                  nel = nel_a_target
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
-                  nel = REAL(ne_b, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
+                  nel = nel_b_target
+                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
                                smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
                ELSE
                   nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
                   CALL Smearkp2(wocc(:, :, :), mu, kTS, weig(:, :, :), nel, wkp, &
                                 smear%electronic_temperature, smear_fermi_dirac)
-                  kTS = kTS/2._dp
+                  kTS_spin(1:2) = 0.5_dp*kTS
                   mus(1:2) = mu
                END IF
             CASE (smear_gaussian, smear_mp, smear_mv)
                IF (nspin == 1) THEN
                   nel = REAL(nelectron, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%smearing_width, 2.0_dp, smear%method)
-               ELSE IF (smear%fixed_mag_mom > 0.0_dp) THEN
-                  nel = REAL(ne_a, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               ELSE IF (smear%fixed_mag_mom >= 0.0_dp) THEN
+                  nel = nel_a_target
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%smearing_width, 1.0_dp, smear%method)
-                  nel = REAL(ne_b, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
+                  nel = nel_b_target
+                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
                                smear%smearing_width, 1.0_dp, smear%method)
                ELSE
                   nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
                   CALL Smearkp2(wocc(:, :, :), mu, kTS, weig(:, :, :), nel, wkp, &
                                 smear%smearing_width, smear%method)
-                  kTS = kTS/2._dp
+                  kTS_spin(1:2) = 0.5_dp*kTS
                   mus(1:2) = mu
                END IF
             CASE DEFAULT
@@ -1288,14 +1314,14 @@ CONTAINS
             ! fixed occupations (2/1)
             IF (nspin == 1) THEN
                nel = REAL(nelectron, KIND=dp)
-               CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                             0.0_dp, 2.0_dp, smear_gaussian)
             ELSE
-               nel = REAL(ne_a, KIND=dp)
-               CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               nel = nel_a_target
+               CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                             0.0_dp, 1.0_dp, smear_gaussian)
-               nel = REAL(ne_b, KIND=dp)
-               CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
+               nel = nel_b_target
+               CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
                             0.0_dp, 1.0_dp, smear_gaussian)
             END IF
          END IF
@@ -1327,7 +1353,7 @@ CONTAINS
                CALL get_mo_set(mo_set, eigenvalues=eigenvalues, occupation_numbers=occupation)
                eigenvalues(1:nmo) = weig(1:nmo, ik, ispin)
                occupation(1:nmo) = wocc(1:nmo, ik, ispin)
-               mo_set%kTS = kTS
+               mo_set%kTS = kTS_spin(ispin)
                mo_set%mu = mus(ispin)
             END DO
          END DO

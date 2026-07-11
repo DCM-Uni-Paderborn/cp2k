@@ -53,10 +53,10 @@ MODULE kpoint_io
    USE qs_mo_io,                        ONLY: wfn_restart_file_name
    USE qs_ot_types,                     ONLY: qs_ot_check_channel_context,&
                                               qs_ot_type
-   USE qs_scf_types,                    ONLY: qs_scf_env_type,&
-                                              qs_ot_restart_adaptive_nint,&
+   USE qs_scf_types,                    ONLY: qs_ot_restart_adaptive_nint,&
                                               qs_ot_restart_adaptive_nlog,&
                                               qs_ot_restart_adaptive_nreal,&
+                                              qs_scf_env_type,&
                                               qs_scf_ot_restart_clear
 #include "./base/base_uses.f90"
 
@@ -67,7 +67,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 21
+   INTEGER, PARAMETER                   :: ot_restart_version = 22
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -537,7 +537,8 @@ CONTAINS
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
-      REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real_payload
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
 
       nchannel = SIZE(qs_ot_env)
       IF (ires > 0) THEN
@@ -813,7 +814,8 @@ CONTAINS
                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_quality_samples, &
                                  qs_ot_env(ichannel)%schur_step_gauge_quality_samples, &
                                  qs_ot_env(ichannel)%kpoint_physical_delta_groups, &
-                                 qs_ot_env(ichannel)%schur_projector_mode_quality_samples]
+                                 qs_ot_env(ichannel)%schur_projector_mode_quality_samples, &
+                                 qs_ot_env(ichannel)%kpoint_occ_preconditioner_ready_samples]
          adaptive_log_payload = [qs_ot_env(ichannel)%schur_model_pending, &
                                  qs_ot_env(ichannel)%schur_model_quality_ready, &
                                  qs_ot_env(ichannel)%schur_constrained_pending, &
@@ -825,7 +827,8 @@ CONTAINS
                                  qs_ot_env(ichannel)%schur_split_candidate_enabled, &
                                  qs_ot_env(ichannel)%schur_residual_history_reset_pending, &
                                  qs_ot_env(ichannel)%kpoint_physical_delta_ready, &
-                                 qs_ot_env(ichannel)%schur_projector_mode_pending]
+                                 qs_ot_env(ichannel)%schur_projector_mode_pending, &
+                                 qs_ot_env(ichannel)%kpoint_occ_preconditioner_active]
          adaptive_real_payload = [qs_ot_env(ichannel)%schur_model_drop, &
                                   qs_ot_env(ichannel)%schur_model_calibrated_drop, &
                                   qs_ot_env(ichannel)%schur_model_measured_drop, &
@@ -913,7 +916,8 @@ CONTAINS
                                   qs_ot_env(ichannel)%schur_projector_mode_response_drop_sum, &
                                   qs_ot_env(ichannel)%schur_projector_mode_step_negative_ema, &
                                   qs_ot_env(ichannel)%schur_projector_mode_response_negative_ema, &
-                                  qs_ot_env(ichannel)%schur_projector_mode_trust_ema]
+                                  qs_ot_env(ichannel)%schur_projector_mode_trust_ema, &
+                                  qs_ot_env(ichannel)%kpoint_occ_metric_residual_quality_ema]
 
          IF (ires > 0) THEN
             WRITE (ires) int_payload
@@ -1046,39 +1050,43 @@ CONTAINS
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
 
       CHARACTER(LEN=LEN(ot_restart_marker))              :: marker
-      INTEGER                                            :: ichannel, ihist, ios, nchannel, ndiis, &
-                                                            nener, version_read
+      INTEGER                                            :: adaptive_ios, ichannel, ihist, ios, &
+                                                            nchannel, ndiis, nener, version_read
       INTEGER, DIMENSION(11)                             :: schur_int_payload_v4
       INTEGER, DIMENSION(12)                             :: schur_int_payload_v5
-      INTEGER, DIMENSION(13)                             :: int_payload_v10, schur_int_payload_v6
-      INTEGER, DIMENSION(14)                             :: schur_int_payload_v8
+      INTEGER, DIMENSION(13)                             :: adaptive_int_payload_v20, &
+                                                            int_payload_v10, schur_int_payload_v6
+      INTEGER, DIMENSION(14)                             :: adaptive_int_payload_v21, &
+                                                            schur_int_payload_v8
       INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(17)                             :: schur_int_payload_v12
       INTEGER, DIMENSION(18)                             :: schur_int_payload_v13
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
-      INTEGER, DIMENSION(13)                             :: adaptive_int_payload_v20
       LOGICAL                                            :: payload_found
+      LOGICAL, DIMENSION(11)                             :: adaptive_log_payload_v20
+      LOGICAL, DIMENSION(12)                             :: adaptive_log_payload_v21
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
       LOGICAL, DIMENSION(28)                             :: log_payload_v18
       LOGICAL, DIMENSION(29)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
-      LOGICAL, DIMENSION(11)                             :: adaptive_log_payload_v20
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload_v11
       REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload_v12
       REAL(KIND=dp), DIMENSION(133)                      :: schur_real_payload_v13
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
-      REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real_payload
-      REAL(KIND=dp), DIMENSION(75)                       :: adaptive_real_payload_v20
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
+      REAL(KIND=dp), DIMENSION(75)                       :: adaptive_real_payload_v20
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload_v10
       REAL(KIND=dp), DIMENSION(87)                       :: schur_real_payload_v7
+      REAL(KIND=dp), DIMENSION(88)                       :: adaptive_real_payload_v21
       REAL(KIND=dp), DIMENSION(89)                       :: schur_real_payload_v8
+      REAL(KIND=dp), &
+         DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
 
       payload_found = .FALSE.
       marker = ""
@@ -1218,17 +1226,47 @@ CONTAINS
                schur_int_payload(6:12) = schur_int_payload_v4(5:11)
                schur_real_payload(1:51) = schur_real_payload_v4
             END IF
-            IF (version_read >= 21) THEN
+            IF (version_read >= 22) THEN
                READ (rst_unit) adaptive_int_payload
                READ (rst_unit) adaptive_log_payload
                READ (rst_unit) adaptive_real_payload
+            ELSE IF (version_read == 21) THEN
+               READ (rst_unit) adaptive_int_payload_v21
+               READ (rst_unit) adaptive_log_payload_v21
+               READ (rst_unit) adaptive_real_payload_v21
+               adaptive_int_payload(1:14) = adaptive_int_payload_v21
+               adaptive_log_payload(1:12) = adaptive_log_payload_v21
+               adaptive_real_payload(1:88) = adaptive_real_payload_v21
             ELSE IF (version_read == 20) THEN
-               READ (rst_unit) adaptive_int_payload_v20
-               READ (rst_unit) adaptive_log_payload_v20
-               READ (rst_unit) adaptive_real_payload_v20
-               adaptive_int_payload(1:13) = adaptive_int_payload_v20
-               adaptive_log_payload(1:11) = adaptive_log_payload_v20
-               adaptive_real_payload(1:75) = adaptive_real_payload_v20
+               ! Early version-20 files predate the adaptive payload, while a
+               ! later development layout reused the same version number for
+               ! both the 13/11/75 and 14/12/88 records.  Probe from largest to
+               ! smallest and rewind when the record is already the following
+               ! matrix payload.
+               READ (rst_unit, IOSTAT=adaptive_ios) adaptive_int_payload_v21
+               IF (adaptive_ios == 0) THEN
+                  READ (rst_unit) adaptive_log_payload_v21
+                  READ (rst_unit) adaptive_real_payload_v21
+                  adaptive_int_payload(1:14) = adaptive_int_payload_v21
+                  adaptive_log_payload(1:12) = adaptive_log_payload_v21
+                  adaptive_real_payload(1:88) = adaptive_real_payload_v21
+               ELSE
+                  BACKSPACE (UNIT=rst_unit, IOSTAT=adaptive_ios)
+                  IF (adaptive_ios /= 0) &
+                     CALL cp_abort(__LOCATION__, "Failed to rewind a legacy version-20 k-point OT restart.")
+                  READ (rst_unit, IOSTAT=adaptive_ios) adaptive_int_payload_v20
+                  IF (adaptive_ios == 0) THEN
+                     READ (rst_unit) adaptive_log_payload_v20
+                     READ (rst_unit) adaptive_real_payload_v20
+                     adaptive_int_payload(1:13) = adaptive_int_payload_v20
+                     adaptive_log_payload(1:11) = adaptive_log_payload_v20
+                     adaptive_real_payload(1:75) = adaptive_real_payload_v20
+                  ELSE
+                     BACKSPACE (UNIT=rst_unit, IOSTAT=adaptive_ios)
+                     IF (adaptive_ios /= 0) &
+                        CALL cp_abort(__LOCATION__, "Failed to rewind a legacy version-20 k-point OT restart.")
+                  END IF
+               END IF
             END IF
          END IF
          IF (version_read < 4) THEN

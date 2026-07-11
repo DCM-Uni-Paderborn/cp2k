@@ -49,10 +49,9 @@ MODULE qs_scf
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, dbcsr_init_p, &
-        dbcsr_multiply, &
-        dbcsr_p_type, dbcsr_release_p, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, &
-        dbcsr_type_no_symmetry, dbcsr_type_symmetric
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
+        dbcsr_init_p, dbcsr_multiply, dbcsr_p_type, dbcsr_release_p, dbcsr_set, dbcsr_type, &
+        dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, dbcsr_type_symmetric
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
@@ -70,6 +69,7 @@ MODULE qs_scf
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_add_default_logger,&
                                               cp_get_default_logger,&
+                                              cp_logger_get_default_io_unit,&
                                               cp_logger_release,&
                                               cp_logger_type,&
                                               cp_rm_default_logger,&
@@ -197,8 +197,8 @@ MODULE qs_scf
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_scf_types,                    ONLY: &
         block_davidson_diag_method_nr, block_krylov_diag_method_nr, filter_matrix_diag_method_nr, &
-        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, qs_scf_ot_restart_clear, &
-        smeagol_method_nr, special_diag_method_nr
+        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
+        qs_scf_ot_restart_clear, smeagol_method_nr, special_diag_method_nr
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
                                               wfi_update
    USE scf_control_types,               ONLY: scf_control_type
@@ -387,14 +387,14 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'scf_env_do_scf'
 
       CHARACTER(LEN=default_string_length)               :: description, name
-      INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, output_unit, &
-         ot_kp_subspace_refresh_iter_count, post_added_mos_auto_resize_steps, &
-         post_ot_kp_subspace_refresh_steps, &
-         scf_energy_message_tag, total_steps
+      INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, &
+         ot_kp_subspace_refresh_iter_count, output_unit, post_added_mos_auto_resize_steps, &
+         post_ot_kp_subspace_refresh_steps, scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
          exit_inner_loop, exit_outer_loop, inner_loop_converged, &
          internal_tblite_density_full_step, internal_tblite_mixer, just_energy, &
-         ot_kp_subspace_refresh, ot_kp_subspace_refresh_done, outer_loop_converged, tblite_native_mixer
+         ot_kp_subspace_refresh, ot_kp_subspace_refresh_done, outer_loop_converged, &
+         tblite_native_mixer
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -1021,12 +1021,12 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_scf_refresh_ot_kp_subspace(qs_env, scf_env, output_unit)
 
-      TYPE(qs_environment_type), POINTER                :: qs_env
-      TYPE(qs_scf_env_type), POINTER                    :: scf_env
-      INTEGER, INTENT(IN)                               :: output_unit
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      INTEGER, INTENT(IN)                                :: output_unit
 
-      INTEGER                                           :: ot_channel
-      TYPE(kpoint_type), POINTER                        :: kpoints
+      INTEGER                                            :: ot_channel
+      TYPE(kpoint_type), POINTER                         :: kpoints
 
       CPASSERT(ASSOCIATED(qs_env))
       CPASSERT(ASSOCIATED(scf_env))
@@ -1035,7 +1035,7 @@ CONTAINS
 
       IF (output_unit > 0) &
          WRITE (UNIT=output_unit, FMT="(T2,A)") &
-            "K-point OT: refreshing collapsed virtual subspace by full KS diagonalization."
+         "K-point OT: refreshing collapsed virtual subspace by full KS diagonalization."
 
       ! The next outer-loop initialization performs do_general_diag_kp on the
       ! current Hamiltonian before allocating new channel-local OT state.  Old
@@ -1059,18 +1059,95 @@ CONTAINS
    END SUBROUTINE qs_scf_refresh_ot_kp_subspace
 
 ! **************************************************************************************************
-!> \brief grow the automatic k-point smearing virtual space and reset k-point objects
+!> \brief restore the k-point ADDED_MOS AUTO size serialized with an OT restart
 !> \param qs_env ...
 !> \param scf_env ...
 !> \param scf_control ...
 !> \param output_unit ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit)
+   SUBROUTINE qs_scf_restore_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       INTEGER, INTENT(IN)                                :: output_unit
+
+      INTEGER                                            :: ichannel, ispin, nspins, restart_nmo
+      INTEGER, DIMENSION(2)                              :: current_nmo, target_nmo
+      LOGICAL                                            :: incompatible, need_resize
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
+
+      NULLIFY (dft_control, mos)
+      IF (.NOT. scf_env%qs_ot_restart%valid) RETURN
+      IF (.NOT. ASSOCIATED(scf_env%qs_ot_restart%channel)) RETURN
+
+      CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, mos=mos)
+      CPASSERT(ASSOCIATED(dft_control))
+      CPASSERT(ASSOCIATED(mos))
+      nspins = dft_control%nspins
+      CPASSERT(nspins >= 1 .AND. nspins <= SIZE(target_nmo))
+
+      current_nmo(:) = 0
+      target_nmo(:) = 0
+      DO ispin = 1, nspins
+         current_nmo(ispin) = mos(ispin)%nmo
+      END DO
+
+      incompatible = .FALSE.
+      DO ichannel = 1, SIZE(scf_env%qs_ot_restart%channel)
+         ASSOCIATE (channel => scf_env%qs_ot_restart%channel(ichannel))
+            IF (.NOT. channel%valid) CYCLE
+            ispin = channel%spin_index
+            IF (ispin < 1 .OR. ispin > nspins .OR. channel%nmo <= 0) THEN
+               incompatible = .TRUE.
+               CYCLE
+            END IF
+            restart_nmo = channel%nmo
+            IF (target_nmo(ispin) == 0) THEN
+               target_nmo(ispin) = restart_nmo
+            ELSE IF (target_nmo(ispin) /= restart_nmo) THEN
+               incompatible = .TRUE.
+            END IF
+         END ASSOCIATE
+      END DO
+      IF (incompatible .OR. ANY(target_nmo(1:nspins) <= 0)) RETURN
+
+      DO
+         need_resize = .FALSE.
+         DO ispin = 1, nspins
+            current_nmo(ispin) = mos(ispin)%nmo
+            IF (target_nmo(ispin) <= current_nmo(ispin)) CYCLE
+            IF (.NOT. scf_control%added_mos_auto(ispin)) RETURN
+            IF (target_nmo(ispin) > mos(ispin)%nao) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "K-point OT restart requests more MOs than available in the AO basis.")
+            END IF
+            need_resize = .TRUE.
+         END DO
+         IF (.NOT. need_resize) EXIT
+
+         CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit, &
+                                            restart_target_nmo=target_nmo(1:nspins))
+      END DO
+
+   END SUBROUTINE qs_scf_restore_added_mos_auto_kp
+
+! **************************************************************************************************
+!> \brief grow the automatic k-point smearing virtual space and reset k-point objects
+!> \param qs_env ...
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param output_unit ...
+!> \param restart_target_nmo exact MO dimensions requested by an AUTO restart
+! **************************************************************************************************
+   SUBROUTINE qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit, restart_target_nmo)
+
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      INTEGER, INTENT(IN)                                :: output_unit
+      INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: restart_target_nmo
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_grow_added_mos_auto_kp'
 
@@ -1125,8 +1202,20 @@ CONTAINS
 
          current_added = MAX(0, scf_control%added_mos(ispin))
          base_nmo = MAX(0, old_nmo - current_added)
-         grow_by = MAX(4, current_added)
-         new_added(ispin) = MIN(mos(ispin)%nao - base_nmo, current_added + grow_by)
+         IF (PRESENT(restart_target_nmo)) THEN
+            CPASSERT(SIZE(restart_target_nmo) >= nspins)
+            IF (restart_target_nmo(ispin) > mos(ispin)%nao) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "K-point OT restart requests more MOs than available in the AO basis.")
+            END IF
+            grow_by = MAX(4, current_added)
+            new_added(ispin) = MAX(current_added, &
+                                   MIN(restart_target_nmo(ispin) - base_nmo, &
+                                       current_added + grow_by))
+         ELSE
+            grow_by = MAX(4, current_added)
+            new_added(ispin) = MIN(mos(ispin)%nao - base_nmo, current_added + grow_by)
+         END IF
          new_nmo(ispin) = base_nmo + new_added(ispin)
          IF (new_nmo(ispin) > old_nmo) need_resize = .TRUE.
       END DO
@@ -1150,13 +1239,25 @@ CONTAINS
       END IF
 
       IF (.NOT. need_resize) THEN
+         IF (PRESENT(restart_target_nmo)) THEN
+            CALL timestop(handle)
+            RETURN
+         END IF
          CALL cp_abort(__LOCATION__, &
                        "K-point ADDED_MOS AUTO cannot grow further although the highest band is still occupied.")
       END IF
 
       scf_control%added_mos(1:nspins) = new_added(1:nspins)
       IF (output_unit > 0) THEN
-         IF (nspins == 2) THEN
+         IF (PRESENT(restart_target_nmo) .AND. nspins == 2) THEN
+            WRITE (UNIT=output_unit, FMT="(T2,A,2I5)") &
+               "K-point OT restart: restoring ADDED_MOS AUTO virtual-space buffer to:", &
+               scf_control%added_mos(1:nspins)
+         ELSE IF (PRESENT(restart_target_nmo)) THEN
+            WRITE (UNIT=output_unit, FMT="(T2,A,I0)") &
+               "K-point OT restart: restoring ADDED_MOS AUTO virtual-space buffer to: ", &
+               scf_control%added_mos(1)
+         ELSE IF (nspins == 2) THEN
             WRITE (UNIT=output_unit, FMT="(T2,A,2I5)") &
                "K-point ADDED_MOS AUTO: growing virtual-space buffer to:", scf_control%added_mos(1:nspins)
          ELSE
@@ -1193,7 +1294,12 @@ CONTAINS
 
          old_nmo = old_mos(ispin)%nmo
          CALL cp_fm_init_random(mo_coeff, mos(ispin)%nmo)
-         CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
+         ! At initial restart sizing the global placeholder MOs have not been
+         ! reconstructed from the k-point density and can be rank deficient.
+         ! A full diagonalization follows immediately, so seed a complete
+         ! independent basis instead of preserving those placeholder columns.
+         IF (.NOT. PRESENT(restart_target_nmo)) &
+            CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
          IF (has_unit_metric) THEN
             CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
          ELSE
@@ -2026,6 +2132,8 @@ CONTAINS
                init_diag_step = .FALSE.
                CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, &
                                        .FALSE., init_diag_step)
+               CALL qs_scf_restore_added_mos_auto_kp(qs_env, scf_env, scf_control, &
+                                                     cp_logger_get_default_io_unit())
                CALL allocate_qs_ot_envs(scf_env=scf_env, &
                                         scf_control=scf_control, &
                                         dft_control=dft_control, &
@@ -3493,6 +3601,25 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(87)
             qs_ot_env%schur_projector_mode_trust_ema = &
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(88)
+         END IF
+         IF (scf_env%qs_ot_restart%format_version >= 22) THEN
+            qs_ot_env%kpoint_occ_preconditioner_ready_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(15)
+            qs_ot_env%kpoint_occ_preconditioner_active = &
+               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(13)
+            qs_ot_env%kpoint_occ_metric_residual_quality_ema = &
+               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(89)
+         ELSE IF (qs_ot_env%has_complex_kpoint_state .AND. &
+                  qs_ot_env%settings%occupation_preconditioner .AND. &
+                  scf_env%qs_ot_restart%channel(1)%mermin_ls_accepted_quality_samples > 0 .AND. &
+                  scf_env%qs_ot_restart%channel(1)%delta > 0.0_dp .AND. &
+                  scf_env%qs_ot_restart%channel(1)%delta <= 7.5E-2_dp) THEN
+            ! Before v22 the complex k-point occupation preconditioner was
+            ! implicitly active.  Preserve a locally calibrated old restart,
+            ! but relearn the new residual-aware orbital metric.
+            qs_ot_env%kpoint_occ_preconditioner_active = .TRUE.
+            qs_ot_env%kpoint_occ_preconditioner_ready_samples = 2
+            qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
          END IF
          IF (scf_env%qs_ot_restart%format_version < 20) THEN
             ! Version 20 keeps the structural CG direction flags invariant.

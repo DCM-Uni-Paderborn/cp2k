@@ -44,6 +44,7 @@ MODULE qs_ot_scf
                                               qs_ot_allocate,&
                                               qs_ot_destroy,&
                                               qs_ot_init,&
+                                              qs_ot_occupation_preconditioner_active,&
                                               qs_ot_set_context,&
                                               qs_ot_settings_init,&
                                               qs_ot_type
@@ -259,7 +260,7 @@ CONTAINS
          END DO
       END IF
 
-      IF (qs_ot_env(1)%settings%occupation_preconditioner) &
+      IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1))) &
          CALL precondition_ot_energy_gradient(qs_ot_env, mo_array, occupation_numbers, smear)
 
       ! this is kind of a hack so far (costly memory wise), we locally recreate the scaled matrix_hc, and
@@ -273,7 +274,7 @@ CONTAINS
          ! Keep the rotation scale separate from the occupation-curvature
          ! scale used for the energy variables.  The occupation Hessian is
          ! preconditioned in precondition_ot_energy_gradient.
-         IF (qs_ot_env(1)%settings%occupation_preconditioner) THEN
+         IF (qs_ot_occupation_preconditioner_active(qs_ot_env(1))) THEN
             orbital_scaling_factor(ispin)%array = rotation_preconditioner_scale
          END IF
          CALL dbcsr_scale_by_vector(matrix_dedc_scaled(ispin)%matrix, alpha=orbital_scaling_factor(ispin)%array, &
@@ -365,7 +366,8 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: curvature_floor = 1.0_dp
 
       INTEGER                                            :: group, handle, imo, ispin, ngroups
-      REAL(KIND=dp)                                      :: curvature, occ_denom, precond_weight, thermal_scale
+      REAL(KIND=dp)                                      :: curvature, occ_denom, precond_weight, &
+                                                            thermal_scale
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: precond_count, precond_shift, precond_sum
 
       CALL timeset(routineN, handle)
@@ -392,7 +394,7 @@ CONTAINS
       END IF
 
       ngroups = 1
-      IF (SIZE(qs_ot_env) == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
+      IF (SIZE(qs_ot_env) == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) ngroups = 2
       ALLOCATE (precond_count(ngroups), precond_shift(ngroups), precond_sum(ngroups))
       precond_count(:) = 0.0_dp
       precond_sum(:) = 0.0_dp

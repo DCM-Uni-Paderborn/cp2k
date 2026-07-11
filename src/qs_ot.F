@@ -15,12 +15,12 @@
 MODULE qs_ot
    USE arnoldi_api,                     ONLY: arnoldi_extremal
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_distribution_type, dbcsr_filter, dbcsr_finalize, &
-        dbcsr_get_block_p, &
-        dbcsr_get_info, dbcsr_get_occupation, dbcsr_init_p, dbcsr_iterator_blocks_left, &
-        dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
-        dbcsr_multiply, dbcsr_release, dbcsr_release_p, dbcsr_reserve_blocks, dbcsr_scale, dbcsr_set, &
-        dbcsr_transposed, dbcsr_type, dbcsr_type_no_symmetry
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_distribution_type, dbcsr_filter, &
+        dbcsr_finalize, dbcsr_get_block_p, dbcsr_get_info, dbcsr_get_occupation, dbcsr_init_p, &
+        dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
+        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_release, dbcsr_release_p, &
+        dbcsr_reserve_blocks, dbcsr_scale, dbcsr_set, dbcsr_transposed, dbcsr_type, &
+        dbcsr_type_no_symmetry
    USE cp_dbcsr_cholesky,               ONLY: cp_dbcsr_cholesky_decompose,&
                                               cp_dbcsr_cholesky_invert,&
                                               cp_dbcsr_cholesky_restore
@@ -36,7 +36,8 @@ MODULE qs_ot
    USE message_passing,                 ONLY: mp_comm_type
    USE preconditioner,                  ONLY: apply_preconditioner
    USE preconditioner_types,            ONLY: preconditioner_type
-   USE qs_ot_types,                     ONLY: qs_ot_type
+   USE qs_ot_types,                     ONLY: qs_ot_occupation_preconditioner_active,&
+                                              qs_ot_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -209,6 +210,11 @@ CONTAINS
 
    CONTAINS
 
+! **************************************************************************************************
+!> \brief ...
+!> \param row_new ...
+!> \param col_new ...
+! **************************************************************************************************
       SUBROUTINE append_union_block(row_new, col_new)
       INTEGER, INTENT(IN)                                :: row_new, col_new
 
@@ -637,7 +643,7 @@ CONTAINS
       CASE ("CG")
          SELECT CASE (qs_ot_env1%settings%line_search_method)
          CASE ("2PNT")
-            IF (qs_ot_env1%settings%occupation_preconditioner .AND. &
+            IF (qs_ot_occupation_preconditioner_active(qs_ot_env1) .AND. &
                 qs_ot_env1%has_complex_kpoint_state) THEN
                IF (qs_ot_env1%line_search_count == 3) update = .TRUE.
             ELSE

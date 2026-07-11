@@ -58,6 +58,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_check_channel_context
    PUBLIC  :: qs_ot_init
    PUBLIC  :: qs_ot_number_of_channels
+   PUBLIC  :: qs_ot_occupation_preconditioner_active
    PUBLIC  :: qs_ot_settings_init
    PUBLIC  :: qs_ot_set_context
    PUBLIC  :: ot_readwrite_input
@@ -211,6 +212,13 @@ MODULE qs_ot_types
       INTEGER          :: OT_count = -1
       REAL(KIND=dp)    :: ds_min = -1.0_dp
       REAL(KIND=dp)    :: broyden_adaptive_sigma = -1.0_dp
+
+      ! Complex k-point OT first approaches the local fixed-N Mermin basin
+      ! with the unpreconditioned rotation/energy model.  This runtime flag
+      ! distinguishes that bootstrap from the user request in settings.
+      LOGICAL          :: kpoint_occ_preconditioner_active = .FALSE.
+      INTEGER          :: kpoint_occ_preconditioner_ready_samples = 0
+      REAL(KIND=dp)    :: kpoint_occ_metric_residual_quality_ema = 0.0_dp
 
       LOGICAL          :: do_taylor = .FALSE.
       INTEGER          :: taylor_order = -1
@@ -718,6 +726,21 @@ MODULE qs_ot_types
 CONTAINS
 
 ! **************************************************************************************************
+!> \brief Return whether the occupation preconditioner belongs to the current runtime model.
+!> \param qs_ot_env ...
+!> \return Requested state for real/Gamma OT, staged state for complex k-point OT.
+! **************************************************************************************************
+   PURE FUNCTION qs_ot_occupation_preconditioner_active(qs_ot_env) RESULT(active)
+      TYPE(qs_ot_type), INTENT(IN)                       :: qs_ot_env
+      LOGICAL                                            :: active
+
+      active = qs_ot_env%settings%occupation_preconditioner
+      IF (active .AND. qs_ot_env%has_complex_kpoint_state) &
+         active = qs_ot_env%kpoint_occ_preconditioner_active
+
+   END FUNCTION qs_ot_occupation_preconditioner_active
+
+! **************************************************************************************************
 !> \brief sets default values for the settings type
 !> \param settings ...
 !> \par History
@@ -957,6 +980,9 @@ CONTAINS
       qs_ot_env%diis_iter = 0
       qs_ot_env%ds_min = qs_ot_env%settings%ds_min
       qs_ot_env%os_valid = .FALSE.
+      qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
+      qs_ot_env%kpoint_occ_preconditioner_ready_samples = 0
+      qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_model_pending = .FALSE.
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_constrained_pending = .FALSE.
@@ -1980,6 +2006,9 @@ CONTAINS
 
       qs_ot_env%state_allocated = .FALSE.
       qs_ot_env%has_complex_kpoint_state = .FALSE.
+      qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
+      qs_ot_env%kpoint_occ_preconditioner_ready_samples = 0
+      qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
       qs_ot_env%ener_direction_linear = .FALSE.
 

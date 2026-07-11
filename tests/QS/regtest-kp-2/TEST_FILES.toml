@@ -9,114 +9,114 @@
 "Al_1_4.inp"                            = [{matcher="E_total", tol=4.0E-12, ref=-8.27931596571888}]
 "Al_1_4_mp.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27878772972890}]
 "Al_1_4_mv.inp"                         = [{matcher="E_total", tol=4.0E-12, ref=-8.27916163440613}]
-"Al_kp_ot_added_auto.inp"               = [{matcher="E_total", tol=1.0E-10, ref=-6.71339818190703},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-6.71339818190703},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-4.93014723E-6},
+"Al_kp_ot_added_auto.inp"               = [{matcher="E_total", tol=1.0E-10, ref=-7.79205868908086},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.79205868908086},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.6249048E-7},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_added_auto_sym3.inp"          = [{matcher="E_total", tol=1.0E-10, ref=-5.60445982520898},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-5.60445982520898},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.993957154E-5},
+"Al_kp_ot_added_auto_sym3.inp"          = [{matcher="E_total", tol=1.0E-10, ref=-7.53928559759581},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.53928559759581},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.001557E-8},
                                            {matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
-                                           {matcher="OT_SCF_convergence", tol=1.0E-7, ref=1.6673899E-1},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-7, ref=2.737520E-2},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_added_auto_full3.inp"         = [{matcher="E_total", tol=1.0E-10, ref=-5.70384656190609},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-5.70384656190609},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.803612947E-5},
+"Al_kp_ot_added_auto_full3.inp"         = [{matcher="E_total", tol=1.0E-10, ref=-7.33680253832364},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.33680253832364},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.566512E-8},
                                            {matcher="N_kpoints", tol=0.0, ref=3},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.33333},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="Kpoint_weight_3", tol=1.0E-5, ref=0.33333},
                                            {matcher="ADDED_MOS_AUTO", tol=0.0, ref=4},
+                                           {matcher="OT_SCF_convergence", tol=1.0E-7, ref=2.972617E-2},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO exhausted"},
                                            {matcher="NO_TEXT", text="K-point ADDED_MOS AUTO cannot grow further"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Slow/manual ADDED_MOS AUTO tail companions: run
 # Al_kp_ot_added_auto_converge.inp and Al_kp_ot_added_auto_sym3_converge.inp
 # by hand. They are intentionally not listed here, so the default regtest stays
 # cheap while the adaptive AUTO grow path can still be checked against the
-# 1E-6 Mermin path. Latest isolated HIGH gamma companion after the analytic
-# fixed-N cluster response and half-active split-curvature updates:
-# initial AUTO buffer 4, ADDED_MOS_AUTO_GROW_SEQUENCE = "8", convergence in
-# 110 steps after the rebuild, 276 inner k-point OT calls overall, and
-# E_total = Mermin = -8.14585274623606 Ha.  No first/last-band warning,
-# AUTO-exhausted warning, or "Unsupported content type" signature is printed.
-# Historical optional 3-k-point endpoints reached -8.1599865 Ha with symmetry
-# reduction and -8.1599868 Ha on the full grid after AUTO growth to 8 and 16.
-# They are not current regression references: with trial-Mermin consistency,
-# both paths enter a high-residual rotation/line-search cycle before AUTO can
-# reach its tail gate, and fixed ADDED_MOS 12 does not cure it.  Keep the two
-# unlisted HIGH inputs as reduced/full controls for that open weighted
-# multi-k-point minimizer bug.  Do not update their endpoint comments from a
-# nonconverged run.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.37072599975538},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.37072599975538},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-2.3816682E-7},
+# 1E-6 Mermin path.  The current isolated HIGH references grow AUTO 4->8->16:
+# the one-k-point path converges in 151 total OT calls at -8.14585334840572 Ha,
+# the reduced 3-point path in 40 final-stage calls at -8.15998708351193 Ha,
+# and the full-grid path in 28 at -8.15998672984139 Ha.  The reduced/full
+# endpoint difference is 3.6E-7 Ha.  No first/last-band, AUTO-exhausted,
+# MAX-ITER, or "Unsupported content type" signature is printed.
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.89619451102384},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.89619451102384},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.2585752E-7},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Write/read remain short restart-I/O smokes.  The bounded continue job is the
-# converged 1E-6 physics anchor: it preserves the version-11 history, performs
-# one collapsed-subspace refresh in the residual tail, and retains finite
-# entropy.  Keep the early smoke references strict but allow the converged
-# entropy/residual small OMP path differences.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-8.06209224998510},
-                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-8.06209224998510},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.401E-11},
+# converged 1E-6 physics anchor: it preserves the version-22 adaptive history,
+# allows one bounded reader step, and retains finite entropy.  Keep the early
+# smoke references strict but allow small OMP differences at the endpoint.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-7.89630608865500},
+                                           {matcher="Mermin_free_energy", tol=1.0E-7, ref=-7.89630608865500},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.507698E-8},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14585320653867},
-                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14585320653867},
-                                           {matcher="Electronic_entropic_energy", tol=5.0E-4, ref=-5.1871600268E-4},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14585306476377},
+                                           {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14585306476377},
+                                           {matcher="Electronic_entropic_energy", tol=5.0E-7, ref=-5.1865729116E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="OT_SCF_convergence", tol=5.0E-1, ref=7.0E-7},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_sym3_write.inp"       = [{matcher="E_total", tol=1.0E-10, ref=-5.00958237342855},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-5.00958237342855},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-2.6981816267E-4},
+"Al_kp_ot_restart_sym3_write.inp"       = [{matcher="E_total", tol=1.0E-10, ref=-6.06694786676069},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-6.06694786676069},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-9.7571741125E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_sym3_read.inp"        = [{matcher="E_total", tol=1.0E-10, ref=-4.94507400790589},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-4.94507400790589},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.473353485E-5},
+"Al_kp_ot_restart_sym3_read.inp"        = [{matcher="E_total", tol=1.0E-10, ref=-5.72832444453074},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-5.72832444453074},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.21752875333E-3},
                                            {matcher="N_kpoints", tol=0.0, ref=2},
                                            {matcher="Kpoint_weight_1", tol=1.0E-5, ref=0.66667},
                                            {matcher="Kpoint_weight_2", tol=1.0E-5, ref=0.33333},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                           {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Al_kp_ot_restart_converge.inp remains an unlisted HIGH-print diagnostic for
 # the converged endpoint.  A fresh OMP_NUM_THREADS=1 write/read/continue chain
-# reaches the finite-entropy 1E-6 branch after one tail subspace refresh in 150
-# total iterations (106 before and 44 after the refresh), with E_total = Mermin
-# = -8.14585320653867 Ha.  The final restart reconverges in one step; no
-# first/last-band, AUTO-exhausted, or "Unsupported content type" warning occurs.
+# reaches the finite-entropy 1E-6 branch in 165 continuation iterations, with
+# E_total = Mermin = -8.14585306476377 Ha.  A deliberately exhausted version-22
+# line-search payload is recovered without a fatal abort and can also converge;
+# no first/last-band, MAX-ITER, or "Unsupported content type" warning occurs.
 "H_sym.inp"                             = []
 "cc1.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-45.64761389790363}]
 "cc2.inp"                               = [{matcher="E_total", tol=1.0E-12, ref=-46.03625569798420}]

@@ -57,9 +57,9 @@ MODULE qs_scf_types
                                  filter_matrix_diag_method_nr = 20, &
                                  smeagol_method_nr = 41
 
-   INTEGER, PARAMETER, PUBLIC :: qs_ot_restart_adaptive_nint = 14, &
-                                 qs_ot_restart_adaptive_nlog = 12, &
-                                 qs_ot_restart_adaptive_nreal = 88
+   INTEGER, PARAMETER, PUBLIC :: qs_ot_restart_adaptive_nint = 15, &
+                                 qs_ot_restart_adaptive_nlog = 13, &
+                                 qs_ot_restart_adaptive_nreal = 89
 
    PUBLIC :: qs_scf_env_type
    PUBLIC :: scf_env_release, scf_env_create, scf_env_did_change

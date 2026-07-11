@@ -2,13 +2,11 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Historical 2026-07 endpoint before trial-Mermin consistency work:
-! AUTO grew to 8 and 16 and reached -8.15998649548303 Ha below 1E-6.
-! The current corrected trial-entropy path does not yet reproduce that result:
-! both AUTO and fixed ADDED_MOS 12 enter a high-residual rotation/line-search
-! cycle before the AUTO tail gate.  Keep this input as the non-default target
-! for the outstanding weighted multi-k-point minimizer fix; do not refresh the
-! historical endpoint from a nonconverged run.
+! Local 2026-07 HIGH reference after normalizing each irreducible-channel
+! search direction by its star multiplicity: AUTO grows from 4 to 8 and 16,
+! then converges in 40 OT steps at -8.15998708351193 Ha.  It prints no
+! first/last-band, AUTO-exhausted, or unsupported-content warning.  Together
+! with the full-grid companion this guards the weighted symmetry reduction.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
@@ -38,7 +36,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 950
+      MAX_SCF 120
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC

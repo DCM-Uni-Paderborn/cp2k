@@ -3,12 +3,11 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Historical 2026-07 endpoint before trial-Mermin consistency work:
-! AUTO grew to 8 and 16 and reached -8.15998697481138 Ha below 1E-6.
-! The current corrected trial-entropy path enters a nonconvergent residual and
-! line-search cycle here as well; fixed ADDED_MOS 12 does not remove it.  Keep
-! this input as the full-grid control for the outstanding weighted minimizer
-! fix and retain the historical endpoint only as a physical target.
+! Local 2026-07 HIGH reference after the fixed-N response and multiplicity
+! fixes: AUTO grows from 4 to 8 and 16, then converges in 28 OT steps at
+! -8.15998672984139 Ha.  It prints no first/last-band, AUTO-exhausted, or
+! unsupported-content warning.  The endpoint agrees with the symmetry-reduced
+! companion within 3.6E-7 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge
@@ -38,7 +37,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 950
+      MAX_SCF 120
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC

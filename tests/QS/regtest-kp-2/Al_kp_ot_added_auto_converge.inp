@@ -2,15 +2,15 @@
 ! This input is intentionally not listed in TEST_FILES.toml so the default
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
 ! Local 2026-07 HIGH reference from an isolated working directory after the
-! analytic fixed-N cluster response and half-active split-curvature updates:
-! initial AUTO buffer 4, grow to 8 only, then final convergence in 110 OT
-! steps after the rebuild.  Total OT lines across AUTO rebuilds: 276.
-! E_total = Mermin = -8.14585274623606 Ha, with no first/last-band warning,
+! fixed-N gauge, multiplicity, and collapsed-search recovery fixes: initial
+! AUTO buffer 4, grow to 8 and 16, then final convergence in 38 OT steps.
+! Total OT lines across AUTO rebuilds: 151.
+! E_total = Mermin = -8.14585334840572 Ha, with no first/last-band warning,
 ! no AUTO-exhausted warning, and no "Unsupported content type" signature.  Run
 ! this companion from a fresh CWD because PROJECT files are written there and
 ! stale Al_kp_ot_added_auto* files make diagnosis ambiguous.  The final tail is
-! no longer solved by growing into an empty virtual edge; remaining slowness is
-! a response/Hessian issue.
+! no longer solved by growing into an empty virtual edge; remaining tail cost
+! is a response/Hessian performance issue rather than a correctness failure.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto
@@ -36,7 +36,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 950
+      MAX_SCF 120
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC
