@@ -3229,8 +3229,6 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(12)
             qs_ot_env%kpoint_physical_delta_groups = &
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(13)
-            qs_ot_env%schur_projector_mode_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(14)
 
             qs_ot_env%schur_model_pending = &
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(1)
@@ -3254,8 +3252,6 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(10)
             qs_ot_env%kpoint_physical_delta_ready = &
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(11)
-            qs_ot_env%schur_projector_mode_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(12)
 
             qs_ot_env%schur_model_drop = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(1)
             qs_ot_env%schur_model_calibrated_drop = &
@@ -3393,6 +3389,12 @@ CONTAINS
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(74)
             qs_ot_env%schur_dense_metric_shadow_measured_sum = &
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(75)
+         END IF
+         IF (scf_env%qs_ot_restart%format_version >= 21) THEN
+            qs_ot_env%schur_projector_mode_quality_samples = &
+               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(14)
+            qs_ot_env%schur_projector_mode_pending = &
+               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(12)
             qs_ot_env%schur_projector_mode_drop = &
                scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(76)
             qs_ot_env%schur_projector_mode_response_drop = &

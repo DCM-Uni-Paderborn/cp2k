@@ -67,7 +67,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 20
+   INTEGER, PARAMETER                   :: ot_restart_version = 21
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -1057,11 +1057,13 @@ CONTAINS
       INTEGER, DIMENSION(18)                             :: schur_int_payload_v13
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
+      INTEGER, DIMENSION(13)                             :: adaptive_int_payload_v20
       LOGICAL                                            :: payload_found
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
       LOGICAL, DIMENSION(28)                             :: log_payload_v18
       LOGICAL, DIMENSION(29)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
+      LOGICAL, DIMENSION(11)                             :: adaptive_log_payload_v20
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload_v11
       REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload_v12
@@ -1069,6 +1071,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
       REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real_payload
+      REAL(KIND=dp), DIMENSION(75)                       :: adaptive_real_payload_v20
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
@@ -1215,10 +1218,17 @@ CONTAINS
                schur_int_payload(6:12) = schur_int_payload_v4(5:11)
                schur_real_payload(1:51) = schur_real_payload_v4
             END IF
-            IF (version_read >= 20) THEN
+            IF (version_read >= 21) THEN
                READ (rst_unit) adaptive_int_payload
                READ (rst_unit) adaptive_log_payload
                READ (rst_unit) adaptive_real_payload
+            ELSE IF (version_read == 20) THEN
+               READ (rst_unit) adaptive_int_payload_v20
+               READ (rst_unit) adaptive_log_payload_v20
+               READ (rst_unit) adaptive_real_payload_v20
+               adaptive_int_payload(1:13) = adaptive_int_payload_v20
+               adaptive_log_payload(1:11) = adaptive_log_payload_v20
+               adaptive_real_payload(1:75) = adaptive_real_payload_v20
             END IF
          END IF
          IF (version_read < 4) THEN
