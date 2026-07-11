@@ -197,6 +197,13 @@ MODULE qs_ot_types
       REAL(KIND=dp)    :: mermin_ls_accepted_quality_ema = 1.0_dp
       REAL(KIND=dp)    :: mermin_ls_accepted_gap = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_accepted_gap_ema = 0.0_dp
+      ! Runtime directional derivatives at the start of a Mermin line search.
+      ! They intentionally are not restart payload: a restarted in-flight
+      ! search must collect a fresh direction before auditing its curvature.
+      LOGICAL          :: mermin_ls_component_slope_valid = .FALSE.
+      REAL(KIND=dp)    :: mermin_ls_matrix_slope = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_rotation_slope = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_energy_slope = 0.0_dp
       REAL(KIND=dp)    :: delta = -1.0_dp, gnorm = -1.0_dp, gnorm_old = -1.0_dp, etotal = -1.0_dp, gradient = -1.0_dp
       LOGICAL          :: energy_only = .FALSE.
       INTEGER          :: diis_iter = -1

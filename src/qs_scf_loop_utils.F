@@ -1493,6 +1493,7 @@ CONTAINS
             local_ot_env(local_channel)%ener_dx(:) = 0.0_dp
          IF (ASSOCIATED(local_ot_env(local_channel)%ener_gx_old)) &
             local_ot_env(local_channel)%ener_gx_old(:) = 0.0_dp
+         local_ot_env(local_channel)%mermin_ls_component_slope_valid = .FALSE.
          local_ot_env(local_channel)%ener_direction_linear = .FALSE.
          local_ot_env(local_channel)%kpoint_preconditioned_direction_ready = .FALSE.
       END DO

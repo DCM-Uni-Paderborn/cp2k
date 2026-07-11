@@ -2614,6 +2614,7 @@ CONTAINS
       INTEGER                                            :: ihist, ndiis
       LOGICAL                                            :: restore_schur_calibration, restored
 
+      qs_ot_env%mermin_ls_component_slope_valid = .FALSE.
       IF (.NOT. scf_env%qs_ot_restart%valid) RETURN
       IF (.NOT. ASSOCIATED(scf_env%qs_ot_restart%channel)) RETURN
       IF (ot_channel < 1 .OR. ot_channel > SIZE(scf_env%qs_ot_restart%channel)) RETURN

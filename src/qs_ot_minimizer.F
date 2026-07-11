@@ -251,6 +251,7 @@ CONTAINS
             END IF
          END DO
          CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, qs_ot_env(1)%gradient)
+         CALL audit_kpoint_mermin_accepted_secant(qs_ot_env, para_env_inter_kp)
       END IF
 
       IF (do_ener) THEN
@@ -266,6 +267,7 @@ CONTAINS
          IF (current_point_is_fine(qs_ot_env)) THEN
             qs_ot_env(1)%OT_METHOD_FULL = "OT CG"
             CALL ot_new_cg_direction(qs_ot_env, para_env_inter_kp)
+            CALL store_kpoint_mermin_direction_slopes(qs_ot_env, para_env_inter_kp)
             qs_ot_env(1)%line_search_count = 0
          ELSE
             qs_ot_env(1)%OT_METHOD_FULL = "OT LS"
@@ -275,6 +277,7 @@ CONTAINS
          IF (current_point_is_fine(qs_ot_env)) THEN
             qs_ot_env(1)%OT_METHOD_FULL = "OT SD"
             CALL ot_new_sd_direction(qs_ot_env, para_env_inter_kp)
+            CALL store_kpoint_mermin_direction_slopes(qs_ot_env, para_env_inter_kp)
             qs_ot_env(1)%line_search_count = 0
          ELSE
             qs_ot_env(1)%OT_METHOD_FULL = "OT LS"
@@ -295,6 +298,215 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE ot_mini
+
+! **************************************************************************************************
+!> \brief retain component slopes for an accepted-step Mermin secant
+!> \param qs_ot_env ...
+!> \param para_env_inter_kp ...
+! **************************************************************************************************
+   SUBROUTINE store_kpoint_mermin_direction_slopes(qs_ot_env, para_env_inter_kp)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+
+      INTEGER                                            :: ichannel
+      REAL(KIND=dp) :: energy_slope, matrix_slope, rotation_slope, slope_sum, tmp
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      DO ichannel = 1, SIZE(qs_ot_env)
+         qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .FALSE.
+         qs_ot_env(ichannel)%mermin_ls_matrix_slope = 0.0_dp
+         qs_ot_env(ichannel)%mermin_ls_rotation_slope = 0.0_dp
+         qs_ot_env(ichannel)%mermin_ls_energy_slope = 0.0_dp
+      END DO
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level < high_print_level) RETURN
+      IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
+      IF (.NOT. qs_ot_env(1)%use_dx) RETURN
+
+      matrix_slope = 0.0_dp
+      rotation_slope = 0.0_dp
+      energy_slope = 0.0_dp
+      DO ichannel = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         IF (qs_ot_env(1)%settings%ks) THEN
+            IF (.NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_gx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_dx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_gx_im) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_dx_im)) CYCLE
+            CALL dbcsr_dot(qs_ot_env(ichannel)%matrix_gx, qs_ot_env(ichannel)%matrix_dx, tmp)
+            qs_ot_env(ichannel)%mermin_ls_matrix_slope = tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%matrix_gx_im, qs_ot_env(ichannel)%matrix_dx_im, tmp)
+            qs_ot_env(ichannel)%mermin_ls_matrix_slope = &
+               qs_ot_env(ichannel)%mermin_ls_matrix_slope + tmp
+         END IF
+         IF (qs_ot_env(1)%settings%do_rotation) THEN
+            IF (.NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_gx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_dx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_gx_im) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_dx_im)) CYCLE
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_gx, qs_ot_env(ichannel)%rot_mat_dx, tmp)
+            qs_ot_env(ichannel)%mermin_ls_rotation_slope = 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_gx_im, qs_ot_env(ichannel)%rot_mat_dx_im, tmp)
+            qs_ot_env(ichannel)%mermin_ls_rotation_slope = &
+               qs_ot_env(ichannel)%mermin_ls_rotation_slope + 0.5_dp*tmp
+         END IF
+         IF (qs_ot_env(1)%settings%do_ener) THEN
+            IF (.NOT. ASSOCIATED(qs_ot_env(ichannel)%ener_gx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%ener_dx)) CYCLE
+            qs_ot_env(ichannel)%mermin_ls_energy_slope = &
+               DOT_PRODUCT(qs_ot_env(ichannel)%ener_gx, qs_ot_env(ichannel)%ener_dx)
+         END IF
+         qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .TRUE.
+         matrix_slope = matrix_slope + qs_ot_env(ichannel)%mermin_ls_matrix_slope
+         rotation_slope = rotation_slope + qs_ot_env(ichannel)%mermin_ls_rotation_slope
+         energy_slope = energy_slope + qs_ot_env(ichannel)%mermin_ls_energy_slope
+      END DO
+
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, matrix_slope)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, rotation_slope)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, energy_slope)
+      slope_sum = matrix_slope + rotation_slope + energy_slope
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+            " OT Mermin direction component slopes matrix rotation energy sum:", &
+            matrix_slope, rotation_slope, energy_slope, slope_sum
+
+   END SUBROUTINE store_kpoint_mermin_direction_slopes
+
+! **************************************************************************************************
+!> \brief compare accepted finite Mermin curvature with endpoint component derivatives
+!> \param qs_ot_env ...
+!> \param para_env_inter_kp ...
+! **************************************************************************************************
+   SUBROUTINE audit_kpoint_mermin_accepted_secant(qs_ot_env, para_env_inter_kp)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+
+      INTEGER                                            :: ichannel, valid_i
+      LOGICAL                                            :: valid
+      REAL(KIND=dp) :: alpha, current_energy, current_matrix, current_rotation, current_total, &
+         energy_curvature, initial_energy, initial_matrix, initial_rotation, initial_total, &
+         matrix_curvature, matrix_fraction, rotation_curvature, auxiliary_curvature, &
+         secant_consistency, total_curvature, tmp
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      IF (.NOT. qs_ot_env(1)%mermin_ls_sample_pending) RETURN
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level < high_print_level) RETURN
+      IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
+
+      valid = .TRUE.
+      initial_matrix = 0.0_dp
+      initial_rotation = 0.0_dp
+      initial_energy = 0.0_dp
+      current_matrix = 0.0_dp
+      current_rotation = 0.0_dp
+      current_energy = 0.0_dp
+      DO ichannel = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         valid = valid .AND. qs_ot_env(ichannel)%mermin_ls_component_slope_valid
+         initial_matrix = initial_matrix + qs_ot_env(ichannel)%mermin_ls_matrix_slope
+         initial_rotation = initial_rotation + qs_ot_env(ichannel)%mermin_ls_rotation_slope
+         initial_energy = initial_energy + qs_ot_env(ichannel)%mermin_ls_energy_slope
+         IF (.NOT. qs_ot_env(ichannel)%mermin_ls_component_slope_valid) CYCLE
+         IF (qs_ot_env(1)%settings%ks) THEN
+            IF (.NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_gx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_dx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_gx_im) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%matrix_dx_im)) THEN
+               valid = .FALSE.
+               CYCLE
+            END IF
+            CALL dbcsr_dot(qs_ot_env(ichannel)%matrix_gx, qs_ot_env(ichannel)%matrix_dx, tmp)
+            current_matrix = current_matrix + tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%matrix_gx_im, qs_ot_env(ichannel)%matrix_dx_im, tmp)
+            current_matrix = current_matrix + tmp
+         END IF
+         IF (qs_ot_env(1)%settings%do_rotation) THEN
+            IF (.NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_gx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_dx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_gx_im) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%rot_mat_dx_im)) THEN
+               valid = .FALSE.
+               CYCLE
+            END IF
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_gx, qs_ot_env(ichannel)%rot_mat_dx, tmp)
+            current_rotation = current_rotation + 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_gx_im, qs_ot_env(ichannel)%rot_mat_dx_im, tmp)
+            current_rotation = current_rotation + 0.5_dp*tmp
+         END IF
+         IF (qs_ot_env(1)%settings%do_ener) THEN
+            IF (.NOT. ASSOCIATED(qs_ot_env(ichannel)%ener_gx) .OR. &
+                .NOT. ASSOCIATED(qs_ot_env(ichannel)%ener_dx)) THEN
+               valid = .FALSE.
+               CYCLE
+            END IF
+            current_energy = current_energy + &
+                             DOT_PRODUCT(qs_ot_env(ichannel)%ener_gx, qs_ot_env(ichannel)%ener_dx)
+         END IF
+      END DO
+      valid_i = MERGE(1, 0, valid)
+      CALL ot_mini_min_kpoint_integer(para_env_inter_kp, valid_i)
+      valid = valid_i > 0
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_matrix)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_rotation)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_energy)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, current_matrix)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, current_rotation)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, current_energy)
+
+      alpha = qs_ot_env(1)%mermin_ls_next_pos
+      valid = valid .AND. ABS(alpha) > 1.0E4_dp*EPSILON(1.0_dp)
+      initial_total = initial_matrix + initial_rotation + initial_energy
+      current_total = current_matrix + current_rotation + current_energy
+      matrix_curvature = 0.0_dp
+      rotation_curvature = 0.0_dp
+      auxiliary_curvature = 0.0_dp
+      total_curvature = 0.0_dp
+      energy_curvature = 0.0_dp
+      matrix_fraction = 0.0_dp
+      secant_consistency = 0.0_dp
+      IF (valid) THEN
+         matrix_curvature = (current_matrix - initial_matrix)/alpha
+         rotation_curvature = (current_rotation - initial_rotation)/alpha
+         auxiliary_curvature = (current_energy - initial_energy)/alpha
+         total_curvature = (current_total - initial_total)/alpha
+         energy_curvature = 2.0_dp* &
+                            (qs_ot_env(1)%etotal - qs_ot_env(1)%mermin_ls_reference_energy - &
+                             alpha*initial_total)/(alpha*alpha)
+         IF (total_curvature > EPSILON(1.0_dp)) &
+            matrix_fraction = matrix_curvature/total_curvature
+         secant_consistency = ABS(total_curvature - energy_curvature)/ &
+                              MAX(ABS(total_curvature), ABS(energy_curvature), EPSILON(1.0_dp))
+      END IF
+
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
+            " OT Mermin accepted secant slopes valid alpha imat irot iener cmat crot cener current:", &
+            valid, alpha, initial_matrix, initial_rotation, initial_energy, &
+            current_matrix, current_rotation, current_energy, qs_ot_env(1)%gradient
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8))') &
+            " OT Mermin accepted secant curvature matrix rotation energy gradient Mermin fraction consistency:", &
+            matrix_curvature, rotation_curvature, auxiliary_curvature, total_curvature, &
+            energy_curvature, matrix_fraction, secant_consistency
+      END IF
+
+   END SUBROUTINE audit_kpoint_mermin_accepted_secant
+
+! **************************************************************************************************
+!> \brief reduce a k-point integer with MIN when a distributed communicator is present
+!> \param para_env_inter_kp ...
+!> \param value ...
+! **************************************************************************************************
+   SUBROUTINE ot_mini_min_kpoint_integer(para_env_inter_kp, value)
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+      INTEGER, INTENT(INOUT)                             :: value
+
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%min(value)
+      END IF
+
+   END SUBROUTINE ot_mini_min_kpoint_integer
 
 ! **************************************************************************************************
 !> \brief sum a minimizer scalar over distributed k-point groups when requested
