@@ -227,9 +227,55 @@ MODULE qs_scf_loop_utils
              qs_scf_new_mos, qs_scf_new_mos_kp, &
              qs_scf_density_mixing, qs_scf_check_inner_exit, &
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
-             qs_scf_kp_added_mos_auto_post_resize_steps
+             qs_scf_kp_added_mos_auto_post_resize_steps, &
+             qs_scf_kp_decouple_inactive_gauge
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Remove thermally inactive equal-occupation gauge coordinates from a dense Schur solve.
+!> \param hessian symmetric rotation Schur block
+!> \param rhs rotation gradient after fixed-N energy elimination
+!> \param occupation_gap normalized occupation difference of each rotation coordinate
+!> \param thermal_activity normalized f(1-f) response of each rotation coordinate
+!> \param gauge_gap_max largest occupation gap classified as gauge-like
+!> \param activity_max largest thermal response classified as inactive
+!> \param gauge_diagonal positive diagonal assigned to projected coordinates
+!> \param nprojected number of removed gauge coordinates
+!> \param info zero on success, negative for inconsistent input
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_decouple_inactive_gauge(hessian, rhs, occupation_gap, thermal_activity, &
+                                                 gauge_gap_max, activity_max, gauge_diagonal, &
+                                                 nprojected, info)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT)      :: hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: rhs
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_gap, thermal_activity
+      REAL(KIND=dp), INTENT(IN)                          :: gauge_gap_max, activity_max, gauge_diagonal
+      INTEGER, INTENT(OUT)                               :: nprojected, info
+
+      INTEGER                                            :: i, n
+      REAL(KIND=dp)                                      :: diagonal
+
+      n = SIZE(rhs)
+      nprojected = 0
+      info = 0
+      IF (n <= 0 .OR. SIZE(hessian, 1) /= n .OR. SIZE(hessian, 2) /= n .OR. &
+          SIZE(occupation_gap) /= n .OR. SIZE(thermal_activity) /= n) THEN
+         info = -1
+         RETURN
+      END IF
+
+      diagonal = MAX(gauge_diagonal, SQRT(EPSILON(1.0_dp)))
+      DO i = 1, n
+         IF (occupation_gap(i) > gauge_gap_max .OR. thermal_activity(i) > activity_max) CYCLE
+         hessian(i, :) = 0.0_dp
+         hessian(:, i) = 0.0_dp
+         hessian(i, i) = diagonal
+         rhs(i) = 0.0_dp
+         nprojected = nprojected + 1
+      END DO
+
+   END SUBROUTINE qs_scf_kp_decouple_inactive_gauge
 
 ! **************************************************************************************************
 !> \brief post-resize convergence gate length for k-point ADDED_MOS AUTO
@@ -7664,7 +7710,8 @@ CONTAINS
          dense_reject_reason, group, ie, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
          local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, &
          projector_fd_cluster_derivatives, projector_fd_cluster_replacements, &
-         projector_kernel_cluster_groups, r, reject_reason, s, schur_attempt, schur_used_attempt, &
+         projector_kernel_cluster_groups, gauge_projected_count, r, reject_reason, s, &
+         schur_attempt, schur_used_attempt, &
          selected_attempt, selected_flavor, split_selected_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
                                                             ipiv_energy, var_channel, var_ei, &
@@ -7686,7 +7733,8 @@ CONTAINS
          exact_density_floor_safe_audit_ready, exact_density_full_audit_ready, &
          exact_density_full_response_ready, exact_density_plateau_response_ready
       LOGICAL :: exact_density_response_ready, exact_energy_model_ready, &
-         exact_physical_response_ready, failed, metric_attempt_current_bridge, &
+         exact_physical_response_ready, failed, inactive_gauge_projection_used, &
+         metric_attempt_current_bridge, &
          metric_attempt_response, metric_attempt_selectable, metric_attempt_tail_bridge, &
          new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
          physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
@@ -7925,7 +7973,8 @@ CONTAINS
          occ_curv_diag_max, occ_curv_diag_sum, occ_curv_projection_sum, occ_projected_term, &
          occ_response_diag_sum, occ_tail_i, occ_tail_j, occgap_shadow_abs_step, &
          occgap_shadow_drop, occgap_shadow_gap_ratio, occgap_shadow_quality, occgap_shadow_step, &
-         pair_occ_gap, pair_projector_weight, physical_delta_norm, physical_delta_norm_limit, &
+         pair_occ_gap, pair_projector_weight, pair_thermal_activity, physical_delta_norm, &
+         physical_delta_norm_limit, &
          physical_delta_nvar, physical_response_gap_avg, physical_response_gap_max, &
          physical_response_gap_norm, plateau_gap_mode_abs_quad, plateau_gap_mode_eval_max, &
          plateau_gap_mode_eval_min
@@ -8434,7 +8483,8 @@ CONTAINS
          split_sol, split_z_e, tether_curv
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_grad_metric_weight, var_occ_gap_weight, &
          var_projector_active_weight, var_projector_response_weight, var_projector_weight, &
-         var_step_weight, z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
+         var_step_weight, var_thermal_activity, z_density_basis_audit_trial, &
+         z_density_basis_curvfloor_audit_trial, &
          z_density_basis_damped_audit_trial, z_density_basis_filtered_audit_trial, &
          z_density_basis_selective_audit_trial, z_density_floor_audit_trial, &
          z_density_floor_safe_audit_trial, z_density_full_audit_trial, &
@@ -8666,7 +8716,7 @@ CONTAINS
                    projector_response_sol(nrot), split_sol(nrot), &
                    var_grad_metric_weight(nrot), var_occ_gap_weight(nrot), &
                    var_projector_active_weight(nrot), var_projector_response_weight(nrot), &
-                   var_projector_weight(nrot), var_step_weight(nrot))
+                   var_projector_weight(nrot), var_step_weight(nrot), var_thermal_activity(nrot))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot), projector_physical_direct_active_lcomp(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
@@ -8872,6 +8922,7 @@ CONTAINS
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
          rot_floor(:) = rotation_curvature_floor
          row_floor_shift(:) = 0.0_dp
+         var_thermal_activity(:) = 0.0_dp
          density_full_global_selected_mermin_quality = 0.0_dp
          density_full_global_selected_mix_residual_quality = 0.0_dp
          density_full_global_selected_residual_quality = 0.0_dp
@@ -9883,9 +9934,16 @@ CONTAINS
                                         ABS(trial_occupation(imo, ikpoint, ispin) - &
                                             trial_occupation(jmo, ikpoint, ispin))/ &
                                         MAX(maxocc, EPSILON(maxocc)))
+                     pair_thermal_activity = 0.0_dp
+                     IF (smear%method == smear_fermi_dirac .AND. sigma > EPSILON(sigma) .AND. &
+                         wkp(ikpoint) > EPSILON(wkp(ikpoint)) .AND. maxocc > EPSILON(maxocc)) &
+                        pair_thermal_activity = MIN(1.0_dp, MAX(0.0_dp, &
+                           4.0_dp*sigma*MAX(occ_curv(var_ei(ivar)), occ_curv(var_ej(ivar)))/ &
+                           (wkp(ikpoint)*maxocc)))
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
                      var_occ_gap_weight(ivar) = pair_occ_gap
+                     var_thermal_activity(ivar) = pair_thermal_activity
                      var_grad_metric_weight(ivar) = rot_grad_norm_weight
                      var_step_weight(ivar) = 1.0_dp/rot_grad_norm_weight
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
@@ -9905,6 +9963,7 @@ CONTAINS
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
                      var_occ_gap_weight(ivar) = pair_occ_gap
+                     var_thermal_activity(ivar) = pair_thermal_activity
                      var_grad_metric_weight(ivar) = rot_grad_norm_weight
                      var_step_weight(ivar) = 1.0_dp/rot_grad_norm_weight
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
@@ -10146,7 +10205,7 @@ CONTAINS
                         projector_physical_sol, projector_offdiag_sol, &
                         projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                         var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
-                        var_projector_weight, var_step_weight)
+                        var_projector_weight, var_step_weight, var_thermal_activity)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
                         energy_cross, energy_cross_density, &
@@ -12516,6 +12575,8 @@ CONTAINS
          ! dense fixed-N coupled response, and the conservative raw fallback.
          DO schur_attempt = 1, 4
             attempt_failed = .FALSE.
+            inactive_gauge_projection_used = .FALSE.
+            gauge_projected_count = 0
             reject_reason = 0
             direction_scale = 0.0_dp
             scale_quality = 0.0_dp
@@ -13144,6 +13205,16 @@ CONTAINS
                END DO
             END DO
             IF (schur_attempt <= 2) schur(:, :) = split_curvature_scale*schur(:, :)
+            inactive_gauge_projection_used = schur_attempt == 3 .AND. exact_attempt_response .AND. &
+                                              residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                              local_ot_env(1)%schur_projector_mode_quality_samples >= &
+                                              ot_kp_schur_calibration_min_samples
+            IF (inactive_gauge_projection_used) THEN
+               CALL qs_scf_kp_decouple_inactive_gauge( &
+                  schur, rhs, var_occ_gap_weight, var_thermal_activity, schur_gauge_occ_gap_max, &
+                  ot_kp_fermi_window_min_frac, schur_gauge_curvature_floor, gauge_projected_count, info)
+               IF (info /= 0 .OR. gauge_projected_count <= 0) inactive_gauge_projection_used = .FALSE.
+            END IF
             DO r = 1, nrot
                IF (projector_diag_compensation > 0.0_dp) schur(r, r) = schur(r, r) + projector_diag_compensation
                row_floor = rotation_curvature_floor
@@ -13207,6 +13278,12 @@ CONTAINS
                "flooravg floormax sfrac dsum dmax:", &
                target_group, ne, nrot, schur_attempt, diag_prefloor_avg, diag_prefloor_min, diag_prefloor_max, &
                row_floor_avg, row_floor_max, diag_shift_fraction, diag_shift_sum, diag_shift_max
+            IF (inactive_gauge_projection_used .AND. logger%iter_info%print_level >= high_print_level .AND. &
+                logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I6),3(1X,ES16.8))') &
+               " OT Schur inactive gauge projection group att count gauge_grad phys_grad ratio:", &
+               target_group, schur_attempt, gauge_projected_count, rot_grad_gauge_norm, &
+               rot_grad_physical_norm, rot_grad_gauge_norm/MAX(rot_grad_physical_norm, EPSILON(1.0_dp))
 
             sol(:) = rhs(:)
             CALL dgesv(nrot, 1, schur, nrot, ipiv, sol, nrot, info)
@@ -18955,6 +19032,7 @@ CONTAINS
                selected_flavor = selected_attempt
                IF (.NOT. split_candidate_selected) THEN
                   IF (selected_attempt == 3) selected_flavor = 30
+                  IF (selected_attempt == 3 .AND. inactive_gauge_projection_used) selected_flavor = 42
                   ! Projector/density candidates are built by the exact-response
                   ! dense attempt and may be selected later while comparing
                   ! against the raw fallback.  Preserve their sub-flavor so the
@@ -21370,7 +21448,7 @@ CONTAINS
                      projector_physical_sol, projector_offdiag_sol, &
                      projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                      var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
-                     var_projector_weight, var_step_weight)
+                     var_projector_weight, var_step_weight, var_thermal_activity)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
                      energy_cross, energy_cross_density, &

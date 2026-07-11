@@ -22,6 +22,7 @@ PROGRAM qs_ot_frechet_unittest
                                               mp_world_init
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel
+   USE qs_scf_loop_utils,               ONLY: qs_scf_kp_decouple_inactive_gauge
 
    IMPLICIT NONE
 
@@ -92,6 +93,8 @@ PROGRAM qs_ot_frechet_unittest
                                                  5.0E-12_dp, nfail)
    CALL check_indefinite_schur_absolute_metric("indefinite Schur absolute metric", &
                                                5.0E-12_dp, nfail)
+   CALL check_inactive_gauge_decoupling("inactive k-point gauge decoupling", &
+                                        5.0E-14_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -3343,6 +3346,56 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_indefinite_schur_absolute_metric
+
+! **************************************************************************************************
+!> \brief Check that only thermally inactive equal-occupation coordinates leave the Schur solve.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_inactive_gauge_decoupling(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      INTEGER                                            :: info, nprojected
+      REAL(KIND=dp)                                      :: err
+      REAL(KIND=dp), DIMENSION(n)                        :: activity, expected_rhs, gap, rhs
+      REAL(KIND=dp), DIMENSION(n, n)                     :: expected_hessian, hessian
+
+      hessian(:, :) = RESHAPE([2.0_dp, 0.3_dp, 0.2_dp, -0.1_dp, &
+                               0.3_dp, 1.5_dp, 0.4_dp, 0.2_dp, &
+                               0.2_dp, 0.4_dp, 1.0_dp, 0.5_dp, &
+                               -0.1_dp, 0.2_dp, 0.5_dp, 0.8_dp], [n, n])
+      rhs(:) = [1.0_dp, 0.2_dp, -0.3_dp, 0.4_dp]
+      gap(:) = [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      activity(:) = [0.0_dp, 0.0_dp, 0.20_dp, 0.0_dp]
+      expected_hessian(:, :) = hessian(:, :)
+      expected_rhs(:) = rhs(:)
+      expected_hessian(2, :) = 0.0_dp
+      expected_hessian(:, 2) = 0.0_dp
+      expected_hessian(2, 2) = 1.25_dp
+      expected_hessian(4, :) = 0.0_dp
+      expected_hessian(:, 4) = 0.0_dp
+      expected_hessian(4, 4) = 1.25_dp
+      expected_rhs(2) = 0.0_dp
+      expected_rhs(4) = 0.0_dp
+
+      CALL qs_scf_kp_decouple_inactive_gauge(hessian, rhs, gap, activity, 0.05_dp, 0.01_dp, &
+                                               1.25_dp, nprojected, info)
+      err = MAX(MAXVAL(ABS(hessian - expected_hessian)), MAXVAL(ABS(rhs - expected_rhs)))
+      IF (err > tol .OR. info /= 0 .OR. nprojected /= 2) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5,2(1X,I6))') TRIM(label), &
+            "failed with error/projected/info", err, nprojected, info
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5,2(1X,I6))') TRIM(label), &
+            "OK with error/projected/info", err, nprojected, info
+      END IF
+
+   END SUBROUTINE check_inactive_gauge_decoupling
 
 ! **************************************************************************************************
 !> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.

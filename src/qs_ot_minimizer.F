@@ -1705,7 +1705,8 @@ CONTAINS
                               (schur_attempt == 3 .AND. schur_last_attempt == 3 .AND. &
                                schur_flavor /= schur_last_flavor .AND. &
                                schur_flavor /= 0 .AND. schur_last_flavor /= 0 .AND. &
-                               (schur_flavor < 0 .OR. schur_last_flavor < 0)))
+                               (schur_flavor < 0 .OR. schur_last_flavor < 0 .OR. &
+                                schur_flavor == 42 .OR. schur_last_flavor == 42)))
       schur_history_mixed = .FALSE.
 
       gnorm_matrix_re = 0.0_dp
