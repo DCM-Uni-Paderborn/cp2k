@@ -243,13 +243,15 @@ CONTAINS
       do_ener = qs_ot_env(1)%settings%do_ener
       residual_closure_rejected = .FALSE.
       contracted_search_restart = .FALSE.
-      next_search_step = qs_ot_env(1)%settings%ds_min
 
+      CALL sync_kpoint_minimizer_control(qs_ot_env, para_env_inter_kp)
+      logger => cp_get_default_logger()
+      next_search_step = qs_ot_env(1)%settings%ds_min
       CALL recover_collapsed_mermin_search(qs_ot_env)
 
       IF (qs_ot_env(1)%has_complex_kpoint_state) THEN
          logger => cp_get_default_logger()
-         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         IF (logger%iter_info%print_level >= high_print_level) THEN
             direction_matrix_re2 = 0.0_dp
             direction_matrix_im2 = 0.0_dp
             direction_rotation_re2 = 0.0_dp
@@ -276,17 +278,19 @@ CONTAINS
                   direction_energy_max = MAX(direction_energy_max, &
                                              MAXVAL(ABS(qs_ot_env(ispin)%ener_dx)))
             END DO
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,5(1X,L1),6(1X,ES16.8))') &
-               " OT line-search direction state count use_dx energy_only done linear complex "// &
-               "mre mim rre rim emax ds:", &
-               qs_ot_env(1)%line_search_count, qs_ot_env(1)%use_dx, qs_ot_env(1)%energy_only, &
-               qs_ot_env(1)%line_search_might_be_done, qs_ot_env(1)%ener_direction_linear, &
-               qs_ot_env(1)%has_complex_kpoint_state, &
-               SQRT(MAX(0.0_dp, direction_matrix_re2)), &
-               SQRT(MAX(0.0_dp, direction_matrix_im2)), &
-               SQRT(MAX(0.0_dp, direction_rotation_re2)), &
-               SQRT(MAX(0.0_dp, direction_rotation_im2)), &
-               direction_energy_max, qs_ot_env(1)%ds_min
+            IF (logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,5(1X,L1),6(1X,ES16.8))') &
+                  " OT line-search direction state count use_dx energy_only done linear complex "// &
+                  "mre mim rre rim emax ds:", &
+                  qs_ot_env(1)%line_search_count, qs_ot_env(1)%use_dx, qs_ot_env(1)%energy_only, &
+                  qs_ot_env(1)%line_search_might_be_done, qs_ot_env(1)%ener_direction_linear, &
+                  qs_ot_env(1)%has_complex_kpoint_state, &
+                  SQRT(MAX(0.0_dp, direction_matrix_re2)), &
+                  SQRT(MAX(0.0_dp, direction_matrix_im2)), &
+                  SQRT(MAX(0.0_dp, direction_rotation_re2)), &
+                  SQRT(MAX(0.0_dp, direction_rotation_im2)), &
+                  direction_energy_max, qs_ot_env(1)%ds_min
+            END IF
          END IF
       END IF
 
@@ -447,6 +451,88 @@ CONTAINS
    END SUBROUTINE ot_mini
 
 ! **************************************************************************************************
+!> \brief synchronize the scalar minimizer state shared by distributed k-point channels
+!> \param qs_ot_env local OT channels
+!> \param para_env_inter_kp communicator connecting k-point groups
+! **************************************************************************************************
+   SUBROUTINE sync_kpoint_minimizer_control(qs_ot_env, para_env_inter_kp)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+
+      IF (ASSOCIATED(qs_ot_env(1)%para_env)) &
+         CALL bcast_kpoint_minimizer_control(qs_ot_env, qs_ot_env(1)%para_env)
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) &
+            CALL bcast_kpoint_minimizer_control(qs_ot_env, para_env_inter_kp)
+      END IF
+
+   END SUBROUTINE sync_kpoint_minimizer_control
+
+! **************************************************************************************************
+!> \brief broadcast shared scalar minimizer state on one k-point communicator
+!> \param qs_ot_env local OT channels
+!> \param para_env communicator used for this synchronization pass
+! **************************************************************************************************
+   SUBROUTINE bcast_kpoint_minimizer_control(qs_ot_env, para_env)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      CALL para_env%bcast(qs_ot_env(1)%ot_pos)
+      CALL para_env%bcast(qs_ot_env(1)%ot_energy)
+      CALL para_env%bcast(qs_ot_env(1)%ot_grad)
+      CALL para_env%bcast(qs_ot_env(1)%line_search_left)
+      CALL para_env%bcast(qs_ot_env(1)%line_search_right)
+      CALL para_env%bcast(qs_ot_env(1)%line_search_mid)
+      CALL para_env%bcast(qs_ot_env(1)%line_search_count)
+      CALL para_env%bcast(qs_ot_env(1)%line_search_might_be_done)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_sample_pending)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_closure_rejected)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_best_sample_index)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_reference_energy)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_best_sample_energy)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_best_sample_drop)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_model_drop)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_model_quality)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_best_sample_pos)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_next_pos)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_samples)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_ema)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_gap)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_gap_ema)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_component_slope_valid)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_matrix_slope)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_rotation_slope)
+      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_energy_slope)
+      CALL para_env%bcast(qs_ot_env(1)%delta)
+      CALL para_env%bcast(qs_ot_env(1)%gnorm)
+      CALL para_env%bcast(qs_ot_env(1)%gnorm_old)
+      CALL para_env%bcast(qs_ot_env(1)%etotal)
+      CALL para_env%bcast(qs_ot_env(1)%gradient)
+      CALL para_env%bcast(qs_ot_env(1)%energy_only)
+      CALL para_env%bcast(qs_ot_env(1)%use_dx)
+      CALL para_env%bcast(qs_ot_env(1)%use_gx_old)
+      CALL para_env%bcast(qs_ot_env(1)%OT_count)
+      CALL para_env%bcast(qs_ot_env(1)%ds_min)
+      CALL para_env%bcast(qs_ot_env(1)%schur_model_attempt)
+      CALL para_env%bcast(qs_ot_env(1)%schur_model_flavor)
+      CALL para_env%bcast(qs_ot_env(1)%schur_cg_attempt)
+      CALL para_env%bcast(qs_ot_env(1)%schur_cg_flavor)
+      CALL para_env%bcast(qs_ot_env(1)%schur_model_delta)
+      CALL para_env%bcast(qs_ot_env(1)%schur_model_control_delta)
+      CALL para_env%bcast(qs_ot_env(1)%schur_residual_history_reset_pending)
+      CALL para_env%bcast(qs_ot_env(1)%schur_residual_history_quality)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta_ready)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta_groups)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_raw_delta)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_projected_delta)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_eps_scf)
+      CALL para_env%bcast(qs_ot_env(1)%ener_direction_linear)
+
+   END SUBROUTINE bcast_kpoint_minimizer_control
+
+! **************************************************************************************************
 !> \brief retain component slopes for an accepted-step Mermin secant
 !> \param qs_ot_env ...
 !> \param para_env_inter_kp ...
@@ -594,7 +680,7 @@ CONTAINS
          END IF
       END DO
       valid_i = MERGE(1, 0, valid)
-      CALL ot_mini_min_kpoint_integer(para_env_inter_kp, valid_i)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, valid_i)
       valid = valid_i > 0
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_matrix)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_rotation)
@@ -643,18 +729,57 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief reduce a k-point integer with MIN when a distributed communicator is present
+!> \param qs_ot_env local OT channels
 !> \param para_env_inter_kp ...
 !> \param value ...
 ! **************************************************************************************************
-   SUBROUTINE ot_mini_min_kpoint_integer(para_env_inter_kp, value)
+   SUBROUTINE ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, value)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
       INTEGER, INTENT(INOUT)                             :: value
 
+      IF (ASSOCIATED(qs_ot_env(1)%para_env)) CALL qs_ot_env(1)%para_env%min(value)
       IF (PRESENT(para_env_inter_kp)) THEN
          IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%min(value)
       END IF
 
    END SUBROUTINE ot_mini_min_kpoint_integer
+
+! **************************************************************************************************
+!> \brief reduce a k-point integer with MAX when a distributed communicator is present
+!> \param qs_ot_env local OT channels
+!> \param para_env_inter_kp ...
+!> \param value ...
+! **************************************************************************************************
+   SUBROUTINE ot_mini_max_kpoint_integer(qs_ot_env, para_env_inter_kp, value)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+      INTEGER, INTENT(INOUT)                             :: value
+
+      IF (ASSOCIATED(qs_ot_env(1)%para_env)) CALL qs_ot_env(1)%para_env%max(value)
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%max(value)
+      END IF
+
+   END SUBROUTINE ot_mini_max_kpoint_integer
+
+! **************************************************************************************************
+!> \brief reduce a k-point scalar with MIN when a distributed communicator is present
+!> \param qs_ot_env local OT channels
+!> \param para_env_inter_kp ...
+!> \param value ...
+! **************************************************************************************************
+   SUBROUTINE ot_mini_min_kpoint_scalar(qs_ot_env, para_env_inter_kp, value)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+      REAL(KIND=dp), INTENT(INOUT)                       :: value
+
+      IF (ASSOCIATED(qs_ot_env(1)%para_env)) CALL qs_ot_env(1)%para_env%min(value)
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%min(value)
+      END IF
+
+   END SUBROUTINE ot_mini_min_kpoint_scalar
 
 ! **************************************************************************************************
 !> \brief sum a minimizer scalar over distributed k-point groups when requested
@@ -999,7 +1124,7 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
-      INTEGER                                            :: group, i, ispin, ngroups
+      INTEGER                                            :: active_all, group, i, ispin, ngroups
       LOGICAL                                            :: active, has_rayleigh_target
       REAL(KIND=dp) :: alignment, combined_probe_max, coupled_probe, coupled_rms, probe_pos, &
          rayleigh_correction, scale, shift, target_rms, weight
@@ -1015,6 +1140,9 @@ CONTAINS
                                qs_ot_occupation_preconditioner_active(qs_ot_env(ispin)) .AND. &
                                ASSOCIATED(qs_ot_env(ispin)%ener_dx))
       END DO
+      active_all = MERGE(1, 0, active)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, active_all)
+      active = active_all == 1
       IF (.NOT. active) RETURN
 
       ngroups = MAX(1, MAXVAL(qs_ot_env(:)%occupation_group_index))
@@ -2123,10 +2251,11 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'ot_new_cg_direction'
 
-      INTEGER :: handle, ispin, matrix_cols, matrix_rows, nspin, schur_attempt, schur_flavor, &
-         schur_last_attempt, schur_last_flavor
-      LOGICAL :: complex_kpoint_history, do_ener, do_ks, high_diagnostic, history_spike_reset, &
-         kpoint_preconditioned_direction, mermin_residual_catastrophic_reset, &
+      INTEGER :: catastrophic_reset_any, direction_ready_all, growth_reset_any, handle, ispin, &
+         matrix_cols, matrix_rows, nspin, schur_attempt, schur_flavor, schur_last_attempt, &
+         schur_last_flavor
+      LOGICAL :: complex_kpoint_history, do_ener, do_ks, high_diagnostic, high_diagnostic_source, &
+         history_spike_reset, kpoint_preconditioned_direction, mermin_residual_catastrophic_reset, &
          mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, preflight_only, &
          projected_raw_tail_release, reset_to_sd, residual_history_reset, &
          residual_spike_history_reset, residual_tail_spike_reset, schur_history_change, &
@@ -2155,8 +2284,8 @@ CONTAINS
 
       nspin = SIZE(qs_ot_env)
       logger => cp_get_default_logger()
-      high_diagnostic = logger%iter_info%print_level >= high_print_level .AND. &
-                        logger%para_env%is_source()
+      high_diagnostic = logger%iter_info%print_level >= high_print_level
+      high_diagnostic_source = high_diagnostic .AND. logger%para_env%is_source()
 
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
@@ -2174,6 +2303,9 @@ CONTAINS
                kpoint_preconditioned_direction = .FALSE.
          END DO
       END IF
+      direction_ready_all = MERGE(1, 0, kpoint_preconditioned_direction)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, direction_ready_all)
+      kpoint_preconditioned_direction = direction_ready_all == 1
       history_spike_reset = .FALSE.
       negative_beta = .FALSE.
       mermin_residual_catastrophic_reset = .FALSE.
@@ -2497,14 +2629,16 @@ CONTAINS
                                REAL(MAX(1, SIZE(qs_ot_env(ispin)%matrix_occ_precond_scale)), KIND=dp)
                occ_scale_max = MAXVAL(qs_ot_env(ispin)%matrix_occ_precond_scale)
             END IF
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I4),1X,L1,1X,I4,6(1X,ES16.8))') &
-               " OT CG matrix channel spin k mult occ-active samples raw search direction omin oavg omax:", &
-               qs_ot_env(ispin)%spin_index, qs_ot_env(ispin)%kpoint_index, &
-               qs_ot_env(ispin)%kpoint_multiplicity, &
-               qs_ot_occupation_preconditioner_active(qs_ot_env(ispin)), &
-               qs_ot_env(ispin)%kpoint_occ_preconditioner_ready_samples, &
-               raw_channel_rms, search_channel_rms, search_direction_rms, &
-               occ_scale_min, occ_scale_avg, occ_scale_max
+            IF (high_diagnostic_source) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I4),1X,L1,1X,I4,6(1X,ES16.8))') &
+                  " OT CG matrix channel spin k mult occ-active samples raw search direction omin oavg omax:", &
+                  qs_ot_env(ispin)%spin_index, qs_ot_env(ispin)%kpoint_index, &
+                  qs_ot_env(ispin)%kpoint_multiplicity, &
+                  qs_ot_occupation_preconditioner_active(qs_ot_env(ispin)), &
+                  qs_ot_env(ispin)%kpoint_occ_preconditioner_ready_samples, &
+                  raw_channel_rms, search_channel_rms, search_direction_rms, &
+                  occ_scale_min, occ_scale_avg, occ_scale_max
+            END IF
          END DO
       END IF
 
@@ -2633,6 +2767,17 @@ CONTAINS
                                                     mermin_residual_growth_quality, &
                                                     mermin_residual_catastrophic_reset)
          END IF
+         ! Residual guards depend on distributed floating-point reductions.  A
+         ! rank-local threshold crossing must not split the CG control flow or
+         ! leave only part of a DBCSR subgroup with updated minimizer history.
+         growth_reset_any = MERGE(1, 0, mermin_residual_growth_reset)
+         catastrophic_reset_any = MERGE(1, 0, mermin_residual_catastrophic_reset)
+         CALL ot_mini_max_kpoint_integer(qs_ot_env, para_env_inter_kp, growth_reset_any)
+         CALL ot_mini_max_kpoint_integer(qs_ot_env, para_env_inter_kp, catastrophic_reset_any)
+         CALL ot_mini_min_kpoint_scalar(qs_ot_env, para_env_inter_kp, &
+                                        mermin_residual_growth_quality)
+         mermin_residual_growth_reset = growth_reset_any == 1
+         mermin_residual_catastrophic_reset = catastrophic_reset_any == 1
          sample_residual_growth_ratio = 0.0_dp
          IF (qs_ot_env(1)%schur_model_delta > EPSILON(1.0_dp)) &
             sample_residual_growth_ratio = residual_growth_delta/qs_ot_env(1)%schur_model_delta

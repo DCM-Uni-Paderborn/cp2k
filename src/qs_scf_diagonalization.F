@@ -432,11 +432,15 @@ CONTAINS
 !> \param diis_error ...
 !> \param qs_env ...
 !> \param probe ...
+!> \param added_mos_auto_grow true when the adaptive virtual-space buffer must grow
+!> \param store_ot_matrices retain H(k) and S(k) in the local k-point-group context for OT
+!> \param transfer_only redistribute and retain H(k)/S(k) without diagonalizing or updating density
 !> \par History
 !>      08.2014 created [JGH]
 ! **************************************************************************************************
    SUBROUTINE do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, update_p, &
-                                 diis_step, diis_error, qs_env, probe, added_mos_auto_grow)
+                                 diis_step, diis_error, qs_env, probe, added_mos_auto_grow, &
+                                 store_ot_matrices, transfer_only)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -449,18 +453,20 @@ CONTAINS
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
       LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
+      LOGICAL, INTENT(IN), OPTIONAL                      :: store_ot_matrices, transfer_only
 
       CHARACTER(len=*), PARAMETER :: routineN = 'do_general_diag_kp'
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: coeffs
-      INTEGER                                            :: handle, ib, igroup, ik, ikp, indx, &
+      INTEGER                                            :: handle, ib, ic, igroup, ik, ikp, indx, &
                                                             ispin, jb, kplocal, nb, nkp, &
-                                                            nkp_groups, nspin
+                                                            nkp_groups, nspin, ot_components
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: do_diis, my_added_mos_auto_grow, &
-                                                            my_kpgrp, use_real_wfn
+                                                            my_kpgrp, my_store_ot_matrices, &
+                                                            my_transfer_only, use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :) :: info
@@ -482,6 +488,12 @@ CONTAINS
 
       my_added_mos_auto_grow = .FALSE.
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
+      my_store_ot_matrices = .FALSE.
+      IF (PRESENT(store_ot_matrices)) my_store_ot_matrices = store_ot_matrices
+      my_transfer_only = .FALSE.
+      IF (PRESENT(transfer_only)) my_transfer_only = transfer_only
+      IF (my_transfer_only) my_store_ot_matrices = .TRUE.
+      CPASSERT(.NOT. my_transfer_only .OR. .NOT. update_p)
 
       NULLIFY (sab_nl)
       CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
@@ -494,6 +506,7 @@ CONTAINS
       do_diis = .FALSE.
       IF (scf_env%iter_count > 1 .AND. .NOT. scf_env%skip_diis .AND. .NOT. use_real_wfn &
           .AND. PRESENT(diis_error) .AND. PRESENT(qs_env)) do_diis = .TRUE.
+      IF (my_transfer_only) do_diis = .FALSE.
 
       ! allocate some work matrices
       ALLOCATE (rmatrix, cmatrix, tmpmat)
@@ -530,6 +543,21 @@ CONTAINS
 
       para_env => kpoints%blacs_env_all%para_env
       nspin = SIZE(matrix_ks, 1)
+      IF (my_store_ot_matrices) THEN
+         ot_components = MERGE(1, 2, use_real_wfn)
+         DO ikp = 1, kplocal
+            kp => kpoints%kp_env(ikp)%kpoint_env
+            CALL cp_fm_release(kp%ot_hmat)
+            CALL cp_fm_release(kp%ot_smat)
+            ALLOCATE (kp%ot_hmat(ot_components, nspin), kp%ot_smat(ot_components))
+            DO ic = 1, ot_components
+               CALL cp_fm_create(kp%ot_smat(ic), matrix_struct)
+               DO ispin = 1, nspin
+                  CALL cp_fm_create(kp%ot_hmat(ic, ispin), matrix_struct)
+               END DO
+            END DO
+         END DO
+      END IF
       ALLOCATE (info(kplocal*nspin*nkp_groups, 4))
 
       ! Setup and start all the communication
@@ -653,6 +681,10 @@ CONTAINS
 
                CALL get_mo_set(kp%mos(1, ispin), mo_coeff=rmos, eigenvalues=eigenvalues)
                CALL get_mo_set(kp%mos(2, ispin), mo_coeff=imos)
+               IF (my_store_ot_matrices) THEN
+                  CALL cp_cfm_to_fm(cksmat, kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin))
+                  IF (ispin == 1) CALL cp_cfm_to_fm(csmat, kp%ot_smat(1), kp%ot_smat(2))
+               END IF
                IF (scf_env%cholesky_method == cholesky_off) THEN
                   CALL cp_cfm_geeig_canon(cksmat, csmat, cmos, eigenvalues, cwork, &
                                           scf_control%eps_eigval)
@@ -698,25 +730,37 @@ CONTAINS
                kp => kpoints%kp_env(ikp)%kpoint_env
                IF (use_real_wfn) THEN
                   CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
-                  IF (scf_env%cholesky_method == cholesky_off) THEN
-                     CALL cp_fm_geeig_canon(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal, &
-                                            scf_control%eps_eigval)
-                  ELSE
-                     CALL cp_fm_geeig(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal)
+                  IF (my_store_ot_matrices) THEN
+                     CALL cp_fm_to_fm(rksmat, kp%ot_hmat(1, ispin))
+                     IF (ispin == 1) CALL cp_fm_to_fm(rsmat, kp%ot_smat(1))
+                  END IF
+                  IF (.NOT. my_transfer_only) THEN
+                     IF (scf_env%cholesky_method == cholesky_off) THEN
+                        CALL cp_fm_geeig_canon(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal, &
+                                               scf_control%eps_eigval)
+                     ELSE
+                        CALL cp_fm_geeig(rksmat, rsmat, mo_coeff, eigenvalues, fmlocal)
+                     END IF
                   END IF
                ELSE
                   CALL get_mo_set(kp%mos(1, ispin), mo_coeff=rmos, eigenvalues=eigenvalues)
                   CALL get_mo_set(kp%mos(2, ispin), mo_coeff=imos)
-                  IF (scf_env%cholesky_method == cholesky_off) THEN
-                     CALL cp_cfm_geeig_canon(cksmat, csmat, cmos, eigenvalues, cwork, &
-                                             scf_control%eps_eigval)
-                  ELSE
-                     CALL cp_cfm_geeig(cksmat, csmat, cmos, eigenvalues, cwork)
+                  IF (my_store_ot_matrices) THEN
+                     CALL cp_cfm_to_fm(cksmat, kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin))
+                     IF (ispin == 1) CALL cp_cfm_to_fm(csmat, kp%ot_smat(1), kp%ot_smat(2))
                   END IF
-                  ! copy eigenvalues to imag set (keep them in sync)
-                  kp%mos(2, ispin)%eigenvalues = eigenvalues
-                  ! split real and imaginary part of mos
-                  CALL cp_cfm_to_fm(cmos, rmos, imos)
+                  IF (.NOT. my_transfer_only) THEN
+                     IF (scf_env%cholesky_method == cholesky_off) THEN
+                        CALL cp_cfm_geeig_canon(cksmat, csmat, cmos, eigenvalues, cwork, &
+                                                scf_control%eps_eigval)
+                     ELSE
+                        CALL cp_cfm_geeig(cksmat, csmat, cmos, eigenvalues, cwork)
+                     END IF
+                     ! copy eigenvalues to imag set (keep them in sync)
+                     kp%mos(2, ispin)%eigenvalues = eigenvalues
+                     ! split real and imaginary part of mos
+                     CALL cp_cfm_to_fm(cmos, rmos, imos)
+                  END IF
                END IF
             END DO
          END DO
@@ -747,7 +791,7 @@ CONTAINS
       ! All done
       DEALLOCATE (info)
 
-      IF (update_p) THEN
+      IF (update_p .AND. .NOT. my_transfer_only) THEN
          ! MO occupations
          IF (PRESENT(probe) .EQV. .TRUE.) THEN
             scf_control%smear%do_smear = .FALSE.

@@ -11,18 +11,18 @@ MODULE qs_scf_loop_utils
    USE cp_control_types,                ONLY: dft_control_type,&
                                               hairy_probes_type
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
-        dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
-        dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_p_type, dbcsr_release, &
-        dbcsr_scale, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
+        dbcsr_add, dbcsr_copy, dbcsr_get_info, dbcsr_init_p, dbcsr_iterator_blocks_left, &
+        dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
+        dbcsr_multiply, dbcsr_p_type, dbcsr_release, dbcsr_release_p, dbcsr_scale, dbcsr_set, &
+        dbcsr_type
    USE cp_dbcsr_contrib,                ONLY: dbcsr_dot,&
                                               dbcsr_get_diag,&
                                               dbcsr_scale_by_vector,&
                                               dbcsr_set_diag
-   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_diag,                   ONLY: cp_dbcsr_heevd
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
+                                              copy_fm_to_dbcsr_bc,&
                                               cp_dbcsr_sm_fm_multiply
    USE cp_external_control,             ONLY: external_control
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale
@@ -45,8 +45,7 @@ MODULE qs_scf_loop_utils
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
                                               kpoint_density_transform,&
                                               kpoint_fixed_spin_targets,&
-                                              kpoint_set_mo_occupation,&
-                                              rskp_transform
+                                              kpoint_set_mo_occupation
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_env_type,&
                                               kpoint_type
@@ -883,10 +882,9 @@ CONTAINS
       INTEGER :: first_channel, handle, ikpoint, imo, ispin, local_channel, local_kpoint, &
          max_ener_nmo, nkpoint, nlocal_channels, nmo, nspin_ot, ref_guard_attempt
       INTEGER, DIMENSION(2)                              :: kp_range
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL :: fermi_window_guarded, initial_density_rebase, initial_density_reference, &
-         protect_mermin_ls_sample, ref_guard_ok, ref_guarded, update_ot_energy_state, &
-         update_ot_energy_state_after, use_real_wfn
+         protect_mermin_ls_sample, ref_guard_ok, ref_guarded, transfer_step, &
+         update_ot_energy_state, update_ot_energy_state_after, use_real_wfn
       REAL(KIND=dp) :: ener_nondiag, full_all_spin_scale, maxocc, occupation_floor, &
          occupation_floor_fraction, occupation_scale_full, ref_guard_max, ref_guard_min, &
          ref_guard_scale, trial_kTS
@@ -894,18 +892,16 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ener_x_old
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: trial_eigenvalues, trial_occupation
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, wkp
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_hc, matrix_hc_im, matrix_x_old, &
-                                                            matrix_x_old_im, rot_mat_x_old, &
-                                                            rot_mat_x_old_im
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: matrix_h_cache_im, matrix_h_cache_re, &
+         matrix_hc, matrix_hc_im, matrix_s_cache_im, matrix_s_cache_re, matrix_x_old, &
+         matrix_x_old_im, rot_mat_x_old, rot_mat_x_old_im
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: density_target, rho_ao_kp
       TYPE(dbcsr_type)                                   :: density_hc_im, density_hc_re
-      TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
-                                                            matrix_s_re
+      TYPE(dbcsr_type), POINTER                          :: matrix_s_im, matrix_s_re
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -918,20 +914,22 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, density_target, dft_control, eigenvalues, &
-               energy, fmwork, kpoints, local_ot_env, logger, matrix_hc, &
-               matrix_hc_im, matrix_k_im, matrix_k_re, matrix_s_im, &
+      NULLIFY (density_target, dft_control, eigenvalues, &
+               energy, fmwork, kpoints, local_ot_env, logger, matrix_h_cache_im, &
+               matrix_h_cache_re, matrix_hc, matrix_hc_im, matrix_s_cache_im, &
+               matrix_s_cache_re, matrix_s_im, &
                matrix_s_re, matrix_x_old, matrix_x_old_im, mo_coeff, &
-               mo_coeff_im, para_env_inter_kp, rho, rho_ao_kp, sab_nl, wkp, xkp)
+               mo_coeff_im, para_env_inter_kp, rho, rho_ao_kp, sab_nl, wkp)
       NULLIFY (rot_mat_x_old, rot_mat_x_old_im)
       added_mos_auto_grow = .FALSE.
       ot_kp_subspace_refresh = .FALSE.
 
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints, rho=rho)
-      CALL get_kpoint_info(kpoints, nkp=nkpoint, xkp=xkp, wkp=wkp, use_real_wfn=use_real_wfn, &
+      logger => cp_get_default_logger()
+      CALL get_kpoint_info(kpoints, nkp=nkpoint, wkp=wkp, use_real_wfn=use_real_wfn, &
                            kp_range=kp_range, para_env_inter_kp=para_env_inter_kp, &
-                           cell_to_index=cell_to_index, sab_nl=sab_nl)
+                           sab_nl=sab_nl)
       CPASSERT(ASSOCIATED(sab_nl))
       CPASSERT(ASSOCIATED(matrix_ks))
       CPASSERT(ASSOCIATED(matrix_s))
@@ -944,6 +942,9 @@ CONTAINS
          CALL cp_abort(__LOCATION__, &
                        "K-point OT driver currently supports OT%ALGORITHM REF only.")
       END IF
+      transfer_step = .FALSE.
+      CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., &
+                              transfer_step, store_ot_matrices=.TRUE., transfer_only=.TRUE.)
       kp => kpoints%kp_env(1)%kpoint_env
       nspin_ot = SIZE(kp%mos, 2)
       CALL qs_ot_check_channel_context(scf_env%qs_ot_env, nspin_ot, &
@@ -962,12 +963,22 @@ CONTAINS
 
       ALLOCATE (matrix_hc(nlocal_channels))
       ALLOCATE (matrix_hc_im(nlocal_channels))
+      ALLOCATE (matrix_h_cache_re(nlocal_channels))
+      ALLOCATE (matrix_h_cache_im(nlocal_channels))
       ALLOCATE (matrix_x_old(nlocal_channels))
       ALLOCATE (matrix_x_old_im(nlocal_channels))
       ALLOCATE (rot_mat_x_old(nlocal_channels))
       ALLOCATE (rot_mat_x_old_im(nlocal_channels))
+      ALLOCATE (matrix_s_cache_re(SIZE(kpoints%kp_env)))
+      ALLOCATE (matrix_s_cache_im(SIZE(kpoints%kp_env)))
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         NULLIFY (matrix_s_cache_re(local_kpoint)%matrix)
+         NULLIFY (matrix_s_cache_im(local_kpoint)%matrix)
+      END DO
       max_ener_nmo = 1
       DO local_channel = 1, nlocal_channels
+         NULLIFY (matrix_h_cache_re(local_channel)%matrix)
+         NULLIFY (matrix_h_cache_im(local_channel)%matrix)
          NULLIFY (matrix_hc(local_channel)%matrix)
          NULLIFY (matrix_hc_im(local_channel)%matrix)
          NULLIFY (matrix_x_old(local_channel)%matrix)
@@ -1025,30 +1036,23 @@ CONTAINS
          END IF
       END IF
 
-      ALLOCATE (matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im)
-      CALL dbcsr_create(matrix_k_re, template=matrix_ks(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_symmetric)
-      CALL dbcsr_create(matrix_k_im, template=matrix_ks(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_antisymmetric)
-      CALL dbcsr_create(matrix_s_re, template=matrix_s(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_symmetric)
-      CALL dbcsr_create(matrix_s_im, template=matrix_s(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_antisymmetric)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_re, sab_nl)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_im, sab_nl)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_re, sab_nl)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_im, sab_nl)
-
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
-         CALL dbcsr_set(matrix_s_re, 0.0_dp)
-         CALL dbcsr_set(matrix_s_im, 0.0_dp)
-         CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s, &
-                             ispin=1, xkp=xkp(1:3, ikpoint), &
-                             cell_to_index=cell_to_index, sab_nl=sab_nl)
+         CPASSERT(ASSOCIATED(kp%ot_smat))
+         CPASSERT(SIZE(kp%ot_smat) >= 2)
+         CALL dbcsr_init_p(matrix_s_cache_re(local_kpoint)%matrix)
+         CALL dbcsr_init_p(matrix_s_cache_im(local_kpoint)%matrix)
+         CALL copy_fm_to_dbcsr_bc(kp%ot_smat(1), matrix_s_cache_re(local_kpoint)%matrix)
+         CALL copy_fm_to_dbcsr_bc(kp%ot_smat(2), matrix_s_cache_im(local_kpoint)%matrix)
+         matrix_s_re => matrix_s_cache_re(local_kpoint)%matrix
+         matrix_s_im => matrix_s_cache_im(local_kpoint)%matrix
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+            CALL dbcsr_init_p(matrix_h_cache_re(local_channel)%matrix)
+            CALL dbcsr_init_p(matrix_h_cache_im(local_channel)%matrix)
+            CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(1, ispin), matrix_h_cache_re(local_channel)%matrix)
+            CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(2, ispin), matrix_h_cache_im(local_channel)%matrix)
             CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
             CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
@@ -1063,25 +1067,22 @@ CONTAINS
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
+         CPASSERT(ASSOCIATED(kp%ot_hmat))
+         CPASSERT(SIZE(kp%ot_hmat, 1) >= 2)
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            CALL dbcsr_set(matrix_k_re, 0.0_dp)
-            CALL dbcsr_set(matrix_k_im, 0.0_dp)
-            CALL rskp_transform(rmatrix=matrix_k_re, cmatrix=matrix_k_im, rsmat=matrix_ks, &
-                                ispin=ispin, xkp=xkp(1:3, ikpoint), &
-                                cell_to_index=cell_to_index, sab_nl=sab_nl)
-
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, mo_coeff=mo_coeff, nmo=nmo)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
             CALL cp_fm_create(hc_re, mo_coeff%matrix_struct)
             CALL cp_fm_create(hc_im, mo_coeff%matrix_struct)
-
-            CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff, hc_re, nmo)
-            CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff_im, hc_re, nmo, &
-                                         alpha=-1.0_dp, beta=1.0_dp)
-            CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff_im, hc_im, nmo)
-            CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff, hc_im, nmo, &
-                                         alpha=1.0_dp, beta=1.0_dp)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_re(local_channel)%matrix, &
+                                         mo_coeff, hc_re, nmo)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_im(local_channel)%matrix, &
+                                         mo_coeff_im, hc_re, nmo, alpha=-1.0_dp, beta=1.0_dp)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_re(local_channel)%matrix, &
+                                         mo_coeff_im, hc_im, nmo)
+            CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_im(local_channel)%matrix, &
+                                         mo_coeff, hc_im, nmo, alpha=1.0_dp, beta=1.0_dp)
 
             CALL copy_fm_to_dbcsr(hc_re, matrix_hc(local_channel)%matrix)
             CALL copy_fm_to_dbcsr(hc_im, matrix_hc_im(local_channel)%matrix)
@@ -1095,7 +1096,6 @@ CONTAINS
             CALL cp_fm_release(hc_im)
          END DO
       END DO
-
       CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
                                                     trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
@@ -1248,10 +1248,10 @@ CONTAINS
          update_ot_energy_state_after = .NOT. local_ot_env(1)%energy_only .AND. &
                                         .NOT. local_ot_env(1)%mermin_ls_closure_rejected
       END IF
-      ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                            xkp, cell_to_index, sab_nl, matrix_s, &
-                                                            matrix_s_re, matrix_s_im, para_env_inter_kp, &
-                                                            ref_guard_min, ref_guard_max)
+      ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok( &
+                     kpoints, local_ot_env, first_channel, nspin_ot, &
+                     matrix_s_cache_re, matrix_s_cache_im, para_env_inter_kp, &
+                     ref_guard_min, ref_guard_max)
       ref_guarded = .FALSE.
       ref_guard_scale = 1.0_dp
       IF (.NOT. ref_guard_ok) THEN
@@ -1261,9 +1261,9 @@ CONTAINS
                                                   ot_kp_ref_overlap_guard_backtrack)
             ref_guard_scale = ref_guard_scale*ot_kp_ref_overlap_guard_backtrack
             ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, &
-                                                                  nspin_ot, xkp, cell_to_index, sab_nl, &
-                                                                  matrix_s, matrix_s_re, matrix_s_im, &
-                                                                  para_env_inter_kp, ref_guard_min, &
+                                                                  nspin_ot, matrix_s_cache_re, &
+                                                                  matrix_s_cache_im, para_env_inter_kp, &
+                                                                  ref_guard_min, &
                                                                   ref_guard_max)
             IF (ref_guard_ok) EXIT
          END DO
@@ -1272,9 +1272,9 @@ CONTAINS
                                                   rot_mat_x_old, rot_mat_x_old_im, ener_x_old, 0.0_dp)
             ref_guard_scale = 0.0_dp
             ref_guard_ok = qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, &
-                                                                  nspin_ot, xkp, cell_to_index, sab_nl, &
-                                                                  matrix_s, matrix_s_re, matrix_s_im, &
-                                                                  para_env_inter_kp, ref_guard_min, &
+                                                                  nspin_ot, matrix_s_cache_re, &
+                                                                  matrix_s_cache_im, para_env_inter_kp, &
+                                                                  ref_guard_min, &
                                                                   ref_guard_max)
          END IF
          IF (.NOT. ref_guard_ok) THEN
@@ -1301,14 +1301,12 @@ CONTAINS
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
-         CALL dbcsr_set(matrix_s_re, 0.0_dp)
-         CALL dbcsr_set(matrix_s_im, 0.0_dp)
-         CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s, &
-                             ispin=1, xkp=xkp(1:3, ikpoint), &
-                             cell_to_index=cell_to_index, sab_nl=sab_nl)
+         matrix_s_re => matrix_s_cache_re(local_kpoint)%matrix
+         matrix_s_im => matrix_s_cache_im(local_kpoint)%matrix
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues, nmo=nmo)
+            CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues, &
+                            nmo=nmo)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
             CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
                                                 matrix_hc_im(local_channel)%matrix, &
@@ -1317,20 +1315,18 @@ CONTAINS
             CALL copy_dbcsr_to_fm(matrix_hc(local_channel)%matrix, mo_coeff)
             CALL copy_dbcsr_to_fm(matrix_hc_im(local_channel)%matrix, mo_coeff_im)
             IF (kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), scf_control%smear)) THEN
-               CALL dbcsr_set(matrix_k_re, 0.0_dp)
-               CALL dbcsr_set(matrix_k_im, 0.0_dp)
-               CALL rskp_transform(rmatrix=matrix_k_re, cmatrix=matrix_k_im, rsmat=matrix_ks, &
-                                   ispin=ispin, xkp=xkp(1:3, ikpoint), &
-                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
+               CPASSERT(ASSOCIATED(kp%ot_hmat))
+               CPASSERT(SIZE(kp%ot_hmat, 1) >= 2)
                CALL cp_fm_create(hc_re, mo_coeff%matrix_struct)
                CALL cp_fm_create(hc_im, mo_coeff%matrix_struct)
-
-               CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff, hc_re, nmo)
-               CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff_im, hc_re, nmo, &
-                                            alpha=-1.0_dp, beta=1.0_dp)
-               CALL cp_dbcsr_sm_fm_multiply(matrix_k_re, mo_coeff_im, hc_im, nmo)
-               CALL cp_dbcsr_sm_fm_multiply(matrix_k_im, mo_coeff, hc_im, nmo, &
-                                            alpha=1.0_dp, beta=1.0_dp)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_re(local_channel)%matrix, &
+                                            mo_coeff, hc_re, nmo)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_im(local_channel)%matrix, &
+                                            mo_coeff_im, hc_re, nmo, alpha=-1.0_dp, beta=1.0_dp)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_re(local_channel)%matrix, &
+                                            mo_coeff_im, hc_im, nmo)
+               CALL cp_dbcsr_sm_fm_multiply(matrix_h_cache_im(local_channel)%matrix, &
+                                            mo_coeff, hc_im, nmo, alpha=1.0_dp, beta=1.0_dp)
 
                CALL dbcsr_copy(density_hc_re, matrix_hc(local_channel)%matrix, name="ot_kp_density_hc_re")
                CALL dbcsr_copy(density_hc_im, matrix_hc_im(local_channel)%matrix, name="ot_kp_density_hc_im")
@@ -1350,7 +1346,6 @@ CONTAINS
             END IF
          END DO
       END DO
-
       CALL kpoint_set_mo_occupation(kpoints, scf_control%smear, &
                                     added_mos_auto=scf_control%added_mos_auto, &
                                     added_mos_auto_grow=added_mos_auto_grow)
@@ -1386,7 +1381,15 @@ CONTAINS
       IF (ALLOCATED(trial_occupation)) DEALLOCATE (trial_occupation)
       IF (ALLOCATED(trial_mu)) DEALLOCATE (trial_mu)
 
+      DO local_kpoint = 1, SIZE(matrix_s_cache_re)
+         CALL dbcsr_release_p(matrix_s_cache_re(local_kpoint)%matrix)
+         CALL dbcsr_release_p(matrix_s_cache_im(local_kpoint)%matrix)
+      END DO
+      DEALLOCATE (matrix_s_cache_re, matrix_s_cache_im)
+
       DO local_channel = 1, nlocal_channels
+         CALL dbcsr_release_p(matrix_h_cache_re(local_channel)%matrix)
+         CALL dbcsr_release_p(matrix_h_cache_im(local_channel)%matrix)
          CALL dbcsr_release(matrix_hc(local_channel)%matrix)
          CALL dbcsr_release(matrix_hc_im(local_channel)%matrix)
          CALL dbcsr_release(matrix_x_old(local_channel)%matrix)
@@ -1404,13 +1407,8 @@ CONTAINS
          DEALLOCATE (matrix_x_old(local_channel)%matrix)
          DEALLOCATE (matrix_x_old_im(local_channel)%matrix)
       END DO
-      DEALLOCATE (ener_x_old, matrix_hc, matrix_hc_im, matrix_x_old, matrix_x_old_im, &
-                  rot_mat_x_old, rot_mat_x_old_im)
-
-      CALL dbcsr_deallocate_matrix(matrix_k_re)
-      CALL dbcsr_deallocate_matrix(matrix_k_im)
-      CALL dbcsr_deallocate_matrix(matrix_s_re)
-      CALL dbcsr_deallocate_matrix(matrix_s_im)
+      DEALLOCATE (ener_x_old, matrix_h_cache_im, matrix_h_cache_re, matrix_hc, matrix_hc_im, &
+                  matrix_x_old, matrix_x_old_im, rot_mat_x_old, rot_mat_x_old_im)
 
       CALL timestop(handle)
 
@@ -1505,31 +1503,22 @@ CONTAINS
 !> \param local_ot_env ...
 !> \param first_channel ...
 !> \param nspin_ot ...
-!> \param xkp ...
-!> \param cell_to_index ...
-!> \param sab_nl ...
-!> \param matrix_s ...
-!> \param matrix_s_re ...
-!> \param matrix_s_im ...
+!> \param matrix_s_cache_re cached real overlap matrices for local k-points
+!> \param matrix_s_cache_im cached imaginary overlap matrices for local k-points
 !> \param para_env_inter_kp ...
 !> \param ref_overlap_min ...
 !> \param ref_overlap_max ...
 !> \return true if all local/global REF overlaps remain safely positive
 ! **************************************************************************************************
    FUNCTION qs_scf_loop_ot_kp_ref_overlap_guard_ok(kpoints, local_ot_env, first_channel, nspin_ot, &
-                                                   xkp, cell_to_index, sab_nl, matrix_s, &
-                                                   matrix_s_re, matrix_s_im, para_env_inter_kp, &
+                                                   matrix_s_cache_re, matrix_s_cache_im, &
+                                                   para_env_inter_kp, &
                                                    ref_overlap_min, ref_overlap_max) RESULT(ok)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
       INTEGER, INTENT(IN)                                :: first_channel, nspin_ot
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_nl
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
-      TYPE(dbcsr_type), POINTER                          :: matrix_s_re, matrix_s_im
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s_cache_re, matrix_s_cache_im
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       REAL(KIND=dp), INTENT(OUT)                         :: ref_overlap_min, ref_overlap_max
       LOGICAL                                            :: ok
@@ -1537,18 +1526,17 @@ CONTAINS
       INTEGER                                            :: ikpoint, ispin, local_channel, &
                                                             local_kpoint
       REAL(KIND=dp)                                      :: channel_max, channel_min
+      TYPE(dbcsr_type), POINTER                          :: matrix_s_im, matrix_s_re
       TYPE(kpoint_env_type), POINTER                     :: kp
 
+      NULLIFY (matrix_s_im, matrix_s_re)
       ref_overlap_min = HUGE(1.0_dp)
       ref_overlap_max = -HUGE(1.0_dp)
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
-         CALL dbcsr_set(matrix_s_re, 0.0_dp)
-         CALL dbcsr_set(matrix_s_im, 0.0_dp)
-         CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s, &
-                             ispin=1, xkp=xkp(1:3, ikpoint), &
-                             cell_to_index=cell_to_index, sab_nl=sab_nl)
+         matrix_s_re => matrix_s_cache_re(local_kpoint)%matrix
+         matrix_s_im => matrix_s_cache_im(local_kpoint)%matrix
          DO ispin = 1, nspin_ot
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
             CALL qs_scf_loop_ot_ref_overlap_bounds(local_ot_env(local_channel), matrix_s_re, matrix_s_im, &
@@ -2290,10 +2278,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
       LOGICAL, INTENT(OUT)                               :: guarded
 
-      INTEGER                                            :: adjusted, current_nmo, group, ikpoint, &
-                                                            imo, ispin, local_channel, &
-                                                            local_kpoint, ngroups, nkpoint, &
-                                                            trial_nmo
+      INTEGER :: adjusted, calibration_samples, current_nmo, group, ikpoint, imo, ispin, &
+         local_channel, local_kpoint, ngroups, nkpoint, trial_nmo
       LOGICAL                                            :: fractional_support_lost, guard_group, &
                                                             lower_frontier, upper_frontier
       REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
@@ -2312,8 +2298,9 @@ CONTAINS
       ! Protect a pre-existing thermal frontier only during initial response
       ! calibration.  Later occupation changes must follow the physical Mermin
       ! minimization, including a legitimately gapped coarse k mesh.
-      IF (local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
-          ot_kp_schur_calibration_min_samples) RETURN
+      calibration_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
+      CALL para_env_inter_kp%min(calibration_samples)
+      IF (calibration_samples >= ot_kp_schur_calibration_min_samples) RETURN
 
       sigma = smear%electronic_temperature
       IF (sigma <= 1.0E-14_dp) RETURN
@@ -4277,7 +4264,8 @@ CONTAINS
             rayleigh_gap = 0.0_dp
             rayleigh_edge_gap = 0.0_dp
             ALLOCATE (rayleigh_diag(nmo))
-            CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, rayleigh_diag)
+            CALL get_replicated_kpoint_ot_diag(local_ot_env(local_channel)%rot_mat_chc, &
+                                               local_ot_env(local_channel), rayleigh_diag)
 
             DO imo = 1, nmo
                occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
@@ -4409,6 +4397,22 @@ CONTAINS
    END FUNCTION kpoint_ot_canonical_tether_weight
 
 ! **************************************************************************************************
+!> \brief gather a distributed k-point OT matrix diagonal on its local subgroup
+!> \param matrix ...
+!> \param qs_ot_env ...
+!> \param diagonal ...
+! **************************************************************************************************
+   SUBROUTINE get_replicated_kpoint_ot_diag(matrix, qs_ot_env, diagonal)
+      TYPE(dbcsr_type), INTENT(IN)                       :: matrix
+      TYPE(qs_ot_type), INTENT(IN)                       :: qs_ot_env
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: diagonal
+
+      CALL dbcsr_get_diag(matrix, diagonal)
+      IF (ASSOCIATED(qs_ot_env%para_env)) CALL qs_ot_env%para_env%sum(diagonal)
+
+   END SUBROUTINE get_replicated_kpoint_ot_diag
+
+! **************************************************************************************************
 !> \brief prepare complex rotation and band-energy gradients for one local k-point OT channel
 !> \param qs_ot_env ...
 !> \param matrix_hc ...
@@ -4485,7 +4489,7 @@ CONTAINS
       CALL dbcsr_copy(chc_im, b_im)
 
       IF (qs_ot_env%settings%do_ener) THEN
-         CALL dbcsr_get_diag(chc_re, qs_ot_env%ener_gx)
+         CALL get_replicated_kpoint_ot_diag(chc_re, qs_ot_env, qs_ot_env%ener_gx)
       END IF
 
       ! At fixed auxiliary energies the Mermin occupations belong to the
@@ -4527,7 +4531,7 @@ CONTAINS
          nmo = SIZE(qs_ot_env%ener_x)
          IF (sigma > 1.0E-14_dp .AND. SIZE(eigenvalues) >= nmo .AND. SIZE(occupation_numbers) >= nmo) THEN
             ALLOCATE (diagonal(nmo), tether_diag(nmo))
-            CALL dbcsr_get_diag(chc_re, diagonal)
+            CALL get_replicated_kpoint_ot_diag(chc_re, qs_ot_env, diagonal)
             tether_diag(:) = 0.0_dp
             tether_shift = 0.0_dp
             rayleigh_edge_gap = 0.0_dp
@@ -4588,7 +4592,7 @@ CONTAINS
          CALL dbcsr_copy(b_re, chc_re)
          CALL dbcsr_copy(b_im, chc_im)
          ALLOCATE (diagonal(SIZE(qs_ot_env%ener_x)))
-         CALL dbcsr_get_diag(b_re, diagonal)
+         CALL get_replicated_kpoint_ot_diag(b_re, qs_ot_env, diagonal)
          diagonal(:) = diagonal(:) - qs_ot_env%ener_x(:)
          CALL dbcsr_set_diag(b_re, diagonal)
          DEALLOCATE (diagonal)
@@ -4793,7 +4797,8 @@ CONTAINS
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
                CALL get_mo_set(kp%mos(1, ispin), nmo=nmo)
                ALLOCATE (nondiag_diag(nmo))
-               CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, nondiag_diag)
+               CALL get_replicated_kpoint_ot_diag(local_ot_env(local_channel)%rot_mat_chc, &
+                                                  local_ot_env(local_channel), nondiag_diag)
                nondiag_diag(:) = nondiag_diag(:) - local_ot_env(local_channel)%ener_x(:)
                local_ot_env(local_channel)%ener_gx(:) = local_ot_env(local_channel)%ener_gx(:) - &
                                            local_ot_env(local_channel)%settings%nondiag_energy_strength*wkp(ikpoint)*nondiag_diag(:)
@@ -4811,7 +4816,8 @@ CONTAINS
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
                mu = trial_mu(ispin)
                ALLOCATE (canonical_diag(nmo))
-               CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, canonical_diag)
+               CALL get_replicated_kpoint_ot_diag(local_ot_env(local_channel)%rot_mat_chc, &
+                                                  local_ot_env(local_channel), canonical_diag)
                tether_shift = 0.0_dp
                rayleigh_edge_gap = 0.0_dp
                tether_weight_sum = 0.0_dp
@@ -7779,7 +7785,8 @@ CONTAINS
                tether_strength = 0.0_dp
                IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
                   ALLOCATE (channel_diag(nmo))
-                  CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, channel_diag)
+                  CALL get_replicated_kpoint_ot_diag(local_ot_env(local_channel)%rot_mat_chc, &
+                                                     local_ot_env(local_channel), channel_diag)
                   rayleigh_edge_gap = 0.0_dp
                   DO imo = 1, nmo
                      tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
@@ -7870,7 +7877,8 @@ CONTAINS
                tether_strength = 0.0_dp
                IF (local_ot_env(local_channel)%settings%canonical_tether) THEN
                   ALLOCATE (channel_diag(nmo))
-                  CALL dbcsr_get_diag(local_ot_env(local_channel)%rot_mat_chc, channel_diag)
+                  CALL get_replicated_kpoint_ot_diag(local_ot_env(local_channel)%rot_mat_chc, &
+                                                     local_ot_env(local_channel), channel_diag)
                   rayleigh_edge_gap = 0.0_dp
                   DO imo = 1, nmo
                      tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
@@ -8077,6 +8085,18 @@ CONTAINS
             local_ot_env(1)%schur_projector_spectral_norm = 0.0_dp
             local_ot_env(1)%schur_projector_spectral_floor = 0.0_dp
             local_ot_env(1)%schur_projector_spectral_emin = 0.0_dp
+         END IF
+         IF (para_env_inter_kp%num_pe > 1) THEN
+            ! The dense Schur matrix is indexed in the local rotation space.
+            ! Summing equally numbered entries from independent k points would
+            ! constrain unrelated rotations and gives a variable collective
+            ! count when local active spaces differ.  Keep the globally
+            ! projected diagonal occupation block until the Schur variables
+            ! have an explicit global (spin,k-point,mode) distribution.
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
+               " OT k-point distributed preconditioner: using block-diagonal occupation response"
+            RETURN
          END IF
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group), &
@@ -25956,11 +25976,11 @@ CONTAINS
 
       INTEGER                                            :: imode, jmode, nrot_local
       REAL(KIND=dp) :: base_projected_neg, base_projected_pos, base_weight, coeff_det, &
-         coeff_negative, coeff_positive, eval_abs_avg, g1, g2, h11, h12, h22, inv_weight_i, &
-         inv_weight_j, mode_norm, mode_sign, mode_weight, negative_balance, negative_gdot, &
-         negative_norm, negative_weight_sum, positive_sum, positive_weight_sum, raw_negative_sum, &
-         residual_weight, response_total_sum, spectral_weight, step_weight, step_weight_sum, &
-         weight_i
+         coeff_negative, coeff_positive, eval_abs_avg, eval_abs_sum, g1, g2, h11, h12, h22, &
+         inv_weight_i, inv_weight_j, mode_norm, mode_sign, mode_weight, negative_balance, &
+         negative_gdot, negative_norm, negative_weight_sum, nrot_count, positive_sum, &
+         positive_weight_sum, raw_negative_sum, residual_weight, response_total_sum, &
+         spectral_weight, step_weight, step_weight_sum, weight_i
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: inv_sqrt_step_weight, mode_coeff, mode_eval, &
          mode_norms, mode_rx, mode_step, response_corr, response_neg, response_pos, &
          sqrt_step_weight
@@ -26030,7 +26050,11 @@ CONTAINS
          END DO
          CALL diamat_all(mode_delta, mode_eval)
          mode_coeff(:) = MATMUL(TRANSPOSE(mode_delta), sqrt_step_weight(:)*step_rot(:))
-         eval_abs_avg = SUM(ABS(mode_eval))/REAL(MAX(1, nrot_local), KIND=dp)
+         eval_abs_sum = SUM(ABS(mode_eval))
+         nrot_count = REAL(nrot_local, KIND=dp)
+         CALL para_env_inter_kp%sum(eval_abs_sum)
+         CALL para_env_inter_kp%sum(nrot_count)
+         eval_abs_avg = eval_abs_sum/MAX(1.0_dp, nrot_count)
          response_total_sum = 0.0_dp
          raw_negative_sum = 0.0_dp
          mode_norms(:) = 0.0_dp
@@ -26039,17 +26063,21 @@ CONTAINS
             mode_step(:) = mode_coeff(imode)*inv_sqrt_step_weight(:)*mode_delta(:, imode)
             mode_rx(:) = MATMUL(response_exact - response_raw, mode_step)
             IF (use_projected_metric) THEN
-               CALL kpoint_ot_mixed_projected_term(mode_rx, mode_rx, occ_curv, tether_curv, &
-                                                   occ_curv_projection_sum, channel_nmo, e_offset, &
-                                                   mode_norm)
+               ! A finite response mode belongs to one local k-point channel.
+               ! Pairing it with the same dense-mode index on another k-point
+               ! is neither gauge invariant nor collective safe.  Classify the
+               ! local mode with the positive diagonal Mermin metric, then
+               ! project and measure the assembled response globally below.
+               mode_norm = DOT_PRODUCT((occ_curv(:) + tether_curv(:))*mode_rx(:), mode_rx(:))
             ELSE
                mode_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
-               CALL para_env_inter_kp%sum(mode_norm)
             END IF
             mode_norms(imode) = MAX(0.0_dp, mode_norm)
             response_total_sum = response_total_sum + mode_norms(imode)
             IF (mode_eval(imode) < 0.0_dp) raw_negative_sum = raw_negative_sum + mode_norms(imode)
          END DO
+         CALL para_env_inter_kp%sum(response_total_sum)
+         CALL para_env_inter_kp%sum(raw_negative_sum)
          IF (PRESENT(diag_response_total_sum)) diag_response_total_sum = response_total_sum
          IF (PRESENT(diag_eval_abs_avg)) diag_eval_abs_avg = eval_abs_avg
          IF (response_total_sum > EPSILON(response_total_sum)) &
@@ -26060,7 +26088,6 @@ CONTAINS
                                                                           history_response_ratio)
 
          step_weight_sum = DOT_PRODUCT(mode_coeff, mode_coeff)
-         IF (PRESENT(diag_step_weight_sum)) diag_step_weight_sum = step_weight_sum
          negative_weight_sum = 0.0_dp
          positive_weight_sum = 0.0_dp
          DO imode = 1, nrot_local
@@ -26086,6 +26113,10 @@ CONTAINS
                negative_weight_sum = negative_weight_sum + mode_weight*step_weight
             END IF
          END DO
+         CALL para_env_inter_kp%sum(step_weight_sum)
+         CALL para_env_inter_kp%sum(positive_weight_sum)
+         CALL para_env_inter_kp%sum(negative_weight_sum)
+         IF (PRESENT(diag_step_weight_sum)) diag_step_weight_sum = step_weight_sum
          IF (PRESENT(diag_positive_weight_sum)) diag_positive_weight_sum = positive_weight_sum
          IF (PRESENT(diag_negative_weight_sum)) diag_negative_weight_sum = negative_weight_sum
          IF (use_projected_metric) THEN
@@ -28212,6 +28243,7 @@ CONTAINS
             END DO
          END DO
          CALL dbcsr_iterator_stop(iter)
+         IF (ASSOCIATED(local_ot_env(1)%para_env)) CALL local_ot_env(1)%para_env%sum(dense)
       END SUBROUTINE dbcsr_square_to_dense
 
 ! **************************************************************************************************

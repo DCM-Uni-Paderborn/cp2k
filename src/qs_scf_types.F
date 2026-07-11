@@ -62,6 +62,7 @@ MODULE qs_scf_types
                                  qs_ot_restart_adaptive_nreal = 89
 
    PUBLIC :: qs_scf_env_type
+   PUBLIC :: qs_ot_restart_dense_matrix_type
    PUBLIC :: scf_env_release, scf_env_create, scf_env_did_change
    PUBLIC :: qs_scf_ot_restart_clear
    PUBLIC :: krylov_space_type, krylov_space_create, subspace_env_type
@@ -98,6 +99,10 @@ MODULE qs_scf_types
    TYPE floating_basis_type
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: gradient => NULL()
    END TYPE floating_basis_type
+
+   TYPE qs_ot_restart_dense_matrix_type
+      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: data
+   END TYPE qs_ot_restart_dense_matrix_type
 
    TYPE qs_ot_restart_channel_type
       LOGICAL :: valid = .FALSE.
@@ -297,6 +302,20 @@ MODULE qs_scf_types
       TYPE(cp_fm_type), DIMENSION(:), POINTER :: matrix_h_e_im => NULL(), matrix_h_x_im => NULL()
       TYPE(cp_fm_type), DIMENSION(:), POINTER :: rot_mat_h_e => NULL(), rot_mat_h_x => NULL()
       TYPE(cp_fm_type), DIMENSION(:), POINTER :: rot_mat_h_e_im => NULL(), rot_mat_h_x_im => NULL()
+      TYPE(qs_ot_restart_dense_matrix_type) :: matrix_x_dense, matrix_x_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: rot_mat_x_dense, rot_mat_x_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: matrix_dx_dense, matrix_dx_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: matrix_gx_old_dense, matrix_gx_old_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: rot_mat_dx_dense, rot_mat_dx_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: rot_mat_gx_old_dense, rot_mat_gx_old_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: matrix_h_e_dense, &
+                                                                          matrix_h_x_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: matrix_h_e_im_dense, &
+                                                                          matrix_h_x_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: rot_mat_h_e_dense, &
+                                                                          rot_mat_h_x_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: rot_mat_h_e_im_dense, &
+                                                                          rot_mat_h_x_im_dense
       REAL(KIND=dp), DIMENSION(:), POINTER :: ener_x => NULL(), ener_dx => NULL(), ener_gx_old => NULL()
       REAL(KIND=dp), DIMENSION(:), POINTER :: c_diis => NULL(), c_broy => NULL(), energy_h => NULL()
       INTEGER, DIMENSION(:), POINTER :: ipivot => NULL()

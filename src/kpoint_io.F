@@ -26,6 +26,7 @@ MODULE kpoint_io
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_get_submatrix,&
                                               cp_fm_read_unformatted,&
                                               cp_fm_release,&
                                               cp_fm_type,&
@@ -56,6 +57,7 @@ MODULE kpoint_io
    USE qs_scf_types,                    ONLY: qs_ot_restart_adaptive_nint,&
                                               qs_ot_restart_adaptive_nlog,&
                                               qs_ot_restart_adaptive_nreal,&
+                                              qs_ot_restart_dense_matrix_type,&
                                               qs_scf_env_type,&
                                               qs_scf_ot_restart_clear
 #include "./base/base_uses.f90"
@@ -1618,19 +1620,23 @@ CONTAINS
 
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_x) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_x_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_x, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_x, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%matrix_x_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_ener_x) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_x(nener))
@@ -1639,35 +1645,43 @@ CONTAINS
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_dx) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_dx)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_dx, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_dx, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_dx_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_gx_old) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_gx_old_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_dx) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_dx_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_gx_old) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_mat_gx_old_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im)
-            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im, rst_unit)
+            CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im, rst_unit, &
+                                        scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im_dense)
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_ener_dx) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_dx(nener))
@@ -1704,41 +1718,57 @@ CONTAINS
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_history) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e(ndiis))
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_dense(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_dense(ndiis))
             DO ihist = 1, ndiis
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_dense(ihist))
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_dense(ihist))
             END DO
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_matrix_history_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_im(ndiis))
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_im(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_im_dense(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_im_dense(ndiis))
             DO ihist = 1, ndiis
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_im(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_im_dense(ihist))
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_im(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_im_dense(ihist))
             END DO
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_history) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e(ndiis))
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_dense(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_dense(ndiis))
             DO ihist = 1, ndiis
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_dense(ihist))
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_dense(ihist))
             END DO
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_rot_history_im) THEN
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_im(ndiis))
             ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_im(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_im_dense(ndiis))
+            ALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_im_dense(ndiis))
             DO ihist = 1, ndiis
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_im(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_im_dense(ihist))
                CALL read_restart_fm_matrix(fmat, scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_im(ihist), &
-                                           rst_unit)
+                                           rst_unit, &
+                                           scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_im_dense(ihist))
             END DO
          END IF
          IF (scf_env%qs_ot_restart%channel(ichannel)%has_ener_history) THEN
@@ -1760,11 +1790,14 @@ CONTAINS
 !> \param fmat_template FM template
 !> \param fmat matrix read from restart
 !> \param rst_unit restart unit
+!> \param dense optional replicated matrix cache for redistribution to k-point groups
 ! **************************************************************************************************
-   SUBROUTINE read_restart_fm_matrix(fmat_template, fmat, rst_unit)
+   SUBROUTINE read_restart_fm_matrix(fmat_template, fmat, rst_unit, dense)
       TYPE(cp_fm_type), INTENT(IN)                       :: fmat_template
       TYPE(cp_fm_type), INTENT(INOUT)                    :: fmat
       INTEGER, INTENT(IN)                                :: rst_unit
+      TYPE(qs_ot_restart_dense_matrix_type), &
+         INTENT(INOUT), OPTIONAL                         :: dense
 
       INTEGER                                            :: ncol, nrow
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
@@ -1779,6 +1812,11 @@ CONTAINS
                                nrow_global=nrow, ncol_global=ncol)
       CALL cp_fm_create(fmat, fm_struct)
       CALL cp_fm_read_unformatted(fmat, rst_unit)
+      IF (PRESENT(dense)) THEN
+         IF (ALLOCATED(dense%data)) DEALLOCATE (dense%data)
+         ALLOCATE (dense%data(nrow, ncol))
+         CALL cp_fm_get_submatrix(fmat, dense%data)
+      END IF
       CALL cp_fm_struct_release(fm_struct)
 
    END SUBROUTINE read_restart_fm_matrix

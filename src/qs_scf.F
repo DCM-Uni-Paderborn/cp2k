@@ -51,10 +51,10 @@ MODULE qs_scf
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
         dbcsr_init_p, dbcsr_multiply, dbcsr_p_type, dbcsr_release_p, dbcsr_set, dbcsr_type, &
-        dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, dbcsr_type_symmetric
-   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
+        dbcsr_type_no_symmetry
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
+                                              copy_fm_to_dbcsr_bc,&
                                               cp_dbcsr_m_by_n_from_row_template,&
                                               cp_dbcsr_m_by_n_from_template,&
                                               cp_dbcsr_sm_fm_multiply,&
@@ -62,9 +62,13 @@ MODULE qs_scf
                                               dbcsr_deallocate_matrix_set
    USE cp_files,                        ONLY: close_file
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                              cp_fm_struct_release,&
+                                              cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_init_random,&
                                               cp_fm_release,&
+                                              cp_fm_set_submatrix,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_add_default_logger,&
@@ -98,8 +102,7 @@ MODULE qs_scf
                                               dp
    USE kpoint_io,                       ONLY: write_kpoints_restart
    USE kpoint_methods,                  ONLY: kpoint_initialize_mo_set,&
-                                              kpoint_initialize_mos,&
-                                              rskp_transform
+                                              kpoint_initialize_mos
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_env_type,&
                                               kpoint_type
@@ -160,7 +163,6 @@ MODULE qs_scf
                                               mo_set_restrict,&
                                               mo_set_type,&
                                               reassign_allocated_mos
-   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_ot,                           ONLY: qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_get_p,&
                                               qs_ot_new_preconditioner
@@ -198,8 +200,8 @@ MODULE qs_scf
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_scf_types,                    ONLY: &
         block_davidson_diag_method_nr, block_krylov_diag_method_nr, filter_matrix_diag_method_nr, &
-        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
-        qs_scf_ot_restart_clear, smeagol_method_nr, special_diag_method_nr
+        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_ot_restart_dense_matrix_type, &
+        qs_scf_env_type, qs_scf_ot_restart_clear, smeagol_method_nr, special_diag_method_nr
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
                                               wfi_update
    USE scf_control_types,               ONLY: scf_control_type
@@ -1379,13 +1381,16 @@ CONTAINS
          END IF
          CALL cp_fm_release(kp%pmat)
          CALL cp_fm_release(kp%wmat)
+         CALL cp_fm_release(kp%ot_hmat)
+         CALL cp_fm_release(kp%ot_smat)
       END DO
       CALL mpools_release(kpoints%mpools)
       CALL kpoint_initialize_mos(kpoints, mos)
       CALL kpoint_initialize_mo_set(kpoints)
 
       diag_step = .FALSE.
-      CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., diag_step)
+      CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., diag_step, &
+                              store_ot_matrices=.TRUE.)
 
       IF (ASSOCIATED(kpoints%scf_diis_buffer)) &
          CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
@@ -2142,7 +2147,7 @@ CONTAINS
                CPASSERT(ASSOCIATED(matrix_s_kp))
                init_diag_step = .FALSE.
                CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, &
-                                       .FALSE., init_diag_step)
+                                       .FALSE., init_diag_step, store_ot_matrices=.TRUE.)
                CALL qs_scf_restore_added_mos_auto_kp(qs_env, scf_env, scf_control, &
                                                      cp_logger_get_default_io_unit())
                CALL allocate_qs_ot_envs(scf_env=scf_env, &
@@ -2430,22 +2435,18 @@ CONTAINS
 
       INTEGER                                            :: handle, ikpoint, ikpoint_local, ispin, &
                                                             nao, nmo, ot_channel
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_fm_type)                                   :: sc_coeff, sc_coeff_im
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
       TYPE(dbcsr_type), POINTER                          :: matrix_sk_im, matrix_sk_re
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(mo_set_type), POINTER                         :: mo_set, mo_set_im
-      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_nl
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, eigenvalues, kp, matrix_sk_im, matrix_sk_re, mo_coeff, mo_coeff_im, &
-               mo_set, mo_set_im, sab_nl, xkp)
+      NULLIFY (eigenvalues, kp, matrix_sk_im, matrix_sk_re, mo_coeff, mo_coeff_im, &
+               mo_set, mo_set_im)
 
       CPASSERT(ASSOCIATED(qs_env))
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
@@ -2455,38 +2456,22 @@ CONTAINS
       CPASSERT(ASSOCIATED(matrix_s_kp(1, 1)%matrix))
       CPASSERT(.NOT. dft_control%restricted .OR. nspin_ot == 1)
 
-      CALL get_kpoint_info(kpoints, xkp=xkp, use_real_wfn=use_real_wfn, &
-                           cell_to_index=cell_to_index, sab_nl=sab_nl)
-      CPASSERT(ASSOCIATED(cell_to_index))
-      CPASSERT(ASSOCIATED(sab_nl))
-
-      ALLOCATE (matrix_sk_re)
-      CALL dbcsr_create(matrix_sk_re, template=matrix_s_kp(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_symmetric)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_sk_re, sab_nl)
-      IF (.NOT. use_real_wfn) THEN
-         ALLOCATE (matrix_sk_im)
-         CALL dbcsr_create(matrix_sk_im, template=matrix_s_kp(1, 1)%matrix, &
-                           matrix_type=dbcsr_type_antisymmetric)
-         CALL cp_dbcsr_alloc_block_from_nbl(matrix_sk_im, sab_nl)
-      END IF
+      CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
 
       DO ikpoint_local = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(ikpoint_local)%kpoint_env
          CPASSERT(ASSOCIATED(kp))
          CPASSERT(ASSOCIATED(kp%mos))
+         CPASSERT(ASSOCIATED(kp%ot_smat))
          CPASSERT(nspin_ot <= SIZE(kp%mos, 2))
          ikpoint = kp%nkpoint
          CPASSERT(ikpoint >= 1)
-         CALL dbcsr_set(matrix_sk_re, 0.0_dp)
-         IF (use_real_wfn) THEN
-            CALL rskp_transform(rmatrix=matrix_sk_re, rsmat=matrix_s_kp, ispin=1, &
-                                xkp=xkp(1:3, ikpoint), cell_to_index=cell_to_index, sab_nl=sab_nl)
-         ELSE
-            CALL dbcsr_set(matrix_sk_im, 0.0_dp)
-            CALL rskp_transform(rmatrix=matrix_sk_re, cmatrix=matrix_sk_im, rsmat=matrix_s_kp, &
-                                ispin=1, xkp=xkp(1:3, ikpoint), cell_to_index=cell_to_index, &
-                                sab_nl=sab_nl)
+         CALL dbcsr_init_p(matrix_sk_re)
+         CALL copy_fm_to_dbcsr_bc(kp%ot_smat(1), matrix_sk_re)
+         IF (.NOT. use_real_wfn) THEN
+            CPASSERT(SIZE(kp%ot_smat) >= 2)
+            CALL dbcsr_init_p(matrix_sk_im)
+            CALL copy_fm_to_dbcsr_bc(kp%ot_smat(2), matrix_sk_im)
          END IF
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
@@ -2499,9 +2484,8 @@ CONTAINS
             CPASSERT(ASSOCIATED(mo_coeff))
             CPASSERT(nao > 0)
             CPASSERT(nmo > 0)
-
             CALL qs_ot_allocate(scf_env%qs_ot_env(ot_channel), &
-                                matrix_s_kp(1, 1)%matrix, &
+                                matrix_sk_re, &
                                 mo_coeff%matrix_struct)
 
             CALL cp_fm_create(sc_coeff, mo_coeff%matrix_struct)
@@ -2518,7 +2502,7 @@ CONTAINS
                CALL get_mo_set(mo_set=mo_set_im, mo_coeff=mo_coeff_im)
                CPASSERT(ASSOCIATED(mo_coeff_im))
                CALL allocate_qs_ot_kpoint_complex_state(scf_env%qs_ot_env(ot_channel), &
-                                                        matrix_s_kp(1, 1)%matrix)
+                                                        matrix_sk_re)
                CALL cp_fm_create(sc_coeff_im, mo_coeff%matrix_struct)
                CALL cp_dbcsr_sm_fm_multiply(matrix_sk_im, mo_coeff_im, sc_coeff, nmo, &
                                             alpha=-1.0_dp, beta=1.0_dp)
@@ -2594,6 +2578,8 @@ CONTAINS
             CALL cp_fm_release(sc_coeff)
             IF (.NOT. use_real_wfn) CALL cp_fm_release(sc_coeff_im)
          END DO
+         CALL dbcsr_release_p(matrix_sk_re)
+         IF (ASSOCIATED(matrix_sk_im)) CALL dbcsr_release_p(matrix_sk_im)
       END DO
 
       CALL qs_ot_check_channel_context(scf_env%qs_ot_env, dft_control%nspins, &
@@ -2604,8 +2590,6 @@ CONTAINS
                                        require_local_state=.TRUE., &
                                        require_complex_state=.NOT. use_real_wfn)
 
-      CALL dbcsr_deallocate_matrix(matrix_sk_re)
-      IF (ASSOCIATED(matrix_sk_im)) CALL dbcsr_deallocate_matrix(matrix_sk_im)
       CALL qs_scf_clear_kpoint_ot_density_calibration(scf_env)
 
       CALL timestop(handle)
@@ -2672,19 +2656,14 @@ CONTAINS
       INTEGER                                            :: handle, ikpoint, ispin, local_kpoint, &
                                                             n_ot_channels, ot_channel, prec_type, &
                                                             ref_channel
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: use_real_wfn
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
                                                             matrix_s_re
       TYPE(kpoint_env_type), POINTER                     :: kp
-      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_nl
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, kp, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, &
-               sab_nl, xkp)
+      NULLIFY (kp, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re)
 
       CPASSERT(ASSOCIATED(qs_env))
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
@@ -2746,59 +2725,32 @@ CONTAINS
       CPASSERT(ASSOCIATED(scf_env%ot_preconditioner))
       CPASSERT(SIZE(scf_env%ot_preconditioner) >= n_ot_channels)
 
-      CALL get_kpoint_info(kpoints, xkp=xkp, use_real_wfn=use_real_wfn, &
-                           cell_to_index=cell_to_index, sab_nl=sab_nl)
-      CPASSERT(ASSOCIATED(xkp))
-      CPASSERT(ASSOCIATED(cell_to_index))
-      CPASSERT(ASSOCIATED(sab_nl))
-
-      ALLOCATE (matrix_k_re, matrix_s_re)
-      CALL dbcsr_create(matrix_k_re, template=matrix_ks_kp(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_symmetric)
-      CALL dbcsr_create(matrix_s_re, template=matrix_s_kp(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_symmetric)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_re, sab_nl)
-      CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_re, sab_nl)
-      IF (.NOT. use_real_wfn) THEN
-         ALLOCATE (matrix_k_im, matrix_s_im)
-         CALL dbcsr_create(matrix_k_im, template=matrix_ks_kp(1, 1)%matrix, &
-                           matrix_type=dbcsr_type_antisymmetric)
-         CALL dbcsr_create(matrix_s_im, template=matrix_s_kp(1, 1)%matrix, &
-                           matrix_type=dbcsr_type_antisymmetric)
-         CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_im, sab_nl)
-         CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_im, sab_nl)
-      END IF
+      CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          CPASSERT(ASSOCIATED(kp))
          CPASSERT(ASSOCIATED(kp%mos))
+         CPASSERT(ASSOCIATED(kp%ot_hmat))
+         CPASSERT(ASSOCIATED(kp%ot_smat))
          ikpoint = kp%nkpoint
-         CALL dbcsr_set(matrix_s_re, 0.0_dp)
-         IF (use_real_wfn) THEN
-            CALL rskp_transform(rmatrix=matrix_s_re, rsmat=matrix_s_kp, ispin=1, &
-                                xkp=xkp(1:3, ikpoint), cell_to_index=cell_to_index, sab_nl=sab_nl)
-         ELSE
-            CALL dbcsr_set(matrix_s_im, 0.0_dp)
-            CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s_kp, &
-                                ispin=1, xkp=xkp(1:3, ikpoint), &
-                                cell_to_index=cell_to_index, sab_nl=sab_nl)
+         CALL dbcsr_init_p(matrix_s_re)
+         CALL copy_fm_to_dbcsr_bc(kp%ot_smat(1), matrix_s_re)
+         IF (.NOT. use_real_wfn) THEN
+            CPASSERT(SIZE(kp%ot_smat) >= 2)
+            CALL dbcsr_init_p(matrix_s_im)
+            CALL copy_fm_to_dbcsr_bc(kp%ot_smat(2), matrix_s_im)
          END IF
 
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
             CPASSERT(scf_env%qs_ot_env(ot_channel)%state_allocated)
-            CALL dbcsr_set(matrix_k_re, 0.0_dp)
-            IF (use_real_wfn) THEN
-               CALL rskp_transform(rmatrix=matrix_k_re, rsmat=matrix_ks_kp, ispin=ispin, &
-                                   xkp=xkp(1:3, ikpoint), &
-                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
-            ELSE
-               CALL dbcsr_set(matrix_k_im, 0.0_dp)
-               CALL rskp_transform(rmatrix=matrix_k_re, cmatrix=matrix_k_im, &
-                                   rsmat=matrix_ks_kp, ispin=ispin, &
-                                   xkp=xkp(1:3, ikpoint), &
-                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
+            CALL dbcsr_init_p(matrix_k_re)
+            CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(1, ispin), matrix_k_re)
+            IF (.NOT. use_real_wfn) THEN
+               CPASSERT(SIZE(kp%ot_hmat, 1) >= 2)
+               CALL dbcsr_init_p(matrix_k_im)
+               CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(2, ispin), matrix_k_im)
             END IF
             IF (prec_type == ot_precond_full_all .AND. .NOT. use_real_wfn) THEN
                CALL make_preconditioner_complex_full_all( &
@@ -2819,13 +2771,12 @@ CONTAINS
             END IF
             CALL qs_ot_new_preconditioner(scf_env%qs_ot_env(ot_channel), &
                                           scf_env%ot_preconditioner(ot_channel)%preconditioner)
+            CALL dbcsr_release_p(matrix_k_re)
+            IF (ASSOCIATED(matrix_k_im)) CALL dbcsr_release_p(matrix_k_im)
          END DO
+         CALL dbcsr_release_p(matrix_s_re)
+         IF (ASSOCIATED(matrix_s_im)) CALL dbcsr_release_p(matrix_s_im)
       END DO
-
-      CALL dbcsr_deallocate_matrix(matrix_k_re)
-      CALL dbcsr_deallocate_matrix(matrix_s_re)
-      IF (ASSOCIATED(matrix_k_im)) CALL dbcsr_deallocate_matrix(matrix_k_im)
-      IF (ASSOCIATED(matrix_s_im)) CALL dbcsr_deallocate_matrix(matrix_s_im)
 
       CALL timestop(handle)
 
@@ -2843,7 +2794,7 @@ CONTAINS
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       INTEGER, INTENT(IN)                                :: ot_channel, nmo
 
-      INTEGER                                            :: ihist, ndiis
+      INTEGER                                            :: ihist, ndiis, shared_channel
       LOGICAL                                            :: restore_schur_calibration, restored
 
       qs_ot_env%mermin_ls_component_slope_valid = .FALSE.
@@ -2855,6 +2806,20 @@ CONTAINS
       IF (scf_env%qs_ot_restart%channel(ot_channel)%kpoint_index /= qs_ot_env%kpoint_index) RETURN
       IF (scf_env%qs_ot_restart%channel(ot_channel)%nmo /= nmo) RETURN
 
+      ! Matrix and vector history is channel resolved, but OT line-search and
+      ! Schur calibration scalars belong to the global minimizer.  Serial
+      ! writers historically only advanced those scalars in the first OT
+      ! channel, so every distributed k-point group must restore them from the
+      ! same canonical restart channel.
+      shared_channel = 0
+      DO ihist = 1, SIZE(scf_env%qs_ot_restart%channel)
+         IF (scf_env%qs_ot_restart%channel(ihist)%valid) THEN
+            shared_channel = ihist
+            EXIT
+         END IF
+      END DO
+      IF (shared_channel == 0) RETURN
+
       ndiis = scf_env%qs_ot_restart%channel(ot_channel)%diis_m
       restored = .FALSE.
       ! Version 20 keeps the accepted-step and CG semantics invariant across a
@@ -2863,29 +2828,29 @@ CONTAINS
       restore_schur_calibration = scf_env%qs_ot_restart%format_version >= 20
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_x .AND. &
           ASSOCIATED(qs_ot_env%matrix_x)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_x, &
-                               qs_ot_env%matrix_x)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%matrix_x_dense, qs_ot_env%matrix_x, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%has_complex_kpoint_state .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_x_im .AND. &
           ASSOCIATED(qs_ot_env%matrix_x_im)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_x_im, &
-                               qs_ot_env%matrix_x_im)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%matrix_x_im_dense, qs_ot_env%matrix_x_im, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_rotation .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_x .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_x)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_x, &
-                               qs_ot_env%rot_mat_x)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_x_dense, qs_ot_env%rot_mat_x, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_rotation .AND. qs_ot_env%has_complex_kpoint_state .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_x_im .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_x_im)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_x_im, &
-                               qs_ot_env%rot_mat_x_im)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_x_im_dense, qs_ot_env%rot_mat_x_im, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_ener .AND. &
@@ -2898,54 +2863,55 @@ CONTAINS
       END IF
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_dx .AND. &
           ASSOCIATED(qs_ot_env%matrix_dx)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_dx, &
-                               qs_ot_env%matrix_dx)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%matrix_dx_dense, qs_ot_env%matrix_dx, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_dx_im .AND. &
           ASSOCIATED(qs_ot_env%matrix_dx_im)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_dx_im, &
-                               qs_ot_env%matrix_dx_im)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%matrix_dx_im_dense, qs_ot_env%matrix_dx_im, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_gx_old .AND. &
           ASSOCIATED(qs_ot_env%matrix_gx_old)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_gx_old, &
-                               qs_ot_env%matrix_gx_old)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%matrix_gx_old_dense, qs_ot_env%matrix_gx_old, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_gx_old_im .AND. &
           ASSOCIATED(qs_ot_env%matrix_gx_old_im)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_gx_old_im, &
-                               qs_ot_env%matrix_gx_old_im)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%matrix_gx_old_im_dense, qs_ot_env%matrix_gx_old_im, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_rotation .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_dx .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_dx)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_dx, &
-                               qs_ot_env%rot_mat_dx)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_dx_dense, qs_ot_env%rot_mat_dx, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_rotation .AND. qs_ot_env%has_complex_kpoint_state .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_dx_im .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_dx_im)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_dx_im, &
-                               qs_ot_env%rot_mat_dx_im)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_dx_im_dense, qs_ot_env%rot_mat_dx_im, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_rotation .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_gx_old .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_gx_old)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_gx_old, &
-                               qs_ot_env%rot_mat_gx_old)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_gx_old_dense, qs_ot_env%rot_mat_gx_old, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_rotation .AND. qs_ot_env%has_complex_kpoint_state .AND. &
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_mat_gx_old_im .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) THEN
-         CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_gx_old_im, &
-                               qs_ot_env%rot_mat_gx_old_im)
+         CALL copy_qs_ot_restart_dense_matrix( &
+            scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_gx_old_im_dense, &
+            qs_ot_env%rot_mat_gx_old_im, qs_ot_env)
          restored = .TRUE.
       END IF
       IF (qs_ot_env%settings%do_ener .AND. &
@@ -2977,20 +2943,24 @@ CONTAINS
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_history .AND. &
           ASSOCIATED(qs_ot_env%matrix_h_e) .AND. ndiis == SIZE(qs_ot_env%matrix_h_e)) THEN
          DO ihist = 1, ndiis
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_e(ihist), &
-                                  qs_ot_env%matrix_h_e(ihist)%matrix)
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_x(ihist), &
-                                  qs_ot_env%matrix_h_x(ihist)%matrix)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_e_dense(ihist), &
+               qs_ot_env%matrix_h_e(ihist)%matrix, qs_ot_env)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_x_dense(ihist), &
+               qs_ot_env%matrix_h_x(ihist)%matrix, qs_ot_env)
          END DO
          restored = .TRUE.
       END IF
       IF (scf_env%qs_ot_restart%channel(ot_channel)%has_matrix_history_im .AND. &
           ASSOCIATED(qs_ot_env%matrix_h_e_im) .AND. ndiis == SIZE(qs_ot_env%matrix_h_e_im)) THEN
          DO ihist = 1, ndiis
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_e_im(ihist), &
-                                  qs_ot_env%matrix_h_e_im(ihist)%matrix)
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_x_im(ihist), &
-                                  qs_ot_env%matrix_h_x_im(ihist)%matrix)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_e_im_dense(ihist), &
+               qs_ot_env%matrix_h_e_im(ihist)%matrix, qs_ot_env)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%matrix_h_x_im_dense(ihist), &
+               qs_ot_env%matrix_h_x_im(ihist)%matrix, qs_ot_env)
          END DO
          restored = .TRUE.
       END IF
@@ -2998,10 +2968,12 @@ CONTAINS
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_history .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_h_e) .AND. ndiis == SIZE(qs_ot_env%rot_mat_h_e)) THEN
          DO ihist = 1, ndiis
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_e(ihist), &
-                                  qs_ot_env%rot_mat_h_e(ihist)%matrix)
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_x(ihist), &
-                                  qs_ot_env%rot_mat_h_x(ihist)%matrix)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_e_dense(ihist), &
+               qs_ot_env%rot_mat_h_e(ihist)%matrix, qs_ot_env)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_x_dense(ihist), &
+               qs_ot_env%rot_mat_h_x(ihist)%matrix, qs_ot_env)
          END DO
          restored = .TRUE.
       END IF
@@ -3009,10 +2981,12 @@ CONTAINS
           scf_env%qs_ot_restart%channel(ot_channel)%has_rot_history_im .AND. &
           ASSOCIATED(qs_ot_env%rot_mat_h_e_im) .AND. ndiis == SIZE(qs_ot_env%rot_mat_h_e_im)) THEN
          DO ihist = 1, ndiis
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_e_im(ihist), &
-                                  qs_ot_env%rot_mat_h_e_im(ihist)%matrix)
-            CALL copy_fm_to_dbcsr(scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_x_im(ihist), &
-                                  qs_ot_env%rot_mat_h_x_im(ihist)%matrix)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_e_im_dense(ihist), &
+               qs_ot_env%rot_mat_h_e_im(ihist)%matrix, qs_ot_env)
+            CALL copy_qs_ot_restart_dense_matrix( &
+               scf_env%qs_ot_restart%channel(ot_channel)%rot_mat_h_x_im_dense(ihist), &
+               qs_ot_env%rot_mat_h_x_im(ihist)%matrix, qs_ot_env)
          END DO
          restored = .TRUE.
       END IF
@@ -3027,64 +3001,64 @@ CONTAINS
       END IF
 
       IF (restored) THEN
-         qs_ot_env%ot_pos = scf_env%qs_ot_restart%channel(ot_channel)%ot_pos
-         qs_ot_env%ot_energy = scf_env%qs_ot_restart%channel(ot_channel)%ot_energy
-         qs_ot_env%ot_grad = scf_env%qs_ot_restart%channel(ot_channel)%ot_grad
-         qs_ot_env%line_search_left = scf_env%qs_ot_restart%channel(ot_channel)%line_search_left
-         qs_ot_env%line_search_right = scf_env%qs_ot_restart%channel(ot_channel)%line_search_right
-         qs_ot_env%line_search_mid = scf_env%qs_ot_restart%channel(ot_channel)%line_search_mid
-         qs_ot_env%line_search_count = scf_env%qs_ot_restart%channel(ot_channel)%line_search_count
+         qs_ot_env%ot_pos = scf_env%qs_ot_restart%channel(shared_channel)%ot_pos
+         qs_ot_env%ot_energy = scf_env%qs_ot_restart%channel(shared_channel)%ot_energy
+         qs_ot_env%ot_grad = scf_env%qs_ot_restart%channel(shared_channel)%ot_grad
+         qs_ot_env%line_search_left = scf_env%qs_ot_restart%channel(shared_channel)%line_search_left
+         qs_ot_env%line_search_right = scf_env%qs_ot_restart%channel(shared_channel)%line_search_right
+         qs_ot_env%line_search_mid = scf_env%qs_ot_restart%channel(shared_channel)%line_search_mid
+         qs_ot_env%line_search_count = scf_env%qs_ot_restart%channel(shared_channel)%line_search_count
          qs_ot_env%line_search_might_be_done = &
-            scf_env%qs_ot_restart%channel(ot_channel)%line_search_might_be_done
-         qs_ot_env%delta = scf_env%qs_ot_restart%channel(ot_channel)%delta
-         qs_ot_env%gnorm = scf_env%qs_ot_restart%channel(ot_channel)%gnorm
-         qs_ot_env%gnorm_old = scf_env%qs_ot_restart%channel(ot_channel)%gnorm_old
-         qs_ot_env%etotal = scf_env%qs_ot_restart%channel(ot_channel)%etotal
-         qs_ot_env%gradient = scf_env%qs_ot_restart%channel(ot_channel)%gradient
-         qs_ot_env%energy_only = scf_env%qs_ot_restart%channel(ot_channel)%energy_only
+            scf_env%qs_ot_restart%channel(shared_channel)%line_search_might_be_done
+         qs_ot_env%delta = scf_env%qs_ot_restart%channel(shared_channel)%delta
+         qs_ot_env%gnorm = scf_env%qs_ot_restart%channel(shared_channel)%gnorm
+         qs_ot_env%gnorm_old = scf_env%qs_ot_restart%channel(shared_channel)%gnorm_old
+         qs_ot_env%etotal = scf_env%qs_ot_restart%channel(shared_channel)%etotal
+         qs_ot_env%gradient = scf_env%qs_ot_restart%channel(shared_channel)%gradient
+         qs_ot_env%energy_only = scf_env%qs_ot_restart%channel(shared_channel)%energy_only
          IF (scf_env%qs_ot_restart%format_version >= 19) THEN
             qs_ot_env%ener_direction_linear = &
-               scf_env%qs_ot_restart%channel(ot_channel)%ener_direction_linear
+               scf_env%qs_ot_restart%channel(shared_channel)%ener_direction_linear
          ELSE IF (scf_env%qs_ot_restart%format_version >= 17) THEN
             ! v17/v18 serialized the already trust-projected ener_dx and all
             ! line-search positions, but omitted this reversibility flag.
             qs_ot_env%ener_direction_linear = &
-               scf_env%qs_ot_restart%channel(ot_channel)%has_ener_dx .AND. &
-               scf_env%qs_ot_restart%channel(ot_channel)%line_search_count > 0
+               scf_env%qs_ot_restart%channel(shared_channel)%has_ener_dx .AND. &
+               scf_env%qs_ot_restart%channel(shared_channel)%line_search_count > 0
          END IF
-         qs_ot_env%diis_iter = scf_env%qs_ot_restart%channel(ot_channel)%diis_iter
-         qs_ot_env%ds_min = scf_env%qs_ot_restart%channel(ot_channel)%ds_min
+         qs_ot_env%diis_iter = scf_env%qs_ot_restart%channel(shared_channel)%diis_iter
+         qs_ot_env%ds_min = scf_env%qs_ot_restart%channel(shared_channel)%ds_min
          qs_ot_env%broyden_adaptive_sigma = &
-            scf_env%qs_ot_restart%channel(ot_channel)%broyden_adaptive_sigma
+            scf_env%qs_ot_restart%channel(shared_channel)%broyden_adaptive_sigma
          IF (scf_env%qs_ot_restart%format_version >= 18) THEN
             qs_ot_env%mermin_ls_sample_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_sample_pending
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_sample_pending
             qs_ot_env%mermin_ls_best_sample_index = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_index
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_best_sample_index
             qs_ot_env%mermin_ls_reference_energy = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_reference_energy
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_reference_energy
             qs_ot_env%mermin_ls_best_sample_energy = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_energy
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_best_sample_energy
             qs_ot_env%mermin_ls_best_sample_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_drop
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_best_sample_drop
             qs_ot_env%mermin_ls_model_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_model_drop
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_model_drop
             qs_ot_env%mermin_ls_model_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_model_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_model_quality
             qs_ot_env%mermin_ls_best_sample_pos = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_best_sample_pos
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_best_sample_pos
             qs_ot_env%mermin_ls_next_pos = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_next_pos
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_next_pos
             qs_ot_env%mermin_ls_accepted_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_accepted_quality_samples
             qs_ot_env%mermin_ls_accepted_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_accepted_quality
             qs_ot_env%mermin_ls_accepted_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_accepted_quality_ema
             qs_ot_env%mermin_ls_accepted_gap = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_gap
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_accepted_gap
             qs_ot_env%mermin_ls_accepted_gap_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mermin_ls_accepted_gap_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_accepted_gap_ema
          END IF
          IF (restore_schur_calibration .AND. scf_env%qs_ot_restart%format_version >= 4) THEN
             qs_ot_env%schur_projector_density_pending = .FALSE.
@@ -3117,231 +3091,231 @@ CONTAINS
             qs_ot_env%schur_projector_physical_trace_invariant_diag = 0.0_dp
             qs_ot_env%schur_projector_physical_trace_invariant_free = 0.0_dp
             qs_ot_env%schur_projector_density_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_quality_samples
             qs_ot_env%schur_projector_density_audit_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_audit_samples
             qs_ot_env%schur_projector_density_descent_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_quality_samples
             qs_ot_env%schur_projector_density_descent_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_quality_samples
             qs_ot_env%schur_projector_response_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_quality_samples
             qs_ot_env%schur_projector_density_full_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_quality_samples
             qs_ot_env%schur_projector_physical_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_quality_samples
             qs_ot_env%schur_projector_physical_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_quality_samples
             qs_ot_env%schur_projector_physical_direct_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_quality_samples
             qs_ot_env%schur_projector_physical_direct_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_quality_samples
             qs_ot_env%schur_projector_phys_direct_density_sel_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_quality_samples
             qs_ot_env%schur_projector_mixed_direct_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_quality_samples
             qs_ot_env%schur_projector_spectral_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_quality_samples
             qs_ot_env%schur_projector_spectral_selected_failure_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_failure_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_failure_samples
             qs_ot_env%schur_projector_density_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_quality
             qs_ot_env%schur_projector_density_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_quality_ema
             qs_ot_env%schur_projector_density_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_drop_sum
             qs_ot_env%schur_projector_density_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_measured_sum
             qs_ot_env%schur_projector_density_lowcurv_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_lowcurv_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_lowcurv_ema
             qs_ot_env%schur_projector_density_lowcurv_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_lowcurv_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_lowcurv_quality_ema
             qs_ot_env%schur_projector_density_audit_amplification_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_amplification_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_audit_amplification_ema
             qs_ot_env%schur_projector_density_audit_amplification_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_amplification_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_audit_amplification_quality_ema
             qs_ot_env%schur_projector_density_audit_lowcurv_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_lowcurv_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_audit_lowcurv_ema
             qs_ot_env%schur_projector_density_audit_lowcurv_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_audit_lowcurv_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_audit_lowcurv_quality_ema
             qs_ot_env%schur_projector_density_descent_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_quality
             qs_ot_env%schur_projector_density_descent_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_quality_ema
             qs_ot_env%schur_projector_density_descent_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_drop_sum
             qs_ot_env%schur_projector_density_descent_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_measured_sum
             qs_ot_env%schur_projector_density_descent_coeff_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_coeff_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_coeff_ema
             qs_ot_env%schur_projector_density_descent_support = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_support
             qs_ot_env%schur_projector_density_descent_support_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_support_ema
             qs_ot_env%schur_projector_density_descent_support_ready = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_support_ready
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_support_ready
             qs_ot_env%schur_projector_physical_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_quality
             qs_ot_env%schur_projector_physical_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_quality_ema
             qs_ot_env%schur_projector_physical_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_drop_sum
             qs_ot_env%schur_projector_physical_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_measured_sum
             qs_ot_env%schur_projector_physical_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_quality
             qs_ot_env%schur_projector_physical_selected_quality_line_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_quality_ema
             qs_ot_env%schur_projector_physical_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_residual_quality
             qs_ot_env%schur_projector_physical_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_residual_quality_ema
             qs_ot_env%schur_projector_physical_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_drop_sum
             qs_ot_env%schur_projector_physical_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_selected_measured_sum
             qs_ot_env%schur_projector_physical_trace_actual_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_actual_ema
             qs_ot_env%schur_projector_physical_trace_raw_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_raw_ema
             qs_ot_env%schur_projector_physical_trace_active_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_active_ema
             qs_ot_env%schur_projector_physical_trace_actual_diag_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_diag_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_actual_diag_ema
             qs_ot_env%schur_projector_physical_trace_actual_free_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_free_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_actual_free_ema
             qs_ot_env%schur_projector_physical_trace_raw_diag_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_diag_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_raw_diag_ema
             qs_ot_env%schur_projector_physical_trace_raw_free_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_free_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_raw_free_ema
             qs_ot_env%schur_projector_physical_trace_active_diag_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_diag_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_active_diag_ema
             qs_ot_env%schur_projector_physical_trace_active_free_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_free_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_active_free_ema
             qs_ot_env%schur_projector_physical_trace_invariant_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_invariant_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_invariant_ema
             qs_ot_env%schur_projector_physical_trace_invariant_diag_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_invariant_diag_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_invariant_diag_ema
             qs_ot_env%schur_projector_physical_trace_invariant_free_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_invariant_free_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_invariant_free_ema
             qs_ot_env%schur_projector_physical_trace_actual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_actual_quality_ema
             qs_ot_env%schur_projector_physical_trace_raw_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_raw_quality_ema
             qs_ot_env%schur_projector_physical_trace_active_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_active_quality_ema
             qs_ot_env%schur_projector_physical_trace_actual_diag_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_diag_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_actual_diag_quality_ema
             qs_ot_env%schur_projector_physical_trace_actual_free_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_actual_free_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_actual_free_quality_ema
             qs_ot_env%schur_projector_physical_trace_raw_diag_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_diag_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_raw_diag_quality_ema
             qs_ot_env%schur_projector_physical_trace_raw_free_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_raw_free_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_raw_free_quality_ema
             qs_ot_env%schur_projector_physical_trace_active_diag_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_diag_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_active_diag_quality_ema
             qs_ot_env%schur_projector_physical_trace_active_free_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_active_free_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_active_free_quality_ema
             qs_ot_env%schur_projector_physical_trace_invariant_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_invariant_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_invariant_quality_ema
             qs_ot_env%schur_projector_physical_trace_invariant_diag_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_invariant_diag_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_invariant_diag_quality_ema
             qs_ot_env%schur_projector_physical_trace_invariant_free_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_trace_invariant_free_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_trace_invariant_free_quality_ema
             qs_ot_env%schur_projector_density_descent_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_quality
             qs_ot_env%schur_projector_density_descent_selected_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_quality_ema
             qs_ot_env%schur_projector_density_descent_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_residual_quality
             qs_ot_env%schur_projector_density_descent_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_residual_quality_ema
             qs_ot_env%schur_projector_density_descent_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_drop_sum
             qs_ot_env%schur_projector_density_descent_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_descent_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_descent_selected_measured_sum
             qs_ot_env%schur_projector_response_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_quality
             qs_ot_env%schur_projector_response_selected_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_quality_ema
             qs_ot_env%schur_projector_response_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_residual_quality
             qs_ot_env%schur_projector_response_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_residual_quality_ema
             qs_ot_env%schur_projector_response_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_drop_sum
             qs_ot_env%schur_projector_response_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%response_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%response_selected_measured_sum
             qs_ot_env%schur_projector_density_full_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_quality
             qs_ot_env%schur_projector_density_full_selected_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_quality_ema
             qs_ot_env%schur_projector_density_full_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_residual_quality
             qs_ot_env%schur_projector_density_full_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_residual_quality_ema
             qs_ot_env%schur_projector_density_full_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_drop_sum
             qs_ot_env%schur_projector_density_full_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_measured_sum
             qs_ot_env%schur_projector_physical_direct_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_quality
             qs_ot_env%schur_projector_physical_direct_quality_shadow_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_quality_shadow_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_quality_shadow_ema
             qs_ot_env%schur_projector_physical_direct_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_drop_sum
             qs_ot_env%schur_projector_physical_direct_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_measured_sum
             qs_ot_env%schur_projector_physical_direct_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_ema
             qs_ot_env%schur_projector_physical_direct_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_quality
             qs_ot_env%schur_projector_physical_direct_selected_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_quality_ema
             qs_ot_env%schur_projector_physical_direct_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_residual_quality
             qs_ot_env%schur_projector_physical_direct_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_residual_quality_ema
             qs_ot_env%schur_projector_physical_direct_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_drop_sum
             qs_ot_env%schur_projector_physical_direct_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%physical_direct_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%physical_direct_selected_measured_sum
             qs_ot_env%schur_projector_phys_direct_density_sel_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_quality
             qs_ot_env%schur_projector_phys_direct_density_sel_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_quality_ema
             qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_resid_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_resid_quality
             qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_resid_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_resid_quality_ema
             qs_ot_env%schur_projector_phys_direct_density_sel_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_drop_sum
             qs_ot_env%schur_projector_phys_direct_density_sel_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%phys_direct_density_sel_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%phys_direct_density_sel_measured_sum
             qs_ot_env%schur_projector_mixed_direct_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_quality
             qs_ot_env%schur_projector_mixed_direct_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_quality_ema
             qs_ot_env%schur_projector_mixed_direct_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_drop_sum
             qs_ot_env%schur_projector_mixed_direct_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_measured_sum
             qs_ot_env%schur_projector_mixed_direct_weight = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_weight
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_weight
             qs_ot_env%schur_projector_mixed_direct_weight_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%mixed_direct_weight_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%mixed_direct_weight_ema
             qs_ot_env%schur_projector_spectral_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_quality
             qs_ot_env%schur_projector_spectral_selected_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_quality_ema
             qs_ot_env%schur_projector_spectral_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_residual_quality
             qs_ot_env%schur_projector_spectral_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_residual_quality_ema
             qs_ot_env%schur_projector_spectral_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_drop_sum
             qs_ot_env%schur_projector_spectral_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%spectral_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%spectral_selected_measured_sum
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 18) THEN
             qs_ot_env%schur_projector_density_full_pending = .FALSE.
@@ -3353,315 +3327,315 @@ CONTAINS
             qs_ot_env%schur_projector_density_fdir_selected = 0.0_dp
             qs_ot_env%schur_projector_density_full_global_drop = 0.0_dp
             qs_ot_env%schur_projector_density_full_selected_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_quality_samples
             qs_ot_env%schur_projector_density_full_direct_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_quality_samples
             qs_ot_env%schur_projector_density_fdir_sel_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_quality_samples
             qs_ot_env%schur_projector_density_full_global_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_quality_samples
             qs_ot_env%schur_projector_density_full_global_sel_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_quality_samples
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_quality_samples
             qs_ot_env%schur_projector_density_full_selected_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_quality
             qs_ot_env%schur_projector_density_full_selected_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_quality_ema
             qs_ot_env%schur_projector_density_full_selected_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_residual_quality
             qs_ot_env%schur_projector_density_full_selected_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_residual_quality_ema
             qs_ot_env%schur_projector_density_full_selected_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_drop_sum
             qs_ot_env%schur_projector_density_full_selected_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_selected_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_selected_measured_sum
             qs_ot_env%schur_projector_density_full_direct_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_quality
             qs_ot_env%schur_projector_density_full_direct_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_quality_ema
             qs_ot_env%schur_projector_density_full_direct_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_drop_sum
             qs_ot_env%schur_projector_density_full_direct_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_measured_sum
             qs_ot_env%schur_projector_density_full_direct_trust = 1.0_dp
             qs_ot_env%schur_projector_density_full_direct_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_trust_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_trust_ema
             qs_ot_env%schur_projector_density_full_direct_weighted_trust = 0.0_dp
             qs_ot_env%schur_projector_density_full_direct_weighted_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_weighted_trust_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_weighted_trust_ema
             qs_ot_env%schur_projector_density_full_direct_abs_trust = 0.0_dp
             qs_ot_env%schur_projector_density_full_direct_abs_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_direct_abs_trust_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_direct_abs_trust_ema
             qs_ot_env%schur_projector_density_fdir_sel_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_quality
             qs_ot_env%schur_projector_density_fdir_sel_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_quality_ema
             qs_ot_env%schur_projector_density_fdir_sel_resid_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_resid_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_resid_quality
             qs_ot_env%schur_projector_density_fdir_sel_resid_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_resid_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_resid_quality_ema
             qs_ot_env%schur_projector_density_fdir_sel_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_drop_sum
             qs_ot_env%schur_projector_density_fdir_sel_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_fdir_sel_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_fdir_sel_measured_sum
             qs_ot_env%schur_projector_density_full_global_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_quality
             qs_ot_env%schur_projector_density_full_global_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_quality_ema
             qs_ot_env%schur_projector_density_full_global_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_drop_sum
             qs_ot_env%schur_projector_density_full_global_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_measured_sum
             qs_ot_env%schur_projector_density_full_global_trust = 1.0_dp
             qs_ot_env%schur_projector_density_full_global_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_trust_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_trust_ema
             qs_ot_env%schur_projector_density_full_global_weighted_trust = 0.0_dp
             qs_ot_env%schur_projector_density_full_global_weighted_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_weighted_trust_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_weighted_trust_ema
             qs_ot_env%schur_projector_density_full_global_abs_trust = 0.0_dp
             qs_ot_env%schur_projector_density_full_global_abs_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_abs_trust_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_abs_trust_ema
             qs_ot_env%schur_projector_density_full_global_selected = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_selected
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_selected
             qs_ot_env%schur_projector_density_full_global_sel_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_quality
             qs_ot_env%schur_projector_density_full_global_sel_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_quality_ema
             qs_ot_env%schur_projector_density_full_global_sel_resid_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_residual_quality
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_residual_quality
             qs_ot_env%schur_projector_density_full_global_sel_resid_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_residual_quality_ema
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_residual_quality_ema
             qs_ot_env%schur_projector_density_full_global_sel_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_drop_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_drop_sum
             qs_ot_env%schur_projector_density_full_global_sel_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%density_full_global_sel_measured_sum
+               scf_env%qs_ot_restart%channel(shared_channel)%density_full_global_sel_measured_sum
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 20) THEN
             qs_ot_env%schur_model_attempt = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(1)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(1)
             qs_ot_env%schur_cg_attempt = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(2)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(2)
             qs_ot_env%schur_model_flavor = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(3)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(3)
             qs_ot_env%schur_cg_flavor = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(4)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(4)
             qs_ot_env%schur_model_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(5)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(5)
             qs_ot_env%schur_constrained_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(6)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(6)
             qs_ot_env%schur_split_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(7)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(7)
             qs_ot_env%schur_coupled_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(8)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(8)
             qs_ot_env%schur_split_shadow_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(9)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(9)
             qs_ot_env%schur_occgap_shadow_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(10)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(10)
             qs_ot_env%schur_dense_metric_shadow_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(11)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(11)
             qs_ot_env%schur_step_gauge_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(12)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(12)
             qs_ot_env%kpoint_physical_delta_groups = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(13)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(13)
 
             qs_ot_env%schur_model_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(1)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(1)
             qs_ot_env%schur_model_quality_ready = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(2)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(2)
             qs_ot_env%schur_constrained_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(3)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(3)
             qs_ot_env%schur_constrained_candidate_enabled = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(4)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(4)
             qs_ot_env%schur_split_shadow_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(5)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(5)
             qs_ot_env%schur_occgap_shadow_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(6)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(6)
             qs_ot_env%schur_dense_metric_shadow_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(7)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(7)
             qs_ot_env%schur_history_mixed = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(8)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(8)
             qs_ot_env%schur_split_candidate_enabled = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(9)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(9)
             qs_ot_env%schur_residual_history_reset_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(10)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(10)
             qs_ot_env%kpoint_physical_delta_ready = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(11)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(11)
 
-            qs_ot_env%schur_model_drop = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(1)
+            qs_ot_env%schur_model_drop = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(1)
             qs_ot_env%schur_model_calibrated_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(2)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(2)
             qs_ot_env%schur_model_measured_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(3)
-            qs_ot_env%schur_model_quality = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(4)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(3)
+            qs_ot_env%schur_model_quality = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(4)
             qs_ot_env%schur_model_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(5)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(5)
             qs_ot_env%schur_model_calibrated_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(6)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(6)
             qs_ot_env%schur_model_calibrated_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(7)
-            qs_ot_env%schur_model_gap_ratio = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(8)
-            qs_ot_env%schur_model_delta = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(9)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(7)
+            qs_ot_env%schur_model_gap_ratio = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(8)
+            qs_ot_env%schur_model_delta = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(9)
             qs_ot_env%schur_model_control_delta = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(10)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(10)
             qs_ot_env%schur_model_residual_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(11)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(11)
             qs_ot_env%schur_residual_history_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(12)
-            qs_ot_env%schur_step_gap_norm = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(13)
-            qs_ot_env%schur_step_gauge_norm = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(14)
-            qs_ot_env%schur_step_fermi_norm = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(15)
-            qs_ot_env%schur_step_gauge_ratio = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(16)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(12)
+            qs_ot_env%schur_step_gap_norm = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(13)
+            qs_ot_env%schur_step_gauge_norm = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(14)
+            qs_ot_env%schur_step_fermi_norm = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(15)
+            qs_ot_env%schur_step_gauge_ratio = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(16)
             qs_ot_env%schur_step_gauge_ratio_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(17)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(17)
             qs_ot_env%schur_step_gauge_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(18)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(18)
             qs_ot_env%schur_step_gauge_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(19)
-            qs_ot_env%kpoint_raw_delta = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(20)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(19)
+            qs_ot_env%kpoint_raw_delta = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(20)
             qs_ot_env%kpoint_physical_delta = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(21)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(21)
             qs_ot_env%kpoint_projected_delta = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(22)
-            qs_ot_env%kpoint_eps_scf = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(23)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(22)
+            qs_ot_env%kpoint_eps_scf = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(23)
             qs_ot_env%kpoint_physical_gnorm = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(24)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(24)
             qs_ot_env%kpoint_physical_rot_gnorm = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(25)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(25)
             qs_ot_env%kpoint_physical_energy_gnorm = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(26)
-            qs_ot_env%kpoint_gauge_gnorm = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(27)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(26)
+            qs_ot_env%kpoint_gauge_gnorm = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(27)
             qs_ot_env%schur_constrained_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(28)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(28)
             qs_ot_env%schur_constrained_calibrated_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(29)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(29)
             qs_ot_env%schur_constrained_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(30)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(30)
             qs_ot_env%schur_constrained_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(31)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(31)
             qs_ot_env%schur_constrained_calibrated_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(32)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(32)
             qs_ot_env%schur_constrained_calibrated_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(33)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(33)
             qs_ot_env%schur_constrained_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(34)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(34)
             qs_ot_env%schur_constrained_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(35)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(35)
             qs_ot_env%schur_constrained_calibrated_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(36)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(36)
             qs_ot_env%schur_constrained_gap_ratio = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(37)
-            qs_ot_env%schur_split_quality = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(38)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(37)
+            qs_ot_env%schur_split_quality = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(38)
             qs_ot_env%schur_split_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(39)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(39)
             qs_ot_env%schur_split_calibrated_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(40)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(40)
             qs_ot_env%schur_split_calibrated_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(41)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(41)
             qs_ot_env%schur_split_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(42)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(42)
             qs_ot_env%schur_split_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(43)
-            qs_ot_env%schur_split_drop_sum = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(44)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(43)
+            qs_ot_env%schur_split_drop_sum = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(44)
             qs_ot_env%schur_split_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(45)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(45)
             qs_ot_env%schur_split_calibrated_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(46)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(46)
             qs_ot_env%schur_split_shadow_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(47)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(47)
             qs_ot_env%schur_split_shadow_calibrated_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(48)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(48)
             qs_ot_env%schur_split_shadow_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(49)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(49)
             qs_ot_env%schur_split_shadow_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(50)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(50)
             qs_ot_env%schur_split_shadow_calibrated_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(51)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(51)
             qs_ot_env%schur_split_shadow_calibrated_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(52)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(52)
             qs_ot_env%schur_split_shadow_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(53)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(53)
             qs_ot_env%schur_split_shadow_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(54)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(54)
             qs_ot_env%schur_split_shadow_calibrated_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(55)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(55)
             qs_ot_env%schur_occgap_shadow_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(56)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(56)
             qs_ot_env%schur_occgap_shadow_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(57)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(57)
             qs_ot_env%schur_occgap_shadow_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(58)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(58)
             qs_ot_env%schur_occgap_shadow_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(59)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(59)
             qs_ot_env%schur_occgap_shadow_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(60)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(60)
             qs_ot_env%schur_occgap_shadow_gap_ratio = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(61)
-            qs_ot_env%schur_coupled_quality = scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(62)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(61)
+            qs_ot_env%schur_coupled_quality = scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(62)
             qs_ot_env%schur_coupled_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(63)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(63)
             qs_ot_env%schur_coupled_calibrated_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(64)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(64)
             qs_ot_env%schur_coupled_calibrated_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(65)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(65)
             qs_ot_env%schur_coupled_residual_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(66)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(66)
             qs_ot_env%schur_coupled_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(67)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(67)
             qs_ot_env%schur_coupled_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(68)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(68)
             qs_ot_env%schur_coupled_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(69)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(69)
             qs_ot_env%schur_coupled_calibrated_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(70)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(70)
             qs_ot_env%schur_dense_metric_shadow_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(71)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(71)
             qs_ot_env%schur_dense_metric_shadow_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(72)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(72)
             qs_ot_env%schur_dense_metric_shadow_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(73)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(73)
             qs_ot_env%schur_dense_metric_shadow_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(74)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(74)
             qs_ot_env%schur_dense_metric_shadow_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(75)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(75)
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 21) THEN
             qs_ot_env%schur_projector_mode_quality_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(14)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(14)
             qs_ot_env%schur_projector_mode_pending = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(12)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(12)
             qs_ot_env%schur_projector_mode_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(76)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(76)
             qs_ot_env%schur_projector_mode_response_drop = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(77)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(77)
             qs_ot_env%schur_projector_mode_step_negative = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(78)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(78)
             qs_ot_env%schur_projector_mode_response_negative = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(79)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(79)
             qs_ot_env%schur_projector_mode_trust = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(80)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(80)
             qs_ot_env%schur_projector_mode_quality = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(81)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(81)
             qs_ot_env%schur_projector_mode_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(82)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(82)
             qs_ot_env%schur_projector_mode_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(83)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(83)
             qs_ot_env%schur_projector_mode_measured_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(84)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(84)
             qs_ot_env%schur_projector_mode_response_drop_sum = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(85)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(85)
             qs_ot_env%schur_projector_mode_step_negative_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(86)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(86)
             qs_ot_env%schur_projector_mode_response_negative_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(87)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(87)
             qs_ot_env%schur_projector_mode_trust_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(88)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(88)
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 22) THEN
             qs_ot_env%kpoint_occ_preconditioner_ready_samples = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_int(15)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_int(15)
             qs_ot_env%kpoint_occ_preconditioner_active = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_log(13)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_log(13)
             qs_ot_env%kpoint_occ_metric_residual_quality_ema = &
-               scf_env%qs_ot_restart%channel(ot_channel)%adaptive_real(89)
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(89)
          ELSE IF (qs_ot_env%has_complex_kpoint_state .AND. &
                   qs_ot_env%settings%occupation_preconditioner .AND. &
                   scf_env%qs_ot_restart%channel(1)%mermin_ls_accepted_quality_samples > 0 .AND. &
@@ -3710,6 +3684,36 @@ CONTAINS
       END IF
 
    END SUBROUTINE apply_qs_ot_kpoint_restart
+
+! **************************************************************************************************
+!> \brief copy replicated restart data into the owning k-point communicator
+!> \param source replicated dense restart matrix
+!> \param matrix local OT DBCSR matrix
+!> \param qs_ot_env owning OT channel
+! **************************************************************************************************
+   SUBROUTINE copy_qs_ot_restart_dense_matrix(source, matrix, qs_ot_env)
+      TYPE(qs_ot_restart_dense_matrix_type), INTENT(IN)  :: source
+      TYPE(dbcsr_type), POINTER                          :: matrix
+      TYPE(qs_ot_type), INTENT(IN)                       :: qs_ot_env
+
+      TYPE(cp_fm_struct_type), POINTER                   :: local_fm_struct
+      TYPE(cp_fm_type)                                   :: local_fm
+
+      CPASSERT(ALLOCATED(source%data))
+      CPASSERT(ASSOCIATED(matrix))
+      CPASSERT(ASSOCIATED(qs_ot_env%blacs_env))
+
+      NULLIFY (local_fm_struct)
+      CALL cp_fm_struct_create(local_fm_struct, context=qs_ot_env%blacs_env, &
+                               nrow_global=SIZE(source%data, 1), &
+                               ncol_global=SIZE(source%data, 2))
+      CALL cp_fm_create(local_fm, local_fm_struct)
+      CALL cp_fm_set_submatrix(local_fm, source%data)
+      CALL copy_fm_to_dbcsr(local_fm, matrix)
+      CALL cp_fm_release(local_fm)
+      CALL cp_fm_struct_release(local_fm_struct)
+
+   END SUBROUTINE copy_qs_ot_restart_dense_matrix
 
 ! **************************************************************************************************
 !> \brief allocate imaginary orbital images for complex k-point OT channel state

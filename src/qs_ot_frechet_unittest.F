@@ -24,6 +24,11 @@ PROGRAM qs_ot_frechet_unittest
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
+   USE cp_log_handling,                 ONLY: cp_add_default_logger,&
+                                              cp_logger_create,&
+                                              cp_logger_release,&
+                                              cp_logger_type,&
+                                              cp_rm_default_logger
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets
    USE machine,                         ONLY: default_output_unit
@@ -58,12 +63,20 @@ PROGRAM qs_ot_frechet_unittest
    REAL(KIND=dp), PARAMETER                           :: projector_response_negative_balance_floor = 1.5E-1_dp, &
                                                          projector_response_negative_balance_max = 5.0E-1_dp
    TYPE(mp_comm_type)                                 :: mp_comm
+   TYPE(cp_logger_type), POINTER                      :: logger
+   TYPE(mp_para_env_type), POINTER                    :: para_env
 
    nfail = 0
+   NULLIFY (logger, para_env)
    CALL mp_world_init(mp_comm)
    mynode = mp_comm%mepos
    io_unit = -1
    IF (mynode == 0) io_unit = default_output_unit
+   ALLOCATE (para_env)
+   CALL para_env%from_dup(mp_comm)
+   CALL cp_logger_create(logger, para_env=para_env, default_global_unit_nr=io_unit, &
+                         close_global_unit_on_dealloc=.FALSE.)
+   CALL cp_add_default_logger(logger)
    CALL dbcsr_init_lib(mp_comm%get_handle(), io_unit)
 
    CALL check_offdiag("separated offdiag", 1.3_dp, -0.4_dp, &
@@ -506,6 +519,9 @@ PROGRAM qs_ot_frechet_unittest
    IF (nfail == 0) PRINT *, "qs_ot_frechet_unittest: OK"
 
    CALL dbcsr_finalize_lib()
+   CALL cp_rm_default_logger()
+   CALL cp_logger_release(logger)
+   CALL mp_para_env_release(para_env)
    CALL mp_world_finalize()
 
    IF (nfail > 0) ERROR STOP "qs_ot_frechet_unittest failed"
