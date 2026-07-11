@@ -48,6 +48,14 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
+   CALL check_kpoint_symmetry_preconditioned_metric("k-point symmetry preconditioned metric", &
+                                                     5.0E-14_dp, nfail)
+   CALL check_metallic_subspace_occupation_preconditioner("metallic subspace occupation preconditioner", &
+                                                           5.0E-14_dp, nfail)
+   CALL check_linear_energy_direction_projection("linear fixed-N energy direction", &
+                                                  5.0E-15_dp, nfail)
+   CALL check_complex_canonical_gauge_transport("complex canonical gauge transport", &
+                                                5.0E-13_dp, nfail)
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
    CALL check_fixed_n_preconditioner_gauge("fixed-N preconditioner gauge", 5.0E-15_dp, nfail)
    CALL check_fixed_n_tether_preconditioner_gauge("fixed-N/tether preconditioner gauge", &
@@ -863,6 +871,318 @@ CONTAINS
    END SUBROUTINE check_weighted_kpoint_mermin_gradient
 
 ! **************************************************************************************************
+!> \brief Check the induced full-grid metric for symmetry-reduced gradients and preconditioned steps.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_symmetry_preconditioned_metric(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nk = 2, nv = 3
+
+      INTEGER                                            :: copy, expanded_index, ik
+      INTEGER, DIMENSION(nk)                             :: multiplicity
+      REAL(KIND=dp) :: beta_expanded, beta_reduced, cross_expanded, cross_reduced, &
+         gdotp_expanded, gdotp_reduced, gnorm_expanded, gnorm_reduced, &
+         old_gnorm_expanded, old_gnorm_reduced, quad_expanded, quad_reduced, &
+         step_norm_expanded, step_norm_reduced
+      REAL(KIND=dp), DIMENSION(nv, nk) :: grad_full, grad_old_full, grad_reduced, &
+         hdiag_full, pgrad_full, pgrad_old_full
+      REAL(KIND=dp), DIMENSION(nv*SUM([2, 1])) :: grad_expanded, grad_old_expanded, &
+         hdiag_expanded, pgrad_expanded, pgrad_old_expanded
+
+      multiplicity(:) = [2, 1]
+      grad_full(:, 1) = [0.40_dp, -0.20_dp, 0.10_dp]
+      grad_full(:, 2) = [-0.30_dp, 0.50_dp, -0.40_dp]
+      grad_old_full(:, 1) = [0.35_dp, -0.25_dp, 0.08_dp]
+      grad_old_full(:, 2) = [-0.28_dp, 0.44_dp, -0.36_dp]
+      hdiag_full(:, 1) = [1.50_dp, 0.80_dp, 2.00_dp]
+      hdiag_full(:, 2) = [0.90_dp, 1.70_dp, 1.20_dp]
+      pgrad_full(:, 1) = grad_full(:, 1)/hdiag_full(:, 1)
+      pgrad_full(:, 2) = grad_full(:, 2)/hdiag_full(:, 2)
+      pgrad_old_full(:, 1) = grad_old_full(:, 1)/hdiag_full(:, 1)
+      pgrad_old_full(:, 2) = grad_old_full(:, 2)/hdiag_full(:, 2)
+
+      expanded_index = 0
+      DO ik = 1, nk
+         grad_reduced(:, ik) = REAL(multiplicity(ik), KIND=dp)*grad_full(:, ik)
+         DO copy = 1, multiplicity(ik)
+            grad_expanded(expanded_index + 1:expanded_index + nv) = grad_full(:, ik)
+            grad_old_expanded(expanded_index + 1:expanded_index + nv) = grad_old_full(:, ik)
+            hdiag_expanded(expanded_index + 1:expanded_index + nv) = hdiag_full(:, ik)
+            pgrad_expanded(expanded_index + 1:expanded_index + nv) = pgrad_full(:, ik)
+            pgrad_old_expanded(expanded_index + 1:expanded_index + nv) = pgrad_old_full(:, ik)
+            expanded_index = expanded_index + nv
+         END DO
+      END DO
+
+      gnorm_reduced = 0.0_dp
+      step_norm_reduced = 0.0_dp
+      gdotp_reduced = 0.0_dp
+      quad_reduced = 0.0_dp
+      cross_reduced = 0.0_dp
+      old_gnorm_reduced = 0.0_dp
+      DO ik = 1, nk
+         gnorm_reduced = gnorm_reduced + &
+                         DOT_PRODUCT(grad_reduced(:, ik), grad_reduced(:, ik))/ &
+                         REAL(multiplicity(ik), KIND=dp)
+         step_norm_reduced = step_norm_reduced + REAL(multiplicity(ik), KIND=dp)* &
+                             DOT_PRODUCT(pgrad_full(:, ik), pgrad_full(:, ik))
+         gdotp_reduced = gdotp_reduced + DOT_PRODUCT(grad_reduced(:, ik), pgrad_full(:, ik))
+         quad_reduced = quad_reduced + REAL(multiplicity(ik), KIND=dp)* &
+                        DOT_PRODUCT(hdiag_full(:, ik)*pgrad_full(:, ik), pgrad_full(:, ik))
+         cross_reduced = cross_reduced + DOT_PRODUCT(grad_reduced(:, ik), pgrad_old_full(:, ik))
+         old_gnorm_reduced = old_gnorm_reduced + REAL(multiplicity(ik), KIND=dp)* &
+                             DOT_PRODUCT(grad_old_full(:, ik), pgrad_old_full(:, ik))
+      END DO
+      beta_reduced = (gdotp_reduced - cross_reduced)/old_gnorm_reduced
+
+      gnorm_expanded = DOT_PRODUCT(grad_expanded, grad_expanded)
+      step_norm_expanded = DOT_PRODUCT(pgrad_expanded, pgrad_expanded)
+      gdotp_expanded = DOT_PRODUCT(grad_expanded, pgrad_expanded)
+      quad_expanded = DOT_PRODUCT(hdiag_expanded*pgrad_expanded, pgrad_expanded)
+      cross_expanded = DOT_PRODUCT(grad_expanded, pgrad_old_expanded)
+      old_gnorm_expanded = DOT_PRODUCT(grad_old_expanded, pgrad_old_expanded)
+      beta_expanded = (gdotp_expanded - cross_expanded)/old_gnorm_expanded
+
+      IF (MAX(ABS(gnorm_reduced - gnorm_expanded), &
+              ABS(step_norm_reduced - step_norm_expanded), &
+              ABS(gdotp_reduced - gdotp_expanded), &
+              ABS(quad_reduced - quad_expanded), &
+              ABS(beta_reduced - beta_expanded)) > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,5(1X,ES16.8))') TRIM(label)//" FAILED", &
+            gnorm_reduced - gnorm_expanded, step_norm_reduced - step_norm_expanded, &
+            gdotp_reduced - gdotp_expanded, quad_reduced - quad_expanded, &
+            beta_reduced - beta_expanded
+      ELSE
+         WRITE (default_output_unit, '(A,5(1X,ES16.8))') TRIM(label)//" OK with residuals", &
+            gnorm_reduced - gnorm_expanded, step_norm_reduced - step_norm_expanded, &
+            gdotp_reduced - gdotp_expanded, quad_reduced - quad_expanded, &
+            beta_reduced - beta_expanded
+      END IF
+
+   END SUBROUTINE check_kpoint_symmetry_preconditioned_metric
+
+! **************************************************************************************************
+!> \brief Check cancellation of the orbital-occupation Hessian factor and its empty-band floor.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_metallic_subspace_occupation_preconditioner(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp, maxocc = 2.0_dp
+
+      REAL(KIND=dp)                                      :: err, floor_fraction, occ_floor
+      REAL(KIND=dp), DIMENSION(4) :: expected, occupation, preconditioned, raw_gradient, &
+         reference, scale
+
+      occupation(:) = [2.0_dp, 1.0_dp, 0.10_dp, 1.0E-4_dp]
+      reference(:) = [0.31_dp, -0.22_dp, 0.17_dp, -0.09_dp]
+      floor_fraction = MAX(1.0E-4_dp, MIN(1.0E-1_dp, SQRT(eps_scf)))
+      occ_floor = maxocc*floor_fraction
+      raw_gradient(:) = occupation(:)/maxocc*reference(:)
+      scale(:) = maxocc/MAX(occupation(:), occ_floor)
+      preconditioned(:) = scale(:)*raw_gradient(:)
+      expected(1:3) = reference(1:3)
+      expected(4) = occupation(4)/occ_floor*reference(4)
+      err = MAXVAL(ABS(preconditioned - expected))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,3(1X,ES16.8))') TRIM(label)//" FAILED", &
+            err, occ_floor, MAXVAL(scale)
+      ELSE
+         WRITE (default_output_unit, '(A,3(1X,ES16.8))') TRIM(label)//" OK with error/floor/maxscale", &
+            err, occ_floor, MAXVAL(scale)
+      END IF
+
+   END SUBROUTINE check_metallic_subspace_occupation_preconditioner
+
+! **************************************************************************************************
+!> \brief Check global fixed-N projection, trust scaling, and exact line-search reversibility.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_linear_energy_direction_projection(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: probe = 0.2_dp, radius = 0.03_dp
+
+      REAL(KIND=dp) :: charge_error, max_step, rayleigh_error, return_error, scale, shift, &
+         target_charge_error, target_shift
+      REAL(KIND=dp), DIMENSION(6) :: combined, direction, projected, rayleigh, target, &
+         weights, x0, xreturn
+
+      direction(:) = [0.42_dp, -0.18_dp, 0.07_dp, -0.31_dp, 0.16_dp, 0.05_dp]
+      weights(:) = [0.80_dp, 0.35_dp, 0.05_dp, 0.55_dp, 0.20_dp, 0.05_dp]
+      x0(:) = [-0.7_dp, -0.2_dp, 0.1_dp, 0.5_dp, 0.9_dp, 1.3_dp]
+      rayleigh(:) = [-0.686_dp, -0.209_dp, 0.104_dp, 0.493_dp, 0.906_dp, 1.297_dp]
+
+      shift = DOT_PRODUCT(weights, direction)/SUM(weights)
+      projected(:) = direction(:) - shift
+
+      target_shift = DOT_PRODUCT(weights, x0 - rayleigh)/SUM(weights)
+      target(:) = rayleigh(:) + target_shift - x0(:)
+      target_charge_error = ABS(DOT_PRODUCT(weights, target))
+      rayleigh_error = MAXVAL(ABS(x0 + probe*(target/probe) - (rayleigh + target_shift)))
+
+      ! A fresh exact correction is added to the current coupled response.
+      ! It does not contain a previous nonlinear-CG energy direction.
+      combined(:) = projected(:) + target(:)/probe
+      max_step = probe*MAXVAL(ABS(combined))
+      scale = 1.0_dp
+      IF (max_step > radius) scale = radius/max_step
+      combined(:) = scale*combined(:)
+
+      charge_error = ABS(DOT_PRODUCT(weights, combined))
+      max_step = probe*MAXVAL(ABS(combined))
+      xreturn(:) = (x0(:) + probe*combined(:)) - probe*combined(:)
+      return_error = MAXVAL(ABS(xreturn - x0))
+
+      IF (MAX(charge_error, target_charge_error, rayleigh_error, return_error, &
+              MAX(0.0_dp, max_step - radius)) > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,5(1X,ES16.8))') TRIM(label)//" FAILED", &
+            charge_error, target_charge_error, rayleigh_error, return_error, max_step - radius
+      ELSE
+         WRITE (default_output_unit, '(A,6(1X,ES16.8))') &
+            TRIM(label)//" OK with charge/target/rayleigh/return/max/scale", &
+            charge_error, target_charge_error, rayleigh_error, return_error, max_step, scale
+      END IF
+
+   END SUBROUTINE check_linear_energy_direction_projection
+
+! **************************************************************************************************
+!> \brief Check the one-time complex canonical gauge transport used before OT history exists.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_canonical_gauge_transport(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nao = 4, nmo = 3
+
+      COMPLEX(KIND=dp) :: coeff, metric_value
+      COMPLEX(KIND=dp), DIMENSION(nao, nao) :: density_after, density_before, h_ao, overlap
+      COMPLEX(KIND=dp), DIMENSION(nao, nmo) :: canonical, cbase, current, transported
+      COMPLEX(KIND=dp), DIMENSION(nmo, nmo) :: chc, evec, generator_u, hcanon, metric, q
+      INTEGER                                            :: i, j
+      REAL(KIND=dp) :: canonical_error, density_error, diagonal_error, metric_error, &
+         norm_value, transport_error
+      REAL(KIND=dp), DIMENSION(nmo)                      :: evals
+      REAL(KIND=dp), DIMENSION(nmo, nmo)                 :: x_im, x_re
+
+      overlap(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      overlap(1, 1) = CMPLX(1.3_dp, 0.0_dp, KIND=dp)
+      overlap(2, 2) = CMPLX(0.8_dp, 0.0_dp, KIND=dp)
+      overlap(3, 3) = CMPLX(1.7_dp, 0.0_dp, KIND=dp)
+      overlap(4, 4) = CMPLX(1.1_dp, 0.0_dp, KIND=dp)
+
+      cbase(:, 1) = [CMPLX(0.8_dp, 0.1_dp, KIND=dp), CMPLX(-0.2_dp, 0.3_dp, KIND=dp), &
+                     CMPLX(0.1_dp, -0.2_dp, KIND=dp), CMPLX(0.3_dp, 0.1_dp, KIND=dp)]
+      cbase(:, 2) = [CMPLX(-0.1_dp, 0.4_dp, KIND=dp), CMPLX(0.7_dp, -0.2_dp, KIND=dp), &
+                     CMPLX(0.2_dp, 0.1_dp, KIND=dp), CMPLX(-0.2_dp, 0.3_dp, KIND=dp)]
+      cbase(:, 3) = [CMPLX(0.2_dp, -0.3_dp, KIND=dp), CMPLX(0.1_dp, 0.2_dp, KIND=dp), &
+                     CMPLX(0.6_dp, 0.1_dp, KIND=dp), CMPLX(0.4_dp, -0.2_dp, KIND=dp)]
+      DO j = 1, nmo
+         DO i = 1, j - 1
+            coeff = DOT_PRODUCT(cbase(:, i), MATMUL(overlap, cbase(:, j)))
+            cbase(:, j) = cbase(:, j) - coeff*cbase(:, i)
+         END DO
+         metric_value = DOT_PRODUCT(cbase(:, j), MATMUL(overlap, cbase(:, j)))
+         norm_value = SQRT(MAX(REAL(metric_value, KIND=dp), EPSILON(1.0_dp)))
+         cbase(:, j) = cbase(:, j)/norm_value
+      END DO
+
+      h_ao(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      h_ao(1, 1) = CMPLX(-0.9_dp, 0.0_dp, KIND=dp)
+      h_ao(2, 2) = CMPLX(-0.2_dp, 0.0_dp, KIND=dp)
+      h_ao(3, 3) = CMPLX(0.4_dp, 0.0_dp, KIND=dp)
+      h_ao(4, 4) = CMPLX(0.8_dp, 0.0_dp, KIND=dp)
+      h_ao(1, 2) = CMPLX(0.13_dp, -0.07_dp, KIND=dp)
+      h_ao(1, 3) = CMPLX(-0.05_dp, 0.09_dp, KIND=dp)
+      h_ao(1, 4) = CMPLX(0.04_dp, 0.02_dp, KIND=dp)
+      h_ao(2, 3) = CMPLX(0.11_dp, -0.03_dp, KIND=dp)
+      h_ao(2, 4) = CMPLX(-0.08_dp, 0.06_dp, KIND=dp)
+      h_ao(3, 4) = CMPLX(0.07_dp, -0.05_dp, KIND=dp)
+      DO j = 2, nao
+         DO i = 1, j - 1
+            h_ao(j, i) = CONJG(h_ao(i, j))
+         END DO
+      END DO
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.17_dp
+      x_re(1, 3) = -0.09_dp
+      x_re(2, 3) = 0.12_dp
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.04_dp
+      x_im(2, 2) = -0.03_dp
+      x_im(3, 3) = 0.02_dp
+      x_im(1, 2) = -0.06_dp
+      x_im(1, 3) = 0.05_dp
+      x_im(2, 3) = 0.03_dp
+      DO j = 2, nmo
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+      CALL dense_rotation_u(x_re, x_im, generator_u)
+
+      current = MATMUL(cbase, generator_u)
+      chc = MATMUL(CONJG(TRANSPOSE(current)), MATMUL(h_ao, current))
+      CALL diag_complex(chc, evec, evals)
+      q = MATMUL(generator_u, evec)
+      transported = MATMUL(cbase, q)
+      canonical = MATMUL(current, evec)
+
+      metric = MATMUL(CONJG(TRANSPOSE(transported)), MATMUL(overlap, transported))
+      hcanon = MATMUL(CONJG(TRANSPOSE(transported)), MATMUL(h_ao, transported))
+      density_before = MATMUL(current, CONJG(TRANSPOSE(current)))
+      density_after = MATMUL(transported, CONJG(TRANSPOSE(transported)))
+      transport_error = MAXVAL(ABS(transported - canonical))
+      metric_error = 0.0_dp
+      diagonal_error = 0.0_dp
+      DO j = 1, nmo
+         metric_error = MAX(metric_error, ABS(metric(j, j) - CMPLX(1.0_dp, 0.0_dp, KIND=dp)))
+         diagonal_error = MAX(diagonal_error, ABS(hcanon(j, j) - CMPLX(evals(j), 0.0_dp, KIND=dp)))
+         DO i = 1, nmo
+            IF (i /= j) THEN
+               metric_error = MAX(metric_error, ABS(metric(i, j)))
+               diagonal_error = MAX(diagonal_error, ABS(hcanon(i, j)))
+            END IF
+         END DO
+      END DO
+      density_error = MAXVAL(ABS(density_after - density_before))
+      canonical_error = MAX(transport_error, metric_error, diagonal_error, density_error)
+
+      IF (canonical_error > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,4(1X,ES16.8))') TRIM(label)//" FAILED", &
+            transport_error, metric_error, diagonal_error, density_error
+      ELSE
+         WRITE (default_output_unit, '(A,4(1X,ES16.8))') TRIM(label)//" OK with transport/metric/diag/density", &
+            transport_error, metric_error, diagonal_error, density_error
+      END IF
+
+   END SUBROUTINE check_complex_canonical_gauge_transport
+
+! **************************************************************************************************
 !> \brief Check the exact auxiliary-energy projection for the fixed-N Mermin subproblem.
 !> \param label ...
 !> \param tol ...
@@ -877,9 +1197,10 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp, nel = 4.35_dp, &
                                                             sigma = 0.030_dp
 
-      REAL(KIND=dp)                                      :: err, gauge_shift
+      INTEGER                                            :: ik
+      REAL(KIND=dp)                                      :: avg, coupling, err, gap, gauge_shift, spectral_err
       REAL(KIND=dp), DIMENSION(nkp)                      :: wk
-      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, grad, h, projected
+      REAL(KIND=dp), DIMENSION(nmo, nkp)                 :: eps, grad, h, projected, spectral, spectral_grad
 
       wk = [0.35_dp, 0.65_dp]
       eps(:, 1) = [-0.34_dp, -0.07_dp, 0.025_dp, 0.18_dp]
@@ -892,11 +1213,26 @@ CONTAINS
       CALL dense_kpoint_mermin_gradient(projected, h, wk, nel, sigma, maxocc, grad)
       err = MAXVAL(ABS(grad))
 
-      IF (err > tol) THEN
+      ! Spectral energies of a non-diagonal CHC matrix do not solve the
+      ! fixed-orbital subproblem unless their eigenvectors also rotate C.
+      spectral(:, :) = h(:, :)
+      coupling = 0.055_dp
+      DO ik = 1, nkp
+         avg = 0.5_dp*(h(2, ik) + h(3, ik))
+         gap = SQRT((0.5_dp*(h(3, ik) - h(2, ik)))**2 + coupling**2)
+         spectral(2, ik) = avg - gap
+         spectral(3, ik) = avg + gap
+      END DO
+      CALL dense_kpoint_mermin_gradient(spectral, h, wk, nel, sigma, maxocc, spectral_grad)
+      spectral_err = MAXVAL(ABS(spectral_grad))
+
+      IF (err > tol .OR. spectral_err <= 1.0E-5_dp) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), &
+            "failed with Rayleigh/spectral residual", err, spectral_err
       ELSE
-         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+         WRITE (*, '(A,1X,A,2(1X,ES12.5))') TRIM(label), &
+            "OK with Rayleigh/spectral residual", err, spectral_err
       END IF
 
    END SUBROUTINE check_kpoint_mermin_energy_projection
@@ -10731,55 +11067,70 @@ CONTAINS
 
       LOGICAL :: bootstrap_ready, enabled_veto, promoted_veto, selected_bad, selected_good, &
          selected_low_positive, selected_low_wait, selected_stalled_probe, selected_stalled_wait, &
-         trust_veto
+         selected_residual_bad, trust_veto
       REAL(KIND=dp)                                      :: err
 
       bootstrap_ready = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                       2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                      0.0_dp, 0.0_dp, &
                                                       0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       promoted_veto = dense_direct_tail_probe_ready(.TRUE., .TRUE., .FALSE., &
                                                     2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                    0.0_dp, 0.0_dp, &
                                                     0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       enabled_veto = dense_direct_tail_probe_ready(.TRUE., .FALSE., .TRUE., &
                                                    2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                   0.0_dp, 0.0_dp, &
                                                    0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       trust_veto = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                  2.0E-5_dp, 4, 0, 0.0_dp, 0.0_dp, &
+                                                 0.0_dp, 0.0_dp, &
                                                  0.10_dp, 0.30_dp, 8.0E-1_dp, 2.0E-2_dp, 0.0_dp)
       selected_bad = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                    2.0E-5_dp, 4, 5, 0.0_dp, 0.0_dp, &
+                                                   1.0_dp, 1.0_dp, &
                                                    0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_low_positive = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                             2.0E-5_dp, 16, 5, 0.056_dp, 0.053_dp, &
+                                                            0.060_dp, 0.053_dp, &
                                                             0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_low_wait = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                         2.0E-5_dp, 17, 5, 0.056_dp, 0.053_dp, &
+                                                        0.060_dp, 0.053_dp, &
                                                         0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_stalled_probe = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                              2.0E-5_dp, 24, 5, 0.056_dp, 0.030_dp, &
+                                                             0.040_dp, 0.030_dp, &
                                                              0.10_dp, 0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_stalled_wait = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                             2.0E-5_dp, 25, 5, 0.056_dp, 0.030_dp, &
+                                                            0.040_dp, 0.030_dp, &
                                                             0.10_dp, 0.10_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       selected_good = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
                                                     2.0E-5_dp, 16, 5, 0.14_dp, 0.08_dp, &
+                                                    0.12_dp, 0.08_dp, &
                                                     0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
+      selected_residual_bad = dense_direct_tail_probe_ready(.TRUE., .FALSE., .FALSE., &
+                                                            2.0E-5_dp, 16, 5, 0.14_dp, 0.08_dp, &
+                                                            0.04_dp, 0.01_dp, &
+                                                            0.10_dp, 0.30_dp, 3.0E-3_dp, 2.0E-2_dp, 0.0_dp)
       err = 0.0_dp
       IF (.NOT. bootstrap_ready .OR. promoted_veto .OR. enabled_veto .OR. trust_veto .OR. &
           selected_bad .OR. selected_low_wait .OR. .NOT. selected_low_positive .OR. &
-          .NOT. selected_stalled_probe .OR. selected_stalled_wait .OR. .NOT. selected_good) err = 1.0_dp
+          .NOT. selected_stalled_probe .OR. selected_stalled_wait .OR. .NOT. selected_good .OR. &
+          selected_residual_bad) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
-            "failed with boot/prom/en/trust/bad/wait/low/stall/wait/good", bootstrap_ready, &
+         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
+            "failed with boot/prom/en/trust/bad/wait/low/stall/wait/good/resbad", bootstrap_ready, &
             promoted_veto, enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, &
-            selected_stalled_probe, selected_stalled_wait, selected_good
+            selected_stalled_probe, selected_stalled_wait, selected_good, selected_residual_bad
       ELSE
-         WRITE (*, '(A,1X,A,10(1X,L1))') TRIM(label), &
-            "OK with boot/prom/en/trust/bad/wait/low/stall/wait/good", bootstrap_ready, &
+         WRITE (*, '(A,1X,A,11(1X,L1))') TRIM(label), &
+            "OK with boot/prom/en/trust/bad/wait/low/stall/wait/good/resbad", bootstrap_ready, &
             promoted_veto, enabled_veto, trust_veto, selected_bad, selected_low_wait, selected_low_positive, &
-            selected_stalled_probe, selected_stalled_wait, selected_good
+            selected_stalled_probe, selected_stalled_wait, selected_good, selected_residual_bad
       END IF
 
    END SUBROUTINE check_projector_direct_tail_probe_bootstrap
@@ -10795,8 +11146,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: inactive, low_drop, low_quality, ready, &
-                                                            tail_veto, trust_veto
+      LOGICAL                                            :: bootstrap, bootstrap_low, inactive, low_drop, &
+                                                            low_quality, ready, tail_veto, trust_veto
       REAL(KIND=dp)                                      :: err
 
       ready = dense_direct_tail_close_call(2.0E-5_dp, 8.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
@@ -10817,19 +11168,25 @@ CONTAINS
       trust_veto = dense_direct_tail_close_call(2.0E-5_dp, 8.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
                                                 .TRUE., .FALSE., .FALSE., 8.0E-1_dp, 4.0E-3_dp, &
                                                 1.0E-2_dp, 1.0_dp)
+      bootstrap = dense_direct_tail_close_call(2.0E-5_dp, 1.1E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                               .FALSE., .FALSE., .TRUE., 2.0E-3_dp, 4.0E-3_dp, &
+                                               1.0E-2_dp, 1.0_dp)
+      bootstrap_low = dense_direct_tail_close_call(2.0E-5_dp, 0.9E-10_dp, 1.0E-9_dp, 0.19_dp, &
+                                                   .FALSE., .FALSE., .TRUE., 2.0E-3_dp, 4.0E-3_dp, &
+                                                   1.0E-2_dp, 1.0_dp)
       err = 0.0_dp
       IF (.NOT. ready .OR. low_drop .OR. inactive .OR. low_quality .OR. tail_veto .OR. &
-          trust_veto) err = 1.0_dp
+          trust_veto .OR. .NOT. bootstrap .OR. bootstrap_low) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
-            "failed with ready/low/inactive/quality/tail/trust", ready, low_drop, inactive, &
-            low_quality, tail_veto, trust_veto
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "failed with ready/low/inactive/quality/tail/trust/bootstrap/bootstrap-low", &
+            ready, low_drop, inactive, low_quality, tail_veto, trust_veto, bootstrap, bootstrap_low
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,L1))') TRIM(label), &
-            "OK with ready/low/inactive/quality/tail/trust", ready, low_drop, inactive, &
-            low_quality, tail_veto, trust_veto
+         WRITE (*, '(A,1X,A,8(1X,L1))') TRIM(label), &
+            "OK with ready/low/inactive/quality/tail/trust/bootstrap/bootstrap-low", &
+            ready, low_drop, inactive, low_quality, tail_veto, trust_veto, bootstrap, bootstrap_low
       END IF
 
    END SUBROUTINE check_projector_direct_tail_close_call
@@ -15103,7 +15460,9 @@ CONTAINS
 ! **************************************************************************************************
    FUNCTION dense_direct_tail_probe_ready(candidate_used, promoted, candidate_enabled, residual_delta, &
                                           coupled_quality_samples, selected_quality_samples, &
-                                          selected_quality_ema, selected_quality, shadow_quality, &
+                                          selected_quality_ema, selected_quality, &
+                                          selected_residual_quality_ema, selected_residual_quality, &
+                                          shadow_quality, &
                                           coupled_residual_quality_ema, weighted_trust_ratio, &
                                           abs_trust_ratio, model_gap_ratio) &
       RESULT(probe_ready)
@@ -15112,7 +15471,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       INTEGER, INTENT(IN)                                :: coupled_quality_samples, &
                                                             selected_quality_samples
-      REAL(KIND=dp), INTENT(IN) :: selected_quality_ema, selected_quality, shadow_quality, &
+      REAL(KIND=dp), INTENT(IN) :: selected_quality_ema, selected_quality, &
+         selected_residual_quality_ema, selected_residual_quality, shadow_quality, &
          coupled_residual_quality_ema, weighted_trust_ratio, abs_trust_ratio, model_gap_ratio
       LOGICAL                                            :: probe_ready
 
@@ -15134,11 +15494,17 @@ CONTAINS
          RETURN
       END IF
 
-      selected_quality_positive = selected_quality_ema >= 5.0E-2_dp .AND. selected_quality >= 5.0E-2_dp
+      selected_quality_positive = selected_quality_ema >= 5.0E-2_dp .AND. &
+                                  selected_quality >= 5.0E-2_dp .AND. &
+                                  selected_residual_quality_ema >= 5.0E-2_dp .AND. &
+                                  selected_residual_quality >= 5.0E-2_dp
       probe_ready = selected_quality_positive .AND. MOD(coupled_quality_samples, 16) == 0
       IF (.NOT. probe_ready) THEN
          residual_tail_stalled = coupled_residual_quality_ema < 0.25_dp
-         selected_quality_positive = selected_quality_ema >= 5.0E-2_dp .AND. selected_quality >= 2.5E-2_dp
+         selected_quality_positive = selected_quality_ema >= 5.0E-2_dp .AND. &
+                                     selected_quality >= 2.5E-2_dp .AND. &
+                                     selected_residual_quality_ema >= 2.5E-2_dp .AND. &
+                                     selected_residual_quality >= 2.5E-2_dp
          probe_ready = residual_tail_stalled .AND. selected_quality_positive .AND. &
                        MOD(coupled_quality_samples, 8) == 0
       END IF
@@ -15209,6 +15575,7 @@ CONTAINS
       required_drop_ratio = 8.0E-1_dp
       IF (dense_residual_quality <= 2.5E-1_dp) &
          required_drop_ratio = MIN(required_drop_ratio, 5.0E-1_dp + dense_residual_quality)
+      IF (tail_probe_ready) required_drop_ratio = MIN(required_drop_ratio, 1.0E-1_dp)
       IF (candidate_expected_drop < required_drop_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
 
       do_probe = .TRUE.

@@ -20,7 +20,9 @@ MODULE qs_ot_minimizer
                                               dbcsr_scale,&
                                               dbcsr_set
    USE cp_dbcsr_contrib,                ONLY: dbcsr_dot,&
-                                              dbcsr_init_random
+                                              dbcsr_get_diag,&
+                                              dbcsr_init_random,&
+                                              dbcsr_scale_by_vector
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
@@ -44,6 +46,7 @@ MODULE qs_ot_minimizer
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
    INTEGER, PARAMETER, PRIVATE :: ot_cg_kp_physical_control_min_samples = 8
+   INTEGER, PARAMETER, PRIVATE :: ot_cg_kp_mermin_closure_max_backtracks = 8
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_cg_kp_history_spike_ratio = 1.0E4_dp, &
                                         ot_cg_kp_history_jump_ratio = 1.0E2_dp, &
                                         ot_cg_kp_history_jump_beta = 1.0E1_dp, &
@@ -79,7 +82,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
-                                        ot_cg_kp_residual_spike_quality_ceiling = 0.0_dp
+                                        ot_cg_kp_residual_spike_quality_ceiling = 0.0_dp, &
+                                        ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp
 
 CONTAINS
 !
@@ -112,7 +116,9 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, nspin
       LOGICAL                                            :: do_ener, do_ks
-      REAL(KIND=dp)                                      :: tmp
+      REAL(KIND=dp) :: direction_energy_max, direction_matrix_im2, direction_matrix_re2, &
+         direction_rotation_im2, direction_rotation_re2, tmp
+      TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
 
@@ -122,6 +128,49 @@ CONTAINS
       do_ener = qs_ot_env(1)%settings%do_ener
 
       CALL recover_collapsed_mermin_search(qs_ot_env)
+
+      IF (qs_ot_env(1)%has_complex_kpoint_state) THEN
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            direction_matrix_re2 = 0.0_dp
+            direction_matrix_im2 = 0.0_dp
+            direction_rotation_re2 = 0.0_dp
+            direction_rotation_im2 = 0.0_dp
+            direction_energy_max = 0.0_dp
+            DO ispin = 1, nspin
+               IF (ASSOCIATED(qs_ot_env(ispin)%matrix_dx)) THEN
+                  CALL dbcsr_dot(qs_ot_env(ispin)%matrix_dx, qs_ot_env(ispin)%matrix_dx, tmp)
+                  direction_matrix_re2 = direction_matrix_re2 + tmp
+               END IF
+               IF (ASSOCIATED(qs_ot_env(ispin)%matrix_dx_im)) THEN
+                  CALL dbcsr_dot(qs_ot_env(ispin)%matrix_dx_im, qs_ot_env(ispin)%matrix_dx_im, tmp)
+                  direction_matrix_im2 = direction_matrix_im2 + tmp
+               END IF
+               IF (ASSOCIATED(qs_ot_env(ispin)%rot_mat_dx)) THEN
+                  CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_dx, qs_ot_env(ispin)%rot_mat_dx, tmp)
+                  direction_rotation_re2 = direction_rotation_re2 + tmp
+               END IF
+               IF (ASSOCIATED(qs_ot_env(ispin)%rot_mat_dx_im)) THEN
+                  CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_dx_im, qs_ot_env(ispin)%rot_mat_dx_im, tmp)
+                  direction_rotation_im2 = direction_rotation_im2 + tmp
+               END IF
+               IF (ASSOCIATED(qs_ot_env(ispin)%ener_dx)) &
+                  direction_energy_max = MAX(direction_energy_max, &
+                                             MAXVAL(ABS(qs_ot_env(ispin)%ener_dx)))
+            END DO
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,5(1X,L1),6(1X,ES16.8))') &
+               " OT line-search direction state count use_dx energy_only done linear complex "// &
+               "mre mim rre rim emax ds:", &
+               qs_ot_env(1)%line_search_count, qs_ot_env(1)%use_dx, qs_ot_env(1)%energy_only, &
+               qs_ot_env(1)%line_search_might_be_done, qs_ot_env(1)%ener_direction_linear, &
+               qs_ot_env(1)%has_complex_kpoint_state, &
+               SQRT(MAX(0.0_dp, direction_matrix_re2)), &
+               SQRT(MAX(0.0_dp, direction_matrix_im2)), &
+               SQRT(MAX(0.0_dp, direction_rotation_re2)), &
+               SQRT(MAX(0.0_dp, direction_rotation_im2)), &
+               direction_energy_max, qs_ot_env(1)%ds_min
+         END IF
+      END IF
 
       qs_ot_env(1)%OT_METHOD_FULL = ""
 
@@ -320,6 +369,8 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       LOGICAL                                            :: res
 
+      REAL(KIND=dp)                                      :: acceptance_tol
+
       res = .FALSE.
 
       ! only if we have a gradient it can be fine
@@ -332,6 +383,12 @@ CONTAINS
          END IF
 
          IF (qs_ot_env(1)%line_search_might_be_done) THEN
+            acceptance_tol = 1.0E-12_dp* &
+                             MAX(1.0_dp, ABS(qs_ot_env(1)%mermin_ls_reference_energy))
+            IF (use_three_point_mermin_search(qs_ot_env) .AND. &
+                qs_ot_env(1)%mermin_ls_sample_pending .AND. &
+                qs_ot_env(1)%etotal > qs_ot_env(1)%mermin_ls_reference_energy + acceptance_tol) &
+               RETURN
             res = .TRUE.
             RETURN
          END IF
@@ -441,6 +498,8 @@ CONTAINS
 
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
       IF (qs_ot_env(1)%line_search_count <= 0) RETURN
+      IF (qs_ot_env(1)%mermin_ls_sample_pending .AND. &
+          qs_ot_env(1)%line_search_might_be_done) RETURN
 
       count = qs_ot_env(1)%line_search_count
       npos = MIN(count + 1, SIZE(qs_ot_env(1)%ot_pos))
@@ -494,6 +553,190 @@ CONTAINS
       qs_ot_env(1)%ds_min = qs_ot_env(1)%settings%ds_min
 
    END SUBROUTINE recover_collapsed_mermin_search
+
+! **************************************************************************************************
+!> \brief fix the k-point auxiliary-energy gauge and trust scale once per search direction
+!> \param qs_ot_env ...
+!> \param para_env_inter_kp ...
+! **************************************************************************************************
+   SUBROUTINE prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+
+      INTEGER                                            :: group, i, ispin, ngroups
+      LOGICAL                                            :: active, has_rayleigh_target
+      REAL(KIND=dp) :: alignment, combined_probe_max, coupled_probe, coupled_rms, probe_pos, &
+         rayleigh_correction, scale, shift, target_rms, weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: direction_max, radius, rayleigh_diag, &
+         rayleigh_shift_sum, rayleigh_target_max, response_sum, target_coupled_dot, &
+         target_norm2, coupled_norm2, weighted_direction
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      active = .FALSE.
+      DO ispin = 1, SIZE(qs_ot_env)
+         qs_ot_env(ispin)%ener_direction_linear = .FALSE.
+         active = active .OR. (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
+                               qs_ot_env(ispin)%settings%occupation_preconditioner .AND. &
+                               ASSOCIATED(qs_ot_env(ispin)%ener_dx))
+      END DO
+      IF (.NOT. active) RETURN
+
+      ngroups = MAX(1, MAXVAL(qs_ot_env(:)%occupation_group_index))
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%max(ngroups)
+      END IF
+      ALLOCATE (coupled_norm2(ngroups), direction_max(ngroups), radius(ngroups), &
+                rayleigh_shift_sum(ngroups), rayleigh_target_max(ngroups), &
+                response_sum(ngroups), target_coupled_dot(ngroups), target_norm2(ngroups), &
+                weighted_direction(ngroups))
+      coupled_norm2(:) = 0.0_dp
+      direction_max(:) = 0.0_dp
+      radius(:) = HUGE(1.0_dp)
+      rayleigh_shift_sum(:) = 0.0_dp
+      rayleigh_target_max(:) = 0.0_dp
+      response_sum(:) = 0.0_dp
+      target_coupled_dot(:) = 0.0_dp
+      target_norm2(:) = 0.0_dp
+      weighted_direction(:) = 0.0_dp
+
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         ! The exact finite energy correction is rebuilt for every accepted
+         ! orbital state.  Do not carry its old CG component into a new
+         ! rotation direction; ener_gx_old is the current coupled Schur
+         ! response and remains the history-safe base direction.
+         IF (ASSOCIATED(qs_ot_env(ispin)%ener_gx_old)) &
+            qs_ot_env(ispin)%ener_dx(:) = -qs_ot_env(ispin)%ener_gx_old(:)
+         IF (qs_ot_env(ispin)%ener_x_trust_radius > 0.0_dp) &
+            radius(group) = MIN(radius(group), qs_ot_env(ispin)%ener_x_trust_radius)
+         IF (.NOT. ASSOCIATED(qs_ot_env(ispin)%ener_x_trust_weight)) CYCLE
+         IF (SIZE(qs_ot_env(ispin)%ener_x_trust_weight) /= SIZE(qs_ot_env(ispin)%ener_dx)) CYCLE
+         has_rayleigh_target = ASSOCIATED(qs_ot_env(ispin)%rot_mat_chc) .AND. &
+                                 SIZE(qs_ot_env(ispin)%ener_x) == SIZE(qs_ot_env(ispin)%ener_dx)
+         IF (has_rayleigh_target) THEN
+            ALLOCATE (rayleigh_diag(SIZE(qs_ot_env(ispin)%ener_dx)))
+            CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, rayleigh_diag)
+         END IF
+         DO i = 1, SIZE(qs_ot_env(ispin)%ener_dx)
+            weight = MAX(0.0_dp, qs_ot_env(ispin)%ener_x_trust_weight(i))
+            response_sum(group) = response_sum(group) + weight
+            weighted_direction(group) = weighted_direction(group) + &
+                                        weight*qs_ot_env(ispin)%ener_dx(i)
+            IF (has_rayleigh_target) &
+               rayleigh_shift_sum(group) = rayleigh_shift_sum(group) + &
+                                             weight*(qs_ot_env(ispin)%ener_x(i) - rayleigh_diag(i))
+         END DO
+         IF (has_rayleigh_target) DEALLOCATE (rayleigh_diag)
+      END DO
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) THEN
+            CALL para_env_inter_kp%sum(response_sum)
+            CALL para_env_inter_kp%sum(weighted_direction)
+            CALL para_env_inter_kp%sum(rayleigh_shift_sum)
+            CALL para_env_inter_kp%min(radius)
+         END IF
+      END IF
+
+      ! A common shift is the chemical-potential gauge mode.  Remove one
+      ! global mode per fixed-occupation group, not one mode per k-point.
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         shift = 0.0_dp
+         IF (response_sum(group) > EPSILON(response_sum(group))) &
+            shift = weighted_direction(group)/response_sum(group)
+         qs_ot_env(ispin)%ener_dx(:) = qs_ot_env(ispin)%ener_dx(:) - shift
+      END DO
+
+      probe_pos = 0.8_dp*ABS(qs_ot_env(1)%ds_min)
+      IF (probe_pos <= EPSILON(probe_pos)) &
+         probe_pos = 0.8_dp*ABS(qs_ot_env(1)%settings%ds_min)
+      probe_pos = MAX(probe_pos, SQRT(EPSILON(probe_pos)))
+
+      ! Audit the exact fixed-orbital Rayleigh correction against the coupled
+      ! Schur response.  The common response-weighted shift is one fixed-N
+      ! chemical-potential gauge mode per occupation group.  A full Rayleigh
+      ! replacement is deliberately not applied here: H changes with the
+      ! density, so its finite response must first be represented by the joint
+      ! rotation/energy model and accepted by the same Mermin line search.
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         IF (.NOT. ASSOCIATED(qs_ot_env(ispin)%rot_mat_chc)) CYCLE
+         IF (.NOT. ASSOCIATED(qs_ot_env(ispin)%ener_x_trust_weight)) CYCLE
+         IF (SIZE(qs_ot_env(ispin)%ener_x_trust_weight) /= SIZE(qs_ot_env(ispin)%ener_dx)) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         IF (response_sum(group) <= EPSILON(response_sum(group))) CYCLE
+         shift = rayleigh_shift_sum(group)/response_sum(group)
+         ALLOCATE (rayleigh_diag(SIZE(qs_ot_env(ispin)%ener_dx)))
+         CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, rayleigh_diag)
+         DO i = 1, SIZE(qs_ot_env(ispin)%ener_dx)
+            weight = MAX(0.0_dp, qs_ot_env(ispin)%ener_x_trust_weight(i))
+            IF (weight <= 0.0_dp) CYCLE
+            rayleigh_correction = rayleigh_diag(i) + shift - qs_ot_env(ispin)%ener_x(i)
+            coupled_probe = probe_pos*qs_ot_env(ispin)%ener_dx(i)
+            rayleigh_target_max(group) = MAX(rayleigh_target_max(group), ABS(rayleigh_correction))
+            target_norm2(group) = target_norm2(group) + weight*rayleigh_correction**2
+            coupled_norm2(group) = coupled_norm2(group) + weight*coupled_probe**2
+            target_coupled_dot(group) = target_coupled_dot(group) + &
+                                        weight*rayleigh_correction*coupled_probe
+         END DO
+         DEALLOCATE (rayleigh_diag)
+      END DO
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) THEN
+            CALL para_env_inter_kp%max(rayleigh_target_max)
+            CALL para_env_inter_kp%sum(target_norm2)
+            CALL para_env_inter_kp%sum(coupled_norm2)
+            CALL para_env_inter_kp%sum(target_coupled_dot)
+         END IF
+      END IF
+
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         direction_max(group) = MAX(direction_max(group), &
+                                    probe_pos*MAXVAL(ABS(qs_ot_env(ispin)%ener_dx)))
+      END DO
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%max(direction_max)
+      END IF
+
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         scale = 1.0_dp
+         IF (radius(group) < HUGE(1.0_dp) .AND. direction_max(group) > radius(group)) &
+            scale = radius(group)/direction_max(group)
+         qs_ot_env(ispin)%ener_dx(:) = scale*qs_ot_env(ispin)%ener_dx(:)
+         qs_ot_env(ispin)%ener_x_trust_scale = MIN(qs_ot_env(ispin)%ener_x_trust_scale, scale)
+         qs_ot_env(ispin)%ener_direction_linear = .TRUE.
+      END DO
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         DO group = 1, ngroups
+            combined_probe_max = direction_max(group)
+            target_rms = SQRT(MAX(0.0_dp, target_norm2(group))/ &
+                              MAX(response_sum(group), EPSILON(response_sum(group))))
+            coupled_rms = SQRT(MAX(0.0_dp, coupled_norm2(group))/ &
+                               MAX(response_sum(group), EPSILON(response_sum(group))))
+            alignment = 0.0_dp
+            IF (target_norm2(group) > EPSILON(target_norm2(group)) .AND. &
+                coupled_norm2(group) > EPSILON(coupled_norm2(group))) &
+               alignment = target_coupled_dot(group)/ &
+                           SQRT(target_norm2(group)*coupled_norm2(group))
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
+               " OT fixed-N Rayleigh response audit group tmax trms srms align smax radius probe response:", &
+               group, rayleigh_target_max(group), target_rms, coupled_rms, alignment, &
+               combined_probe_max, radius(group), probe_pos, response_sum(group)
+         END DO
+      END IF
+
+      DEALLOCATE (coupled_norm2, direction_max, radius, rayleigh_shift_sum, rayleigh_target_max, &
+                  response_sum, target_coupled_dot, target_norm2, weighted_direction)
+
+   END SUBROUTINE prepare_linear_kpoint_energy_direction
 
 ! **************************************************************************************************
 !> \brief moves x adding the right amount (ds) of the gradient or search direction
@@ -592,6 +835,14 @@ CONTAINS
 
       n = SIZE(direction)
       IF (n == 0) RETURN
+
+      IF (qs_ot_env%ener_direction_linear) THEN
+         raw_step_max = MAXVAL(ABS(alpha*direction))
+         qs_ot_env%ener_x(:) = qs_ot_env%ener_x(:) + alpha*direction(:)
+         qs_ot_env%ener_x_step_max = raw_step_max
+         qs_ot_env%ener_x_trusted_step_max = raw_step_max
+         RETURN
+      END IF
 
       ALLOCATE (raw_step(n), limited_step(n))
       raw_step(:) = alpha*direction(:)
@@ -823,10 +1074,12 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_line_search_3pnt'
       REAL(KIND=dp), PARAMETER                           :: acceptance_tol = 1.0E-12_dp
 
-      INTEGER                                            :: best_index, count, handle, i
-      LOGICAL                                            :: mermin_boundary_extend, mermin_search
-      REAL(KIND=dp) :: best_drop, best_energy, denom, ds, fa, fb, fc, model_drop, model_quality, &
-         nom, pos, slope_mismatch, slope_model, tol, val, xa, xb, xc
+      INTEGER                                            :: best_index, closure_backtracks, count, &
+                                                            handle, i
+      LOGICAL :: mermin_boundary_extend, mermin_closure_reset, mermin_search, &
+         mermin_uphill_closure
+      REAL(KIND=dp) :: best_drop, best_energy, closure_pos_floor, denom, ds, fa, fb, fc, &
+         model_drop, model_quality, nom, pos, slope_mismatch, slope_model, tol, val, xa, xb, xc
       TYPE(cp_logger_type), POINTER                      :: logger
 
       CALL timeset(routineN, handle)
@@ -841,6 +1094,7 @@ CONTAINS
       qs_ot_env(1)%ot_energy(count) = qs_ot_env(1)%etotal
       SELECT CASE (count)
       CASE (1)
+         qs_ot_env(1)%mermin_ls_closure_rejected = .FALSE.
          qs_ot_env(1)%ot_pos(count) = 0.0_dp
          qs_ot_env(1)%ot_grad(count) = qs_ot_env(1)%gradient
          qs_ot_env(1)%ot_pos(count + 1) = qs_ot_env(1)%ds_min*0.8_dp
@@ -886,6 +1140,11 @@ CONTAINS
                                   fc < fb .AND. fb < fa .AND. val >= best_energy - tol
          IF (mermin_boundary_extend) THEN
             qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*1.4_dp
+         ELSE IF (mermin_search .AND. best_index == 1) THEN
+            ! No sampled point descends from the current Mermin reference.
+            ! Close the line search at the reference coordinates and verify
+            ! that state once more after the density/Hamiltonian update.
+            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
          ELSE IF (mermin_search .AND. best_index /= 1 .AND. val >= best_energy - tol) THEN
             qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(best_index)
          ELSE IF (val < fa .AND. val <= fb .AND. val <= fc) THEN ! OK, we go to a minimum
@@ -895,7 +1154,7 @@ CONTAINS
          ELSE ! just take an extended step
             qs_ot_env(1)%OT_pos(count + 1) = MAXVAL(qs_ot_env(1)%OT_pos(1:3))*2.0_dp
          END IF
-         IF (mermin_search .AND. best_index /= 1 .AND. .NOT. mermin_boundary_extend) THEN
+         IF (mermin_search .AND. .NOT. mermin_boundary_extend) THEN
             qs_ot_env(1)%mermin_ls_sample_pending = .TRUE.
             qs_ot_env(1)%mermin_ls_best_sample_index = best_index
             qs_ot_env(1)%mermin_ls_reference_energy = fa
@@ -905,8 +1164,6 @@ CONTAINS
             qs_ot_env(1)%mermin_ls_model_quality = model_quality
             qs_ot_env(1)%mermin_ls_best_sample_pos = qs_ot_env(1)%OT_pos(best_index)
             qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
-         ELSE IF (mermin_search .AND. .NOT. mermin_boundary_extend) THEN
-            qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
          END IF
          IF (mermin_search) THEN
             logger => cp_get_default_logger()
@@ -921,7 +1178,51 @@ CONTAINS
          qs_ot_env(1)%line_search_might_be_done = .NOT. mermin_boundary_extend
       CASE (4:)
          IF (.NOT. use_three_point_mermin_search(qs_ot_env)) CPABORT("NYI")
-         IF (count == 4 .AND. qs_ot_env(1)%OT_pos(4) > qs_ot_env(1)%OT_pos(3) .AND. &
+         tol = acceptance_tol*MAX(1.0_dp, ABS(qs_ot_env(1)%mermin_ls_reference_energy))
+         mermin_uphill_closure = qs_ot_env(1)%mermin_ls_sample_pending .AND. &
+                                  qs_ot_env(1)%OT_energy(count) > &
+                                  qs_ot_env(1)%mermin_ls_reference_energy + tol
+         mermin_closure_reset = .FALSE.
+         IF (qs_ot_env(1)%mermin_ls_sample_pending .AND. .NOT. mermin_uphill_closure) THEN
+            best_index = count
+            best_energy = qs_ot_env(1)%OT_energy(count)
+            best_drop = qs_ot_env(1)%mermin_ls_reference_energy - best_energy
+            qs_ot_env(1)%OT_pos(count + 1) = qs_ot_env(1)%OT_pos(count)
+            qs_ot_env(1)%mermin_ls_best_sample_index = best_index
+            qs_ot_env(1)%mermin_ls_best_sample_energy = best_energy
+            qs_ot_env(1)%mermin_ls_best_sample_drop = MAX(0.0_dp, best_drop)
+            IF (qs_ot_env(1)%mermin_ls_model_drop > EPSILON(1.0_dp)) &
+               qs_ot_env(1)%mermin_ls_model_quality = &
+               MAX(0.0_dp, best_drop)/qs_ot_env(1)%mermin_ls_model_drop
+            qs_ot_env(1)%mermin_ls_best_sample_pos = qs_ot_env(1)%OT_pos(count)
+            qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count)
+         ELSE IF (mermin_uphill_closure) THEN
+            closure_backtracks = count - 3
+            closure_pos_floor = MAX(1.0E4_dp*EPSILON(1.0_dp), &
+                                    qs_ot_env(1)%settings%eps_taylor)* &
+                                MAX(1.0_dp, ABS(qs_ot_env(1)%settings%ds_min))
+            mermin_closure_reset = closure_backtracks >= ot_cg_kp_mermin_closure_max_backtracks .OR. &
+                                   ABS(qs_ot_env(1)%OT_pos(count)) <= closure_pos_floor
+            IF (mermin_closure_reset) THEN
+               qs_ot_env(1)%OT_pos(count + 1) = 0.0_dp
+               qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
+               qs_ot_env(1)%mermin_ls_closure_rejected = .TRUE.
+               qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
+               qs_ot_env(1)%schur_residual_history_quality = 0.0_dp
+            ELSE
+               qs_ot_env(1)%OT_pos(count + 1) = &
+                  ot_cg_kp_mermin_closure_backtrack*qs_ot_env(1)%OT_pos(count)
+               qs_ot_env(1)%mermin_ls_next_pos = qs_ot_env(1)%OT_pos(count + 1)
+            END IF
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I5,1X,L1,5(1X,ES16.8))') &
+                  " OT Mermin LS closure backtrack count reset ref current pos next:", &
+                  closure_backtracks, mermin_closure_reset, &
+                  qs_ot_env(1)%mermin_ls_reference_energy, qs_ot_env(1)%OT_energy(count), &
+                  qs_ot_env(1)%OT_pos(count), qs_ot_env(1)%OT_pos(count + 1), closure_pos_floor
+            END IF
+         ELSE IF (count == 4 .AND. qs_ot_env(1)%OT_pos(4) > qs_ot_env(1)%OT_pos(3) .AND. &
              qs_ot_env(1)%OT_energy(3) < qs_ot_env(1)%OT_energy(2) .AND. &
              qs_ot_env(1)%OT_energy(2) < qs_ot_env(1)%OT_energy(1)) THEN
             best_index = 3
@@ -966,8 +1267,8 @@ CONTAINS
                qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
             END IF
          END IF
-         qs_ot_env(1)%energy_only = .FALSE.
-         qs_ot_env(1)%line_search_might_be_done = .TRUE.
+         qs_ot_env(1)%energy_only = mermin_uphill_closure .AND. .NOT. mermin_closure_reset
+         qs_ot_env(1)%line_search_might_be_done = .NOT. mermin_uphill_closure .OR. mermin_closure_reset
       CASE DEFAULT
          CPABORT("NYI")
       END SELECT
@@ -1335,6 +1636,7 @@ CONTAINS
                                                             schur_flavor, schur_last_attempt, &
                                                             schur_last_flavor
       LOGICAL :: complex_kpoint_history, do_ener, do_ks, history_spike_reset, &
+         kpoint_preconditioned_direction, &
          mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, &
          projected_raw_tail_release, reset_to_sd, residual_history_reset, &
          residual_spike_history_reset, residual_tail_spike_reset, schur_history_change, &
@@ -1358,10 +1660,19 @@ CONTAINS
       do_ks = qs_ot_env(1)%settings%ks
       do_ener = qs_ot_env(1)%settings%do_ener
       complex_kpoint_history = .FALSE.
+      kpoint_preconditioned_direction = .FALSE.
       gnorm_metric = 0.0_dp
       DO ispin = 1, nspin
          complex_kpoint_history = complex_kpoint_history .OR. qs_ot_env(ispin)%has_complex_kpoint_state
       END DO
+      IF (complex_kpoint_history) THEN
+         kpoint_preconditioned_direction = .TRUE.
+         DO ispin = 1, nspin
+            IF (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
+                .NOT. qs_ot_env(ispin)%kpoint_preconditioned_direction_ready) &
+               kpoint_preconditioned_direction = .FALSE.
+         END DO
+      END IF
       history_spike_reset = .FALSE.
       negative_beta = .FALSE.
       mermin_residual_growth_reset = .FALSE.
@@ -1451,11 +1762,26 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env(1)%preconditioner)) THEN
 
          DO ispin = 1, nspin
+            norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
             CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
                                       qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old)
+            IF (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
+                ASSOCIATED(qs_ot_env(ispin)%matrix_occ_precond_scale)) &
+               CALL dbcsr_scale_by_vector(qs_ot_env(ispin)%matrix_gx_old, &
+                                          alpha=qs_ot_env(ispin)%matrix_occ_precond_scale, &
+                                          side='right')
+            IF (kpoint_preconditioned_direction) &
+               CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old, norm_weight)
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) &
                CALL apply_preconditioner(qs_ot_env(ispin)%preconditioner, &
                                          qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_old_im)
+            IF (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
+                ASSOCIATED(qs_ot_env(ispin)%matrix_occ_precond_scale)) &
+               CALL dbcsr_scale_by_vector(qs_ot_env(ispin)%matrix_gx_old_im, &
+                                          alpha=qs_ot_env(ispin)%matrix_occ_precond_scale, &
+                                          side='right')
+            IF (kpoint_preconditioned_direction .AND. qs_ot_env(ispin)%has_complex_kpoint_state) &
+               CALL dbcsr_scale(qs_ot_env(ispin)%matrix_gx_old_im, norm_weight)
          END DO
          qs_ot_env(1)%gnorm = 0.0_dp
          IF (do_ks) THEN
@@ -1464,56 +1790,83 @@ CONTAINS
                CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old, tmp)
                qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
                gnorm_matrix_re = gnorm_matrix_re + tmp
-               gnorm_metric = gnorm_metric + norm_weight*tmp
+               IF (kpoint_preconditioned_direction) THEN
+                  gnorm_metric = gnorm_metric + tmp
+               ELSE
+                  gnorm_metric = gnorm_metric + norm_weight*tmp
+               END IF
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
                   CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_old_im, tmp)
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
                   gnorm_matrix_im = gnorm_matrix_im + tmp
-                  gnorm_metric = gnorm_metric + norm_weight*tmp
+                  IF (kpoint_preconditioned_direction) THEN
+                     gnorm_metric = gnorm_metric + tmp
+                  ELSE
+                     gnorm_metric = gnorm_metric + norm_weight*tmp
+                  END IF
                END IF
             END DO
             IF (qs_ot_env(1)%gnorm < 0.0_dp) THEN
                WRITE (cp_logger_get_default_unit_nr(logger), *) "WARNING Preconditioner not positive definite !"
             END IF
-            DO ispin = 1, nspin
-               CALL dbcsr_copy(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_gx_old)
-               IF (qs_ot_env(ispin)%has_complex_kpoint_state) &
-                  CALL dbcsr_copy(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_gx_old_im)
-            END DO
             IF (qs_ot_env(1)%settings%do_rotation) THEN
                DO ispin = 1, nspin
                   norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-                  ! right now no preconditioner yet
-                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old, qs_ot_env(ispin)%rot_mat_gx)
-                  CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx_old, tmp)
+                  IF (kpoint_preconditioned_direction) THEN
+                     CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx))
+                     CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_pgx, tmp)
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old, qs_ot_env(ispin)%rot_mat_pgx)
+                  ELSE
+                     ! right now no preconditioner yet
+                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old, qs_ot_env(ispin)%rot_mat_gx)
+                     CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx_old, tmp)
+                  END IF
                   ! added 0.5, because we have (antisymmetry) only half the number of variables
                   qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
                   gnorm_rot_re = gnorm_rot_re + 0.5_dp*tmp
-                  gnorm_metric = gnorm_metric + norm_weight*0.5_dp*tmp
-                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old_im, qs_ot_env(ispin)%rot_mat_gx_im)
-                     CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_gx_old_im, tmp)
-                     qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
-                     gnorm_rot_im = gnorm_rot_im + 0.5_dp*tmp
+                  IF (kpoint_preconditioned_direction) THEN
+                     gnorm_metric = gnorm_metric + 0.5_dp*tmp
+                  ELSE
                      gnorm_metric = gnorm_metric + norm_weight*0.5_dp*tmp
                   END IF
-               END DO
-               DO ispin = 1, nspin
-                  CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_gx_old)
-                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) &
-                     CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_gx_old_im)
+                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                     IF (kpoint_preconditioned_direction) THEN
+                        CPASSERT(ASSOCIATED(qs_ot_env(ispin)%rot_mat_pgx_im))
+                        CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_pgx_im, tmp)
+                        CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old_im, qs_ot_env(ispin)%rot_mat_pgx_im)
+                     ELSE
+                        CALL dbcsr_copy(qs_ot_env(ispin)%rot_mat_gx_old_im, qs_ot_env(ispin)%rot_mat_gx_im)
+                        CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_gx_old_im, tmp)
+                     END IF
+                     qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + 0.5_dp*tmp
+                     gnorm_rot_im = gnorm_rot_im + 0.5_dp*tmp
+                     IF (kpoint_preconditioned_direction) THEN
+                        gnorm_metric = gnorm_metric + 0.5_dp*tmp
+                     ELSE
+                        gnorm_metric = gnorm_metric + norm_weight*0.5_dp*tmp
+                     END IF
+                  END IF
                END DO
             END IF
          END IF
          IF (do_ener) THEN
             DO ispin = 1, nspin
                norm_weight = ot_kpoint_channel_norm_weight(qs_ot_env(ispin))
-               qs_ot_env(ispin)%ener_gx_old = qs_ot_env(ispin)%ener_gx
-               tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_gx_old)
+               IF (kpoint_preconditioned_direction) THEN
+                  CPASSERT(ASSOCIATED(qs_ot_env(ispin)%ener_pgx))
+                  tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_pgx)
+                  qs_ot_env(ispin)%ener_gx_old = qs_ot_env(ispin)%ener_pgx
+               ELSE
+                  qs_ot_env(ispin)%ener_gx_old = qs_ot_env(ispin)%ener_gx
+                  tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_gx_old)
+               END IF
                qs_ot_env(1)%gnorm = qs_ot_env(1)%gnorm + tmp
                gnorm_ener = gnorm_ener + tmp
-               gnorm_metric = gnorm_metric + norm_weight*tmp
-               qs_ot_env(ispin)%ener_gx = qs_ot_env(ispin)%ener_gx_old
+               IF (kpoint_preconditioned_direction) THEN
+                  gnorm_metric = gnorm_metric + tmp
+               ELSE
+                  gnorm_metric = gnorm_metric + norm_weight*tmp
+               END IF
             END DO
          END IF
       ELSE
@@ -1814,23 +2167,23 @@ CONTAINS
       test_down = 0.0_dp
       IF (do_ks) THEN
          DO ispin = 1, nspin
-            CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx, qs_ot_env(ispin)%matrix_gx, &
+            CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx, qs_ot_env(ispin)%matrix_gx_old, &
                            alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
             CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_dx, tmp)
             test_down = test_down + tmp
             IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-               CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx_im, qs_ot_env(ispin)%matrix_gx_im, &
+               CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx_im, qs_ot_env(ispin)%matrix_gx_old_im, &
                               alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_dx_im, tmp)
                test_down = test_down + tmp
             END IF
             IF (qs_ot_env(1)%settings%do_rotation) THEN
-               CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_dx, qs_ot_env(ispin)%rot_mat_gx, &
+               CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_dx, qs_ot_env(ispin)%rot_mat_gx_old, &
                               alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_dx, tmp)
                test_down = test_down + 0.5_dp*tmp
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
-                  CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_dx_im, qs_ot_env(ispin)%rot_mat_gx_im, &
+                  CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_dx_im, qs_ot_env(ispin)%rot_mat_gx_old_im, &
                                  alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                   CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_dx_im, tmp)
                   test_down = test_down + 0.5_dp*tmp
@@ -1840,7 +2193,11 @@ CONTAINS
       END IF
       IF (do_ener) THEN
          DO ispin = 1, nspin
-            qs_ot_env(ispin)%ener_dx = beta_pr*qs_ot_env(ispin)%ener_dx - qs_ot_env(ispin)%ener_gx
+            qs_ot_env(ispin)%ener_dx = beta_pr*qs_ot_env(ispin)%ener_dx - qs_ot_env(ispin)%ener_gx_old
+         END DO
+         IF (kpoint_preconditioned_direction) &
+            CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp)
+         DO ispin = 1, nspin
             tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_dx)
             test_down = test_down + tmp
          END DO
@@ -1852,25 +2209,53 @@ CONTAINS
          beta_pr = 0.0_dp
          IF (do_ks) THEN
             DO ispin = 1, nspin
-               CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx, qs_ot_env(ispin)%matrix_gx, &
+               CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx, qs_ot_env(ispin)%matrix_gx_old, &
                               alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                IF (qs_ot_env(ispin)%has_complex_kpoint_state) &
-                  CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx_im, qs_ot_env(ispin)%matrix_gx_im, &
+                  CALL dbcsr_add(qs_ot_env(ispin)%matrix_dx_im, qs_ot_env(ispin)%matrix_gx_old_im, &
                                  alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                IF (qs_ot_env(1)%settings%do_rotation) THEN
                   CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_dx, &
-                                 qs_ot_env(ispin)%rot_mat_gx, alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
+                                 qs_ot_env(ispin)%rot_mat_gx_old, alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                   IF (qs_ot_env(ispin)%has_complex_kpoint_state) &
                      CALL dbcsr_add(qs_ot_env(ispin)%rot_mat_dx_im, &
-                                    qs_ot_env(ispin)%rot_mat_gx_im, alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
+                                    qs_ot_env(ispin)%rot_mat_gx_old_im, alpha_scalar=beta_pr, beta_scalar=-1.0_dp)
                END IF
             END DO
          END IF
          IF (do_ener) THEN
             DO ispin = 1, nspin
-               qs_ot_env(ispin)%ener_dx = beta_pr*qs_ot_env(ispin)%ener_dx - qs_ot_env(ispin)%ener_gx
+               qs_ot_env(ispin)%ener_dx = -qs_ot_env(ispin)%ener_gx_old
+            END DO
+            IF (kpoint_preconditioned_direction) &
+               CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp)
+         END IF
+         test_down = 0.0_dp
+         IF (do_ks) THEN
+            DO ispin = 1, nspin
+               CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_dx, tmp)
+               test_down = test_down + tmp
+               IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                  CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_dx_im, tmp)
+                  test_down = test_down + tmp
+               END IF
+               IF (qs_ot_env(1)%settings%do_rotation) THEN
+                  CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_dx, tmp)
+                  test_down = test_down + 0.5_dp*tmp
+                  IF (qs_ot_env(ispin)%has_complex_kpoint_state) THEN
+                     CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_dx_im, tmp)
+                     test_down = test_down + 0.5_dp*tmp
+                  END IF
+               END IF
             END DO
          END IF
+         IF (do_ener) THEN
+            DO ispin = 1, nspin
+               test_down = test_down + DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, &
+                                                   qs_ot_env(ispin)%ener_dx)
+            END DO
+         END IF
+         CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, test_down)
       END IF
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
@@ -1884,10 +2269,15 @@ CONTAINS
             schur_history_change, schur_history_mixed, reset_to_sd, history_spike_reset, residual_history_reset
       END IF
       ! since we change the direction we have to adjust the gradient
-      qs_ot_env(1)%gradient = beta_pr*qs_ot_env(1)%gradient - qs_ot_env(1)%gnorm
+      qs_ot_env(1)%gradient = test_down
       qs_ot_env(1)%gnorm_old = qs_ot_env(1)%gnorm
       qs_ot_env(1)%schur_cg_attempt = schur_attempt
       qs_ot_env(1)%schur_cg_flavor = schur_flavor
+      IF (kpoint_preconditioned_direction) THEN
+         DO ispin = 1, nspin
+            qs_ot_env(ispin)%kpoint_preconditioned_direction_ready = .FALSE.
+         END DO
+      END IF
 
       CALL timestop(handle)
 

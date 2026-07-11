@@ -57,6 +57,10 @@ MODULE qs_scf_types
                                  filter_matrix_diag_method_nr = 20, &
                                  smeagol_method_nr = 41
 
+   INTEGER, PARAMETER, PUBLIC :: qs_ot_restart_adaptive_nint = 14, &
+                                 qs_ot_restart_adaptive_nlog = 12, &
+                                 qs_ot_restart_adaptive_nreal = 88
+
    PUBLIC :: qs_scf_env_type
    PUBLIC :: scf_env_release, scf_env_create, scf_env_did_change
    PUBLIC :: qs_scf_ot_restart_clear
@@ -116,6 +120,7 @@ MODULE qs_scf_types
       INTEGER :: line_search_left = -1, line_search_right = -1, line_search_mid = -1
       INTEGER :: line_search_count = -1, diis_iter = -1
       LOGICAL :: line_search_might_be_done = .FALSE., energy_only = .FALSE.
+      LOGICAL :: ener_direction_linear = .FALSE.
       LOGICAL :: mermin_ls_sample_pending = .FALSE.
       INTEGER :: mermin_ls_best_sample_index = 0
       INTEGER :: mermin_ls_accepted_quality_samples = 0
@@ -133,6 +138,9 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
+      INTEGER, DIMENSION(qs_ot_restart_adaptive_nint) :: adaptive_int = 0
+      LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog) :: adaptive_log = .FALSE.
+      REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real = 0.0_dp
       INTEGER :: density_quality_samples = 0, density_audit_samples = 0
       INTEGER :: density_descent_quality_samples = 0
       INTEGER :: density_descent_selected_quality_samples = 0

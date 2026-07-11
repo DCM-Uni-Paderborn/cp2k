@@ -54,6 +54,9 @@ MODULE kpoint_io
    USE qs_ot_types,                     ONLY: qs_ot_check_channel_context,&
                                               qs_ot_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type,&
+                                              qs_ot_restart_adaptive_nint,&
+                                              qs_ot_restart_adaptive_nlog,&
+                                              qs_ot_restart_adaptive_nreal,&
                                               qs_scf_ot_restart_clear
 #include "./base/base_uses.f90"
 
@@ -64,7 +67,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 14
+   INTEGER, PARAMETER                   :: ot_restart_version = 20
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -524,14 +527,17 @@ CONTAINS
                                                             nmo, nmo_ortho
       INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(19)                             :: schur_int_payload
+      INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
       LOGICAL :: has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, has_ener_x, &
          has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
          has_matrix_history, has_matrix_history_im, has_matrix_x, has_matrix_x_im, &
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
-      LOGICAL, DIMENSION(28)                             :: log_payload
+      LOGICAL, DIMENSION(29)                             :: log_payload
+      LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real_payload
 
       nchannel = SIZE(qs_ot_env)
       IF (ires > 0) THEN
@@ -617,7 +623,8 @@ CONTAINS
                         has_diis_scalars, has_matrix_history, has_matrix_history_im, &
                         has_rot_history, has_rot_history_im, has_ener_history, &
                         has_matrix_x, has_matrix_x_im, &
-                        qs_ot_env(ichannel)%mermin_ls_sample_pending]
+                        qs_ot_env(ichannel)%mermin_ls_sample_pending, &
+                        qs_ot_env(ichannel)%ener_direction_linear]
          real_payload = [qs_ot_env(ichannel)%kpoint_weight, &
                          qs_ot_env(ichannel)%delta, qs_ot_env(ichannel)%gnorm, &
                          qs_ot_env(ichannel)%gnorm_old, qs_ot_env(ichannel)%etotal, &
@@ -793,6 +800,121 @@ CONTAINS
                                qs_ot_env(ichannel)%schur_projector_physical_selected_drop_sum, &
                                qs_ot_env(ichannel)%schur_projector_physical_selected_measured_sum]
 
+         adaptive_int_payload = [qs_ot_env(ichannel)%schur_model_attempt, &
+                                 qs_ot_env(ichannel)%schur_cg_attempt, &
+                                 qs_ot_env(ichannel)%schur_model_flavor, &
+                                 qs_ot_env(ichannel)%schur_cg_flavor, &
+                                 qs_ot_env(ichannel)%schur_model_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_constrained_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_split_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_coupled_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_split_shadow_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_occgap_shadow_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_dense_metric_shadow_quality_samples, &
+                                 qs_ot_env(ichannel)%schur_step_gauge_quality_samples, &
+                                 qs_ot_env(ichannel)%kpoint_physical_delta_groups, &
+                                 qs_ot_env(ichannel)%schur_projector_mode_quality_samples]
+         adaptive_log_payload = [qs_ot_env(ichannel)%schur_model_pending, &
+                                 qs_ot_env(ichannel)%schur_model_quality_ready, &
+                                 qs_ot_env(ichannel)%schur_constrained_pending, &
+                                 qs_ot_env(ichannel)%schur_constrained_candidate_enabled, &
+                                 qs_ot_env(ichannel)%schur_split_shadow_pending, &
+                                 qs_ot_env(ichannel)%schur_occgap_shadow_pending, &
+                                 qs_ot_env(ichannel)%schur_dense_metric_shadow_pending, &
+                                 qs_ot_env(ichannel)%schur_history_mixed, &
+                                 qs_ot_env(ichannel)%schur_split_candidate_enabled, &
+                                 qs_ot_env(ichannel)%schur_residual_history_reset_pending, &
+                                 qs_ot_env(ichannel)%kpoint_physical_delta_ready, &
+                                 qs_ot_env(ichannel)%schur_projector_mode_pending]
+         adaptive_real_payload = [qs_ot_env(ichannel)%schur_model_drop, &
+                                  qs_ot_env(ichannel)%schur_model_calibrated_drop, &
+                                  qs_ot_env(ichannel)%schur_model_measured_drop, &
+                                  qs_ot_env(ichannel)%schur_model_quality, &
+                                  qs_ot_env(ichannel)%schur_model_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_model_calibrated_quality, &
+                                  qs_ot_env(ichannel)%schur_model_calibrated_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_model_gap_ratio, &
+                                  qs_ot_env(ichannel)%schur_model_delta, &
+                                  qs_ot_env(ichannel)%schur_model_control_delta, &
+                                  qs_ot_env(ichannel)%schur_model_residual_drop, &
+                                  qs_ot_env(ichannel)%schur_residual_history_quality, &
+                                  qs_ot_env(ichannel)%schur_step_gap_norm, &
+                                  qs_ot_env(ichannel)%schur_step_gauge_norm, &
+                                  qs_ot_env(ichannel)%schur_step_fermi_norm, &
+                                  qs_ot_env(ichannel)%schur_step_gauge_ratio, &
+                                  qs_ot_env(ichannel)%schur_step_gauge_ratio_ema, &
+                                  qs_ot_env(ichannel)%schur_step_gauge_residual_quality, &
+                                  qs_ot_env(ichannel)%schur_step_gauge_residual_quality_ema, &
+                                  qs_ot_env(ichannel)%kpoint_raw_delta, &
+                                  qs_ot_env(ichannel)%kpoint_physical_delta, &
+                                  qs_ot_env(ichannel)%kpoint_projected_delta, &
+                                  qs_ot_env(ichannel)%kpoint_eps_scf, &
+                                  qs_ot_env(ichannel)%kpoint_physical_gnorm, &
+                                  qs_ot_env(ichannel)%kpoint_physical_rot_gnorm, &
+                                  qs_ot_env(ichannel)%kpoint_physical_energy_gnorm, &
+                                  qs_ot_env(ichannel)%kpoint_gauge_gnorm, &
+                                  qs_ot_env(ichannel)%schur_constrained_drop, &
+                                  qs_ot_env(ichannel)%schur_constrained_calibrated_drop, &
+                                  qs_ot_env(ichannel)%schur_constrained_quality, &
+                                  qs_ot_env(ichannel)%schur_constrained_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_constrained_calibrated_quality, &
+                                  qs_ot_env(ichannel)%schur_constrained_calibrated_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_constrained_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_constrained_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_constrained_calibrated_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_constrained_gap_ratio, &
+                                  qs_ot_env(ichannel)%schur_split_quality, &
+                                  qs_ot_env(ichannel)%schur_split_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_split_calibrated_quality, &
+                                  qs_ot_env(ichannel)%schur_split_calibrated_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_split_residual_quality, &
+                                  qs_ot_env(ichannel)%schur_split_residual_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_split_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_split_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_split_calibrated_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_drop, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_drop, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_quality, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_quality, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_split_shadow_calibrated_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_occgap_shadow_drop, &
+                                  qs_ot_env(ichannel)%schur_occgap_shadow_quality, &
+                                  qs_ot_env(ichannel)%schur_occgap_shadow_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_occgap_shadow_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_occgap_shadow_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_occgap_shadow_gap_ratio, &
+                                  qs_ot_env(ichannel)%schur_coupled_quality, &
+                                  qs_ot_env(ichannel)%schur_coupled_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_coupled_calibrated_quality, &
+                                  qs_ot_env(ichannel)%schur_coupled_calibrated_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_coupled_residual_quality, &
+                                  qs_ot_env(ichannel)%schur_coupled_residual_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_coupled_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_coupled_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_coupled_calibrated_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_drop, &
+                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_quality, &
+                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_dense_metric_shadow_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_drop, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_response_drop, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_step_negative, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_response_negative, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_trust, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_quality, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_measured_sum, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_response_drop_sum, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_step_negative_ema, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_response_negative_ema, &
+                                  qs_ot_env(ichannel)%schur_projector_mode_trust_ema]
+
          IF (ires > 0) THEN
             WRITE (ires) int_payload
             WRITE (ires) log_payload
@@ -802,6 +924,9 @@ CONTAINS
             WRITE (ires) qs_ot_env(ichannel)%ot_grad
             WRITE (ires) schur_int_payload
             WRITE (ires) schur_real_payload
+            WRITE (ires) adaptive_int_payload
+            WRITE (ires) adaptive_log_payload
+            WRITE (ires) adaptive_real_payload
          END IF
          IF (has_rot_mat_x) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_x, &
                                                             qs_ot_env(ichannel), ires)
@@ -931,15 +1056,20 @@ CONTAINS
       INTEGER, DIMENSION(17)                             :: schur_int_payload_v12
       INTEGER, DIMENSION(18)                             :: schur_int_payload_v13
       INTEGER, DIMENSION(19)                             :: schur_int_payload
+      INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
       LOGICAL                                            :: payload_found
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
-      LOGICAL, DIMENSION(28)                             :: log_payload
+      LOGICAL, DIMENSION(28)                             :: log_payload_v18
+      LOGICAL, DIMENSION(29)                             :: log_payload
+      LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload_v11
       REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload_v12
       REAL(KIND=dp), DIMENSION(133)                      :: schur_real_payload_v13
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real_payload
+      REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
@@ -972,11 +1102,33 @@ CONTAINS
       scf_env%qs_ot_restart%nchannel = nchannel
       ALLOCATE (scf_env%qs_ot_restart%channel(nchannel))
       DO ichannel = 1, nchannel
+         adaptive_int_payload(:) = 0
+         adaptive_log_payload(:) = .FALSE.
+         adaptive_real_payload(:) = 0.0_dp
          IF (para_env%is_source()) THEN
-            IF (version_read >= 11) THEN
+            IF (version_read >= 19) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload
                READ (rst_unit) real_payload
+            ELSE IF (version_read >= 17) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload_v18
+               READ (rst_unit) real_payload
+               log_payload(:) = .FALSE.
+               log_payload(1:28) = log_payload_v18
+            ELSE IF (version_read == 16) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload_v18
+               READ (rst_unit) real_payload_v16
+               log_payload(:) = .FALSE.
+               log_payload(1:28) = log_payload_v18
+               real_payload(:) = real_payload_v16(1:19)
+            ELSE IF (version_read >= 11) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload_v18
+               READ (rst_unit) real_payload
+               log_payload(:) = .FALSE.
+               log_payload(1:28) = log_payload_v18
             ELSE
                READ (rst_unit) int_payload_v10
                READ (rst_unit) log_payload_v10
@@ -1063,6 +1215,11 @@ CONTAINS
                schur_int_payload(6:12) = schur_int_payload_v4(5:11)
                schur_real_payload(1:51) = schur_real_payload_v4
             END IF
+            IF (version_read >= 20) THEN
+               READ (rst_unit) adaptive_int_payload
+               READ (rst_unit) adaptive_log_payload
+               READ (rst_unit) adaptive_real_payload
+            END IF
          END IF
          IF (version_read < 4) THEN
             schur_int_payload(:) = 0
@@ -1087,6 +1244,13 @@ CONTAINS
          CALL para_env%bcast(scf_env%qs_ot_restart%channel(ichannel)%ot_grad)
          CALL para_env%bcast(schur_int_payload)
          CALL para_env%bcast(schur_real_payload)
+         CALL para_env%bcast(adaptive_int_payload)
+         CALL para_env%bcast(adaptive_log_payload)
+         CALL para_env%bcast(adaptive_real_payload)
+
+         scf_env%qs_ot_restart%channel(ichannel)%adaptive_int = adaptive_int_payload
+         scf_env%qs_ot_restart%channel(ichannel)%adaptive_log = adaptive_log_payload
+         scf_env%qs_ot_restart%channel(ichannel)%adaptive_real = adaptive_real_payload
 
          scf_env%qs_ot_restart%channel(ichannel)%valid = log_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%spin_index = int_payload(2)
@@ -1131,6 +1295,7 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x = log_payload(26)
          scf_env%qs_ot_restart%channel(ichannel)%has_matrix_x_im = log_payload(27)
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_sample_pending = log_payload(28)
+         scf_env%qs_ot_restart%channel(ichannel)%ener_direction_linear = log_payload(29)
          scf_env%qs_ot_restart%channel(ichannel)%kpoint_weight = real_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%delta = real_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%gnorm = real_payload(3)

@@ -111,6 +111,7 @@ MODULE qs_ot_types
       TYPE(qs_ot_settings_type) :: settings = qs_ot_settings_type()
       LOGICAL                   :: restricted = .FALSE.
       INTEGER                   :: spin_index = 0, kpoint_index = 0, local_kpoint_index = 0
+      INTEGER                   :: occupation_group_index = 1
       INTEGER                   :: kpoint_multiplicity = 1
       REAL(KIND=dp)             :: kpoint_weight = 1.0_dp
       LOGICAL                   :: has_kpoint_context = .FALSE.
@@ -185,6 +186,7 @@ MODULE qs_ot_types
       INTEGER          :: line_search_count = -1
       LOGICAL          :: line_search_might_be_done = .FALSE.
       LOGICAL          :: mermin_ls_sample_pending = .FALSE.
+      LOGICAL          :: mermin_ls_closure_rejected = .FALSE.
       INTEGER          :: mermin_ls_best_sample_index = 0
       REAL(KIND=dp)    :: mermin_ls_reference_energy = 0.0_dp, mermin_ls_best_sample_energy = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_best_sample_drop = 0.0_dp, mermin_ls_model_drop = 0.0_dp
@@ -223,6 +225,8 @@ MODULE qs_ot_types
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER :: rot_mat_h_x_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_gx => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_gx_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_pgx => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_pgx_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_gx_old => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_gx_old_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_dx => NULL()
@@ -692,10 +696,14 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_dx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_pgx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx_old => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: matrix_occ_precond_scale => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:, :) :: ener_h_e => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:, :) :: ener_h_x => NULL()
+      LOGICAL :: kpoint_preconditioned_direction_ready = .FALSE.
+      LOGICAL :: ener_direction_linear = .FALSE.
    END TYPE qs_ot_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_types'
@@ -922,6 +930,7 @@ CONTAINS
       qs_ot_env%OT_grad(:) = 0.0_dp
       qs_ot_env%line_search_count = 0
       qs_ot_env%mermin_ls_sample_pending = .FALSE.
+      qs_ot_env%mermin_ls_closure_rejected = .FALSE.
       qs_ot_env%mermin_ls_best_sample_index = 0
       qs_ot_env%mermin_ls_reference_energy = 0.0_dp
       qs_ot_env%mermin_ls_best_sample_energy = 0.0_dp
@@ -1437,6 +1446,10 @@ CONTAINS
             CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) &
             CALL dbcsr_set(qs_ot_env%rot_mat_gx_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_pgx, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) &
+            CALL dbcsr_set(qs_ot_env%rot_mat_pgx_im, 0.0_dp)
          IF (qs_ot_env%use_dx) &
             CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
          IF (qs_ot_env%use_dx .AND. ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
@@ -1448,6 +1461,7 @@ CONTAINS
       END IF
       IF (qs_ot_env%settings%do_ener) THEN
          qs_ot_env%ener_gx(:) = 0.0_dp
+         IF (ASSOCIATED(qs_ot_env%ener_pgx)) qs_ot_env%ener_pgx(:) = 0.0_dp
          qs_ot_env%ener_x_trust_radius = -1.0_dp
          qs_ot_env%ener_x_trust_edge_window = -1.0_dp
          qs_ot_env%ener_x_trust_mu = 0.0_dp
@@ -1467,11 +1481,15 @@ CONTAINS
          qs_ot_env%canonical_tether_grad_max = 0.0_dp
          qs_ot_env%added_mos_auto_basis_signal = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
+         IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) &
+            qs_ot_env%matrix_occ_precond_scale(:) = 1.0_dp
          IF (qs_ot_env%use_dx) &
             qs_ot_env%ener_dx(:) = 0.0_dp
          IF (qs_ot_env%use_gx_old) &
             qs_ot_env%ener_gx_old(:) = 0.0_dp
       END IF
+      qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
+      qs_ot_env%ener_direction_linear = .FALSE.
 
    END SUBROUTINE qs_ot_init
 
@@ -1742,6 +1760,7 @@ CONTAINS
       NULLIFY (qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, qs_ot_env%rot_mat_x, qs_ot_env%rot_mat_x_im, &
                qs_ot_env%rot_mat_h_e, qs_ot_env%rot_mat_h_x, qs_ot_env%rot_mat_h_e_im, &
                qs_ot_env%rot_mat_h_x_im, qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_gx_im, &
+               qs_ot_env%rot_mat_pgx, qs_ot_env%rot_mat_pgx_im, &
                qs_ot_env%rot_mat_gx_old, qs_ot_env%rot_mat_gx_old_im, qs_ot_env%rot_mat_dx, &
                qs_ot_env%rot_mat_dx_im, qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
                qs_ot_env%rot_mat_dedu_im, qs_ot_env%rot_mat_chc, qs_ot_env%rot_mat_chc_im, &
@@ -1808,7 +1827,9 @@ CONTAINS
          ncoef = k
          ALLOCATE (qs_ot_env%ener_x(ncoef))
          ALLOCATE (qs_ot_env%ener_x_trust_weight(ncoef))
+         ALLOCATE (qs_ot_env%matrix_occ_precond_scale(ncoef))
          qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
+         qs_ot_env%matrix_occ_precond_scale(:) = 1.0_dp
 
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             ALLOCATE (qs_ot_env%ener_h_e(m_diis, ncoef))
@@ -1923,6 +1944,8 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_evec_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_evec_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_pgx)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_pgx_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_old)
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_old_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_dx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dx)
@@ -1932,7 +1955,10 @@ CONTAINS
       IF (qs_ot_env%settings%do_ener) THEN
          IF (ASSOCIATED(qs_ot_env%ener_x)) DEALLOCATE (qs_ot_env%ener_x)
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) DEALLOCATE (qs_ot_env%ener_x_trust_weight)
+         IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) &
+            DEALLOCATE (qs_ot_env%matrix_occ_precond_scale)
          IF (ASSOCIATED(qs_ot_env%ener_gx)) DEALLOCATE (qs_ot_env%ener_gx)
+         IF (ASSOCIATED(qs_ot_env%ener_pgx)) DEALLOCATE (qs_ot_env%ener_pgx)
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)
             IF (ASSOCIATED(qs_ot_env%ener_h_e)) DEALLOCATE (qs_ot_env%ener_h_e)
@@ -1947,6 +1973,8 @@ CONTAINS
 
       qs_ot_env%state_allocated = .FALSE.
       qs_ot_env%has_complex_kpoint_state = .FALSE.
+      qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
+      qs_ot_env%ener_direction_linear = .FALSE.
 
    END SUBROUTINE qs_ot_destroy
 
