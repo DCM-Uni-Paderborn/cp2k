@@ -15,8 +15,7 @@ MODULE qs_scf_loop_utils
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
         dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_multiply, dbcsr_p_type, dbcsr_release, &
         dbcsr_scale, dbcsr_set, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_symmetric
-   USE cp_dbcsr_contrib,                ONLY: dbcsr_add_on_diag,&
-                                              dbcsr_dot,&
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_dot,&
                                               dbcsr_get_diag,&
                                               dbcsr_scale_by_vector,&
                                               dbcsr_set_diag
@@ -228,7 +227,8 @@ MODULE qs_scf_loop_utils
              qs_scf_density_mixing, qs_scf_check_inner_exit, &
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
              qs_scf_kp_added_mos_auto_post_resize_steps, &
-             qs_scf_kp_decouple_inactive_gauge
+             qs_scf_kp_decouple_inactive_gauge, &
+             qs_scf_kp_fermi_guard_transition
 
 CONTAINS
 
@@ -685,7 +685,7 @@ CONTAINS
          nkpoint, nlocal_channels, nmo, nspin_ot, ref_guard_attempt
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL :: canonical_gauge_bootstrap, fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, ref_guarded, &
+      LOGICAL :: fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, ref_guarded, &
          update_ot_energy_state, update_ot_energy_state_after, use_real_wfn
       REAL(KIND=dp) :: ener_nondiag, maxocc, occupation_floor, occupation_floor_fraction, &
          ref_guard_max, ref_guard_min, ref_guard_scale
@@ -967,21 +967,7 @@ CONTAINS
                                                   wkp, scf_control%smear, &
                                                   trial_eigenvalues, trial_occupation, trial_mu)
 
-      canonical_gauge_bootstrap = scf_env%iter_count == 1 .AND. &
-                                  local_ot_env(1)%OT_count <= 0 .AND. &
-                                  kpoint_ot_project_energy_subproblem(local_ot_env(1), scf_control%smear) .AND. &
-                                  (.NOT. scf_env%qs_ot_restart%valid .OR. &
-                                   scf_env%qs_ot_restart%format_version < 17)
-      IF (canonical_gauge_bootstrap) THEN
-         DO local_channel = 1, SIZE(local_ot_env)
-            CALL qs_scf_loop_bootstrap_ot_kp_canonical_gauge(local_ot_env(local_channel))
-            local_ot_env(local_channel)%OT_METHOD_FULL = "OT CAN"
-            local_ot_env(local_channel)%delta = 1.0_dp
-            local_ot_env(local_channel)%energy_only = .FALSE.
-         END DO
-         protect_mermin_ls_sample = .FALSE.
-         update_ot_energy_state_after = .TRUE.
-      ELSE IF (fermi_window_guarded) THEN
+      IF (fermi_window_guarded) THEN
          ! A frontier projection is not an affine step along the current OT
          ! direction.  Evaluate its density and Hamiltonian as a separate base
          ! point instead of mixing it into an accepted line-search endpoint.
@@ -1888,15 +1874,15 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
       LOGICAL, INTENT(OUT)                               :: guarded
 
-      INTEGER                                            :: adjusted, group, ikpoint, imo, ispin, &
+      INTEGER                                            :: adjusted, current_nmo, group, ikpoint, imo, ispin, &
                                                             local_channel, local_kpoint, ngroups, &
-                                                            nkpoint, nmo
-      LOGICAL                                            :: guard_group, lower_frontier, upper_frontier
-      REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, frontier_dist, &
-                                                            maxocc, occ_tail, release_weight, sigma
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: frac_weight, lower_dist, max_partial, &
-                                                            maxocc_group, min_abs_eps_mu, release_instant, &
-                                                            upper_dist
+                                                            nkpoint, trial_nmo
+      LOGICAL :: fractional_support_lost, guard_group, lower_frontier, upper_frontier
+      REAL(KIND=dp) :: anchor_window, distance_tol, eps, frontier_dist, &
+         maxocc, occ_tail, release_weight, sigma, trial_release
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: current_max_partial, frac_weight, lower_dist, &
+         max_partial, maxocc_group, min_abs_eps_mu, release_current, release_trial, upper_dist
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -1904,9 +1890,9 @@ CONTAINS
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
       IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
       IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
-      ! The artificial frontier support is only a bootstrap for calibrating the
-      ! finite-temperature response.  Keeping it after that point would replace
-      ! the physical Mermin minimum on a legitimately gapped coarse k mesh.
+      ! Protect a pre-existing thermal frontier only during initial response
+      ! calibration.  Later occupation changes must follow the physical Mermin
+      ! minimization, including a legitimately gapped coarse k mesh.
       IF (local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
           ot_kp_schur_calibration_min_samples) RETURN
 
@@ -1914,28 +1900,50 @@ CONTAINS
       IF (sigma <= 1.0E-14_dp) RETURN
       anchor_window = kpoint_ot_fermi_window_anchor(sigma)
 
-      nmo = SIZE(trial_eigenvalues, 1)
+      trial_nmo = SIZE(trial_eigenvalues, 1)
       nkpoint = SIZE(trial_eigenvalues, 2)
       ngroups = 1
       IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) ngroups = 2
-      ALLOCATE (frac_weight(ngroups), lower_dist(ngroups), max_partial(ngroups), &
-                maxocc_group(ngroups), min_abs_eps_mu(ngroups), release_instant(ngroups), &
-                upper_dist(ngroups))
+      ALLOCATE (current_max_partial(ngroups), frac_weight(ngroups), lower_dist(ngroups), &
+                max_partial(ngroups), maxocc_group(ngroups), min_abs_eps_mu(ngroups), &
+                release_current(ngroups), release_trial(ngroups), upper_dist(ngroups))
+      current_max_partial(:) = 0.0_dp
       frac_weight(:) = 0.0_dp
       lower_dist(:) = HUGE(1.0_dp)
       max_partial(:) = 0.0_dp
       maxocc_group(:) = 0.0_dp
       min_abs_eps_mu(:) = HUGE(1.0_dp)
-      release_instant(:) = 0.0_dp
+      release_current(:) = 0.0_dp
+      release_trial(:) = 0.0_dp
       upper_dist(:) = HUGE(1.0_dp)
 
-      kp => kpoints%kp_env(1)%kpoint_env
+      ! Preserve an existing finite-temperature frontier, but never create one
+      ! from an initially integer state.  The latter changes the optimization
+      ! problem and repeatedly destroys otherwise valid minimizer history.
+      DO local_kpoint = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local_kpoint)%kpoint_env
+         DO ispin = 1, nspin_ot
+            group = MERGE(ispin, 1, ngroups == nspin_ot)
+            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=current_nmo, &
+                            occupation_numbers=occupation_numbers)
+            maxocc_group(group) = MAX(maxocc_group(group), maxocc)
+            IF (.NOT. ASSOCIATED(occupation_numbers)) CYCLE
+            DO imo = 1, current_nmo
+               occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
+               current_max_partial(group) = MAX(current_max_partial(group), occ_tail)
+            END DO
+         END DO
+      END DO
+      DO group = 1, ngroups
+         CALL para_env_inter_kp%max(current_max_partial(group))
+         CALL para_env_inter_kp%max(maxocc_group(group))
+      END DO
+
       DO ikpoint = 1, nkpoint
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
-            CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc)
-            maxocc_group(group) = MAX(maxocc_group(group), maxocc)
-            DO imo = 1, nmo
+            maxocc = maxocc_group(group)
+            DO imo = 1, trial_nmo
                occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
                                           maxocc - trial_occupation(imo, ikpoint, ispin)))
                frac_weight(group) = frac_weight(group) + wkp(ikpoint)*occ_tail
@@ -1953,8 +1961,10 @@ CONTAINS
       END DO
 
       DO group = 1, ngroups
-         release_instant(group) = kpoint_ot_fermi_window_release_weight(max_partial(group), &
-                                                                        maxocc_group(group))
+         release_current(group) = kpoint_ot_fermi_window_release_weight(current_max_partial(group), &
+                                                                         maxocc_group(group))
+         release_trial(group) = kpoint_ot_fermi_window_release_weight(max_partial(group), &
+                                                                       maxocc_group(group))
       END DO
 
       adjusted = 0
@@ -1965,15 +1975,19 @@ CONTAINS
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-            release_weight = release_instant(group)
+            trial_release = release_trial(group)
+            fractional_support_lost = qs_scf_kp_fermi_guard_transition( &
+               current_max_partial(group), max_partial(group), maxocc_group(group))
+            release_weight = trial_release
             guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
                           upper_dist(group) < HUGE(1.0_dp) .AND. &
                           min_abs_eps_mu(group) > anchor_window .AND. &
+                          fractional_support_lost .AND. &
                           release_weight < 1.0_dp - EPSILON(1.0_dp)
             IF (.NOT. guard_group) CYCLE
 
             distance_tol = MAX(1.0E-10_dp, 1.0E-8_dp*MAX(lower_dist(group), upper_dist(group)))
-            DO imo = 1, nmo
+            DO imo = 1, trial_nmo
                lower_frontier = trial_eigenvalues(imo, ikpoint, ispin) <= trial_mu(ispin) .AND. &
                                 ABS(trial_mu(ispin) - trial_eigenvalues(imo, ikpoint, ispin) - &
                                     lower_dist(group)) <= distance_tol
@@ -2004,14 +2018,14 @@ CONTAINS
       logger => cp_get_default_logger()
       IF (guarded .AND. logger%iter_info%print_level >= high_print_level .AND. &
           logger%para_env%is_source()) THEN
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),1X,I5)') &
-            " OT k-point trial Fermi-window guard sigma anchor frac min_abs instant release adjusted:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
+            " OT k-point trial Fermi-window guard sigma anchor frac min_abs current trial release adjusted:", &
             sigma, anchor_window, MINVAL(frac_weight), MINVAL(min_abs_eps_mu), &
-            MINVAL(release_instant), MINVAL(release_instant), adjusted
+            MINVAL(release_current), MINVAL(release_trial), MINVAL(release_trial), adjusted
       END IF
 
-      DEALLOCATE (frac_weight, lower_dist, max_partial, maxocc_group, min_abs_eps_mu, &
-                  release_instant, upper_dist)
+      DEALLOCATE (current_max_partial, frac_weight, lower_dist, max_partial, maxocc_group, &
+                  min_abs_eps_mu, release_current, release_trial, upper_dist)
 
    END SUBROUTINE qs_scf_loop_guard_ot_kp_trial_fermi_window
 
@@ -2069,6 +2083,30 @@ CONTAINS
       weight = weight*weight*(3.0_dp - 2.0_dp*weight)
 
    END FUNCTION kpoint_ot_fermi_window_release_weight
+
+! **************************************************************************************************
+!> \brief whether a trial loses an already established finite-temperature occupation frontier
+!> \param current_max_partial largest min(f,maxocc-f) in the accepted state
+!> \param trial_max_partial largest min(f,maxocc-f) in the trial state
+!> \param maxocc maximum orbital occupation
+!> \return true only for loss of physical fractional support
+! **************************************************************************************************
+   FUNCTION qs_scf_kp_fermi_guard_transition(current_max_partial, trial_max_partial, maxocc) &
+      RESULT(guard)
+      REAL(KIND=dp), INTENT(IN)                          :: current_max_partial, trial_max_partial, maxocc
+      LOGICAL                                            :: guard
+
+      REAL(KIND=dp)                                      :: current_release, trial_release
+
+      guard = .FALSE.
+      IF (maxocc <= EPSILON(1.0_dp)) RETURN
+      IF (current_max_partial < maxocc*ot_kp_fermi_window_min_frac) RETURN
+
+      current_release = kpoint_ot_fermi_window_release_weight(current_max_partial, maxocc)
+      trial_release = kpoint_ot_fermi_window_release_weight(trial_max_partial, maxocc)
+      guard = trial_release + 10.0_dp*EPSILON(1.0_dp) < current_release
+
+   END FUNCTION qs_scf_kp_fermi_guard_transition
 
 ! **************************************************************************************************
 !> \brief residual-gated canonical projector blend weight for k-point OT
@@ -3179,90 +3217,6 @@ CONTAINS
       trust_quality = MIN(1.0_dp, MAX(0.0_dp, trust_quality))
 
    END FUNCTION kpoint_ot_direct_trace_mismatch_trust
-
-! **************************************************************************************************
-!> \brief absorb the initial canonical MO gauge before any minimizer history exists
-!> \param qs_ot_env ...
-! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_bootstrap_ot_kp_canonical_gauge(qs_ot_env)
-
-      TYPE(qs_ot_type)                                   :: qs_ot_env
-
-      INTEGER                                            :: nmo
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_energies
-      TYPE(dbcsr_type) :: evec_im, evec_re, q_im, q_re, tmp_nk, &
-         x_old_im, x_old_re
-
-      CPASSERT(qs_ot_env%has_complex_kpoint_state)
-      CPASSERT(ASSOCIATED(qs_ot_env%matrix_x))
-      CPASSERT(ASSOCIATED(qs_ot_env%matrix_x_im))
-      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
-      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
-      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u))
-      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
-
-      CALL qs_ot_generate_rotation_complex(qs_ot_env)
-      CALL dbcsr_get_info(qs_ot_env%rot_mat_chc, nfullcols_total=nmo)
-      ALLOCATE (canonical_energies(nmo))
-      CALL dbcsr_copy(evec_re, qs_ot_env%rot_mat_chc, name="ot_kp_bootstrap_evec_re")
-      CALL dbcsr_copy(evec_im, qs_ot_env%rot_mat_chc_im, name="ot_kp_bootstrap_evec_im")
-      CALL dbcsr_copy(q_re, qs_ot_env%rot_mat_chc, name="ot_kp_bootstrap_q_re")
-      CALL dbcsr_copy(q_im, qs_ot_env%rot_mat_chc_im, name="ot_kp_bootstrap_q_im")
-      CALL cp_dbcsr_heevd(matrix_re=q_re, &
-                          matrix_im=q_im, &
-                          eigenvectors_re=evec_re, &
-                          eigenvectors_im=evec_im, &
-                          eigenvalues=canonical_energies, &
-                          para_env=qs_ot_env%para_env, &
-                          blacs_env=qs_ot_env%blacs_env)
-
-      ! Q = U*V maps the REF basis directly to the canonical current orbitals.
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, evec_re, 0.0_dp, q_re)
-      CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%rot_mat_u_im, evec_im, 1.0_dp, q_re)
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, evec_im, 0.0_dp, q_im)
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, evec_re, 1.0_dp, q_im)
-
-      CALL dbcsr_copy(x_old_re, qs_ot_env%matrix_x, name="ot_kp_bootstrap_x_re")
-      CALL dbcsr_copy(x_old_im, qs_ot_env%matrix_x_im, name="ot_kp_bootstrap_x_im")
-      CALL dbcsr_copy(tmp_nk, qs_ot_env%matrix_x, name="ot_kp_bootstrap_tmp_nk")
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, x_old_re, q_re, 0.0_dp, qs_ot_env%matrix_x)
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, x_old_im, q_im, 0.0_dp, tmp_nk)
-      CALL dbcsr_add(qs_ot_env%matrix_x, tmp_nk, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, x_old_re, q_im, 0.0_dp, qs_ot_env%matrix_x_im)
-      CALL dbcsr_multiply('N', 'N', 1.0_dp, x_old_im, q_re, 0.0_dp, tmp_nk)
-      CALL dbcsr_add(qs_ot_env%matrix_x_im, tmp_nk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
-
-      CALL dbcsr_set(qs_ot_env%rot_mat_x, 0.0_dp)
-      CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
-      CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
-      CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
-      CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%matrix_dx)) CALL dbcsr_set(qs_ot_env%matrix_dx, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%matrix_dx_im)) CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%matrix_gx_old)) CALL dbcsr_set(qs_ot_env%matrix_gx_old, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%matrix_gx_old_im)) CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_dx)) CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old)) CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%ener_dx)) qs_ot_env%ener_dx(:) = 0.0_dp
-      IF (ASSOCIATED(qs_ot_env%ener_gx_old)) qs_ot_env%ener_gx_old(:) = 0.0_dp
-      qs_ot_env%gnorm = 0.0_dp
-      qs_ot_env%gnorm_old = 1.0_dp
-      qs_ot_env%ener_direction_linear = .FALSE.
-      qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
-      qs_ot_env%ener_x(:) = canonical_energies(:)
-
-      CALL dbcsr_release(evec_re)
-      CALL dbcsr_release(evec_im)
-      CALL dbcsr_release(q_re)
-      CALL dbcsr_release(q_im)
-      CALL dbcsr_release(tmp_nk)
-      CALL dbcsr_release(x_old_re)
-      CALL dbcsr_release(x_old_im)
-      DEALLOCATE (canonical_energies)
-
-   END SUBROUTINE qs_scf_loop_bootstrap_ot_kp_canonical_gauge
 
 ! **************************************************************************************************
 !> \brief assemble CHC for the coupled fixed-N k-point OT energy subproblem

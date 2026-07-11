@@ -22,7 +22,8 @@ PROGRAM qs_ot_frechet_unittest
                                               mp_world_init
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel
-   USE qs_scf_loop_utils,               ONLY: qs_scf_kp_decouple_inactive_gauge
+   USE qs_scf_loop_utils,               ONLY: qs_scf_kp_decouple_inactive_gauge,&
+                                              qs_scf_kp_fermi_guard_transition
 
    IMPLICIT NONE
 
@@ -95,6 +96,7 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-12_dp, nfail)
    CALL check_inactive_gauge_decoupling("inactive k-point gauge decoupling", &
                                         5.0E-14_dp, nfail)
+   CALL check_fermi_guard_transition("k-point Fermi guard transition", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -3396,6 +3398,33 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_inactive_gauge_decoupling
+
+! **************************************************************************************************
+!> \brief Check that the Fermi guard preserves fractional support without creating it.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_guard_transition(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp
+
+      failed = qs_scf_kp_fermi_guard_transition(0.0_dp, 0.0_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_guard_transition(0.0_dp, 2.0E-3_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_guard_transition(1.0E-3_dp, 0.0_dp, maxocc) .OR. &
+               .NOT. qs_scf_kp_fermi_guard_transition(2.0E-3_dp, 0.0_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_guard_transition(2.0E-3_dp, 2.0E-3_dp, maxocc) .OR. &
+               qs_scf_kp_fermi_guard_transition(2.0E-3_dp, 0.0_dp, 0.0_dp)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_fermi_guard_transition
 
 ! **************************************************************************************************
 !> \brief Build the dense mixed fixed-N/tether energy block used by exact-response tests.
