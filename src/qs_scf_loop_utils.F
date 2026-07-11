@@ -237,8 +237,10 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_decouple_inactive_gauge, &
              qs_scf_kp_density_control_delta, &
              qs_scf_kp_fermi_guard_transition, &
+             qs_scf_kp_full_all_spin_normalization, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate
 
 CONTAINS
@@ -299,6 +301,20 @@ CONTAINS
       changed = active .NEQV. previous_active
 
    END SUBROUTINE qs_scf_kp_occ_preconditioner_transition
+
+! **************************************************************************************************
+!> \brief Remove the spin-degeneracy scale already carried by a k-point OT orbital gradient.
+!> \param maxocc maximum occupation of one spatial orbital
+!> \return objective normalization for a state-selective orbital Hessian inverse
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_full_all_spin_normalization(maxocc) RESULT(scale)
+      REAL(KIND=dp), INTENT(IN)                          :: maxocc
+      REAL(KIND=dp)                                      :: scale
+
+      scale = 1.0_dp
+      IF (maxocc > EPSILON(maxocc)) scale = 1.0_dp/maxocc
+
+   END FUNCTION qs_scf_kp_full_all_spin_normalization
 
 ! **************************************************************************************************
 !> \brief Continue from the physical occupation-weighted orbital metric to full unweighting.
@@ -389,6 +405,20 @@ CONTAINS
    END FUNCTION qs_scf_kp_added_mos_auto_post_resize_steps
 
 ! **************************************************************************************************
+!> \brief Classify loss of a thermally resolved Fermi-window occupation.
+!> \param max_partial_fraction largest min(f,1-f) over represented bands
+!> \return true when the represented subspace no longer resolves the thermal frontier
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_subspace_is_collapsed(max_partial_fraction) RESULT(collapsed)
+      REAL(KIND=dp), INTENT(IN)                          :: max_partial_fraction
+      LOGICAL                                            :: collapsed
+
+      collapsed = max_partial_fraction < &
+                  MAX(ot_kp_fermi_window_min_frac, 0.25_dp*ot_kp_fermi_window_tail_fraction)
+
+   END FUNCTION qs_scf_kp_subspace_is_collapsed
+
+! **************************************************************************************************
 !> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
 !> \param allow_refresh whether this SCF invocation may still refresh once
 !> \param fermi_window_guarded whether the current state is a projected Fermi-window sample
@@ -397,25 +427,33 @@ CONTAINS
 !> \param eps_scf requested SCF threshold
 !> \param step_ready whether enough history or a restart is available
 !> \param base_state whether the sample is an accepted/base line-search state
-!> \return true only inside the residual tail where a full subspace rebuild is warranted
+!> \param high_residual_stagnant optional flag for a collapsed line search below SCF resolution
+!> \return true when a full subspace rebuild is warranted
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
-                                                 residual_delta, eps_scf, step_ready, base_state) &
+                                                 residual_delta, eps_scf, step_ready, base_state, &
+                                                 high_residual_stagnant) &
       RESULT(refresh)
 
       LOGICAL, INTENT(IN)                                :: allow_refresh, fermi_window_guarded, &
                                                             collapsed
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, eps_scf
       LOGICAL, INTENT(IN)                                :: step_ready, base_state
+      LOGICAL, INTENT(IN), OPTIONAL                      :: high_residual_stagnant
       LOGICAL                                            :: refresh
 
+      LOGICAL                                            :: catastrophic_stagnation
       REAL(KIND=dp)                                      :: eps, residual_upper
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
       residual_upper = SQRT(eps)
+      catastrophic_stagnation = .FALSE.
+      IF (PRESENT(high_residual_stagnant)) &
+         catastrophic_stagnation = high_residual_stagnant .AND. residual_delta > residual_upper
       refresh = allow_refresh .AND. .NOT. fermi_window_guarded .AND. collapsed .AND. &
-                residual_delta > 10.0_dp*eps .AND. residual_delta <= residual_upper .AND. &
-                step_ready .AND. base_state
+                residual_delta > 10.0_dp*eps .AND. &
+                (residual_delta <= residual_upper .OR. catastrophic_stagnation) .AND. &
+                step_ready .AND. (base_state .OR. catastrophic_stagnation)
 
    END FUNCTION qs_scf_kp_subspace_refresh_gate
 
@@ -849,8 +887,9 @@ CONTAINS
       LOGICAL :: fermi_window_guarded, initial_density_rebase, initial_density_reference, &
          protect_mermin_ls_sample, ref_guard_ok, ref_guarded, update_ot_energy_state, &
          update_ot_energy_state_after, use_real_wfn
-      REAL(KIND=dp) :: ener_nondiag, maxocc, occupation_floor, occupation_floor_fraction, &
-         occupation_scale_full, ref_guard_max, ref_guard_min, ref_guard_scale, trial_kTS
+      REAL(KIND=dp) :: ener_nondiag, full_all_spin_scale, maxocc, occupation_floor, &
+         occupation_floor_fraction, occupation_scale_full, ref_guard_max, ref_guard_min, &
+         ref_guard_scale, trial_kTS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_scaling_factor, trial_mu
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ener_x_old
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: trial_eigenvalues, trial_occupation
@@ -1085,8 +1124,13 @@ CONTAINS
             local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
 
+            full_all_spin_scale = 1.0_dp
+            IF (ASSOCIATED(local_ot_env(local_channel)%preconditioner)) THEN
+               IF (ASSOCIATED(local_ot_env(local_channel)%preconditioner%complex_fm)) &
+                  full_all_spin_scale = qs_scf_kp_full_all_spin_normalization(maxocc)
+            END IF
             IF (ASSOCIATED(local_ot_env(local_channel)%matrix_occ_precond_scale)) &
-               local_ot_env(local_channel)%matrix_occ_precond_scale(:) = 1.0_dp
+               local_ot_env(local_channel)%matrix_occ_precond_scale(:) = full_all_spin_scale
             IF (ASSOCIATED(local_ot_env(local_channel)%matrix_occ_precond_scale) .AND. &
                 qs_ot_occupation_preconditioner_active(local_ot_env(local_channel)) .AND. &
                 scf_control%smear%do_smear .AND. &
@@ -1102,7 +1146,7 @@ CONTAINS
                   occupation_scale_full = &
                      maxocc/MAX(trial_occupation(imo, ikpoint, ispin), occupation_floor)
                   local_ot_env(local_channel)%matrix_occ_precond_scale(imo) = &
-                     qs_scf_kp_occ_metric_continuation( &
+                     full_all_spin_scale*qs_scf_kp_occ_metric_continuation( &
                      occupation_scale_full, &
                      local_ot_env(1)%mermin_ls_accepted_quality_samples, &
                      local_ot_env(1)%mermin_ls_accepted_quality_ema, &
@@ -1120,8 +1164,9 @@ CONTAINS
                                                             ener_nondiag)
 
             ALLOCATE (orbital_scaling_factor(nmo))
-            ! Keep orbital gradients on the fixed-N Mermin surface. The occupation
-            ! preconditioner below acts on energy variables, not by unweighting empty bands.
+            ! Keep orbital gradients on the fixed-N Mermin surface.  The spectral
+            ! preconditioner removes maxocc once, and the optional occupation metric
+            ! continues separately from f/maxocc to an unweighted orbital direction.
             orbital_scaling_factor(:) = 2.0_dp*wkp(ikpoint)*trial_occupation(1:nmo, ikpoint, ispin)
             CALL dbcsr_scale_by_vector(matrix_hc(local_channel)%matrix, &
                                        alpha=orbital_scaling_factor, side='right')
@@ -1797,7 +1842,8 @@ CONTAINS
       LOGICAL                                            :: refresh
 
       INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo
-      LOGICAL                                            :: base_state, collapsed, step_ready
+      LOGICAL                                            :: base_state, collapsed, &
+                                                            high_residual_stagnant, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -1831,21 +1877,25 @@ CONTAINS
       CALL para_env_inter_kp%sum(fractional_weight)
       CALL para_env_inter_kp%max(max_partial_fraction)
 
-      collapsed = max_partial_fraction < ot_kp_fermi_window_min_frac
+      collapsed = qs_scf_kp_subspace_is_collapsed(max_partial_fraction)
       residual_delta = MAX(scf_residual, local_ot_env(1)%delta)
       step_ready = restart_valid .OR. local_ot_env(1)%OT_count >= ot_kp_subspace_refresh_min_steps .OR. &
                    scf_iteration >= ot_kp_subspace_refresh_min_steps
       base_state = local_ot_env(1)%line_search_count == 0 .OR. accepted_sample .OR. &
                    (restart_valid .AND. scf_iteration <= 1)
+      high_residual_stagnant = residual_delta > SQRT(MAX(eps_scf, EPSILON(1.0_dp))) .AND. &
+                               local_ot_env(1)%ds_min <= &
+                               MAX(eps_scf, SQRT(EPSILON(1.0_dp)))
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
-                                                residual_delta, eps_scf, step_ready, base_state)
+                                                residual_delta, eps_scf, step_ready, base_state, &
+                                                high_residual_stagnant)
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
           collapsed .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,L1,1X,I6,3(1X,ES16.8))') &
-         " OT k-point subspace refresh ready restart step residual frac max:", &
-         refresh, restart_valid, local_ot_env(1)%OT_count, residual_delta, &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),1X,I6,3(1X,ES16.8))') &
+         " OT k-point subspace refresh ready restart stagnant step residual frac max:", &
+         refresh, restart_valid, high_residual_stagnant, local_ot_env(1)%OT_count, residual_delta, &
          fractional_weight, max_partial_fraction
 
    END FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed

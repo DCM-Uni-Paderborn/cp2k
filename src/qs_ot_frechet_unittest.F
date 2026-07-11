@@ -9,18 +9,34 @@
 !> \brief finite-difference checks for the complex OT rotation Frechet kernel
 ! **************************************************************************************************
 PROGRAM qs_ot_frechet_unittest
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
+                                              cp_blacs_env_release,&
+                                              cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_get_element,&
+                                              cp_cfm_release,&
+                                              cp_cfm_set_element,&
+                                              cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_create, dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, &
         dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
         dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                              cp_fm_struct_release,&
+                                              cp_fm_struct_type
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets
    USE machine,                         ONLY: default_output_unit
    USE mathlib,                         ONLY: diag_complex,&
                                               diamat_all
    USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_release,&
+                                              mp_para_env_type,&
                                               mp_world_finalize,&
                                               mp_world_init
+   USE preconditioner,                  ONLY: apply_preconditioner,&
+                                              make_complex_full_all
+   USE preconditioner_types,            ONLY: preconditioner_type
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel
    USE qs_ot_minimizer,                 ONLY: ot_kpoint_cg_residual_growth_guard,&
@@ -30,8 +46,10 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_scf_loop_utils,               ONLY: qs_scf_kp_decouple_inactive_gauge,&
                                               qs_scf_kp_density_control_delta,&
                                               qs_scf_kp_fermi_guard_transition,&
+                                              qs_scf_kp_full_all_spin_normalization,&
                                               qs_scf_kp_occ_metric_continuation,&
                                               qs_scf_kp_occ_preconditioner_transition,&
+                                              qs_scf_kp_subspace_is_collapsed,&
                                               qs_scf_kp_subspace_refresh_gate
 
    IMPLICIT NONE
@@ -58,6 +76,8 @@ PROGRAM qs_ot_frechet_unittest
                    5.0E-8_dp, nfail)
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
+   CALL check_complex_full_all_preconditioner("complex FULL_ALL phase covariance", &
+                                              5.0E-11_dp, nfail, mp_comm)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_symmetry_preconditioned_metric("k-point symmetry preconditioned metric", &
                                                     5.0E-14_dp, nfail)
@@ -757,6 +777,225 @@ CONTAINS
    END SUBROUTINE check_dbcsr_sparse_pattern
 
 ! **************************************************************************************************
+!> \brief Exercise the production complex FULL_ALL builder and spectral application.
+!>        Independent orbital phases must rotate the output covariantly, while
+!>        imaginary Hamiltonian couplings must remain present in a positive metric.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+!> \param mp_comm ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_full_all_preconditioner(label, tol, nfail, mp_comm)
+
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+      TYPE(mp_comm_type), INTENT(IN)                     :: mp_comm
+
+      INTEGER, PARAMETER                                 :: k = 2, n = 4
+
+      COMPLEX(KIND=dp)                                   :: value
+      COMPLEX(KIND=dp), DIMENSION(k)                     :: phases
+      COMPLEX(KIND=dp), DIMENSION(k, k)                  :: chc
+      COMPLEX(KIND=dp), DIMENSION(n, k) :: c0, c0_conjugate, c0_phase, gradient, &
+         gradient_conjugate, gradient_phase, output, output_conjugate, output_phase, reference, &
+         spectral
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: h, h_conjugate, identity, w
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: descent, gauge_error, imaginary_norm, &
+                                                            orthogonality_error, reference_error, &
+                                                            time_reversal_error
+      REAL(KIND=dp), DIMENSION(k)                        :: c0_evals
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_cfm_type) :: c0_cfm, c0_conjugate_cfm, c0_phase_cfm, gradient_cfm, &
+         gradient_conjugate_cfm, gradient_phase_cfm, h_cfm, h_conjugate_cfm, output_cfm, &
+         output_conjugate_cfm, output_phase_cfm, s_cfm
+      TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(preconditioner_type)                          :: preconditioner_conjugate_env, &
+                                                            preconditioner_env, &
+                                                            preconditioner_phase_env
+
+      NULLIFY (blacs_env, fm_struct, para_env)
+      ALLOCATE (para_env)
+      CALL para_env%from_dup(mp_comm)
+      CALL cp_blacs_env_create(blacs_env, para_env)
+      CALL cp_fm_struct_create(fm_struct, nrow_global=n, ncol_global=n, &
+                               context=blacs_env, para_env=para_env)
+
+      identity(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         identity(i, i) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+      END DO
+      h(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      h(1, 1) = CMPLX(-0.45_dp, 0.0_dp, KIND=dp)
+      h(2, 2) = CMPLX(-0.12_dp, 0.0_dp, KIND=dp)
+      h(3, 3) = CMPLX(0.34_dp, 0.0_dp, KIND=dp)
+      h(4, 4) = CMPLX(0.81_dp, 0.0_dp, KIND=dp)
+      h(1, 2) = CMPLX(0.07_dp, 0.05_dp, KIND=dp)
+      h(2, 1) = CONJG(h(1, 2))
+      h(1, 3) = CMPLX(-0.03_dp, 0.04_dp, KIND=dp)
+      h(3, 1) = CONJG(h(1, 3))
+      h(2, 4) = CMPLX(0.06_dp, -0.02_dp, KIND=dp)
+      h(4, 2) = CONJG(h(2, 4))
+      h(3, 4) = CMPLX(-0.05_dp, 0.03_dp, KIND=dp)
+      h(4, 3) = CONJG(h(3, 4))
+
+      c0(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      c0(1, 1) = CMPLX(1.0_dp/SQRT(2.0_dp), 0.0_dp, KIND=dp)
+      c0(2, 1) = CMPLX(0.0_dp, 1.0_dp/SQRT(2.0_dp), KIND=dp)
+      c0(3, 2) = CMPLX(1.0_dp/SQRT(2.0_dp), 0.0_dp, KIND=dp)
+      c0(4, 2) = EXP(CMPLX(0.0_dp, 0.31_dp, KIND=dp))/SQRT(2.0_dp)
+      chc = MATMUL(CONJG(TRANSPOSE(c0)), MATMUL(h, c0))
+      DO i = 1, k
+         c0_evals(i) = REAL(chc(i, i), KIND=dp)
+      END DO
+
+      gradient(:, 1) = [CMPLX(0.17_dp, 0.0_dp, KIND=dp), &
+                        CMPLX(-0.08_dp, 0.0_dp, KIND=dp), &
+                        CMPLX(0.11_dp, 0.0_dp, KIND=dp), &
+                        CMPLX(-0.04_dp, 0.0_dp, KIND=dp)]
+      gradient(:, 2) = [CMPLX(-0.03_dp, 0.06_dp, KIND=dp), &
+                        CMPLX(0.09_dp, -0.02_dp, KIND=dp), &
+                        CMPLX(-0.14_dp, 0.05_dp, KIND=dp), &
+                        CMPLX(0.07_dp, 0.03_dp, KIND=dp)]
+      phases = [EXP(CMPLX(0.0_dp, 0.43_dp, KIND=dp)), &
+                EXP(CMPLX(0.0_dp, -0.67_dp, KIND=dp))]
+      DO j = 1, k
+         c0_phase(:, j) = phases(j)*c0(:, j)
+         gradient_phase(:, j) = phases(j)*gradient(:, j)
+      END DO
+      h_conjugate(:, :) = CONJG(h(:, :))
+      c0_conjugate(:, :) = CONJG(c0(:, :))
+      gradient_conjugate(:, :) = CONJG(gradient(:, :))
+
+      CALL cp_cfm_create(h_cfm, fm_struct, name='complex FULL_ALL test H')
+      CALL cp_cfm_create(h_conjugate_cfm, fm_struct, name='complex FULL_ALL conjugate H')
+      CALL cp_cfm_create(s_cfm, fm_struct, name='complex FULL_ALL test S')
+      CALL cp_cfm_create(c0_cfm, fm_struct, nrow=n, ncol=k, name='complex FULL_ALL test C')
+      CALL cp_cfm_create(c0_phase_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL phased C')
+      CALL cp_cfm_create(c0_conjugate_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL conjugate C')
+      CALL cp_cfm_create(gradient_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL test gradient')
+      CALL cp_cfm_create(gradient_phase_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL phased gradient')
+      CALL cp_cfm_create(gradient_conjugate_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL conjugate gradient')
+      CALL cp_cfm_create(output_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL test output')
+      CALL cp_cfm_create(output_phase_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL phased output')
+      CALL cp_cfm_create(output_conjugate_cfm, fm_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL conjugate output')
+      DO j = 1, n
+         DO i = 1, n
+            CALL cp_cfm_set_element(h_cfm, i, j, h(i, j))
+            CALL cp_cfm_set_element(h_conjugate_cfm, i, j, h_conjugate(i, j))
+            CALL cp_cfm_set_element(s_cfm, i, j, identity(i, j))
+         END DO
+      END DO
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_set_element(c0_cfm, i, j, c0(i, j))
+            CALL cp_cfm_set_element(c0_phase_cfm, i, j, c0_phase(i, j))
+            CALL cp_cfm_set_element(c0_conjugate_cfm, i, j, c0_conjugate(i, j))
+            CALL cp_cfm_set_element(gradient_cfm, i, j, gradient(i, j))
+            CALL cp_cfm_set_element(gradient_phase_cfm, i, j, gradient_phase(i, j))
+            CALL cp_cfm_set_element(gradient_conjugate_cfm, i, j, gradient_conjugate(i, j))
+         END DO
+      END DO
+
+      CALL make_complex_full_all(preconditioner_env, c0_cfm, h_cfm, s_cfm, &
+                                 c0_evals, 0.08_dp)
+      CALL make_complex_full_all(preconditioner_phase_env, c0_phase_cfm, h_cfm, s_cfm, &
+                                 c0_evals, 0.08_dp)
+      CALL make_complex_full_all(preconditioner_conjugate_env, c0_conjugate_cfm, &
+                                 h_conjugate_cfm, s_cfm, c0_evals, 0.08_dp)
+      CALL apply_preconditioner(preconditioner_env, gradient_cfm, output_cfm)
+      CALL apply_preconditioner(preconditioner_phase_env, gradient_phase_cfm, output_phase_cfm)
+      CALL apply_preconditioner(preconditioner_conjugate_env, gradient_conjugate_cfm, &
+                                output_conjugate_cfm)
+
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_get_element(output_cfm, i, j, value)
+            output(i, j) = value
+            CALL cp_cfm_get_element(output_phase_cfm, i, j, value)
+            output_phase(i, j) = value
+            CALL cp_cfm_get_element(output_conjugate_cfm, i, j, value)
+            output_conjugate(i, j) = value
+         END DO
+      END DO
+      DO j = 1, n
+         DO i = 1, n
+            CALL cp_cfm_get_element(preconditioner_env%complex_fm, i, j, value)
+            w(i, j) = value
+         END DO
+      END DO
+
+      spectral = MATMUL(CONJG(TRANSPOSE(w)), gradient)
+      DO j = 1, k
+         DO i = 1, n
+            spectral(i, j) = spectral(i, j)/ &
+                             MAX(preconditioner_env%energy_gap, &
+                                 preconditioner_env%full_evals(i) - &
+                                 preconditioner_env%occ_evals(j))
+         END DO
+      END DO
+      reference = MATMUL(w, spectral)
+      reference_error = MAXVAL(ABS(output - reference))
+      gauge_error = 0.0_dp
+      DO j = 1, k
+         gauge_error = MAX(gauge_error, MAXVAL(ABS(output_phase(:, j) - phases(j)*output(:, j))))
+      END DO
+      time_reversal_error = MAXVAL(ABS(output_conjugate - CONJG(output)))
+      orthogonality_error = MAXVAL(ABS(MATMUL(CONJG(TRANSPOSE(w)), w) - identity))
+      descent = REAL(SUM(CONJG(gradient)*output), KIND=dp)
+      imaginary_norm = MAXVAL(ABS(AIMAG(output(:, 1))))
+
+      IF (reference_error > tol .OR. gauge_error > tol .OR. time_reversal_error > tol .OR. &
+          orthogonality_error > tol .OR. &
+          descent <= 0.0_dp .OR. imaginary_norm <= 1.0E-8_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            'failed with ref/gauge/time-reversal/ortho/descent/imag', reference_error, gauge_error, &
+            time_reversal_error, orthogonality_error, descent, imaginary_norm
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            'OK with ref/gauge/time-reversal/ortho/descent/imag', reference_error, gauge_error, &
+            time_reversal_error, orthogonality_error, descent, imaginary_norm
+      END IF
+
+      CALL cp_cfm_release(preconditioner_conjugate_env%complex_fm)
+      DEALLOCATE (preconditioner_conjugate_env%complex_fm)
+      DEALLOCATE (preconditioner_conjugate_env%full_evals, preconditioner_conjugate_env%occ_evals)
+      CALL cp_cfm_release(preconditioner_phase_env%complex_fm)
+      DEALLOCATE (preconditioner_phase_env%complex_fm)
+      DEALLOCATE (preconditioner_phase_env%full_evals, preconditioner_phase_env%occ_evals)
+      CALL cp_cfm_release(preconditioner_env%complex_fm)
+      DEALLOCATE (preconditioner_env%complex_fm)
+      DEALLOCATE (preconditioner_env%full_evals, preconditioner_env%occ_evals)
+      CALL cp_cfm_release(output_phase_cfm)
+      CALL cp_cfm_release(output_conjugate_cfm)
+      CALL cp_cfm_release(output_cfm)
+      CALL cp_cfm_release(gradient_phase_cfm)
+      CALL cp_cfm_release(gradient_conjugate_cfm)
+      CALL cp_cfm_release(gradient_cfm)
+      CALL cp_cfm_release(c0_phase_cfm)
+      CALL cp_cfm_release(c0_conjugate_cfm)
+      CALL cp_cfm_release(c0_cfm)
+      CALL cp_cfm_release(s_cfm)
+      CALL cp_cfm_release(h_conjugate_cfm)
+      CALL cp_cfm_release(h_cfm)
+      CALL cp_fm_struct_release(fm_struct)
+      CALL cp_blacs_env_release(blacs_env)
+      CALL mp_para_env_release(para_env)
+
+   END SUBROUTINE check_complex_full_all_preconditioner
+
+! **************************************************************************************************
 !> \brief Fill the dense companion to the sparse Frechet pattern tests.
 !> \param z ...
 ! **************************************************************************************************
@@ -996,7 +1235,7 @@ CONTAINS
    END SUBROUTINE check_kpoint_symmetry_preconditioned_metric
 
 ! **************************************************************************************************
-!> \brief Check cancellation of the orbital-occupation Hessian factor and its empty-band floor.
+!> \brief Check spin-invariant cancellation of the orbital-occupation Hessian factor.
 !> \param label ...
 !> \param tol ...
 !> \param nfail ...
@@ -1006,30 +1245,42 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp, maxocc = 2.0_dp
+      REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp, &
+                                                            maxocc_rks = 2.0_dp, &
+                                                            maxocc_uks = 1.0_dp
 
       REAL(KIND=dp)                                      :: err, floor_fraction, occ_floor
-      REAL(KIND=dp), DIMENSION(4)                        :: expected, occupation, preconditioned, &
-                                                            raw_gradient, reference, scale
+      REAL(KIND=dp), DIMENSION(4) :: expected, occupation_fraction, occupation_rks, &
+         occupation_uks, preconditioned_rks, preconditioned_uks, raw_gradient_rks, &
+         raw_gradient_uks, reference, scale_rks, scale_uks
 
-      occupation(:) = [2.0_dp, 1.0_dp, 0.10_dp, 1.0E-4_dp]
+      occupation_fraction(:) = [1.0_dp, 0.5_dp, 0.05_dp, 5.0E-5_dp]
+      occupation_rks(:) = maxocc_rks*occupation_fraction(:)
+      occupation_uks(:) = maxocc_uks*occupation_fraction(:)
       reference(:) = [0.31_dp, -0.22_dp, 0.17_dp, -0.09_dp]
       floor_fraction = MAX(1.0E-4_dp, MIN(1.0E-1_dp, SQRT(eps_scf)))
-      occ_floor = maxocc*floor_fraction
-      raw_gradient(:) = occupation(:)/maxocc*reference(:)
-      SCALE(:) = maxocc/MAX(occupation(:), occ_floor)
-      preconditioned(:) = SCALE(:)*raw_gradient(:)
+      occ_floor = maxocc_rks*floor_fraction
+      raw_gradient_rks(:) = occupation_rks(:)*reference(:)
+      raw_gradient_uks(:) = occupation_uks(:)*reference(:)
+      scale_rks(:) = qs_scf_kp_full_all_spin_normalization(maxocc_rks)* &
+                     maxocc_rks/MAX(occupation_rks(:), occ_floor)
+      scale_uks(:) = qs_scf_kp_full_all_spin_normalization(maxocc_uks)* &
+                     maxocc_uks/MAX(occupation_uks(:), maxocc_uks*floor_fraction)
+      preconditioned_rks(:) = scale_rks(:)*raw_gradient_rks(:)
+      preconditioned_uks(:) = scale_uks(:)*raw_gradient_uks(:)
       expected(1:3) = reference(1:3)
-      expected(4) = occupation(4)/occ_floor*reference(4)
-      err = MAXVAL(ABS(preconditioned - expected))
+      expected(4) = occupation_fraction(4)/floor_fraction*reference(4)
+      err = MAX(MAXVAL(ABS(preconditioned_rks - expected)), &
+                MAXVAL(ABS(preconditioned_uks - expected)), &
+                MAXVAL(ABS(preconditioned_rks - preconditioned_uks)))
 
       IF (err > tol) THEN
          nfail = nfail + 1
          WRITE (default_output_unit, '(A,3(1X,ES16.8))') TRIM(label)//" FAILED", &
-            err, occ_floor, MAXVAL(scale)
+            err, occ_floor, MAXVAL(scale_rks)
       ELSE
          WRITE (default_output_unit, '(A,3(1X,ES16.8))') TRIM(label)//" OK with error/floor/maxscale", &
-            err, occ_floor, MAXVAL(scale)
+            err, occ_floor, MAXVAL(scale_rks)
       END IF
 
    END SUBROUTINE check_metallic_subspace_occupation_preconditioner
@@ -3457,7 +3708,7 @@ CONTAINS
    END SUBROUTINE check_fermi_guard_transition
 
 ! **************************************************************************************************
-!> \brief Check that collapsed-subspace recovery is confined to accepted residual-tail states.
+!> \brief Check accepted-tail and high-residual stagnant collapsed-subspace recovery.
 !> \param label ...
 !> \param nfail ...
 ! **************************************************************************************************
@@ -3471,6 +3722,8 @@ CONTAINS
 
       failed = .NOT. qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                      5.0E-4_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               .NOT. qs_scf_kp_subspace_is_collapsed(1.5E-3_dp) .OR. &
+               qs_scf_kp_subspace_is_collapsed(2.0E-2_dp) .OR. &
                qs_scf_kp_subspace_refresh_gate(.FALSE., .FALSE., .TRUE., &
                                                5.0E-4_dp, eps_scf, .TRUE., .TRUE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .TRUE., .TRUE., &
@@ -3481,6 +3734,10 @@ CONTAINS
                                                5.0E-6_dp, eps_scf, .TRUE., .TRUE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                1.1E-3_dp, eps_scf, .TRUE., .TRUE.) .OR. &
+               .NOT. qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                                     2.0E-1_dp, eps_scf, .TRUE., .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
+                                               2.0E-1_dp, eps_scf, .TRUE., .TRUE., .FALSE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                5.0E-4_dp, eps_scf, .FALSE., .TRUE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &

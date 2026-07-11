@@ -20,6 +20,14 @@ MODULE preconditioner_makes
                                               get_selected_ritz_vector,&
                                               set_arnoldi_initial_vector,&
                                               setup_arnoldi_env
+   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_column_scale,&
+                                              cp_cfm_gemm
+   USE cp_cfm_diag,                     ONLY: cp_cfm_geeig
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_get_info,&
+                                              cp_cfm_release,&
+                                              cp_cfm_to_cfm,&
+                                              cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_get_info, dbcsr_multiply, dbcsr_p_type, &
         dbcsr_release, dbcsr_type, dbcsr_type_symmetric
@@ -50,6 +58,8 @@ MODULE preconditioner_makes
         ot_precond_full_single, ot_precond_full_single_inverse, ot_precond_s_inverse, &
         ot_precond_solver_default, ot_precond_solver_inv_chol
    USE kinds,                           ONLY: dp
+   USE mathconstants,                   ONLY: z_one,&
+                                              z_zero
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE preconditioner_types,            ONLY: preconditioner_type
 #include "./base/base_uses.f90"
@@ -60,7 +70,7 @@ MODULE preconditioner_makes
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'preconditioner_makes'
 
-   PUBLIC :: make_preconditioner_matrix
+   PUBLIC :: make_complex_full_all, make_preconditioner_matrix
 
 CONTAINS
 
@@ -813,5 +823,114 @@ CONTAINS
 
    END SUBROUTINE make_full_single_inverse
 
-END MODULE preconditioner_makes
+! **************************************************************************************************
+!> \brief Build the state-selective FULL_ALL operator for a complex k-point channel.
+!>        The occupied/reference subspace is replaced without rotating its current gauge,
+!>        while the orthogonal complement retains the spectrum of H(k).
+!> \param preconditioner_env preconditioner storage
+!> \param matrix_c0 complex reference orbitals, C^H S C = I
+!> \param matrix_h complex Hermitian k-point Hamiltonian
+!> \param matrix_s complex Hermitian k-point overlap
+!> \param c0_evals reference-orbital energies in the current OT gauge
+!> \param energy_gap denominator floor
+! **************************************************************************************************
+   SUBROUTINE make_complex_full_all(preconditioner_env, matrix_c0, matrix_h, matrix_s, &
+                                    c0_evals, energy_gap)
 
+      TYPE(preconditioner_type)                          :: preconditioner_env
+      TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_c0, matrix_h, matrix_s
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: c0_evals
+      REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'make_complex_full_all'
+      REAL(KIND=dp), PARAMETER                           :: lambda_base = 10.0_dp
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: shifted_evals
+      INTEGER                                            :: handle, k, n
+      TYPE(cp_cfm_type) :: matrix_chc, matrix_diag_work, matrix_hc0, matrix_s_copy, matrix_sc0, &
+         matrix_sc_chc, matrix_shifted_sc, matrix_tmp
+
+      CALL timeset(routineN, handle)
+
+      CALL cp_cfm_get_info(matrix_c0, nrow_global=n, ncol_global=k)
+      CPASSERT(n > 0)
+      CPASSERT(k > 0 .AND. k <= n)
+      CPASSERT(SIZE(c0_evals) >= k)
+      CPASSERT(energy_gap > 0.0_dp)
+
+      IF (ASSOCIATED(preconditioner_env%complex_fm)) THEN
+         CALL cp_cfm_release(preconditioner_env%complex_fm)
+         DEALLOCATE (preconditioner_env%complex_fm)
+      END IF
+      IF (ASSOCIATED(preconditioner_env%occ_evals)) DEALLOCATE (preconditioner_env%occ_evals)
+      IF (ASSOCIATED(preconditioner_env%full_evals)) DEALLOCATE (preconditioner_env%full_evals)
+
+      ALLOCATE (preconditioner_env%complex_fm)
+      CALL cp_cfm_create(preconditioner_env%complex_fm, matrix_h%matrix_struct, &
+                         name='complex FULL_ALL eigenvectors')
+      ALLOCATE (preconditioner_env%full_evals(n), preconditioner_env%occ_evals(k))
+
+      CALL cp_cfm_create(matrix_hc0, matrix_c0%matrix_struct, name='complex FULL_ALL HC')
+      CALL cp_cfm_create(matrix_sc0, matrix_c0%matrix_struct, name='complex FULL_ALL SC')
+      CALL cp_cfm_create(matrix_chc, matrix_c0%matrix_struct, nrow=k, ncol=k, &
+                         name='complex FULL_ALL CHC')
+      CALL cp_cfm_create(matrix_sc_chc, matrix_c0%matrix_struct, &
+                         name='complex FULL_ALL SC CHC')
+      CALL cp_cfm_create(matrix_shifted_sc, matrix_c0%matrix_struct, &
+                         name='complex FULL_ALL shifted SC')
+      CALL cp_cfm_create(matrix_tmp, matrix_h%matrix_struct, name='complex FULL_ALL projected H')
+      CALL cp_cfm_create(matrix_s_copy, matrix_s%matrix_struct, name='complex FULL_ALL S copy')
+      CALL cp_cfm_create(matrix_diag_work, matrix_h%matrix_struct, &
+                         name='complex FULL_ALL diagonalization work')
+
+      CALL cp_cfm_gemm('N', 'N', n, k, n, z_one, matrix_h, matrix_c0, z_zero, matrix_hc0)
+      CALL cp_cfm_gemm('N', 'N', n, k, n, z_one, matrix_s, matrix_c0, z_zero, matrix_sc0)
+      CALL cp_cfm_gemm('C', 'N', k, k, n, z_one, matrix_c0, matrix_hc0, z_zero, matrix_chc)
+
+      ! Q^H H Q with Q = I - C C^H S.  This removes the in-subspace and
+      ! cross-subspace blocks even when fractional occupations make C noncanonical.
+      CALL cp_cfm_to_cfm(matrix_h, matrix_tmp)
+      CALL cp_cfm_gemm('N', 'C', n, n, k, -z_one, matrix_hc0, matrix_sc0, &
+                       z_one, matrix_tmp)
+      CALL cp_cfm_gemm('N', 'C', n, n, k, -z_one, matrix_sc0, matrix_hc0, &
+                       z_one, matrix_tmp)
+      CALL cp_cfm_gemm('N', 'N', n, k, k, z_one, matrix_sc0, matrix_chc, &
+                       z_zero, matrix_sc_chc)
+      CALL cp_cfm_gemm('N', 'C', n, n, k, z_one, matrix_sc_chc, matrix_sc0, &
+                       z_one, matrix_tmp)
+
+      ! Put the reference vectors below the complementary spectrum so the
+      ! generalized diagonalization returns the complement after the first k columns.
+      ALLOCATE (shifted_evals(k))
+      shifted_evals(:) = CMPLX(c0_evals(1:k) - lambda_base, 0.0_dp, KIND=dp)
+      CALL cp_cfm_to_cfm(matrix_sc0, matrix_shifted_sc)
+      CALL cp_cfm_column_scale(matrix_shifted_sc, shifted_evals)
+      CALL cp_cfm_gemm('N', 'C', n, n, k, z_one, matrix_shifted_sc, matrix_sc0, &
+                       z_one, matrix_tmp)
+
+      CALL cp_cfm_to_cfm(matrix_s, matrix_s_copy)
+      CALL cp_cfm_geeig(matrix_tmp, matrix_s_copy, preconditioner_env%complex_fm, &
+                        preconditioner_env%full_evals, matrix_diag_work)
+
+      preconditioner_env%occ_evals(:) = c0_evals(1:k)
+      preconditioner_env%full_evals(1:k) = c0_evals(1:k)
+      CALL cp_cfm_to_cfm(matrix_c0, preconditioner_env%complex_fm, k)
+      preconditioner_env%energy_gap = energy_gap
+      preconditioner_env%in_use = ot_precond_full_all
+      preconditioner_env%solver = ot_precond_solver_default
+
+      DEALLOCATE (shifted_evals)
+      CALL cp_cfm_release(matrix_diag_work)
+      CALL cp_cfm_release(matrix_s_copy)
+      CALL cp_cfm_release(matrix_tmp)
+      CALL cp_cfm_release(matrix_shifted_sc)
+      CALL cp_cfm_release(matrix_sc_chc)
+      CALL cp_cfm_release(matrix_chc)
+      CALL cp_cfm_release(matrix_sc0)
+      CALL cp_cfm_release(matrix_hc0)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE make_complex_full_all
+
+END MODULE preconditioner_makes

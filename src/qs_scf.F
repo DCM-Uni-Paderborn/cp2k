@@ -110,6 +110,7 @@ MODULE qs_scf
                                               mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE preconditioner,                  ONLY: make_preconditioner,&
+                                              make_preconditioner_complex_full_all,&
                                               prepare_preconditioner,&
                                               restart_preconditioner
    USE preconditioner_types,            ONLY: destroy_preconditioner,&
@@ -385,16 +386,17 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: total_scf_steps
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'scf_env_do_scf'
+      INTEGER, PARAMETER :: max_ot_kp_subspace_refreshes = 2
 
       CHARACTER(LEN=default_string_length)               :: description, name
       INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, &
-         ot_kp_subspace_refresh_iter_count, output_unit, post_added_mos_auto_resize_steps, &
-         post_ot_kp_subspace_refresh_steps, scf_energy_message_tag, total_steps
+         ot_kp_subspace_refresh_count, ot_kp_subspace_refresh_iter_count, output_unit, &
+         post_added_mos_auto_resize_steps, post_ot_kp_subspace_refresh_steps, &
+         scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
          exit_inner_loop, exit_outer_loop, inner_loop_converged, &
          internal_tblite_density_full_step, internal_tblite_mixer, just_energy, &
-         ot_kp_subspace_refresh, ot_kp_subspace_refresh_done, outer_loop_converged, &
-         tblite_native_mixer
+         ot_kp_subspace_refresh, outer_loop_converged, tblite_native_mixer
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -507,9 +509,9 @@ CONTAINS
       scf_env%outer_scf%iter_count = 0
       iter_count = 0
       post_added_mos_auto_resize_steps = 0
+      ot_kp_subspace_refresh_count = 0
       ot_kp_subspace_refresh_iter_count = 0
       post_ot_kp_subspace_refresh_steps = 0
-      ot_kp_subspace_refresh_done = .FALSE.
       total_steps = 0
       energy%tot_old = 0.0_dp
 
@@ -564,7 +566,8 @@ CONTAINS
                   CALL qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, &
                                          added_mos_auto_grow=added_mos_auto_grow, &
                                          ot_kp_subspace_refresh=ot_kp_subspace_refresh, &
-                                         allow_ot_kp_subspace_refresh=.NOT. ot_kp_subspace_refresh_done, &
+                                         allow_ot_kp_subspace_refresh= &
+                                         ot_kp_subspace_refresh_count < max_ot_kp_subspace_refreshes, &
                                          settle_ot_kp_subspace=post_ot_kp_subspace_refresh_steps > 0)
                END IF
             ELSE
@@ -581,7 +584,7 @@ CONTAINS
 
             IF (ot_kp_subspace_refresh) THEN
                CALL qs_scf_refresh_ot_kp_subspace(qs_env, scf_env, output_unit)
-               ot_kp_subspace_refresh_done = .TRUE.
+               ot_kp_subspace_refresh_count = ot_kp_subspace_refresh_count + 1
                post_ot_kp_subspace_refresh_steps = 1
                total_steps = MAX(0, total_steps - 1)
                iter_count = MAX(0, iter_count - 1)
@@ -596,7 +599,9 @@ CONTAINS
 
             IF (added_mos_auto_grow) THEN
                IF (do_kpoints) THEN
-                  CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit)
+                  CALL qs_scf_grow_added_mos_auto_kp( &
+                     qs_env, scf_env, scf_control, output_unit, &
+                     reseed_global_basis=ot_kp_subspace_refresh_count > 0)
                ELSE
                   CALL qs_scf_grow_added_mos_auto(qs_env, scf_env, scf_control, output_unit)
                END IF
@@ -1140,14 +1145,17 @@ CONTAINS
 !> \param scf_control ...
 !> \param output_unit ...
 !> \param restart_target_nmo exact MO dimensions requested by an AUTO restart
+!> \param reseed_global_basis discard stale global placeholder orbitals after a k-point refresh
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit, restart_target_nmo)
+   SUBROUTINE qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit, &
+                                            restart_target_nmo, reseed_global_basis)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       INTEGER, INTENT(IN)                                :: output_unit
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: restart_target_nmo
+      LOGICAL, INTENT(IN), OPTIONAL                      :: reseed_global_basis
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_grow_added_mos_auto_kp'
 
@@ -1155,7 +1163,8 @@ CONTAINS
                                                             handle, ic, ik, ispin, nmo_mat, &
                                                             nspins, old_nmo, target_nmo
       INTEGER, DIMENSION(2)                              :: new_added, new_nmo
-      LOGICAL                                            :: diag_step, has_unit_metric, need_resize
+      LOGICAL                                            :: diag_step, has_unit_metric, need_resize, &
+                                                            reseed_basis
       REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
                                                             maxocc, n_el_f
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, &
@@ -1191,6 +1200,8 @@ CONTAINS
       CPASSERT(ASSOCIATED(matrix_s))
 
       nspins = dft_control%nspins
+      reseed_basis = .FALSE.
+      IF (PRESENT(reseed_global_basis)) reseed_basis = reseed_global_basis
       new_added = scf_control%added_mos
       new_nmo(:) = 0
       need_resize = .FALSE.
@@ -1294,11 +1305,11 @@ CONTAINS
 
          old_nmo = old_mos(ispin)%nmo
          CALL cp_fm_init_random(mo_coeff, mos(ispin)%nmo)
-         ! At initial restart sizing the global placeholder MOs have not been
-         ! reconstructed from the k-point density and can be rank deficient.
+         ! Restart sizing and post-refresh AUTO growth can see global placeholder
+         ! MOs that were not reconstructed from the current k-point orbitals.
          ! A full diagonalization follows immediately, so seed a complete
-         ! independent basis instead of preserving those placeholder columns.
-         IF (.NOT. PRESENT(restart_target_nmo)) &
+         ! independent basis instead of preserving rank-deficient columns.
+         IF (.NOT. PRESENT(restart_target_nmo) .AND. .NOT. reseed_basis) &
             CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
          IF (has_unit_metric) THEN
             CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
@@ -2349,7 +2360,7 @@ CONTAINS
       do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
       ! Only full all needs rotation.
       is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
-      IF (do_rotation .AND. is_full_all) &
+      IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) &
          CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
 
       DO ikpoint = 1, nkpoint
@@ -2662,15 +2673,18 @@ CONTAINS
                                                             n_ot_channels, ot_channel, prec_type, &
                                                             ref_channel
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
-      TYPE(dbcsr_type), POINTER                          :: matrix_k_re, matrix_s_re
+      TYPE(dbcsr_type), POINTER                          :: matrix_k_im, matrix_k_re, matrix_s_im, &
+                                                            matrix_s_re
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (cell_to_index, kp, matrix_k_re, matrix_s_re, sab_nl, xkp)
+      NULLIFY (cell_to_index, kp, matrix_k_im, matrix_k_re, matrix_s_im, matrix_s_re, &
+               sab_nl, xkp)
 
       CPASSERT(ASSOCIATED(qs_env))
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
@@ -2689,6 +2703,9 @@ CONTAINS
          ! Supported as a channel-local real-part approximation to the complex
          ! Hermitian k-point preconditioner.  The same inverse is applied to the
          ! real and imaginary orbital-gradient channels in the OT minimizer.
+      CASE (ot_precond_full_all)
+         ! Built directly from complex H(k), S(k), and C(k), without rotating
+         ! the OT reference gauge.
       CASE DEFAULT
          ! Other preconditioners keep the historical unpreconditioned k-point OT path.
          CALL timestop(handle)
@@ -2729,7 +2746,8 @@ CONTAINS
       CPASSERT(ASSOCIATED(scf_env%ot_preconditioner))
       CPASSERT(SIZE(scf_env%ot_preconditioner) >= n_ot_channels)
 
-      CALL get_kpoint_info(kpoints, xkp=xkp, cell_to_index=cell_to_index, sab_nl=sab_nl)
+      CALL get_kpoint_info(kpoints, xkp=xkp, use_real_wfn=use_real_wfn, &
+                           cell_to_index=cell_to_index, sab_nl=sab_nl)
       CPASSERT(ASSOCIATED(xkp))
       CPASSERT(ASSOCIATED(cell_to_index))
       CPASSERT(ASSOCIATED(sab_nl))
@@ -2741,6 +2759,15 @@ CONTAINS
                         matrix_type=dbcsr_type_symmetric)
       CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_re, sab_nl)
       CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_re, sab_nl)
+      IF (.NOT. use_real_wfn) THEN
+         ALLOCATE (matrix_k_im, matrix_s_im)
+         CALL dbcsr_create(matrix_k_im, template=matrix_ks_kp(1, 1)%matrix, &
+                           matrix_type=dbcsr_type_antisymmetric)
+         CALL dbcsr_create(matrix_s_im, template=matrix_s_kp(1, 1)%matrix, &
+                           matrix_type=dbcsr_type_antisymmetric)
+         CALL cp_dbcsr_alloc_block_from_nbl(matrix_k_im, sab_nl)
+         CALL cp_dbcsr_alloc_block_from_nbl(matrix_s_im, sab_nl)
+      END IF
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -2748,24 +2775,48 @@ CONTAINS
          CPASSERT(ASSOCIATED(kp%mos))
          ikpoint = kp%nkpoint
          CALL dbcsr_set(matrix_s_re, 0.0_dp)
-         CALL rskp_transform(rmatrix=matrix_s_re, rsmat=matrix_s_kp, ispin=1, &
-                             xkp=xkp(1:3, ikpoint), cell_to_index=cell_to_index, sab_nl=sab_nl)
+         IF (use_real_wfn) THEN
+            CALL rskp_transform(rmatrix=matrix_s_re, rsmat=matrix_s_kp, ispin=1, &
+                                xkp=xkp(1:3, ikpoint), cell_to_index=cell_to_index, sab_nl=sab_nl)
+         ELSE
+            CALL dbcsr_set(matrix_s_im, 0.0_dp)
+            CALL rskp_transform(rmatrix=matrix_s_re, cmatrix=matrix_s_im, rsmat=matrix_s_kp, &
+                                ispin=1, xkp=xkp(1:3, ikpoint), &
+                                cell_to_index=cell_to_index, sab_nl=sab_nl)
+         END IF
 
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
             CPASSERT(scf_env%qs_ot_env(ot_channel)%state_allocated)
             CALL dbcsr_set(matrix_k_re, 0.0_dp)
-            CALL rskp_transform(rmatrix=matrix_k_re, rsmat=matrix_ks_kp, ispin=ispin, &
-                                xkp=xkp(1:3, ikpoint), cell_to_index=cell_to_index, sab_nl=sab_nl)
-            CALL make_preconditioner(scf_env%ot_preconditioner(ot_channel)%preconditioner, &
-                                     prec_type, &
-                                     scf_env%qs_ot_env(1)%settings%precond_solver_type, &
-                                     matrix_h=matrix_k_re, &
-                                     matrix_s=matrix_s_re, &
-                                     mo_set=kp%mos(1, ispin), &
-                                     energy_gap=scf_env%qs_ot_env(1)%settings%energy_gap, &
-                                     convert_precond_to_dbcsr=.TRUE., &
-                                     chol_type=scf_env%qs_ot_env(1)%settings%cholesky_type)
+            IF (use_real_wfn) THEN
+               CALL rskp_transform(rmatrix=matrix_k_re, rsmat=matrix_ks_kp, ispin=ispin, &
+                                   xkp=xkp(1:3, ikpoint), &
+                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
+            ELSE
+               CALL dbcsr_set(matrix_k_im, 0.0_dp)
+               CALL rskp_transform(rmatrix=matrix_k_re, cmatrix=matrix_k_im, &
+                                   rsmat=matrix_ks_kp, ispin=ispin, &
+                                   xkp=xkp(1:3, ikpoint), &
+                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
+            END IF
+            IF (prec_type == ot_precond_full_all .AND. .NOT. use_real_wfn) THEN
+               CALL make_preconditioner_complex_full_all( &
+                  scf_env%ot_preconditioner(ot_channel)%preconditioner, &
+                  matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im, &
+                  kp%mos(1, ispin), kp%mos(2, ispin), &
+                  scf_env%qs_ot_env(1)%settings%energy_gap)
+            ELSE
+               CALL make_preconditioner(scf_env%ot_preconditioner(ot_channel)%preconditioner, &
+                                        prec_type, &
+                                        scf_env%qs_ot_env(1)%settings%precond_solver_type, &
+                                        matrix_h=matrix_k_re, &
+                                        matrix_s=matrix_s_re, &
+                                        mo_set=kp%mos(1, ispin), &
+                                        energy_gap=scf_env%qs_ot_env(1)%settings%energy_gap, &
+                                        convert_precond_to_dbcsr=.TRUE., &
+                                        chol_type=scf_env%qs_ot_env(1)%settings%cholesky_type)
+            END IF
             CALL qs_ot_new_preconditioner(scf_env%qs_ot_env(ot_channel), &
                                           scf_env%ot_preconditioner(ot_channel)%preconditioner)
          END DO
@@ -2773,6 +2824,8 @@ CONTAINS
 
       CALL dbcsr_deallocate_matrix(matrix_k_re)
       CALL dbcsr_deallocate_matrix(matrix_s_re)
+      IF (ASSOCIATED(matrix_k_im)) CALL dbcsr_deallocate_matrix(matrix_k_im)
+      IF (ASSOCIATED(matrix_s_im)) CALL dbcsr_deallocate_matrix(matrix_s_im)
 
       CALL timestop(handle)
 

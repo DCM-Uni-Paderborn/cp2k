@@ -14,6 +14,10 @@
 ! **************************************************************************************************
 MODULE preconditioner
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_release,&
+                                              cp_cfm_type,&
+                                              cp_fm_to_cfm
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
                                               dbcsr_type
@@ -37,9 +41,12 @@ MODULE preconditioner
    USE kinds,                           ONLY: default_string_length,&
                                               dp
    USE message_passing,                 ONLY: mp_para_env_type
-   USE preconditioner_apply,            ONLY: apply_preconditioner_dbcsr,&
+   USE preconditioner_apply,            ONLY: apply_preconditioner_cfm_complex,&
+                                              apply_preconditioner_dbcsr,&
+                                              apply_preconditioner_dbcsr_complex,&
                                               apply_preconditioner_fm
-   USE preconditioner_makes,            ONLY: make_preconditioner_matrix
+   USE preconditioner_makes,            ONLY: make_complex_full_all,&
+                                              make_preconditioner_matrix
    USE preconditioner_solvers,          ONLY: solve_preconditioner,&
                                               transfer_dbcsr_to_fm,&
                                               transfer_fm_to_dbcsr
@@ -61,12 +68,15 @@ MODULE preconditioner
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'preconditioner'
 
-   PUBLIC :: make_preconditioner, restart_preconditioner
+   PUBLIC :: make_complex_full_all, make_preconditioner, &
+             make_preconditioner_complex_full_all, restart_preconditioner
    PUBLIC :: apply_preconditioner, prepare_preconditioner
 
 ! The public interface for apply preconditioner, the routines can be found in preconditioner_apply.F
    INTERFACE apply_preconditioner
+      MODULE PROCEDURE apply_preconditioner_cfm_complex
       MODULE PROCEDURE apply_preconditioner_dbcsr
+      MODULE PROCEDURE apply_preconditioner_dbcsr_complex
       MODULE PROCEDURE apply_preconditioner_fm
    END INTERFACE
 
@@ -231,6 +241,89 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE make_preconditioner
+
+! **************************************************************************************************
+!> \brief Construct FULL_ALL directly from the complex H(k), S(k), and C(k) channel.
+!>        Unlike the historical Gamma-point setup, this routine preserves the OT
+!>        reference gauge and therefore remains compatible with explicit rotations.
+!> \param preconditioner_env preconditioner storage
+!> \param matrix_h_re real part of H(k)
+!> \param matrix_h_im imaginary part of H(k)
+!> \param matrix_s_re real part of S(k)
+!> \param matrix_s_im imaginary part of S(k)
+!> \param mo_set_re real part of the reference orbitals and their eigenvalues
+!> \param mo_set_im imaginary part of the reference orbitals
+!> \param energy_gap denominator floor
+! **************************************************************************************************
+   SUBROUTINE make_preconditioner_complex_full_all(preconditioner_env, &
+                                                   matrix_h_re, matrix_h_im, &
+                                                   matrix_s_re, matrix_s_im, &
+                                                   mo_set_re, mo_set_im, energy_gap)
+
+      TYPE(preconditioner_type)                          :: preconditioner_env
+      TYPE(dbcsr_type), POINTER                          :: matrix_h_re, matrix_h_im, matrix_s_re, &
+                                                            matrix_s_im
+      TYPE(mo_set_type), INTENT(IN)                      :: mo_set_re, mo_set_im
+      REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'make_preconditioner_complex_full_all'
+
+      INTEGER                                            :: handle, nao, nmo
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(cp_cfm_type)                                  :: matrix_c, matrix_h, matrix_s
+      TYPE(cp_fm_type)                                   :: matrix_h_im_fm, matrix_h_re_fm, &
+                                                            matrix_s_im_fm, matrix_s_re_fm
+      TYPE(cp_fm_type), POINTER                          :: mo_coeff_im, mo_coeff_re
+
+      CALL timeset(routineN, handle)
+
+      NULLIFY (eigenvalues, mo_coeff_im, mo_coeff_re)
+      CPASSERT(ASSOCIATED(matrix_h_re))
+      CPASSERT(ASSOCIATED(matrix_h_im))
+      CPASSERT(ASSOCIATED(matrix_s_re))
+      CPASSERT(ASSOCIATED(matrix_s_im))
+      CALL get_mo_set(mo_set_re, mo_coeff=mo_coeff_re, eigenvalues=eigenvalues, &
+                      nao=nao, nmo=nmo)
+      CALL get_mo_set(mo_set_im, mo_coeff=mo_coeff_im)
+      CPASSERT(ASSOCIATED(mo_coeff_re))
+      CPASSERT(ASSOCIATED(mo_coeff_im))
+      CPASSERT(ASSOCIATED(eigenvalues))
+      CPASSERT(SIZE(eigenvalues) >= nmo)
+
+      CALL cp_fm_create(matrix_h_re_fm, mo_coeff_re%matrix_struct, nrow=nao, ncol=nao, &
+                        name='complex FULL_ALL H real')
+      CALL cp_fm_create(matrix_h_im_fm, mo_coeff_re%matrix_struct, nrow=nao, ncol=nao, &
+                        name='complex FULL_ALL H imaginary')
+      CALL cp_fm_create(matrix_s_re_fm, mo_coeff_re%matrix_struct, nrow=nao, ncol=nao, &
+                        name='complex FULL_ALL S real')
+      CALL cp_fm_create(matrix_s_im_fm, mo_coeff_re%matrix_struct, nrow=nao, ncol=nao, &
+                        name='complex FULL_ALL S imaginary')
+      CALL copy_dbcsr_to_fm(matrix_h_re, matrix_h_re_fm)
+      CALL copy_dbcsr_to_fm(matrix_h_im, matrix_h_im_fm)
+      CALL copy_dbcsr_to_fm(matrix_s_re, matrix_s_re_fm)
+      CALL copy_dbcsr_to_fm(matrix_s_im, matrix_s_im_fm)
+
+      CALL cp_cfm_create(matrix_h, matrix_h_re_fm%matrix_struct, name='complex FULL_ALL H')
+      CALL cp_cfm_create(matrix_s, matrix_s_re_fm%matrix_struct, name='complex FULL_ALL S')
+      CALL cp_cfm_create(matrix_c, mo_coeff_re%matrix_struct, name='complex FULL_ALL C')
+      CALL cp_fm_to_cfm(matrix_h_re_fm, matrix_h_im_fm, matrix_h)
+      CALL cp_fm_to_cfm(matrix_s_re_fm, matrix_s_im_fm, matrix_s)
+      CALL cp_fm_to_cfm(mo_coeff_re, mo_coeff_im, matrix_c)
+
+      CALL make_complex_full_all(preconditioner_env, matrix_c, matrix_h, matrix_s, &
+                                 eigenvalues(1:nmo), energy_gap)
+
+      CALL cp_cfm_release(matrix_c)
+      CALL cp_cfm_release(matrix_s)
+      CALL cp_cfm_release(matrix_h)
+      CALL cp_fm_release(matrix_s_im_fm)
+      CALL cp_fm_release(matrix_s_re_fm)
+      CALL cp_fm_release(matrix_h_im_fm)
+      CALL cp_fm_release(matrix_h_re_fm)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE make_preconditioner_complex_full_all
 
 ! **************************************************************************************************
 !> \brief Allows for a restart of the preconditioner
