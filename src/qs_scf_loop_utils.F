@@ -1209,7 +1209,8 @@ CONTAINS
                                                             ener_nondiag)
 
             local_ot_env(local_channel)%orbital_schur_response_ready = .FALSE.
-            IF (qs_ot_occupation_preconditioner_active(local_ot_env(local_channel)) .AND. &
+            IF (logger%iter_info%print_level >= high_print_level .AND. &
+                qs_ot_occupation_preconditioner_active(local_ot_env(local_channel)) .AND. &
                 ASSOCIATED(local_ot_env(local_channel)%preconditioner) .AND. &
                 ASSOCIATED(local_ot_env(local_channel)%preconditioner%complex_fm) .AND. &
                 ASSOCIATED(local_ot_env(local_channel)%matrix_occ_precond_scale)) THEN
