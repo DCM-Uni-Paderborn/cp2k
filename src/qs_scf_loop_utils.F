@@ -4679,7 +4679,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_diag, gdotv, gsum, &
                                                             nondiag_diag, precond_count, &
                                                             precond_shift, precond_sum
-      LOGICAL                                            :: active_preconditioner
+      LOGICAL                                            :: active_preconditioner, global_schur_replicated
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: schur_group_done
       REAL(KIND=dp), DIMENSION(:), POINTER               :: vector_swap
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -4702,6 +4702,7 @@ CONTAINS
       schur_group_done(:) = .FALSE.
       active_preconditioner = qs_ot_occupation_preconditioner_active(local_ot_env(1)) .AND. &
                               smear%do_smear .AND. smear%method == smear_fermi_dirac
+      global_schur_replicated = para_env_inter_kp%num_pe > 1
 
       rot_generator_re = 0.0_dp
       rot_generator_im = 0.0_dp
@@ -8086,18 +8087,10 @@ CONTAINS
             local_ot_env(1)%schur_projector_spectral_floor = 0.0_dp
             local_ot_env(1)%schur_projector_spectral_emin = 0.0_dp
          END IF
-         IF (para_env_inter_kp%num_pe > 1) THEN
-            ! The dense Schur matrix is indexed in the local rotation space.
-            ! Summing equally numbered entries from independent k points would
-            ! constrain unrelated rotations and gives a variable collective
-            ! count when local active spaces differ.  Keep the globally
-            ! projected diagonal occupation block until the Schur variables
-            ! have an explicit global (spin,k-point,mode) distribution.
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
-               " OT k-point distributed preconditioner: using block-diagonal occupation response"
-            RETURN
-         END IF
+         IF (global_schur_replicated .AND. &
+             logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
+            " OT k-point distributed preconditioner: using global replicated Schur response"
          DO group = 1, ngroups
             CALL precondition_kpoint_ot_schur_group(group, group_done(group), &
                                                     added_mos_auto_tail_enabled, &
@@ -8135,14 +8128,15 @@ CONTAINS
          schur_response_trust_factor = 2.5E-1_dp
 
       INTEGER :: channel_var_start, constrained_reject_reason, coupled_reject_reason, &
-         dense_reject_reason, gauge_projected_count, group, ie, ikpoint, imo, info, ispin, ivar, &
-         jmo, local_channel, local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, &
+         dense_reject_reason, failed_i, gauge_projected_count, global_channel, global_kpoint, &
+         global_spin, group, ie, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
+         local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, &
          projector_fd_cluster_derivatives, projector_fd_cluster_replacements, &
          projector_kernel_cluster_groups, r, reject_reason, s, schur_attempt, schur_used_attempt, &
          selected_attempt, selected_flavor, split_selected_attempt
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: channel_nmo, e_offset, ipiv, &
-                                                            ipiv_energy, var_channel, var_ei, &
-                                                            var_ej, var_i, var_j, var_kind
+      INTEGER, ALLOCATABLE, DIMENSION(:) :: channel_multiplicity, channel_nmo, channel_nrot, &
+         channel_var_offset, e_offset, ipiv, ipiv_energy, var_channel, var_ei, var_ej, var_i, &
+         var_j, var_kind
       LOGICAL :: active_pair, attempt_failed, constrained_candidate_enabled, &
          constrained_candidate_ready, constrained_candidate_selected, dense_exact_scale_ready, &
          density_descent_bootstrap_ready, density_descent_candidate_ready, &
@@ -8883,17 +8877,17 @@ CONTAINS
          tether_curv_diag_max, tether_curv_diag_sum, tether_projected_term, tether_response, &
          tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max
       REAL(KIND=dp) :: total_curv_diag_sum, z_shift, z_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, constrained_sol, &
-         constrained_z_e, curv, density_basis_selective_floor_weight, density_descent_rx_e, &
-         density_descent_z_e, density_full_global_rx_e, density_full_global_sol, &
-         density_full_rx_e, density_full_sol, density_full_z_e, density_gap_projected_e, &
-         density_gap_rx_e, density_gap_trial_basis_e, density_gap_trial_projected_e, &
-         density_plateau_rx_e, density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, &
-         energy_grad_metric_weight, energy_step_weight, grad_e, grad_rot, occ_curv, &
-         projector_inactive_offdiag_rx_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_inactive_offdiag_sol, &
-         projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
-         projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, channel_maxocc, &
+         constrained_sol, constrained_z_e, curv, density_basis_selective_floor_weight, &
+         density_descent_rx_e, density_descent_z_e, density_full_global_rx_e, &
+         density_full_global_sol, density_full_rx_e, density_full_sol, density_full_z_e, &
+         density_gap_projected_e, density_gap_rx_e, density_gap_trial_basis_e, &
+         density_gap_trial_projected_e, density_plateau_rx_e, density_plateau_z_e, &
+         direct_pg_base_e, direct_pg_rx_e, energy_grad_metric_weight, energy_step_weight, grad_e, &
+         grad_rot, occ_curv
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_inactive_offdiag_rx_e, &
+         projector_inactive_offdiag_sol, projector_inactive_offdiag_z_e, projector_offdiag_rx_e, &
+         projector_offdiag_sol, projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
          projector_physical_direct_curv_eval, projector_physical_direct_density_rx_e, &
          projector_physical_direct_density_sol, projector_physical_direct_density_z_e, &
          projector_physical_direct_diagref_rx_e, projector_physical_direct_effective_rx_e, &
@@ -9030,10 +9024,40 @@ CONTAINS
          IF (logger%iter_info%print_level >= high_print_level) &
             projector_density_full_audit_enabled = .TRUE.
 
-         nchannels = SIZE(local_ot_env)
-         ALLOCATE (channel_nmo(nchannels), e_offset(nchannels))
+         ! Dense Schur variables use one replicated global ordering.  A local
+         ! k-point group contributes only its owned channel blocks; the
+         ! inter-kpoint communicator assembles them below before the solve.
+         nchannels = nspin_ot*SIZE(wkp)
+         ALLOCATE (channel_multiplicity(nchannels), channel_nmo(nchannels), &
+                   channel_nrot(nchannels), channel_var_offset(nchannels), &
+                   channel_maxocc(nchannels), e_offset(nchannels))
+         channel_multiplicity(:) = 0
          channel_nmo(:) = 0
+         channel_nrot(:) = 0
+         channel_var_offset(:) = 0
+         channel_maxocc(:) = 0.0_dp
          e_offset(:) = 0
+
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (group /= target_group) CYCLE
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               global_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
+               channel_nmo(global_channel) = nmo
+               channel_multiplicity(global_channel) = &
+                  MAX(1, local_ot_env(local_channel)%kpoint_multiplicity)
+               channel_maxocc(global_channel) = maxocc
+            END DO
+         END DO
+         IF (global_schur_replicated) THEN
+            CALL para_env_inter_kp%sum(channel_multiplicity)
+            CALL para_env_inter_kp%sum(channel_nmo)
+            CALL para_env_inter_kp%sum(channel_maxocc)
+         END IF
 
          ne = 0
          nrot = 0
@@ -9043,45 +9067,79 @@ CONTAINS
          schur_active_subspace = .FALSE.
          schur_energy_window = ot_kp_fermi_window_outer_factor*MAX(sigma, EPSILON(sigma))
          projector_occupation_window_gap = schur_energy_window
-         DO local_kpoint = 1, SIZE(kpoints%kp_env)
-            kp => kpoints%kp_env(local_kpoint)%kpoint_env
-            ikpoint = kp%nkpoint
-            DO ispin = 1, nspin_ot
-               group = MERGE(ispin, 1, ngroups == nspin_ot)
-               IF (group /= target_group) CYCLE
-               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
-               e_offset(local_channel) = ne + 1
-               channel_nmo(local_channel) = nmo
-               ne = ne + nmo
-               nrot_full = nrot_full + nmo*(nmo - 1)
-               schur_active_occ_min = MAX(schur_active_occ_min, &
-                                          ot_kp_fermi_window_min_frac*MAX(maxocc, 1.0_dp))
-               DO imo = 1, nmo - 1
-                  DO jmo = imo + 1, nmo
-                     occ_tail_i = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
-                                                  maxocc - trial_occupation(imo, ikpoint, ispin)))
-                     occ_tail_j = MAX(0.0_dp, MIN(trial_occupation(jmo, ikpoint, ispin), &
-                                                  maxocc - trial_occupation(jmo, ikpoint, ispin)))
-                     active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
-                                   ABS(trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin)) <= &
-                                   schur_energy_window .OR. &
-                                   ABS(trial_eigenvalues(jmo, ikpoint, ispin) - trial_mu(ispin)) <= &
-                                   schur_energy_window
-                     IF (active_pair) nrot_active = nrot_active + 2
-                  END DO
+         DO global_channel = 1, nchannels
+            IF (channel_nmo(global_channel) <= 0) CYCLE
+            schur_active_occ_min = MAX(schur_active_occ_min, &
+                                       ot_kp_fermi_window_min_frac* &
+                                       MAX(channel_maxocc(global_channel), 1.0_dp))
+         END DO
+         DO global_channel = 1, nchannels
+            nmo = channel_nmo(global_channel)
+            IF (nmo <= 0) CYCLE
+            global_spin = MOD(global_channel - 1, nspin_ot) + 1
+            global_kpoint = (global_channel - 1)/nspin_ot + 1
+            group = MERGE(global_spin, 1, ngroups == nspin_ot)
+            IF (group /= target_group) CYCLE
+            maxocc = channel_maxocc(global_channel)
+            e_offset(global_channel) = ne + 1
+            ne = ne + nmo
+            nrot_full = nrot_full + nmo*(nmo - 1)
+            DO imo = 1, nmo - 1
+               DO jmo = imo + 1, nmo
+                  occ_tail_i = MAX(0.0_dp, MIN(trial_occupation(imo, global_kpoint, global_spin), &
+                                               maxocc - trial_occupation(imo, global_kpoint, global_spin)))
+                  occ_tail_j = MAX(0.0_dp, MIN(trial_occupation(jmo, global_kpoint, global_spin), &
+                                               maxocc - trial_occupation(jmo, global_kpoint, global_spin)))
+                  active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
+                                ABS(trial_eigenvalues(imo, global_kpoint, global_spin) - &
+                                    trial_mu(global_spin)) <= schur_energy_window .OR. &
+                                ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
+                                    trial_mu(global_spin)) <= schur_energy_window
+                  IF (active_pair) nrot_active = nrot_active + 2
                END DO
             END DO
          END DO
          schur_active_subspace = nrot_full > max_schur_rot
          nrot = MERGE(nrot_active, nrot_full, schur_active_subspace)
 
+         ivar = 0
+         DO global_channel = 1, nchannels
+            nmo = channel_nmo(global_channel)
+            IF (nmo <= 0) CYCLE
+            global_spin = MOD(global_channel - 1, nspin_ot) + 1
+            global_kpoint = (global_channel - 1)/nspin_ot + 1
+            group = MERGE(global_spin, 1, ngroups == nspin_ot)
+            IF (group /= target_group) CYCLE
+            maxocc = channel_maxocc(global_channel)
+            channel_var_offset(global_channel) = ivar + 1
+            DO imo = 1, nmo - 1
+               DO jmo = imo + 1, nmo
+                  IF (schur_active_subspace) THEN
+                     occ_tail_i = MAX(0.0_dp, MIN(trial_occupation(imo, global_kpoint, global_spin), &
+                                                  maxocc - trial_occupation(imo, global_kpoint, global_spin)))
+                     occ_tail_j = MAX(0.0_dp, MIN(trial_occupation(jmo, global_kpoint, global_spin), &
+                                                  maxocc - trial_occupation(jmo, global_kpoint, global_spin)))
+                     active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
+                                   ABS(trial_eigenvalues(imo, global_kpoint, global_spin) - &
+                                       trial_mu(global_spin)) <= schur_energy_window .OR. &
+                                   ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
+                                       trial_mu(global_spin)) <= schur_energy_window
+                     IF (.NOT. active_pair) CYCLE
+                  END IF
+                  channel_nrot(global_channel) = channel_nrot(global_channel) + 2
+                  ivar = ivar + 2
+               END DO
+            END DO
+         END DO
+         CPASSERT(ivar == nrot)
+
          IF (ne == 0 .OR. nrot == 0 .OR. nrot > max_schur_rot) THEN
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),1(1X,L1))') &
                " OT Schur skipped group ne nrot full max active:", &
                target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_subspace
-            DEALLOCATE (channel_nmo, e_offset)
+            DEALLOCATE (channel_multiplicity, channel_nmo, channel_nrot, channel_var_offset, &
+                        channel_maxocc, e_offset)
             RETURN
          END IF
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
@@ -9268,6 +9326,12 @@ CONTAINS
          var_occ_gap_weight(:) = 0.0_dp
          var_projector_weight(:) = 0.0_dp
          var_step_weight(:) = 0.0_dp
+         var_channel(:) = 0
+         var_ei(:) = 0
+         var_ej(:) = 0
+         var_i(:) = 0
+         var_j(:) = 0
+         var_kind(:) = 0
          grad_rot(:) = 0.0_dp
          rhs(:) = 0.0_dp
          rtd(:) = 0.0_dp
@@ -9346,7 +9410,7 @@ CONTAINS
          projector_physical_direct_schur_mat(:, :) = 0.0_dp
          projector_physical_direct_schur_evec(:, :) = 0.0_dp
          projector_physical_direct_schur_vec(:, :) = 0.0_dp
-         rot_floor(:) = rotation_curvature_floor
+         rot_floor(:) = 0.0_dp
          row_floor_shift(:) = 0.0_dp
          var_thermal_activity(:) = 0.0_dp
          density_full_global_selected_mermin_quality = 0.0_dp
@@ -10279,6 +10343,7 @@ CONTAINS
                group = MERGE(ispin, 1, ngroups == nspin_ot)
                IF (group /= target_group) CYCLE
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               global_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
                channel_projector_weight = &
                   kpoint_ot_canonical_projector_weight(local_ot_env(local_channel)%delta, &
                                                        ot_kp_canonical_projector_max_weight)
@@ -10312,7 +10377,7 @@ CONTAINS
                END IF
 
                DO imo = 1, nmo
-                  ie = e_offset(local_channel) + imo - 1
+                  ie = e_offset(global_channel) + imo - 1
                   gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
                                                 trial_eigenvalues(imo, ikpoint, ispin), mu, &
                                                 sigma, maxocc, smear%method)
@@ -10327,9 +10392,10 @@ CONTAINS
                   energy_grad_metric_weight(ie) = rot_grad_norm_weight
                   energy_step_weight(ie) = 1.0_dp/rot_grad_norm_weight
                END DO
-               channel_occ_curv_max = MAXVAL(occ_curv(e_offset(local_channel): &
-                                                      e_offset(local_channel) + nmo - 1))
+               channel_occ_curv_max = MAXVAL(occ_curv(e_offset(global_channel): &
+                                                      e_offset(global_channel) + nmo - 1))
 
+               ivar = channel_var_offset(global_channel) - 1
                channel_var_start = ivar + 1
                DO imo = 1, nmo - 1
                   DO jmo = imo + 1, nmo
@@ -10346,12 +10412,12 @@ CONTAINS
                         IF (.NOT. active_pair) CYCLE
                      END IF
                      ivar = ivar + 1
-                     var_channel(ivar) = local_channel
+                     var_channel(ivar) = global_channel
                      var_i(ivar) = imo
                      var_j(ivar) = jmo
                      var_kind(ivar) = 1
-                     var_ei(ivar) = e_offset(local_channel) + imo - 1
-                     var_ej(ivar) = e_offset(local_channel) + jmo - 1
+                     var_ei(ivar) = e_offset(global_channel) + imo - 1
+                     var_ej(ivar) = e_offset(global_channel) + jmo - 1
                      pair_projector_weight = kpoint_ot_pair_projector_weight(channel_projector_weight, &
                                                                              occ_curv(var_ei(ivar)), &
                                                                              occ_curv(var_ej(ivar)), &
@@ -10373,6 +10439,7 @@ CONTAINS
                      var_grad_metric_weight(ivar) = rot_grad_norm_weight
                      var_step_weight(ivar) = 1.0_dp/rot_grad_norm_weight
                      grad_rot(ivar) = 2.0_dp*grad_re(imo, jmo)
+                     rot_floor(ivar) = rotation_curvature_floor
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) <= EPSILON(1.0_dp) .AND. &
@@ -10380,12 +10447,12 @@ CONTAINS
                         rot_floor(ivar) = schur_gauge_curvature_floor
 
                      ivar = ivar + 1
-                     var_channel(ivar) = local_channel
+                     var_channel(ivar) = global_channel
                      var_i(ivar) = imo
                      var_j(ivar) = jmo
                      var_kind(ivar) = 2
-                     var_ei(ivar) = e_offset(local_channel) + imo - 1
-                     var_ej(ivar) = e_offset(local_channel) + jmo - 1
+                     var_ei(ivar) = e_offset(global_channel) + imo - 1
+                     var_ej(ivar) = e_offset(global_channel) + jmo - 1
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
                      var_occ_gap_weight(ivar) = pair_occ_gap
@@ -10393,6 +10460,7 @@ CONTAINS
                      var_grad_metric_weight(ivar) = rot_grad_norm_weight
                      var_step_weight(ivar) = 1.0_dp/rot_grad_norm_weight
                      grad_rot(ivar) = 2.0_dp*grad_im(imo, jmo)
+                     rot_floor(ivar) = rotation_curvature_floor
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) > EPSILON(1.0_dp)) &
                         rot_floor(ivar) = schur_frontier_curvature_floor
                      IF (MAX(curv(var_ei(ivar)), curv(var_ej(ivar))) <= EPSILON(1.0_dp) .AND. &
@@ -10400,13 +10468,15 @@ CONTAINS
                         rot_floor(ivar) = schur_gauge_curvature_floor
                   END DO
                END DO
+               failed_i = ivar - channel_var_offset(global_channel) + 1
+               CPASSERT(failed_i == channel_nrot(global_channel))
                density_global_lift_control = &
                   kpoint_ot_density_global_lift_control(eps_scf_channel, residual_delta)
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
-                                                    e_offset(local_channel), h_re, h_im, &
+                                                    e_offset(global_channel), h_re, h_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     projector_occupation_window_gap, &
-                                                    occ_curv(e_offset(local_channel):e_offset(local_channel) + nmo - 1), &
+                                                    occ_curv(e_offset(global_channel):e_offset(global_channel) + nmo - 1), &
                                                     var_i, var_j, var_kind, &
                                                     projector_physical_shadow_enabled, &
                                                     projector_density_full_audit_enabled, &
@@ -10429,7 +10499,56 @@ CONTAINS
             END DO
          END DO
 
-         CPASSERT(ivar == nrot)
+         IF (global_schur_replicated) THEN
+            CALL para_env_inter_kp%sum(curv)
+            CALL para_env_inter_kp%sum(grad_e)
+            CALL para_env_inter_kp%sum(occ_curv)
+            CALL para_env_inter_kp%sum(tether_curv)
+            CALL para_env_inter_kp%sum(energy_grad_metric_weight)
+            CALL para_env_inter_kp%sum(energy_step_weight)
+            CALL para_env_inter_kp%sum(grad_rot)
+            CALL para_env_inter_kp%sum(rot_floor)
+            CALL para_env_inter_kp%sum(var_channel)
+            CALL para_env_inter_kp%sum(var_ei)
+            CALL para_env_inter_kp%sum(var_ej)
+            CALL para_env_inter_kp%sum(var_i)
+            CALL para_env_inter_kp%sum(var_j)
+            CALL para_env_inter_kp%sum(var_kind)
+            CALL para_env_inter_kp%sum(var_grad_metric_weight)
+            CALL para_env_inter_kp%sum(var_occ_gap_weight)
+            CALL para_env_inter_kp%sum(var_projector_active_weight)
+            CALL para_env_inter_kp%sum(var_projector_weight)
+            CALL para_env_inter_kp%sum(var_step_weight)
+            CALL para_env_inter_kp%sum(var_thermal_activity)
+            CALL para_env_inter_kp%sum(response)
+            CALL para_env_inter_kp%sum(response_occ)
+            CALL para_env_inter_kp%sum(response_occ_physical)
+            CALL para_env_inter_kp%sum(response_density_physical)
+            CALL para_env_inter_kp%sum(response_density_floor_audit)
+            CALL para_env_inter_kp%sum(response_density_floor_safe_audit)
+            CALL para_env_inter_kp%sum(response_density_full)
+            CALL para_env_inter_kp%sum(response_density_full_audit)
+            CALL para_env_inter_kp%sum(response_density_basis_audit)
+            CALL para_env_inter_kp%sum(response_density_plateau)
+            CALL para_env_inter_kp%sum(rot_hessian)
+            CALL para_env_inter_kp%sum(rot_hessian_coupled)
+            CALL para_env_inter_kp%sum(rot_hessian_projector)
+            CALL para_env_inter_kp%sum(rot_hessian_projector_physical)
+            CALL para_env_inter_kp%sum(rot_hessian_projector_physical_offdiag)
+            CALL para_env_inter_kp%sum(rot_hessian_projector_physical_offdiag_plateau)
+            CALL para_env_inter_kp%sum(projector_fd_cluster_derivatives)
+            CALL para_env_inter_kp%sum(projector_fd_cluster_replacements)
+            CALL para_env_inter_kp%sum(projector_kernel_cluster_groups)
+            failed_i = MERGE(1, 0, failed)
+            CALL para_env_inter_kp%max(failed_i)
+            failed = failed_i /= 0
+         ELSE
+            CPASSERT(ivar == nrot)
+         END IF
+         CPASSERT(ALL(var_channel > 0))
+         CPASSERT(ALL(var_i > 0))
+         CPASSERT(ALL(var_j > 0))
+         CPASSERT(ALL(var_kind > 0))
          rot_grad_active_re = 0.0_dp
          rot_grad_active_im = 0.0_dp
          rot_grad_inactive_re = 0.0_dp
@@ -10446,9 +10565,9 @@ CONTAINS
          physical_delta_nvar = 0.0_dp
          DO r = 1, nrot
             rot_grad_norm_weight = 1.0_dp/ &
-                                   REAL(MAX(1, local_ot_env(var_channel(r))%kpoint_multiplicity), KIND=dp)
+                                   REAL(MAX(1, channel_multiplicity(var_channel(r))), KIND=dp)
             physical_delta_nvar = physical_delta_nvar + &
-                                  REAL(MAX(1, local_ot_env(var_channel(r))%kpoint_multiplicity), KIND=dp)
+                                  REAL(MAX(1, channel_multiplicity(var_channel(r))), KIND=dp)
             rot_grad_pair_fraction = 0.0_dp
             IF (var_projector_weight(r) > EPSILON(var_projector_weight(r))) &
                rot_grad_pair_fraction = var_projector_active_weight(r)/var_projector_weight(r)
@@ -10480,19 +10599,32 @@ CONTAINS
             rot_grad_inactive_weight_sum = rot_grad_inactive_weight_sum + rot_grad_rest_fraction
             rot_grad_active_fraction_max = MAX(rot_grad_active_fraction_max, rot_grad_pair_fraction)
          END DO
-         CALL para_env_inter_kp%sum(rot_grad_active_re)
-         CALL para_env_inter_kp%sum(rot_grad_active_im)
-         CALL para_env_inter_kp%sum(rot_grad_inactive_re)
-         CALL para_env_inter_kp%sum(rot_grad_inactive_im)
-         CALL para_env_inter_kp%sum(rot_grad_gap_re)
-         CALL para_env_inter_kp%sum(rot_grad_gap_im)
-         CALL para_env_inter_kp%sum(rot_grad_gauge_re)
-         CALL para_env_inter_kp%sum(rot_grad_gauge_im)
-         CALL para_env_inter_kp%sum(rot_grad_active_weight_sum)
-         CALL para_env_inter_kp%sum(rot_grad_inactive_weight_sum)
-         CALL para_env_inter_kp%sum(rot_grad_gap_weight)
-         CALL para_env_inter_kp%sum(rot_grad_gauge_weight)
-         CALL para_env_inter_kp%max(rot_grad_active_fraction_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_active_re)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_active_im)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_inactive_re)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_inactive_im)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_gap_re)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_gap_im)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_gauge_re)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_gauge_im)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_active_weight_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_inactive_weight_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_gap_weight)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_gauge_weight)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(rot_grad_active_fraction_max)
          rot_grad_active_fraction_avg = 0.0_dp
          IF (rot_grad_active_weight_sum + rot_grad_inactive_weight_sum > EPSILON(1.0_dp)) &
             rot_grad_active_fraction_avg = rot_grad_active_weight_sum/ &
@@ -10504,17 +10636,19 @@ CONTAINS
          DO local_channel = 1, nchannels
             IF (channel_nmo(local_channel) <= 0) CYCLE
             rot_grad_norm_weight = 1.0_dp/ &
-                                   REAL(MAX(1, local_ot_env(local_channel)%kpoint_multiplicity), KIND=dp)
+                                   REAL(MAX(1, channel_multiplicity(local_channel)), KIND=dp)
             physical_delta_nvar = physical_delta_nvar + &
-                                  REAL(MAX(1, local_ot_env(local_channel)%kpoint_multiplicity), KIND=dp)* &
+                                  REAL(MAX(1, channel_multiplicity(local_channel)), KIND=dp)* &
                                   REAL(channel_nmo(local_channel), KIND=dp)
             DO imo = 1, channel_nmo(local_channel)
                ie = e_offset(local_channel) + imo - 1
                rot_grad_energy_norm = rot_grad_energy_norm + rot_grad_norm_weight*grad_e(ie)*grad_e(ie)
             END DO
          END DO
-         CALL para_env_inter_kp%sum(rot_grad_energy_norm)
-         CALL para_env_inter_kp%sum(physical_delta_nvar)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(rot_grad_energy_norm)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(physical_delta_nvar)
          rot_grad_total_physical_norm = rot_grad_physical_norm + rot_grad_energy_norm
          ! With a complete rotation audit the raw physical gradient is a safer
          ! convergence metric than the preconditioned Schur search direction.
@@ -10631,7 +10765,8 @@ CONTAINS
                         projector_physical_sol, projector_offdiag_sol, &
                         projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                         var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
-                        var_projector_weight, var_step_weight, var_thermal_activity)
+                        var_projector_response_weight, var_projector_weight, var_step_weight, &
+                        var_thermal_activity)
             DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
             DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
                         energy_cross, energy_cross_density, &
@@ -10659,7 +10794,8 @@ CONTAINS
                         rot_hessian_projector_physical_offdiag, &
                         rot_hessian_projector_physical_offdiag_plateau, &
                         rot_hessian_projector_physical_offdiag_plateau_active, &
-                        schur, schur_metric, ipiv, ipiv_energy, channel_nmo, e_offset)
+                        schur, schur_metric, ipiv, ipiv_energy, channel_multiplicity, channel_nmo, &
+                        channel_nrot, channel_var_offset, channel_maxocc, e_offset)
             RETURN
          END IF
 
@@ -10669,12 +10805,18 @@ CONTAINS
          occ_curv_diag_max = MAXVAL(occ_curv(:))
          tether_curv_diag_max = MAXVAL(tether_curv(:))
          total_curv_diag_max = MAXVAL(curv(:))
-         CALL para_env_inter_kp%sum(occ_curv_diag_sum)
-         CALL para_env_inter_kp%sum(tether_curv_diag_sum)
-         CALL para_env_inter_kp%sum(total_curv_diag_sum)
-         CALL para_env_inter_kp%max(occ_curv_diag_max)
-         CALL para_env_inter_kp%max(tether_curv_diag_max)
-         CALL para_env_inter_kp%max(total_curv_diag_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(occ_curv_diag_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(tether_curv_diag_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(total_curv_diag_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(occ_curv_diag_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(tether_curv_diag_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(total_curv_diag_max)
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
                " OT Schur occupation preconditioner group occ_sum occ_max tether_sum tether_max total_sum total_max:", &
@@ -10687,9 +10829,11 @@ CONTAINS
          energy_floor_count = 0.0_dp
          energy_floor_curv_sum = 0.0_dp
          curv_projection_sum = SUM(curv)
-         CALL para_env_inter_kp%sum(curv_projection_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
-         CALL para_env_inter_kp%sum(occ_curv_projection_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(occ_curv_projection_sum)
          DO ie = 1, ne
             IF (curv(ie) > EPSILON(curv(ie))) THEN
                IF (curv(ie) < energy_curvature_floor) THEN
@@ -10701,10 +10845,14 @@ CONTAINS
                z_weight = z_weight + curv(ie)
             END IF
          END DO
-         CALL para_env_inter_kp%sum(z_shift)
-         CALL para_env_inter_kp%sum(z_weight)
-         CALL para_env_inter_kp%sum(energy_floor_count)
-         CALL para_env_inter_kp%sum(energy_floor_curv_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(z_shift)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(z_weight)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(energy_floor_count)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(energy_floor_curv_sum)
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
             " OT Schur occupation preconditioner energy-floor group count curv_sum floor:", &
@@ -10934,23 +11082,40 @@ CONTAINS
             SUM(ABS(response_density_full(:, :) - response_density_physical(:, :)))
          projector_physical_density_gap_abs_max = &
             MAXVAL(ABS(response_density_full(:, :) - response_density_physical(:, :)))
-         CALL para_env_inter_kp%sum(projector_density_floor_audit_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_floor_safe_audit_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_floor_audit_gap_abs_avg)
-         CALL para_env_inter_kp%sum(projector_physical_density_full_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_full_audit_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_basis_audit_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_basis_raw_gap_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_basis_physical_gap_abs_avg)
-         CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
-         CALL para_env_inter_kp%sum(projector_physical_density_active_abs_avg)
-         CALL para_env_inter_kp%sum(projector_physical_density_gap_abs_avg)
-         CALL para_env_inter_kp%sum(projector_response_character_abs_avg)
-         CALL para_env_inter_kp%sum(projector_response_character_fraction)
-         CALL para_env_inter_kp%max(projector_response_character_max)
-         CALL para_env_inter_kp%max(projector_physical_density_gap_abs_max)
-         CALL para_env_inter_kp%max(projector_density_basis_raw_gap_abs_max)
-         CALL para_env_inter_kp%max(projector_density_basis_physical_gap_abs_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_floor_audit_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_floor_safe_audit_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_floor_audit_gap_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_physical_density_full_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_full_audit_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_basis_audit_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_basis_raw_gap_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_basis_physical_gap_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_physical_density_active_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_physical_density_gap_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_response_character_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_response_character_fraction)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(projector_response_character_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(projector_physical_density_gap_abs_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(projector_density_basis_raw_gap_abs_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(projector_density_basis_physical_gap_abs_max)
          projector_density_floor_audit_abs_avg = projector_density_floor_audit_abs_avg/ &
                                                  REAL(MAX(1, ne*nrot), KIND=dp)
          projector_density_floor_safe_audit_abs_avg = projector_density_floor_safe_audit_abs_avg/ &
@@ -11314,7 +11479,8 @@ CONTAINS
             END DO
          END IF
          projector_density_full_global_abs_avg = SUM(ABS(response_density_full_global(:, :)))
-         CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(projector_density_full_global_abs_avg)
          projector_density_full_global_abs_avg = projector_density_full_global_abs_avg/ &
                                                  REAL(MAX(1, ne*nrot), KIND=dp)
          IF (projector_density_full_audit_enabled .AND. projector_density_floor_audit_abs_avg > &
@@ -12106,9 +12272,11 @@ CONTAINS
                                                   projector_physical_residual_diag_avg
          projector_gauge_abs_avg = projector_gauge_abs_avg/REAL(MAX(1, nrot*nrot), KIND=dp)
          curv_projection_sum = SUM(curv)
-         CALL para_env_inter_kp%sum(curv_projection_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(curv_projection_sum)
          occ_curv_projection_sum = SUM(occ_curv)
-         CALL para_env_inter_kp%sum(occ_curv_projection_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(occ_curv_projection_sum)
          ! The split candidate follows the same diagonal/spectral projector blend as
          ! the finite complex rotation gradient: occupation curvature sees the
          ! finite projector response, while the channel-local tether still sees the
@@ -12124,7 +12292,8 @@ CONTAINS
          END DO
          DO r = 1, nrot
             response_shift = DOT_PRODUCT(curv, response_coupled(:, r))
-            CALL para_env_inter_kp%sum(response_shift)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(response_shift)
             IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                response_coupled(:, r) = response_coupled(:, r) - response_shift/curv_projection_sum
             DO ie = 1, ne
@@ -12140,7 +12309,8 @@ CONTAINS
          DO r = 1, nrot
             projector_response_gap_norm = DOT_PRODUCT(occ_curv(:)*(response_occ(:, r) - response(:, r)), &
                                                       response_occ(:, r) - response(:, r))
-            CALL para_env_inter_kp%sum(projector_response_gap_norm)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(projector_response_gap_norm)
             IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
                projector_response_gap_avg = projector_response_gap_avg + &
                                             SQRT(MAX(0.0_dp, projector_response_gap_norm/occ_curv_projection_sum))
@@ -12148,7 +12318,8 @@ CONTAINS
                                              MAXVAL(ABS(response_occ(:, r) - response(:, r))))
             physical_response_gap_norm = DOT_PRODUCT(occ_curv(:)*(response_occ_physical(:, r) - response_occ(:, r)), &
                                                      response_occ_physical(:, r) - response_occ(:, r))
-            CALL para_env_inter_kp%sum(physical_response_gap_norm)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(physical_response_gap_norm)
             IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
                physical_response_gap_avg = physical_response_gap_avg + &
                                            SQRT(MAX(0.0_dp, physical_response_gap_norm/occ_curv_projection_sum))
@@ -12157,8 +12328,10 @@ CONTAINS
          END DO
          projector_response_gap_avg = projector_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
          physical_response_gap_avg = physical_response_gap_avg/REAL(MAX(1, nrot), KIND=dp)
-         CALL para_env_inter_kp%max(projector_response_gap_max)
-         CALL para_env_inter_kp%max(physical_response_gap_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(projector_response_gap_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(physical_response_gap_max)
          density_plateau_exact_gap_avg = 0.0_dp
          density_plateau_exact_gap_max = 0.0_dp
          density_plateau_raw_gap_avg = 0.0_dp
@@ -12168,7 +12341,8 @@ CONTAINS
                physical_response_gap_norm = &
                   DOT_PRODUCT(occ_curv(:)*(response_density_full(:, r) - response_density_physical(:, r)), &
                               response_density_full(:, r) - response_density_physical(:, r))
-               CALL para_env_inter_kp%sum(physical_response_gap_norm)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%sum(physical_response_gap_norm)
                IF (occ_curv_projection_sum > EPSILON(occ_curv_projection_sum)) &
                   density_plateau_raw_gap_avg = density_plateau_raw_gap_avg + &
                                                 SQRT(MAX(0.0_dp, physical_response_gap_norm/occ_curv_projection_sum))
@@ -12178,7 +12352,8 @@ CONTAINS
                physical_response_gap_norm = &
                   DOT_PRODUCT(curv(:)*(response_density_full_exact(:, r) - response_density_exact(:, r)), &
                               response_density_full_exact(:, r) - response_density_exact(:, r))
-               CALL para_env_inter_kp%sum(physical_response_gap_norm)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%sum(physical_response_gap_norm)
                IF (curv_projection_sum > EPSILON(curv_projection_sum)) &
                   density_plateau_exact_gap_avg = density_plateau_exact_gap_avg + &
                                                   SQRT(MAX(0.0_dp, physical_response_gap_norm/curv_projection_sum))
@@ -12188,8 +12363,10 @@ CONTAINS
             END DO
             density_plateau_raw_gap_avg = density_plateau_raw_gap_avg/REAL(MAX(1, nrot), KIND=dp)
             density_plateau_exact_gap_avg = density_plateau_exact_gap_avg/REAL(MAX(1, nrot), KIND=dp)
-            CALL para_env_inter_kp%max(density_plateau_raw_gap_max)
-            CALL para_env_inter_kp%max(density_plateau_exact_gap_max)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%max(density_plateau_raw_gap_max)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%max(density_plateau_exact_gap_max)
          END IF
          CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ, response, grad_e, &
                                                     channel_nmo, e_offset, energy_hessian, energy_cross, &
@@ -12229,12 +12406,12 @@ CONTAINS
          IF (sigma > EPSILON(sigma)) THEN
             response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
             response_abs_trust = ot_kp_fermi_window_outer_factor*sigma
-            DO local_channel = 1, nchannels
-               IF (channel_nmo(local_channel) <= 0) CYCLE
+            DO local_channel = 1, SIZE(local_ot_env)
                IF (local_ot_env(local_channel)%ener_x_trust_radius <= 0.0_dp) CYCLE
                density_projector_trust_scale = &
                   MIN(density_projector_trust_scale, local_ot_env(local_channel)%ener_x_trust_scale)
             END DO
+            IF (global_schur_replicated) CALL para_env_inter_kp%min(density_projector_trust_scale)
             density_projector_trust_scale = MIN(1.0_dp, MAX(0.0_dp, density_projector_trust_scale))
             IF (density_projector_control_delta > 0.0_dp .AND. &
                 ot_kp_canonical_density_max_weight > 0.0_dp) THEN
@@ -13844,7 +14021,8 @@ CONTAINS
                          projector_response_metric_normp > EPSILON(projector_response_metric_normp) .AND. &
                          projector_response_norm_ratio <= max_norm_ratio) THEN
                         projector_response_unit_abs_step = MAXVAL(ABS(projector_response_rx_e))
-                        CALL para_env_inter_kp%max(projector_response_unit_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(projector_response_unit_abs_step)
                         projector_response_unit_weighted_step = &
                            kpoint_ot_weighted_response_step(projector_response_rx_e, curv, curv_projection_sum)
                         projector_response_trust_scale = 1.0_dp
@@ -14048,7 +14226,8 @@ CONTAINS
                          projector_physical_normp > EPSILON(projector_physical_normp) .AND. &
                          projector_physical_norm_ratio <= max_norm_ratio) THEN
                         projector_physical_unit_abs_step = MAXVAL(ABS(projector_physical_rx_e))
-                        CALL para_env_inter_kp%max(projector_physical_unit_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(projector_physical_unit_abs_step)
                         projector_physical_unit_weighted_step = &
                            kpoint_ot_weighted_response_step(projector_physical_rx_e, curv, curv_projection_sum)
                         projector_physical_trust_scale = 1.0_dp
@@ -14118,9 +14297,12 @@ CONTAINS
                                                              projector_physical_step_gap_norm, &
                                                              projector_physical_step_gauge_norm, &
                                                              projector_physical_step_fermi_norm)
-                           CALL para_env_inter_kp%sum(projector_physical_step_gap_norm)
-                           CALL para_env_inter_kp%sum(projector_physical_step_gauge_norm)
-                           CALL para_env_inter_kp%sum(projector_physical_step_fermi_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_physical_step_gap_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_physical_step_gauge_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_physical_step_fermi_norm)
                            projector_physical_step_gap_norm = &
                               SQRT(MAX(0.0_dp, projector_physical_step_gap_norm))
                            projector_physical_step_gauge_norm = &
@@ -14227,7 +14409,8 @@ CONTAINS
                          projector_inactive_offdiag_norm_ratio <= max_norm_ratio) THEN
                         projector_inactive_offdiag_unit_abs_step = &
                            MAXVAL(ABS(projector_inactive_offdiag_rx_e))
-                        CALL para_env_inter_kp%max(projector_inactive_offdiag_unit_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(projector_inactive_offdiag_unit_abs_step)
                         projector_inactive_offdiag_unit_weighted_step = &
                            kpoint_ot_weighted_response_step( &
                            projector_inactive_offdiag_rx_e, curv, curv_projection_sum)
@@ -14330,9 +14513,12 @@ CONTAINS
                                                              projector_inactive_offdiag_step_gap_norm, &
                                                              projector_inactive_offdiag_step_gauge_norm, &
                                                              projector_inactive_offdiag_step_fermi_norm)
-                           CALL para_env_inter_kp%sum(projector_inactive_offdiag_step_gap_norm)
-                           CALL para_env_inter_kp%sum(projector_inactive_offdiag_step_gauge_norm)
-                           CALL para_env_inter_kp%sum(projector_inactive_offdiag_step_fermi_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_inactive_offdiag_step_gap_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_inactive_offdiag_step_gauge_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_inactive_offdiag_step_fermi_norm)
                            projector_inactive_offdiag_step_gap_norm = &
                               SQRT(MAX(0.0_dp, projector_inactive_offdiag_step_gap_norm))
                            projector_inactive_offdiag_step_gauge_norm = &
@@ -14509,7 +14695,8 @@ CONTAINS
                          projector_offdiag_normp > EPSILON(projector_offdiag_normp) .AND. &
                          projector_offdiag_norm_ratio <= max_norm_ratio) THEN
                         projector_offdiag_unit_abs_step = MAXVAL(ABS(projector_offdiag_rx_e))
-                        CALL para_env_inter_kp%max(projector_offdiag_unit_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(projector_offdiag_unit_abs_step)
                         projector_offdiag_unit_weighted_step = &
                            kpoint_ot_weighted_response_step(projector_offdiag_rx_e, curv, &
                                                             curv_projection_sum)
@@ -14590,9 +14777,12 @@ CONTAINS
                                                              projector_offdiag_step_gap_norm, &
                                                              projector_offdiag_step_gauge_norm, &
                                                              projector_offdiag_step_fermi_norm)
-                           CALL para_env_inter_kp%sum(projector_offdiag_step_gap_norm)
-                           CALL para_env_inter_kp%sum(projector_offdiag_step_gauge_norm)
-                           CALL para_env_inter_kp%sum(projector_offdiag_step_fermi_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_offdiag_step_gap_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_offdiag_step_gauge_norm)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%sum(projector_offdiag_step_fermi_norm)
                            projector_offdiag_step_gap_norm = &
                               SQRT(MAX(0.0_dp, projector_offdiag_step_gap_norm))
                            projector_offdiag_step_gauge_norm = &
@@ -15637,7 +15827,8 @@ CONTAINS
                             EPSILON(projector_physical_direct_spectral_metric_normp)) THEN
                            projector_physical_direct_spectral_unit_abs_step = &
                               MAXVAL(ABS(projector_physical_direct_spectral_rx_e))
-                           CALL para_env_inter_kp%max(projector_physical_direct_spectral_unit_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(projector_physical_direct_spectral_unit_abs_step)
                            projector_physical_direct_spectral_unit_weighted_step = &
                               kpoint_ot_weighted_response_step( &
                               projector_physical_direct_spectral_rx_e, curv, curv_projection_sum)
@@ -15865,7 +16056,8 @@ CONTAINS
                             EPSILON(projector_physical_direct_density_normp)) THEN
                            projector_physical_direct_density_response_abs_step = &
                               MAXVAL(ABS(projector_physical_direct_density_rx_e))
-                           CALL para_env_inter_kp%max(projector_physical_direct_density_response_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(projector_physical_direct_density_response_abs_step)
                            projector_physical_direct_density_response_weighted_step = &
                               kpoint_ot_weighted_response_step( &
                               projector_physical_direct_density_rx_e, curv, curv_projection_sum)
@@ -16089,7 +16281,8 @@ CONTAINS
                            density_full_direction_scale = density_full_gdotp/ &
                                                           MAX(density_full_normp, EPSILON(density_full_normp))
                            density_full_response_abs_step = MAXVAL(ABS(density_full_rx_e))
-                           CALL para_env_inter_kp%max(density_full_response_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_full_response_abs_step)
                            density_full_response_weighted_step = &
                               kpoint_ot_weighted_response_step( &
                               density_full_rx_e, curv, &
@@ -16359,7 +16552,8 @@ CONTAINS
                               density_full_direct_direction_scale = &
                                  density_full_direct_direction_scale*density_full_direct_history_scale
                               density_full_direct_response_abs_step = MAXVAL(ABS(rx_e))
-                              CALL para_env_inter_kp%max(density_full_direct_response_abs_step)
+                              IF (.NOT. global_schur_replicated) &
+                                 CALL para_env_inter_kp%max(density_full_direct_response_abs_step)
                               density_full_direct_response_weighted_step = &
                                  kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
                               IF (response_trust > EPSILON(response_trust) .AND. &
@@ -16511,7 +16705,8 @@ CONTAINS
                                                                  MAX(density_full_global_normp, EPSILON(density_full_global_normp))
                            density_full_global_response_abs_step = &
                               MAXVAL(ABS(density_full_global_rx_e))
-                           CALL para_env_inter_kp%max(density_full_global_response_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_full_global_response_abs_step)
                            density_full_global_response_weighted_step = &
                               kpoint_ot_weighted_response_step( &
                               density_full_global_rx_e, curv, curv_projection_sum)
@@ -16697,7 +16892,8 @@ CONTAINS
                         density_gap_gdot = DOT_PRODUCT(grad_e, density_gap_rx_e)
                         density_gap_norm = DOT_PRODUCT(density_gap_rx_e, density_gap_rx_e)
                         density_gap_raw_abs = MAXVAL(ABS(density_gap_rx_e))
-                        CALL para_env_inter_kp%max(density_gap_raw_abs)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(density_gap_raw_abs)
                         density_gap_raw_weighted = &
                            kpoint_ot_weighted_response_step(density_gap_rx_e, curv, &
                                                             curv_projection_sum)
@@ -16708,7 +16904,8 @@ CONTAINS
                            occ_curv, tether_curv, occ_curv_projection_sum, &
                            channel_nmo, e_offset)
                         density_descent_gap_projected_abs = MAXVAL(ABS(density_gap_projected_e))
-                        CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(density_descent_gap_projected_abs)
                         density_descent_gap_projected_weighted = &
                            kpoint_ot_weighted_response_step(density_gap_projected_e, curv, &
                                                             curv_projection_sum)
@@ -16725,7 +16922,8 @@ CONTAINS
                               occ_curv, tether_curv, occ_curv_projection_sum, &
                               channel_nmo, e_offset)
                            density_descent_gap_trial_abs = MAXVAL(ABS(density_gap_trial_projected_e))
-                           CALL para_env_inter_kp%max(density_descent_gap_trial_abs)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_descent_gap_trial_abs)
                            density_descent_gap_trial_weighted = &
                               kpoint_ot_weighted_response_step(density_gap_trial_projected_e, curv, &
                                                                curv_projection_sum)
@@ -16759,7 +16957,8 @@ CONTAINS
                               occ_curv, tether_curv, occ_curv_projection_sum, &
                               channel_nmo, e_offset)
                            density_descent_gap_trial_abs = MAXVAL(ABS(density_gap_trial_projected_e))
-                           CALL para_env_inter_kp%max(density_descent_gap_trial_abs)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_descent_gap_trial_abs)
                            density_descent_gap_trial_weighted = &
                               kpoint_ot_weighted_response_step(density_gap_trial_projected_e, curv, &
                                                                curv_projection_sum)
@@ -16814,7 +17013,8 @@ CONTAINS
                               density_descent_direction_scale*density_descent_normp
                            density_descent_response_abs_step = density_descent_direction_scale* &
                                                                MAXVAL(ABS(density_descent_rx_e))
-                           CALL para_env_inter_kp%max(density_descent_response_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_descent_response_abs_step)
                            density_descent_response_weighted_step = density_descent_direction_scale* &
                                                                     kpoint_ot_weighted_response_step(density_descent_rx_e, curv, &
                                                                                                      curv_projection_sum)
@@ -16947,7 +17147,8 @@ CONTAINS
                               density_gap_scale_quality*density_gap_model_calibrated_drop
                            density_gap_response_abs_step = density_gap_direction_scale* &
                                                            MAXVAL(ABS(density_gap_rx_e))
-                           CALL para_env_inter_kp%max(density_gap_response_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_gap_response_abs_step)
                            density_gap_response_weighted_step = density_gap_direction_scale* &
                                                                 kpoint_ot_weighted_response_step(density_gap_rx_e, curv, &
                                                                                                  curv_projection_sum)
@@ -17006,7 +17207,8 @@ CONTAINS
                               density_plateau_scale_quality*density_plateau_model_calibrated_drop
                            density_plateau_response_abs_step = density_plateau_direction_scale* &
                                                                MAXVAL(ABS(density_plateau_rx_e))
-                           CALL para_env_inter_kp%max(density_plateau_response_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(density_plateau_response_abs_step)
                            density_plateau_response_weighted_step = &
                               density_plateau_direction_scale* &
                               kpoint_ot_weighted_response_step(density_plateau_rx_e, curv, &
@@ -17139,7 +17341,8 @@ CONTAINS
                               projector_physical_direct_diagref_response_abs_step = &
                                  projector_physical_direct_diagref_direction_scale* &
                                  MAXVAL(ABS(projector_physical_direct_diagref_rx_e))
-                              CALL para_env_inter_kp%max(projector_physical_direct_diagref_response_abs_step)
+                              IF (.NOT. global_schur_replicated) &
+                                 CALL para_env_inter_kp%max(projector_physical_direct_diagref_response_abs_step)
                               projector_physical_direct_diagref_response_weighted_step = &
                                  projector_physical_direct_diagref_direction_scale* &
                                  kpoint_ot_weighted_response_step( &
@@ -17387,7 +17590,8 @@ CONTAINS
                                EPSILON(projector_physical_direct_metric_normp))
                         projector_physical_direct_unit_abs_step = &
                            MAXVAL(ABS(projector_physical_direct_effective_rx_e))
-                        CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
                         projector_physical_direct_unit_weighted_step = &
                            kpoint_ot_weighted_response_step(projector_physical_direct_effective_rx_e, curv, &
                                                             curv_projection_sum)
@@ -17756,7 +17960,8 @@ CONTAINS
                IF (.NOT. attempt_failed) THEN
                   IF (metric_attempt_response) THEN
                      dense_metric_unit_abs_step = MAXVAL(ABS(rx_e))
-                     CALL para_env_inter_kp%max(dense_metric_unit_abs_step)
+                     IF (.NOT. global_schur_replicated) &
+                        CALL para_env_inter_kp%max(dense_metric_unit_abs_step)
                      dense_metric_unit_weighted_step = &
                         kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
                      dense_metric_trust_scale = 1.0_dp
@@ -17877,7 +18082,8 @@ CONTAINS
                         response_weighted_step = direction_scale*dense_metric_unit_weighted_step
                      ELSE
                         response_abs_step = direction_scale*MAXVAL(ABS(rx_e))
-                        CALL para_env_inter_kp%max(response_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(response_abs_step)
                         response_weighted_step = direction_scale* &
                                                  kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
                      END IF
@@ -17951,9 +18157,12 @@ CONTAINS
                                                           projector_step_gap_norm, &
                                                           projector_step_gauge_norm, &
                                                           projector_step_fermi_norm)
-                        CALL para_env_inter_kp%sum(projector_step_gap_norm)
-                        CALL para_env_inter_kp%sum(projector_step_gauge_norm)
-                        CALL para_env_inter_kp%sum(projector_step_fermi_norm)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%sum(projector_step_gap_norm)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%sum(projector_step_gauge_norm)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%sum(projector_step_fermi_norm)
                         projector_step_gap_norm = SQRT(MAX(0.0_dp, projector_step_gap_norm))
                         projector_step_gauge_norm = SQRT(MAX(0.0_dp, projector_step_gauge_norm))
                         projector_step_fermi_norm = SQRT(MAX(0.0_dp, projector_step_fermi_norm))
@@ -17981,7 +18190,8 @@ CONTAINS
                      IF (schur_attempt <= 3 .AND. .NOT. attempt_failed) THEN
                         rx_model(:) = MATMUL(response_occ - response, sol)
                         occgap_shadow_abs_step = MAXVAL(ABS(rx_model))
-                        CALL para_env_inter_kp%max(occgap_shadow_abs_step)
+                        IF (.NOT. global_schur_replicated) &
+                           CALL para_env_inter_kp%max(occgap_shadow_abs_step)
                         occgap_shadow_step = kpoint_ot_weighted_response_step(rx_model, occ_curv, &
                                                                               occ_curv_projection_sum)
                         IF (response_trust > EPSILON(response_trust)) &
@@ -19779,7 +19989,8 @@ CONTAINS
                density_basis_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_basis_history_gap_drop)
                density_basis_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_basis_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_basis_history_abs_step)
                density_basis_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -19809,7 +20020,8 @@ CONTAINS
                density_basis_curvfloor_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_basis_curvfloor_history_gap_drop)
                density_basis_curvfloor_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_basis_curvfloor_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_basis_curvfloor_history_abs_step)
                density_basis_curvfloor_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -19841,7 +20053,8 @@ CONTAINS
                density_floor_safe_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_floor_safe_history_gap_drop)
                density_floor_safe_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_floor_safe_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_floor_safe_history_abs_step)
                density_floor_safe_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -19882,7 +20095,8 @@ CONTAINS
                density_basis_selective_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_basis_selective_history_gap_drop)
                density_basis_selective_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_basis_selective_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_basis_selective_history_abs_step)
                density_basis_selective_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -19914,7 +20128,8 @@ CONTAINS
                density_basis_filtered_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_basis_filtered_history_gap_drop)
                density_basis_filtered_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_basis_filtered_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_basis_filtered_history_abs_step)
                density_basis_filtered_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -19961,7 +20176,8 @@ CONTAINS
                density_basis_damped_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_basis_damped_history_gap_drop)
                density_basis_damped_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_basis_damped_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_basis_damped_history_abs_step)
                density_basis_damped_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -19992,7 +20208,8 @@ CONTAINS
                density_full_history_drop = &
                   MAX(0.0_dp, accepted_model_calibrated_drop - density_full_history_gap_drop)
                density_full_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_full_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_full_history_abs_step)
                density_full_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -20068,7 +20285,8 @@ CONTAINS
                   MAX(0.0_dp, accepted_model_calibrated_drop - &
                       density_full_global_history_gap_drop)
                density_full_global_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_full_global_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_full_global_history_abs_step)
                density_full_global_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -20125,7 +20343,8 @@ CONTAINS
                   MAX(0.0_dp, accepted_model_calibrated_drop - &
                       density_full_direct_history_gap_drop)
                density_full_direct_history_abs_step = MAXVAL(ABS(rx_model))
-               CALL para_env_inter_kp%max(density_full_direct_history_abs_step)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%max(density_full_direct_history_abs_step)
                density_full_direct_history_weighted_step = &
                   kpoint_ot_weighted_response_step(rx_model, curv, curv_projection_sum)
                IF (response_trust > EPSILON(response_trust)) &
@@ -20326,12 +20545,18 @@ CONTAINS
             energy_independent_norm = kpoint_ot_weighted_vector_dot( &
                                       z_trial, z_trial, energy_step_weight)
             energy_selected_norm = kpoint_ot_weighted_vector_dot(z_e, z_e, energy_step_weight)
-            CALL para_env_inter_kp%sum(energy_gradient_sum)
-            CALL para_env_inter_kp%sum(energy_gradient_abs_sum)
-            CALL para_env_inter_kp%sum(energy_independent_gdot)
-            CALL para_env_inter_kp%sum(energy_selected_gdot)
-            CALL para_env_inter_kp%sum(energy_independent_norm)
-            CALL para_env_inter_kp%sum(energy_selected_norm)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(energy_gradient_sum)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(energy_gradient_abs_sum)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(energy_independent_gdot)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(energy_selected_gdot)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(energy_independent_norm)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(energy_selected_norm)
             energy_split_ratio = 0.0_dp
             IF (energy_independent_gdot > EPSILON(energy_independent_gdot)) &
                energy_split_ratio = energy_selected_gdot/energy_independent_gdot
@@ -20348,16 +20573,18 @@ CONTAINS
                   group = MERGE(ispin, 1, ngroups == nspin_ot)
                   IF (group /= target_group) CYCLE
                   local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
-                  nmo = channel_nmo(local_channel)
+                  global_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+                  nmo = channel_nmo(global_channel)
                   DO imo = 1, nmo
-                     ie = e_offset(local_channel) + imo - 1
+                     ie = e_offset(global_channel) + imo - 1
                      local_ot_env(local_channel)%ener_gx(imo) = z_e(ie)
                   END DO
                END DO
             END DO
 
-            DO local_channel = 1, nchannels
-               nmo = channel_nmo(local_channel)
+            DO local_channel = 1, SIZE(local_ot_env)
+               global_channel = first_channel + local_channel - 1
+               nmo = channel_nmo(global_channel)
                IF (nmo <= 0) CYCLE
                ALLOCATE (grad_re(nmo, nmo), grad_im(nmo, nmo))
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx, grad_re)
@@ -20365,7 +20592,7 @@ CONTAINS
                CALL local_ot_env(local_channel)%para_env%sum(grad_re)
                CALL local_ot_env(local_channel)%para_env%sum(grad_im)
                DO r = 1, nrot
-                  IF (var_channel(r) /= local_channel) CYCLE
+                  IF (var_channel(r) /= global_channel) CYCLE
                   imo = var_i(r)
                   jmo = var_j(r)
                   SELECT CASE (var_kind(r))
@@ -20419,14 +20646,22 @@ CONTAINS
                                            accepted_step_sq
                END IF
             END DO
-            CALL para_env_inter_kp%sum(accepted_step_gap_re)
-            CALL para_env_inter_kp%sum(accepted_step_gap_im)
-            CALL para_env_inter_kp%sum(accepted_step_gauge_re)
-            CALL para_env_inter_kp%sum(accepted_step_gauge_im)
-            CALL para_env_inter_kp%sum(accepted_step_fermi_re)
-            CALL para_env_inter_kp%sum(accepted_step_fermi_im)
-            CALL para_env_inter_kp%sum(accepted_step_gap_weight)
-            CALL para_env_inter_kp%sum(accepted_step_gauge_weight)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_gap_re)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_gap_im)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_gauge_re)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_gauge_im)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_fermi_re)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_fermi_im)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_gap_weight)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(accepted_step_gauge_weight)
             accepted_step_gap_re = SQRT(MAX(0.0_dp, accepted_step_gap_re))
             accepted_step_gap_im = SQRT(MAX(0.0_dp, accepted_step_gap_im))
             accepted_step_gauge_re = SQRT(MAX(0.0_dp, accepted_step_gauge_re))
@@ -21365,7 +21600,8 @@ CONTAINS
                             projector_physical_direct_metric_normp > &
                             EPSILON(projector_physical_direct_metric_normp)) THEN
                            projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
-                           CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
                            projector_physical_direct_unit_weighted_step = &
                               kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
                            projector_physical_direct_trust_scale = 1.0_dp
@@ -21515,7 +21751,8 @@ CONTAINS
                             projector_physical_direct_metric_normp > &
                             EPSILON(projector_physical_direct_metric_normp)) THEN
                            projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
-                           CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                           IF (.NOT. global_schur_replicated) &
+                              CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
                            projector_physical_direct_unit_weighted_step = &
                               kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
                            projector_physical_direct_trust_scale = 1.0_dp
@@ -21673,7 +21910,8 @@ CONTAINS
                                projector_physical_direct_metric_normp > &
                                EPSILON(projector_physical_direct_metric_normp)) THEN
                               projector_physical_direct_unit_abs_step = MAXVAL(ABS(rx_e))
-                              CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
+                              IF (.NOT. global_schur_replicated) &
+                                 CALL para_env_inter_kp%max(projector_physical_direct_unit_abs_step)
                               projector_physical_direct_unit_weighted_step = &
                                  kpoint_ot_weighted_response_step(rx_e, curv, curv_projection_sum)
                               projector_physical_direct_trust_scale = 1.0_dp
@@ -21896,7 +22134,8 @@ CONTAINS
                      projector_physical_sol, projector_offdiag_sol, &
                      projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
                      var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
-                     var_projector_weight, var_step_weight, var_thermal_activity)
+                     var_projector_response_weight, var_projector_weight, var_step_weight, &
+                     var_thermal_activity)
          DEALLOCATE (var_channel, var_ei, var_ej, var_i, var_j, var_kind)
          DEALLOCATE (rot_floor, row_floor_shift, projector_physical_direct_active_lcomp, &
                      energy_cross, energy_cross_density, &
@@ -21935,7 +22174,8 @@ CONTAINS
                      rot_hessian_projector_physical_offdiag, &
                      rot_hessian_projector_physical_offdiag_plateau, &
                      rot_hessian_projector_physical_offdiag_plateau_active, &
-                     schur, schur_metric, ipiv, ipiv_energy, channel_nmo, e_offset)
+                     schur, schur_metric, ipiv, ipiv_energy, channel_multiplicity, channel_nmo, &
+                     channel_nrot, channel_var_offset, channel_maxocc, e_offset)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
 ! **************************************************************************************************
@@ -21972,7 +22212,8 @@ CONTAINS
             DO pass = 1, 2
                IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
                   response_shift = DOT_PRODUCT(occ_curv, response_vec)
-                  CALL para_env_inter_kp%sum(response_shift)
+                  IF (.NOT. global_schur_replicated) &
+                     CALL para_env_inter_kp%sum(response_shift)
                   response_vec(:) = response_vec(:) - response_shift/occ_curv_sum
                END IF
                DO local_channel = 1, SIZE(channel_nmo)
@@ -22030,7 +22271,8 @@ CONTAINS
          projected = .FALSE.
 
          curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
-         CALL para_env_inter_kp%max(curv_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(curv_max)
          IF (curv_max <= EPSILON(curv_max)) THEN
             RETURN
          END IF
@@ -22072,10 +22314,14 @@ CONTAINS
                global_alpha_rhs_over_beta = global_alpha_rhs_over_beta + channel_alpha*channel_rhs/channel_beta
             END IF
          END DO
-         CALL para_env_inter_kp%sum(occ_metric)
-         CALL para_env_inter_kp%sum(occ_rhs)
-         CALL para_env_inter_kp%sum(global_alpha2_over_beta)
-         CALL para_env_inter_kp%sum(global_alpha_rhs_over_beta)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(occ_metric)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(occ_rhs)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(global_alpha2_over_beta)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(global_alpha_rhs_over_beta)
 
          lambda_occ = 0.0_dp
          IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
@@ -22162,8 +22408,10 @@ CONTAINS
          coeff = 0.0_dp
          gdot = DOT_PRODUCT(grad_e, response_vec)
          denom = DOT_PRODUCT(grad_e, descent_vec)
-         CALL para_env_inter_kp%sum(gdot)
-         CALL para_env_inter_kp%sum(denom)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(gdot)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(denom)
          IF (denom <= EPSILON(denom)) RETURN
 
          grad_coeff = 0.0_dp
@@ -22228,12 +22476,16 @@ CONTAINS
          IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
             left_shift = DOT_PRODUCT(occ_curv, response_left)
             right_shift = DOT_PRODUCT(occ_curv, response_right)
-            CALL para_env_inter_kp%sum(left_shift)
-            CALL para_env_inter_kp%sum(right_shift)
-            CALL para_env_inter_kp%sum(occ_term)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(left_shift)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(right_shift)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(occ_term)
             occ_term = occ_term - left_shift*right_shift/occ_curv_sum
          ELSE
-            CALL para_env_inter_kp%sum(occ_term)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(occ_term)
          END IF
          tether_term = DOT_PRODUCT(tether_curv(:)*response_left(:), response_right(:))
          DO local_channel = 1, SIZE(channel_nmo)
@@ -22248,7 +22500,8 @@ CONTAINS
                                       response_right(first_energy:first_energy + nmo - 1))
             tether_term = tether_term - left_shift*right_shift/weight_sum
          END DO
-         CALL para_env_inter_kp%sum(tether_term)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(tether_term)
          projected_term = occ_term + tether_term
          IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
          IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
@@ -22291,12 +22544,16 @@ CONTAINS
          IF (occ_curv_sum > EPSILON(occ_curv_sum)) THEN
             left_shift = DOT_PRODUCT(occ_curv, response_occ_left)
             right_shift = DOT_PRODUCT(occ_curv, response_occ_right)
-            CALL para_env_inter_kp%sum(left_shift)
-            CALL para_env_inter_kp%sum(right_shift)
-            CALL para_env_inter_kp%sum(occ_term)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(left_shift)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(right_shift)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(occ_term)
             occ_term = occ_term - left_shift*right_shift/occ_curv_sum
          ELSE
-            CALL para_env_inter_kp%sum(occ_term)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(occ_term)
          END IF
          tether_term = DOT_PRODUCT(tether_curv(:)*response_tether_left(:), response_tether_right(:))
          DO local_channel = 1, SIZE(channel_nmo)
@@ -22311,7 +22568,8 @@ CONTAINS
                                       response_tether_right(first_energy:first_energy + nmo - 1))
             tether_term = tether_term - left_shift*right_shift/weight_sum
          END DO
-         CALL para_env_inter_kp%sum(tether_term)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(tether_term)
          projected_term = occ_term + tether_term
          IF (PRESENT(occ_projected_term)) occ_projected_term = occ_term
          IF (PRESENT(tether_projected_term)) tether_projected_term = tether_term
@@ -22373,7 +22631,8 @@ CONTAINS
          z_exact(:) = 0.0_dp
 
          curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
-         CALL para_env_inter_kp%max(curv_max)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%max(curv_max)
          IF (curv_max <= 0.0_dp) RETURN
          response_curv_floor = 0.0_dp
          IF (PRESENT(curv_floor_fraction)) &
@@ -22391,7 +22650,8 @@ CONTAINS
          END DO
 
          occ_sum = SUM(occ_curv)
-         CALL para_env_inter_kp%sum(occ_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(occ_sum)
          IF (occ_sum > EPSILON(occ_sum)) THEN
             DO je = 1, ne_local
                DO ie = 1, ne_local
@@ -22401,7 +22661,8 @@ CONTAINS
             END DO
             DO r = 1, nrot_local
                response_shift = DOT_PRODUCT(occ_curv, response_occ(:, r))
-               CALL para_env_inter_kp%sum(response_shift)
+               IF (.NOT. global_schur_replicated) &
+                  CALL para_env_inter_kp%sum(response_shift)
                energy_cross(:, r) = energy_cross(:, r) + &
                                     occ_curv(:)*(response_occ(:, r) - response_shift/occ_sum)
             END DO
@@ -22516,12 +22777,14 @@ CONTAINS
       REAL(KIND=dp)                                      :: weighted_norm
 
          weighted_norm = DOT_PRODUCT(curv(:)*response_vec(:), response_vec(:))
-         CALL para_env_inter_kp%sum(weighted_norm)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(weighted_norm)
          IF (curv_sum > EPSILON(curv_sum)) THEN
             step = SQRT(MAX(0.0_dp, weighted_norm/curv_sum))
          ELSE
             step = MAXVAL(ABS(response_vec))
-            CALL para_env_inter_kp%max(step)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%max(step)
          END IF
 
       END FUNCTION kpoint_ot_weighted_response_step
@@ -26052,8 +26315,10 @@ CONTAINS
          mode_coeff(:) = MATMUL(TRANSPOSE(mode_delta), sqrt_step_weight(:)*step_rot(:))
          eval_abs_sum = SUM(ABS(mode_eval))
          nrot_count = REAL(nrot_local, KIND=dp)
-         CALL para_env_inter_kp%sum(eval_abs_sum)
-         CALL para_env_inter_kp%sum(nrot_count)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(eval_abs_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(nrot_count)
          eval_abs_avg = eval_abs_sum/MAX(1.0_dp, nrot_count)
          response_total_sum = 0.0_dp
          raw_negative_sum = 0.0_dp
@@ -26076,8 +26341,10 @@ CONTAINS
             response_total_sum = response_total_sum + mode_norms(imode)
             IF (mode_eval(imode) < 0.0_dp) raw_negative_sum = raw_negative_sum + mode_norms(imode)
          END DO
-         CALL para_env_inter_kp%sum(response_total_sum)
-         CALL para_env_inter_kp%sum(raw_negative_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(response_total_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(raw_negative_sum)
          IF (PRESENT(diag_response_total_sum)) diag_response_total_sum = response_total_sum
          IF (PRESENT(diag_eval_abs_avg)) diag_eval_abs_avg = eval_abs_avg
          IF (response_total_sum > EPSILON(response_total_sum)) &
@@ -26113,9 +26380,12 @@ CONTAINS
                negative_weight_sum = negative_weight_sum + mode_weight*step_weight
             END IF
          END DO
-         CALL para_env_inter_kp%sum(step_weight_sum)
-         CALL para_env_inter_kp%sum(positive_weight_sum)
-         CALL para_env_inter_kp%sum(negative_weight_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(step_weight_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(positive_weight_sum)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(negative_weight_sum)
          IF (PRESENT(diag_step_weight_sum)) diag_step_weight_sum = step_weight_sum
          IF (PRESENT(diag_positive_weight_sum)) diag_positive_weight_sum = positive_weight_sum
          IF (PRESENT(diag_negative_weight_sum)) diag_negative_weight_sum = negative_weight_sum
@@ -26136,9 +26406,12 @@ CONTAINS
             h11 = DOT_PRODUCT(curv(:)*response_pos(:), response_pos(:))
             h12 = DOT_PRODUCT(curv(:)*response_pos(:), response_neg(:))
             h22 = DOT_PRODUCT(curv(:)*response_neg(:), response_neg(:))
-            CALL para_env_inter_kp%sum(h11)
-            CALL para_env_inter_kp%sum(h12)
-            CALL para_env_inter_kp%sum(h22)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(h11)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(h12)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(h22)
          END IF
          h11 = MAX(0.0_dp, h11)
          h22 = MAX(0.0_dp, h22)
@@ -26151,15 +26424,19 @@ CONTAINS
                                                 base_projected_neg)
             g1 = DOT_PRODUCT(grad_e(:), response_pos(:))
             g2 = DOT_PRODUCT(grad_e(:), response_neg(:))
-            CALL para_env_inter_kp%sum(g1)
-            CALL para_env_inter_kp%sum(g2)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(g1)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(g2)
             g1 = g1 - base_projected_pos
             g2 = g2 - base_projected_neg
          ELSE
             g1 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_pos(:))
             g2 = DOT_PRODUCT(grad_e(:) - curv(:)*energy_base(:), response_neg(:))
-            CALL para_env_inter_kp%sum(g1)
-            CALL para_env_inter_kp%sum(g2)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(g1)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(g2)
          END IF
          coeff_positive = 1.0_dp
          coeff_negative = 1.0_dp
@@ -26191,8 +26468,10 @@ CONTAINS
             correction_drop = DOT_PRODUCT(curv(:)*response_corr(:), response_corr(:))
             negative_norm = DOT_PRODUCT(curv(:)*(coeff_negative*response_neg(:)), &
                                         coeff_negative*response_neg(:))
-            CALL para_env_inter_kp%sum(correction_drop)
-            CALL para_env_inter_kp%sum(negative_norm)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(correction_drop)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(negative_norm)
          END IF
          correction_drop = 0.5_dp*MAX(0.0_dp, correction_drop)
          IF (step_weight_sum > EPSILON(step_weight_sum)) &
@@ -26318,7 +26597,8 @@ CONTAINS
             mode_step(:) = mode_coeff(imode)*inv_sqrt_step_weight(:)*mode_vec(:, imode)
             mode_rx(:) = MATMUL(response_model - response_actual, mode_step)
             mode_response_norm = DOT_PRODUCT(curv(:)*mode_rx(:), mode_rx(:))
-            CALL para_env_inter_kp%sum(mode_response_norm)
+            IF (.NOT. global_schur_replicated) &
+               CALL para_env_inter_kp%sum(mode_response_norm)
             response_total_sum = response_total_sum + mode_response_norm
             IF (filtered_eval < 0.0_dp) response_negative_sum = response_negative_sum + mode_response_norm
          END DO
@@ -26459,7 +26739,8 @@ CONTAINS
       REAL(KIND=dp)                                      :: drop
 
          drop = SUM(curv(:)*(response_model(:) - response_actual(:))**2)
-         CALL para_env_inter_kp%sum(drop)
+         IF (.NOT. global_schur_replicated) &
+            CALL para_env_inter_kp%sum(drop)
          drop = 0.5_dp*scale*scale*MAX(0.0_dp, drop)
 
       END FUNCTION kpoint_ot_response_mismatch_drop
