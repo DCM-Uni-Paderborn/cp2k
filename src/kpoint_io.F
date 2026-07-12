@@ -29,6 +29,7 @@ MODULE kpoint_io
                                               cp_fm_get_submatrix,&
                                               cp_fm_read_unformatted,&
                                               cp_fm_release,&
+                                              cp_fm_set_submatrix,&
                                               cp_fm_type,&
                                               cp_fm_write_unformatted
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -69,7 +70,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 22
+   INTEGER, PARAMETER                   :: ot_restart_version = 23
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -170,7 +171,7 @@ CONTAINS
                   END DO
                END DO
                IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
-                  CALL write_kpoint_ot_restart_payload(scf_env%qs_ot_env, ires)
+                  CALL write_kpoint_ot_restart_payload(scf_env%qs_ot_env, fmat, ires)
                END IF
 
                CALL cp_print_key_finished_output(ires, logger, dft_section, TRIM(keys(ikey)))
@@ -519,19 +520,23 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief write optional k-point OT restart state after the density payload
 !> \param qs_ot_env OT channels
+!> \param fmat_template global restart FM distribution
 !> \param ires restart unit
 ! **************************************************************************************************
-   SUBROUTINE write_kpoint_ot_restart_payload(qs_ot_env, ires)
+   SUBROUTINE write_kpoint_ot_restart_payload(qs_ot_env, fmat_template, ires)
       TYPE(qs_ot_type), DIMENSION(:), INTENT(IN)         :: qs_ot_env
+      TYPE(cp_fm_type), INTENT(IN)                       :: fmat_template
       INTEGER, INTENT(IN)                                :: ires
 
       INTEGER                                            :: ichannel, ihist, nchannel, ndiis, nener, &
-                                                            nmo, nmo_ortho
+                                                            nmo, nmo_ortho, source_count
       INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(19)                             :: schur_int_payload
+      INTEGER, DIMENSION(29)                             :: log_payload_int
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
-      LOGICAL :: has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, has_ener_x, &
-         has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
+      INTEGER, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload_int
+      LOGICAL :: channel_source, has_diis_scalars, has_ener_dx, has_ener_gx_old, has_ener_history, &
+         has_ener_x, has_matrix_dx, has_matrix_dx_im, has_matrix_gx_old, has_matrix_gx_old_im, &
          has_matrix_history, has_matrix_history_im, has_matrix_x, has_matrix_x_im, &
          has_rot_history, has_rot_history_im, has_rot_mat_dx, has_rot_mat_dx_im, &
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
@@ -539,9 +544,15 @@ CONTAINS
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(53)                       :: ot_energy_payload, ot_grad_payload, &
+                                                            ot_pos_payload
       REAL(KIND=dp), &
          DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
+      TYPE(dbcsr_type), POINTER                          :: restart_matrix
+      TYPE(mp_para_env_type), POINTER                    :: global_para_env
 
+      NULLIFY (global_para_env, restart_matrix)
+      global_para_env => fmat_template%matrix_struct%para_env
       nchannel = SIZE(qs_ot_env)
       IF (ires > 0) THEN
          WRITE (ires) ot_restart_marker
@@ -921,13 +932,78 @@ CONTAINS
                                   qs_ot_env(ichannel)%schur_projector_mode_trust_ema, &
                                   qs_ot_env(ichannel)%kpoint_occ_metric_residual_quality_ema]
 
+         channel_source = qs_ot_env(ichannel)%state_allocated
+         IF (channel_source) THEN
+            CPASSERT(ASSOCIATED(qs_ot_env(ichannel)%para_env))
+            channel_source = qs_ot_env(ichannel)%para_env%is_source()
+         END IF
+         source_count = MERGE(1, 0, channel_source)
+         CALL global_para_env%sum(source_count)
+         CPASSERT(source_count == 1)
+
+         log_payload_int = MERGE(1, 0, log_payload)
+         adaptive_log_payload_int = MERGE(1, 0, adaptive_log_payload)
+         ot_pos_payload = qs_ot_env(ichannel)%ot_pos
+         ot_energy_payload = qs_ot_env(ichannel)%ot_energy
+         ot_grad_payload = qs_ot_env(ichannel)%ot_grad
+         IF (.NOT. channel_source) THEN
+            int_payload = 0
+            log_payload_int = 0
+            real_payload = 0.0_dp
+            ot_pos_payload = 0.0_dp
+            ot_energy_payload = 0.0_dp
+            ot_grad_payload = 0.0_dp
+            schur_int_payload = 0
+            schur_real_payload = 0.0_dp
+            adaptive_int_payload = 0
+            adaptive_log_payload_int = 0
+            adaptive_real_payload = 0.0_dp
+         END IF
+         CALL global_para_env%sum(int_payload)
+         CALL global_para_env%sum(log_payload_int)
+         CALL global_para_env%sum(real_payload)
+         CALL global_para_env%sum(ot_pos_payload)
+         CALL global_para_env%sum(ot_energy_payload)
+         CALL global_para_env%sum(ot_grad_payload)
+         CALL global_para_env%sum(schur_int_payload)
+         CALL global_para_env%sum(schur_real_payload)
+         CALL global_para_env%sum(adaptive_int_payload)
+         CALL global_para_env%sum(adaptive_log_payload_int)
+         CALL global_para_env%sum(adaptive_real_payload)
+         log_payload = log_payload_int /= 0
+         adaptive_log_payload = adaptive_log_payload_int /= 0
+
+         nener = int_payload(14)
+         ndiis = int_payload(15)
+         has_rot_mat_x = log_payload(5)
+         has_rot_mat_x_im = log_payload(6)
+         has_ener_x = log_payload(7)
+         has_matrix_dx = log_payload(10)
+         has_matrix_dx_im = log_payload(11)
+         has_matrix_gx_old = log_payload(12)
+         has_matrix_gx_old_im = log_payload(13)
+         has_rot_mat_dx = log_payload(14)
+         has_rot_mat_dx_im = log_payload(15)
+         has_rot_mat_gx_old = log_payload(16)
+         has_rot_mat_gx_old_im = log_payload(17)
+         has_ener_dx = log_payload(18)
+         has_ener_gx_old = log_payload(19)
+         has_diis_scalars = log_payload(20)
+         has_matrix_history = log_payload(21)
+         has_matrix_history_im = log_payload(22)
+         has_rot_history = log_payload(23)
+         has_rot_history_im = log_payload(24)
+         has_ener_history = log_payload(25)
+         has_matrix_x = log_payload(26)
+         has_matrix_x_im = log_payload(27)
+
          IF (ires > 0) THEN
             WRITE (ires) int_payload
             WRITE (ires) log_payload
             WRITE (ires) real_payload
-            WRITE (ires) qs_ot_env(ichannel)%ot_pos
-            WRITE (ires) qs_ot_env(ichannel)%ot_energy
-            WRITE (ires) qs_ot_env(ichannel)%ot_grad
+            WRITE (ires) ot_pos_payload
+            WRITE (ires) ot_energy_payload
+            WRITE (ires) ot_grad_payload
             WRITE (ires) schur_int_payload
             WRITE (ires) schur_real_payload
             WRITE (ires) adaptive_int_payload
@@ -935,108 +1011,278 @@ CONTAINS
             WRITE (ires) adaptive_real_payload
          END IF
          IF (has_rot_mat_x) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_x, &
-                                                            qs_ot_env(ichannel), ires)
+                                                            qs_ot_env(ichannel), channel_source, &
+                                                            fmat_template, ires)
          IF (has_rot_mat_x_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_x_im, &
-                                                               qs_ot_env(ichannel), ires)
+                                                               qs_ot_env(ichannel), channel_source, &
+                                                               fmat_template, ires)
          IF (has_matrix_x) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_x, &
-                                                           qs_ot_env(ichannel), ires)
+                                                           qs_ot_env(ichannel), channel_source, &
+                                                           fmat_template, ires)
          IF (has_matrix_x_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_x_im, &
-                                                              qs_ot_env(ichannel), ires)
-         IF (has_ener_x .AND. ires > 0) WRITE (ires) qs_ot_env(ichannel)%ener_x
+                                                              qs_ot_env(ichannel), channel_source, &
+                                                              fmat_template, ires)
+         IF (has_ener_x) CALL write_restart_real_vector(qs_ot_env(ichannel)%ener_x, nener, &
+                                                        channel_source, global_para_env, ires)
          IF (has_matrix_dx) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_dx, &
-                                                            qs_ot_env(ichannel), ires)
+                                                            qs_ot_env(ichannel), channel_source, &
+                                                            fmat_template, ires)
          IF (has_matrix_dx_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_dx_im, &
-                                                               qs_ot_env(ichannel), ires)
+                                                               qs_ot_env(ichannel), channel_source, &
+                                                               fmat_template, ires)
          IF (has_matrix_gx_old) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_gx_old, &
-                                                                qs_ot_env(ichannel), ires)
+                                                                qs_ot_env(ichannel), channel_source, &
+                                                                fmat_template, ires)
          IF (has_matrix_gx_old_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_gx_old_im, &
-                                                                   qs_ot_env(ichannel), ires)
+                                                                   qs_ot_env(ichannel), channel_source, &
+                                                                   fmat_template, ires)
          IF (has_rot_mat_dx) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_dx, &
-                                                             qs_ot_env(ichannel), ires)
+                                                             qs_ot_env(ichannel), channel_source, &
+                                                             fmat_template, ires)
          IF (has_rot_mat_dx_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_dx_im, &
-                                                                qs_ot_env(ichannel), ires)
+                                                                qs_ot_env(ichannel), channel_source, &
+                                                                fmat_template, ires)
          IF (has_rot_mat_gx_old) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_gx_old, &
-                                                                 qs_ot_env(ichannel), ires)
+                                                                 qs_ot_env(ichannel), channel_source, &
+                                                                 fmat_template, ires)
          IF (has_rot_mat_gx_old_im) CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_gx_old_im, &
-                                                                    qs_ot_env(ichannel), ires)
-         IF (has_ener_dx .AND. ires > 0) WRITE (ires) qs_ot_env(ichannel)%ener_dx
-         IF (has_ener_gx_old .AND. ires > 0) WRITE (ires) qs_ot_env(ichannel)%ener_gx_old
-         IF (has_diis_scalars .AND. ires > 0) THEN
-            WRITE (ires) qs_ot_env(ichannel)%ls_diis
-            WRITE (ires) qs_ot_env(ichannel)%lss_diis
-            WRITE (ires) qs_ot_env(ichannel)%c_diis
-            WRITE (ires) qs_ot_env(ichannel)%c_broy
-            WRITE (ires) qs_ot_env(ichannel)%energy_h
-            WRITE (ires) qs_ot_env(ichannel)%ipivot
+                                                                    qs_ot_env(ichannel), channel_source, &
+                                                                    fmat_template, ires)
+         IF (has_ener_dx) CALL write_restart_real_vector(qs_ot_env(ichannel)%ener_dx, nener, &
+                                                         channel_source, global_para_env, ires)
+         IF (has_ener_gx_old) CALL write_restart_real_vector(qs_ot_env(ichannel)%ener_gx_old, nener, &
+                                                             channel_source, global_para_env, ires)
+         IF (has_diis_scalars) THEN
+            CALL write_restart_real_matrix(qs_ot_env(ichannel)%ls_diis, ndiis + 1, ndiis + 1, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_real_matrix(qs_ot_env(ichannel)%lss_diis, ndiis + 1, ndiis + 1, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_real_vector(qs_ot_env(ichannel)%c_diis, ndiis + 1, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_real_vector(qs_ot_env(ichannel)%c_broy, ndiis, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_real_vector(qs_ot_env(ichannel)%energy_h, ndiis, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_integer_vector(qs_ot_env(ichannel)%ipivot, ndiis + 1, &
+                                              channel_source, global_para_env, ires)
          END IF
          IF (has_matrix_history) THEN
             DO ihist = 1, ndiis
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_h_e(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_h_x(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%matrix_h_e(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%matrix_h_x(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
             END DO
          END IF
          IF (has_matrix_history_im) THEN
             DO ihist = 1, ndiis
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_h_e_im(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%matrix_h_x_im(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%matrix_h_e_im(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%matrix_h_x_im(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
             END DO
          END IF
          IF (has_rot_history) THEN
             DO ihist = 1, ndiis
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_h_e(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_h_x(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_e(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_x(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
             END DO
          END IF
          IF (has_rot_history_im) THEN
             DO ihist = 1, ndiis
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_h_e_im(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
-               CALL write_restart_dbcsr_matrix(qs_ot_env(ichannel)%rot_mat_h_x_im(ihist)%matrix, &
-                                               qs_ot_env(ichannel), ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_e_im(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
+               NULLIFY (restart_matrix)
+               IF (qs_ot_env(ichannel)%state_allocated) &
+                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_x_im(ihist)%matrix
+               CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
+                                               fmat_template, ires)
             END DO
          END IF
-         IF (has_ener_history .AND. ires > 0) THEN
-            WRITE (ires) qs_ot_env(ichannel)%ener_h_e
-            WRITE (ires) qs_ot_env(ichannel)%ener_h_x
+         IF (has_ener_history) THEN
+            CALL write_restart_real_matrix(qs_ot_env(ichannel)%ener_h_e, ndiis, nener, &
+                                           channel_source, global_para_env, ires)
+            CALL write_restart_real_matrix(qs_ot_env(ichannel)%ener_h_x, ndiis, nener, &
+                                           channel_source, global_para_env, ires)
          END IF
       END DO
 
    END SUBROUTINE write_kpoint_ot_restart_payload
 
 ! **************************************************************************************************
-!> \brief write a DBCSR matrix through the restart FM layer
+!> \brief gather one channel-local DBCSR matrix and write it through the global restart FM layer
 !> \param matrix matrix to write
 !> \param qs_ot_env channel owning the matrix distribution
+!> \param channel_source true on the source rank of the owning k-point group
+!> \param fmat_template global restart FM distribution
 !> \param ires restart unit
 ! **************************************************************************************************
-   SUBROUTINE write_restart_dbcsr_matrix(matrix, qs_ot_env, ires)
+   SUBROUTINE write_restart_dbcsr_matrix(matrix, qs_ot_env, channel_source, fmat_template, ires)
       TYPE(dbcsr_type), POINTER                          :: matrix
       TYPE(qs_ot_type), INTENT(IN)                       :: qs_ot_env
+      LOGICAL, INTENT(IN)                                :: channel_source
+      TYPE(cp_fm_type), INTENT(IN)                       :: fmat_template
       INTEGER, INTENT(IN)                                :: ires
 
       INTEGER                                            :: ncol, nrow
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dense
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
-      TYPE(cp_fm_type)                                   :: fmat
+      TYPE(cp_fm_type)                                   :: fmat, global_fmat
+      TYPE(mp_para_env_type), POINTER                    :: global_para_env
 
-      NULLIFY (fm_struct)
-      CALL dbcsr_get_info(matrix, nfullrows_total=nrow, nfullcols_total=ncol)
+      NULLIFY (fm_struct, global_para_env)
+      global_para_env => fmat_template%matrix_struct%para_env
+      nrow = 0
+      ncol = 0
+      IF (channel_source) THEN
+         CPASSERT(ASSOCIATED(matrix))
+         CALL dbcsr_get_info(matrix, nfullrows_total=nrow, nfullcols_total=ncol)
+      END IF
+      CALL global_para_env%sum(nrow)
+      CALL global_para_env%sum(ncol)
+      CPASSERT(nrow > 0 .AND. ncol > 0)
+      ALLOCATE (dense(nrow, ncol))
+      dense = 0.0_dp
+
+      IF (qs_ot_env%state_allocated) THEN
+         CPASSERT(ASSOCIATED(matrix))
+         CALL cp_fm_struct_create(fm_struct, para_env=qs_ot_env%para_env, &
+                                  context=qs_ot_env%blacs_env, &
+                                  nrow_global=nrow, ncol_global=ncol)
+         CALL cp_fm_create(fmat, fm_struct)
+         CALL copy_dbcsr_to_fm(matrix, fmat)
+         CALL cp_fm_get_submatrix(fmat, dense)
+         IF (.NOT. channel_source) dense = 0.0_dp
+         CALL cp_fm_release(fmat)
+         CALL cp_fm_struct_release(fm_struct)
+      END IF
+      CALL global_para_env%sum(dense)
+
       IF (ires > 0) WRITE (ires) nrow, ncol
-      CALL cp_fm_struct_create(fm_struct, para_env=qs_ot_env%para_env, &
-                               context=qs_ot_env%blacs_env, &
-                               nrow_global=nrow, ncol_global=ncol)
-      CALL cp_fm_create(fmat, fm_struct)
-      CALL copy_dbcsr_to_fm(matrix, fmat)
-      CALL cp_fm_write_unformatted(fmat, ires)
-      CALL cp_fm_release(fmat)
-      CALL cp_fm_struct_release(fm_struct)
+      CALL cp_fm_create(global_fmat, fmat_template%matrix_struct, nrow=nrow, ncol=ncol)
+      CALL cp_fm_set_submatrix(global_fmat, dense)
+      CALL cp_fm_write_unformatted(global_fmat, ires)
+      CALL cp_fm_release(global_fmat)
+      DEALLOCATE (dense)
 
    END SUBROUTINE write_restart_dbcsr_matrix
+
+! **************************************************************************************************
+!> \brief gather and write one channel-local real vector
+!> \param vector ...
+!> \param n ...
+!> \param channel_source ...
+!> \param para_env ...
+!> \param ires ...
+! **************************************************************************************************
+   SUBROUTINE write_restart_real_vector(vector, n, channel_source, para_env, ires)
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: vector
+      INTEGER, INTENT(IN)                                :: n
+      LOGICAL, INTENT(IN)                                :: channel_source
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: ires
+
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: buffer
+
+      CPASSERT(n > 0)
+      ALLOCATE (buffer(n))
+      buffer = 0.0_dp
+      IF (channel_source) THEN
+         CPASSERT(ASSOCIATED(vector))
+         CPASSERT(SIZE(vector) == n)
+         buffer = vector
+      END IF
+      CALL para_env%sum(buffer)
+      IF (ires > 0) WRITE (ires) buffer
+      DEALLOCATE (buffer)
+
+   END SUBROUTINE write_restart_real_vector
+
+! **************************************************************************************************
+!> \brief gather and write one channel-local real matrix
+!> \param matrix ...
+!> \param nrow ...
+!> \param ncol ...
+!> \param channel_source ...
+!> \param para_env ...
+!> \param ires ...
+! **************************************************************************************************
+   SUBROUTINE write_restart_real_matrix(matrix, nrow, ncol, channel_source, para_env, ires)
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: matrix
+      INTEGER, INTENT(IN)                                :: nrow, ncol
+      LOGICAL, INTENT(IN)                                :: channel_source
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: ires
+
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: buffer
+
+      CPASSERT(nrow > 0 .AND. ncol > 0)
+      ALLOCATE (buffer(nrow, ncol))
+      buffer = 0.0_dp
+      IF (channel_source) THEN
+         CPASSERT(ASSOCIATED(matrix))
+         CPASSERT(SIZE(matrix, 1) == nrow .AND. SIZE(matrix, 2) == ncol)
+         buffer = matrix
+      END IF
+      CALL para_env%sum(buffer)
+      IF (ires > 0) WRITE (ires) buffer
+      DEALLOCATE (buffer)
+
+   END SUBROUTINE write_restart_real_matrix
+
+! **************************************************************************************************
+!> \brief gather and write one channel-local integer vector
+!> \param vector ...
+!> \param n ...
+!> \param channel_source ...
+!> \param para_env ...
+!> \param ires ...
+! **************************************************************************************************
+   SUBROUTINE write_restart_integer_vector(vector, n, channel_source, para_env, ires)
+      INTEGER, DIMENSION(:), POINTER                     :: vector
+      INTEGER, INTENT(IN)                                :: n
+      LOGICAL, INTENT(IN)                                :: channel_source
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: ires
+
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: buffer
+
+      CPASSERT(n > 0)
+      ALLOCATE (buffer(n))
+      buffer = 0
+      IF (channel_source) THEN
+         CPASSERT(ASSOCIATED(vector))
+         CPASSERT(SIZE(vector) == n)
+         buffer = vector
+      END IF
+      CALL para_env%sum(buffer)
+      IF (ires > 0) WRITE (ires) buffer
+      DEALLOCATE (buffer)
+
+   END SUBROUTINE write_restart_integer_vector
 
 ! **************************************************************************************************
 !> \brief read optional k-point OT restart state after the density payload
@@ -1302,7 +1548,9 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%adaptive_log = adaptive_log_payload
          scf_env%qs_ot_restart%channel(ichannel)%adaptive_real = adaptive_real_payload
 
-         scf_env%qs_ot_restart%channel(ichannel)%valid = log_payload(1)
+         scf_env%qs_ot_restart%channel(ichannel)%valid = log_payload(1) .AND. &
+                                                         int_payload(1) == ichannel .AND. &
+                                                         int_payload(5) > 0
          scf_env%qs_ot_restart%channel(ichannel)%spin_index = int_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%kpoint_index = int_payload(3)
          scf_env%qs_ot_restart%channel(ichannel)%local_kpoint_index = int_payload(4)
@@ -1782,6 +2030,12 @@ CONTAINS
             CALL para_env%bcast(scf_env%qs_ot_restart%channel(ichannel)%ener_h_x)
          END IF
       END DO
+
+      IF (ANY(.NOT. scf_env%qs_ot_restart%channel(:)%valid)) THEN
+         scf_env%qs_ot_restart%valid = .FALSE.
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring incomplete k-point OT restart payload; density restart remains available")
+      END IF
 
    END SUBROUTINE read_kpoint_ot_restart_payload
 

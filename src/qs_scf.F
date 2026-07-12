@@ -2434,8 +2434,9 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_qs_ot_kpoint_state'
 
       INTEGER                                            :: handle, ikpoint, ikpoint_local, ispin, &
-                                                            nao, nmo, ot_channel
-      LOGICAL                                            :: use_real_wfn
+                                                            nao, nmo, ot_channel, &
+                                                            restart_compatible_int
+      LOGICAL                                            :: restart_compatible, use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cp_fm_type)                                   :: sc_coeff, sc_coeff_im
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
@@ -2457,6 +2458,40 @@ CONTAINS
       CPASSERT(.NOT. dft_control%restricted .OR. nspin_ot == 1)
 
       CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
+
+      ! A distributed minimizer restart is meaningful only if every channel can
+      ! restore the same accepted-step state.  Reject the payload globally
+      ! before touching any local channel if the current MO layout differs.
+      restart_compatible = scf_env%qs_ot_restart%valid .AND. &
+                           ASSOCIATED(scf_env%qs_ot_restart%channel)
+      IF (restart_compatible) THEN
+         restart_compatible = SIZE(scf_env%qs_ot_restart%channel) == SIZE(scf_env%qs_ot_env)
+      END IF
+      IF (restart_compatible) THEN
+         DO ikpoint_local = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(ikpoint_local)%kpoint_env
+            CPASSERT(ASSOCIATED(kp))
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+               mo_set => kp%mos(1, ispin)
+               CALL get_mo_set(mo_set=mo_set, nmo=nmo)
+               restart_compatible = restart_compatible .AND. &
+                                    scf_env%qs_ot_restart%channel(ot_channel)%valid .AND. &
+                                    scf_env%qs_ot_restart%channel(ot_channel)%spin_index == ispin .AND. &
+                                    scf_env%qs_ot_restart%channel(ot_channel)%kpoint_index == ikpoint .AND. &
+                                    scf_env%qs_ot_restart%channel(ot_channel)%nmo == nmo
+            END DO
+         END DO
+      END IF
+      restart_compatible_int = MERGE(1, 0, restart_compatible)
+      CPASSERT(ASSOCIATED(kpoints%para_env))
+      CALL kpoints%para_env%min(restart_compatible_int)
+      IF (scf_env%qs_ot_restart%valid .AND. restart_compatible_int == 0) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring k-point OT restart payload incompatible with the current channel layout")
+      END IF
+      scf_env%qs_ot_restart%valid = restart_compatible_int /= 0
 
       DO ikpoint_local = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(ikpoint_local)%kpoint_env

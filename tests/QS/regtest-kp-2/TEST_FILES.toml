@@ -68,7 +68,7 @@
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Write/read remain short restart-I/O smokes.  The bounded continue job is the
-# converged 1E-6 physics anchor: it preserves the version-22 adaptive history,
+# converged 1E-6 physics anchor: it preserves the version-23 adaptive history,
 # allows one bounded reader step, and retains finite entropy.  Keep the early
 # smoke references strict but allow small OMP differences at the endpoint.
 "Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-7, ref=-7.89630608865500},
