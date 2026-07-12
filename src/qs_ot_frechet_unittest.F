@@ -51,12 +51,12 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_multiplicity_direction_scale,&
                                               ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_fermi_entropy_state, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate
 
    IMPLICIT NONE
 
@@ -159,6 +159,7 @@ PROGRAM qs_ot_frechet_unittest
                                          5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_search_stagnant("k-point OT stagnant-search restart", nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
+   CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -4442,6 +4443,43 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_secant_geometry
+
+! **************************************************************************************************
+!> \brief check the signed rotation/energy cross block in the finite secant model
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_coupled_secant_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: error
+      REAL(KIND=dp), DIMENSION(2)                        :: model_energy, model_rotation, &
+                                                            step_energy, step_rotation
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: energy_cross, energy_hessian, &
+                                                            rotation_hessian
+
+      rotation_hessian(:, :) = RESHAPE([4.0_dp, 1.0_dp, 1.0_dp, 3.0_dp], [2, 2])
+      energy_hessian(:, :) = RESHAPE([2.0_dp, 0.5_dp, 0.5_dp, 1.5_dp], [2, 2])
+      energy_cross(:, :) = RESHAPE([0.2_dp, 0.4_dp, -0.3_dp, 0.1_dp], [2, 2])
+      step_rotation(:) = [0.5_dp, -0.2_dp]
+      step_energy(:) = [0.1_dp, 0.3_dp]
+
+      CALL qs_scf_kp_coupled_secant_model(rotation_hessian, energy_hessian, energy_cross, &
+                                          step_rotation, step_energy, model_rotation, model_energy)
+      error = MAX(MAXVAL(ABS(model_rotation - [1.66_dp, -0.10_dp])), &
+                  MAXVAL(ABS(model_energy - [0.19_dp, 0.32_dp])))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
+      ELSE
+         WRITE (*, '(A,4(1X,ES16.8))') TRIM(label)//" OK with rotation/energy", &
+            model_rotation, model_energy
+      END IF
+
+   END SUBROUTINE check_kpoint_coupled_secant_model
 
 ! **************************************************************************************************
 !> \brief Check that an irreducible representative takes a one-member search direction.
