@@ -57,7 +57,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_vector_secant_promoted
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_vector_secant_promoted
 
    IMPLICIT NONE
 
@@ -162,6 +163,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
+   CALL check_kpoint_symmetric_multisecant_update("k-point OT symmetric multisecant update", &
+                                                  5.0E-13_dp, nfail)
    CALL check_kpoint_vector_secant_promotion("k-point OT vector secant promotion", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
@@ -698,12 +701,14 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: dbcsr_out, dense_ref, z
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: dbcsr_out, dense_ref, gradient_out, &
+                                                            gradient_ref, tangent_out, &
+                                                            tangent_ref, z
       INTEGER, DIMENSION(:), POINTER                     :: col_blk_size, col_dist, row_blk_size, &
                                                             row_dist
       INTEGER, DIMENSION(:, :), POINTER                  :: pgrid
       LOGICAL                                            :: found
-      REAL(KIND=dp)                                      :: err
+      REAL(KIND=dp)                                      :: dual_after, dual_before, err
       REAL(KIND=dp), DIMENSION(2, 2)                     :: block
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block_p
       REAL(KIND=dp), DIMENSION(n)                        :: evals
@@ -810,6 +815,26 @@ CONTAINS
       IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
 
       err = MAX(err, MAXVAL(ABS(dbcsr_out - dense_ref)))
+      CALL dbcsr_release(outer_re)
+      CALL dbcsr_release(outer_im)
+
+      CALL qs_ot_apply_complex_frechet_dbcsr(evals, inner_re, inner_im, outer_re, outer_im, &
+                                             right_trivialized=.TRUE.)
+      CALL sparse_pattern_pair_to_dense(outer_re, outer_im, tangent_out)
+      CALL apply_dense_frechet(evals, z, tangent_ref, right_trivialized=.TRUE.)
+      err = MAX(err, MAXVAL(ABS(tangent_out - tangent_ref)))
+      CALL dbcsr_release(outer_re)
+      CALL dbcsr_release(outer_im)
+
+      CALL qs_ot_apply_complex_frechet_dbcsr(evals, inner_re, inner_im, outer_re, outer_im, &
+                                             adjoint=.TRUE., inverse=.TRUE., right_trivialized=.TRUE.)
+      CALL sparse_pattern_pair_to_dense(outer_re, outer_im, gradient_out)
+      CALL apply_dense_frechet(evals, z, gradient_ref, adjoint=.TRUE., inverse=.TRUE., &
+                               right_trivialized=.TRUE.)
+      err = MAX(err, MAXVAL(ABS(gradient_out - gradient_ref)))
+      dual_before = REAL(SUM(CONJG(z)*z), KIND=dp)
+      dual_after = REAL(SUM(CONJG(gradient_out)*tangent_out), KIND=dp)
+      err = MAX(err, ABS(dual_after - dual_before))
       IF (err > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
@@ -825,6 +850,34 @@ CONTAINS
       DEALLOCATE (pgrid, row_dist, col_dist, row_blk_size, col_blk_size)
 
    END SUBROUTINE check_dbcsr_sparse_pattern
+
+! **************************************************************************************************
+!> \brief Gather the fixed 2x2-block DBCSR Frechet fixture into a dense complex matrix.
+!> \param matrix_re ...
+!> \param matrix_im ...
+!> \param dense ...
+! **************************************************************************************************
+   SUBROUTINE sparse_pattern_pair_to_dense(matrix_re, matrix_im, dense)
+      TYPE(dbcsr_type)                                   :: matrix_re, matrix_im
+      COMPLEX(KIND=dp), DIMENSION(4, 4), INTENT(OUT)     :: dense
+
+      INTEGER                                            :: col, row
+      LOGICAL                                            :: found
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block_p
+
+      dense(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO row = 1, 2
+      DO col = 1, 2
+         CALL dbcsr_get_block_p(matrix_re, row, col, block_p, found)
+         IF (found) dense(2*row - 1:2*row, 2*col - 1:2*col) = &
+            dense(2*row - 1:2*row, 2*col - 1:2*col) + CMPLX(block_p, 0.0_dp, KIND=dp)
+         CALL dbcsr_get_block_p(matrix_im, row, col, block_p, found)
+         IF (found) dense(2*row - 1:2*row, 2*col - 1:2*col) = &
+            dense(2*row - 1:2*row, 2*col - 1:2*col) + CMPLX(0.0_dp, block_p, KIND=dp)
+      END DO
+      END DO
+
+   END SUBROUTINE sparse_pattern_pair_to_dense
 
 ! **************************************************************************************************
 !> \brief Exercise the production complex FULL_ALL builder and spectral application.
@@ -1371,25 +1424,44 @@ CONTAINS
 !> \param z ...
 !> \param out ...
 !> \param adjoint ...
+!> \param inverse ...
+!> \param right_trivialized ...
 ! **************************************************************************************************
-   SUBROUTINE apply_dense_frechet(evals, z, out, adjoint)
+   SUBROUTINE apply_dense_frechet(evals, z, out, adjoint, inverse, right_trivialized)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: z
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: out
-      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint, inverse, right_trivialized
 
       COMPLEX(KIND=dp)                                   :: kernel
       INTEGER                                            :: i, j
-      LOGICAL                                            :: use_adjoint
+      LOGICAL                                            :: use_adjoint, use_inverse, &
+                                                            use_right_trivialized
+      REAL(KIND=dp)                                      :: kernel_abs
 
       use_adjoint = .FALSE.
       IF (PRESENT(adjoint)) use_adjoint = adjoint
+      use_inverse = .FALSE.
+      IF (PRESENT(inverse)) use_inverse = inverse
+      use_right_trivialized = .FALSE.
+      IF (PRESENT(right_trivialized)) use_right_trivialized = right_trivialized
 
       DO i = 1, SIZE(z, 1)
       DO j = 1, SIZE(z, 2)
          kernel = qs_ot_complex_exp_frechet_kernel(evals(i), evals(j))
          IF (use_adjoint) kernel = CONJG(kernel)
-         out(i, j) = z(i, j)*kernel
+         IF (use_inverse) THEN
+            kernel_abs = ABS(kernel)
+            IF (kernel_abs > SQRT(EPSILON(1.0_dp))) THEN
+               out(i, j) = z(i, j)/kernel
+            ELSE
+               out(i, j) = z(i, j)*CONJG(kernel)/(kernel_abs**2 + EPSILON(1.0_dp))
+            END IF
+         ELSE
+            out(i, j) = z(i, j)*kernel
+         END IF
+         IF (use_right_trivialized) &
+            out(i, j) = EXP(CMPLX(0.0_dp, evals(i), KIND=dp))*out(i, j)
       END DO
       END DO
 
@@ -4522,6 +4594,81 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_symmetric_secant_update
+
+! **************************************************************************************************
+!> \brief check a compatible, incompatible, and rank-deficient two-secant update
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_symmetric_multisecant_update(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: dependent_ready, incompatible_ready, &
+                                                            ready
+      REAL(KIND=dp) :: compatibility, compatible_correction_norm, correction_norm, &
+         dependent_independence, error, incompatible_compatibility, independence, residual_norm, &
+         updated_residual_norm
+      REAL(KIND=dp), DIMENSION(4, 2)                     :: dependent_steps, incompatible_targets, &
+                                                            steps, targets
+      REAL(KIND=dp), DIMENSION(4, 4)                     :: hessian, true_hessian, updated_hessian
+
+      hessian(:, :) = 0.0_dp
+      hessian(1, 1) = -1.0_dp
+      hessian(2, 2) = 0.4_dp
+      hessian(3, 3) = 1.7_dp
+      hessian(4, 4) = -0.2_dp
+      hessian(1, 3) = 0.15_dp
+      hessian(3, 1) = hessian(1, 3)
+      true_hessian(:, :) = hessian
+      true_hessian(1, 2) = 0.35_dp
+      true_hessian(2, 1) = true_hessian(1, 2)
+      true_hessian(2, 4) = -0.22_dp
+      true_hessian(4, 2) = true_hessian(2, 4)
+      true_hessian(3, 4) = 0.18_dp
+      true_hessian(4, 3) = true_hessian(3, 4)
+      steps(:, 1) = [0.5_dp, -0.2_dp, 0.3_dp, 0.1_dp]
+      steps(:, 2) = [-0.1_dp, 0.4_dp, 0.2_dp, -0.3_dp]
+      targets(:, :) = MATMUL(true_hessian, steps)
+
+      CALL qs_scf_kp_symmetric_multisecant_update( &
+         hessian, steps, targets, 1.0_dp, updated_hessian, ready, independence, compatibility, &
+         correction_norm, residual_norm, updated_residual_norm)
+      compatible_correction_norm = correction_norm
+      error = MAXVAL(ABS(MATMUL(updated_hessian, steps) - targets)) + &
+              MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))) + compatibility
+
+      incompatible_targets(:, :) = targets
+      incompatible_targets(1, 2) = incompatible_targets(1, 2) + 0.08_dp
+      CALL qs_scf_kp_symmetric_multisecant_update( &
+         hessian, steps, incompatible_targets, 1.0_dp, updated_hessian, incompatible_ready, &
+         independence, compatibility, correction_norm, residual_norm, updated_residual_norm)
+      incompatible_compatibility = compatibility
+      error = error + updated_residual_norm
+      dependent_steps(:, 1) = steps(:, 1)
+      dependent_steps(:, 2) = 2.0_dp*steps(:, 1)
+      CALL qs_scf_kp_symmetric_multisecant_update( &
+         hessian, dependent_steps, MATMUL(true_hessian, dependent_steps), 1.0_dp, &
+         updated_hessian, dependent_ready, dependent_independence, compatibility, correction_norm, &
+         residual_norm, updated_residual_norm)
+
+      IF (.NOT. ready .OR. .NOT. incompatible_ready .OR. dependent_ready .OR. &
+          independence <= 0.0_dp .OR. dependent_independence > tol .OR. &
+          incompatible_compatibility <= 0.0_dp .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,3(1X,L1),5(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/incompatible/dependent/error/independence/dependent/compatibility/correction", &
+            ready, incompatible_ready, dependent_ready, error, independence, dependent_independence, &
+            incompatible_compatibility, compatible_correction_norm
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
+            " OK with error/independence/dependent/compatibility/correction", &
+            error, independence, dependent_independence, incompatible_compatibility, compatible_correction_norm
+      END IF
+
+   END SUBROUTINE check_kpoint_symmetric_multisecant_update
 
 ! **************************************************************************************************
 !> \brief check accepted-drop and residual calibration for the vector-secant candidate

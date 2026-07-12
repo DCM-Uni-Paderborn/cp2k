@@ -636,8 +636,9 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
-      INTEGER                                            :: ichannel, valid_i, vector_valid_i
-      LOGICAL                                            :: valid, vector_valid
+      INTEGER                                            :: ichannel, previous_valid_i, valid_i, &
+                                                            vector_valid_i
+      LOGICAL                                            :: previous_valid, valid, vector_valid
       REAL(KIND=dp) :: alpha, auxiliary_curvature, current_energy, current_matrix, &
          current_rotation, current_total, energy_curvature, initial_energy, initial_matrix, &
          initial_rotation, initial_total, matrix_curvature, matrix_fraction, rotation_curvature, &
@@ -666,6 +667,53 @@ CONTAINS
       secant_energy_s2 = 0.0_dp
       secant_energy_y2 = 0.0_dp
       secant_energy_sty = 0.0_dp
+
+      previous_valid = .TRUE.
+      DO ichannel = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         previous_valid = previous_valid .AND. qs_ot_env(ichannel)%mermin_secant_ready
+         IF (qs_ot_env(1)%settings%do_rotation) &
+            previous_valid = previous_valid .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_im) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_im) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_previous) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_previous_im) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_previous) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_previous_im)
+         IF (qs_ot_env(1)%settings%do_ener) &
+            previous_valid = previous_valid .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_y) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s_previous) .AND. &
+                             ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_y_previous)
+      END DO
+      previous_valid_i = MERGE(1, 0, previous_valid)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, previous_valid_i)
+      previous_valid = previous_valid_i > 0
+      IF (previous_valid) THEN
+         DO ichannel = 1, SIZE(qs_ot_env)
+            IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+            IF (qs_ot_env(1)%settings%do_rotation) THEN
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_previous, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_s)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_previous_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_s_im)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_previous, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_y)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_previous_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_y_im)
+            END IF
+            IF (qs_ot_env(1)%settings%do_ener) THEN
+               qs_ot_env(ichannel)%ener_mermin_s_previous(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_s(:)
+               qs_ot_env(ichannel)%ener_mermin_y_previous(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_y(:)
+            END IF
+         END DO
+      END IF
+
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
          valid = valid .AND. qs_ot_env(ichannel)%mermin_ls_component_slope_valid
@@ -824,6 +872,7 @@ CONTAINS
 
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         qs_ot_env(ichannel)%mermin_secant_previous_ready = previous_valid .AND. vector_valid
          qs_ot_env(ichannel)%mermin_secant_ready = vector_valid
          IF (.NOT. vector_valid) CYCLE
          qs_ot_env(ichannel)%mermin_secant_sty = secant_sty

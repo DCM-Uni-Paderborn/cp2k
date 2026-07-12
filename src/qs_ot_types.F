@@ -204,6 +204,8 @@ MODULE qs_ot_types
       LOGICAL          :: mermin_ls_component_slope_valid = .FALSE.
       LOGICAL          :: mermin_ls_vector_start_valid = .FALSE.
       LOGICAL          :: mermin_secant_ready = .FALSE.
+      ! One additional accepted secant is runtime-only and is relearned after restart/resize.
+      LOGICAL          :: mermin_secant_previous_ready = .FALSE.
       REAL(KIND=dp)    :: mermin_ls_matrix_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_rotation_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_energy_slope = 0.0_dp
@@ -260,6 +262,10 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_previous => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_previous_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y_previous => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y_previous_im => NULL()
 
       REAL(KIND=dp), DIMENSION(:), POINTER :: rot_mat_evals => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_re => NULL()
@@ -740,6 +746,8 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_g0 => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_y => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s_previous => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_y_previous => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: matrix_occ_precond_scale => NULL()
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :) :: orbital_schur_response_metric
@@ -1004,6 +1012,7 @@ CONTAINS
       qs_ot_env%mermin_ls_accepted_gap_ema = 0.0_dp
       qs_ot_env%mermin_ls_vector_start_valid = .FALSE.
       qs_ot_env%mermin_secant_ready = .FALSE.
+      qs_ot_env%mermin_secant_previous_ready = .FALSE.
       qs_ot_env%mermin_secant_sty = 0.0_dp
       qs_ot_env%mermin_secant_snorm = 0.0_dp
       qs_ot_env%mermin_secant_ynorm = 0.0_dp
@@ -1844,6 +1853,8 @@ CONTAINS
                qs_ot_env%rot_mat_dx_im, qs_ot_env%rot_mat_mermin_g0, qs_ot_env%rot_mat_mermin_g0_im, &
                qs_ot_env%rot_mat_mermin_s, qs_ot_env%rot_mat_mermin_s_im, &
                qs_ot_env%rot_mat_mermin_y, qs_ot_env%rot_mat_mermin_y_im, &
+               qs_ot_env%rot_mat_mermin_s_previous, qs_ot_env%rot_mat_mermin_s_previous_im, &
+               qs_ot_env%rot_mat_mermin_y_previous, qs_ot_env%rot_mat_mermin_y_previous_im, &
                qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
                qs_ot_env%rot_mat_dedu_im, qs_ot_env%rot_mat_chc, qs_ot_env%rot_mat_chc_im, &
                qs_ot_env%rot_mat_evec_re, qs_ot_env%rot_mat_evec_im)
@@ -2038,6 +2049,14 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y)
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous)) &
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_previous)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous_im)) &
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_previous_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous)) &
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_previous)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous_im)) &
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_previous_im)
       END IF
 
       IF (qs_ot_env%settings%do_ener) THEN
@@ -2050,6 +2069,8 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%ener_mermin_g0)) DEALLOCATE (qs_ot_env%ener_mermin_g0)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_s)) DEALLOCATE (qs_ot_env%ener_mermin_s)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_y)) DEALLOCATE (qs_ot_env%ener_mermin_y)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_s_previous)) DEALLOCATE (qs_ot_env%ener_mermin_s_previous)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_y_previous)) DEALLOCATE (qs_ot_env%ener_mermin_y_previous)
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)
             IF (ASSOCIATED(qs_ot_env%ener_h_e)) DEALLOCATE (qs_ot_env%ener_h_e)

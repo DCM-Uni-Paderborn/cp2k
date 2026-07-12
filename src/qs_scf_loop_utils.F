@@ -246,6 +246,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_symmetric_multisecant_update, &
              qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate, &
@@ -386,6 +387,99 @@ CONTAINS
       DEALLOCATE (residual, updated_residual)
 
    END SUBROUTINE qs_scf_kp_symmetric_secant_update
+
+! **************************************************************************************************
+!> \brief Apply a symmetric least-change update for two accepted vector secants.
+!> \param hessian symmetric reference Hessian
+!> \param steps independent accepted steps S
+!> \param secant_targets observed gradient differences Y
+!> \param weight fraction of the least-change correction
+!> \param updated_hessian corrected symmetric Hessian
+!> \param ready whether the two-step subspace was finite and independent
+!> \param independence normalized determinant of S^T S
+!> \param compatibility_norm relative target correction needed to make S^T Y symmetric
+!> \param correction_norm Frobenius norm of the Hessian correction
+!> \param residual_norm norm of the compatible secant residual before the update
+!> \param updated_residual_norm norm of the compatible secant residual after the update
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_symmetric_multisecant_update(hessian, steps, secant_targets, weight, &
+                                                     updated_hessian, ready, independence, &
+                                                     compatibility_norm, correction_norm, &
+                                                     residual_norm, updated_residual_norm)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian, steps, secant_targets
+      REAL(KIND=dp), INTENT(IN)                          :: weight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_hessian
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT)                         :: independence, compatibility_norm, &
+                                                            correction_norm, residual_norm, &
+                                                            updated_residual_norm
+
+      INTEGER                                            :: n
+      REAL(KIND=dp)                                      :: det, gram_scale, update_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: compatible_targets, correction, model, &
+                                                            residual, step_inverse, &
+                                                            updated_residual
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: gram, gram_inverse, skew, step_residual
+
+      n = SIZE(steps, 1)
+      CPASSERT(ALL(SHAPE(hessian) == [n, n]))
+      CPASSERT(SIZE(steps, 2) == 2)
+      CPASSERT(ALL(SHAPE(secant_targets) == [n, 2]))
+      CPASSERT(ALL(SHAPE(updated_hessian) == [n, n]))
+
+      updated_hessian(:, :) = hessian(:, :)
+      ready = .FALSE.
+      independence = 0.0_dp
+      compatibility_norm = 0.0_dp
+      correction_norm = 0.0_dp
+      residual_norm = 0.0_dp
+      updated_residual_norm = 0.0_dp
+      IF (n <= 0) RETURN
+
+      update_weight = MIN(1.0_dp, MAX(0.0_dp, weight))
+      IF (update_weight <= EPSILON(1.0_dp)) RETURN
+      gram(:, :) = MATMUL(TRANSPOSE(steps), steps)
+      gram_scale = gram(1, 1)*gram(2, 2)
+      IF (gram_scale <= EPSILON(1.0_dp)) RETURN
+      det = gram_scale - gram(1, 2)*gram(2, 1)
+      independence = MAX(0.0_dp, det/gram_scale)
+      IF (det <= SQRT(EPSILON(1.0_dp))*gram_scale) RETURN
+
+      gram_inverse(1, 1) = gram(2, 2)/det
+      gram_inverse(1, 2) = -gram(1, 2)/det
+      gram_inverse(2, 1) = -gram(2, 1)/det
+      gram_inverse(2, 2) = gram(1, 1)/det
+      skew(:, :) = 0.5_dp*(MATMUL(TRANSPOSE(steps), secant_targets) - &
+                           TRANSPOSE(MATMUL(TRANSPOSE(steps), secant_targets)))
+
+      ALLOCATE (compatible_targets(n, 2), correction(n, n), model(n, 2), residual(n, 2), &
+                step_inverse(n, 2), updated_residual(n, 2))
+      step_inverse(:, :) = MATMUL(steps, gram_inverse)
+      compatible_targets(:, :) = secant_targets - MATMUL(step_inverse, skew)
+      compatibility_norm = SQRT(MAX(0.0_dp, SUM((compatible_targets - secant_targets)**2)))/ &
+                           MAX(SQRT(MAX(0.0_dp, SUM(secant_targets**2))), EPSILON(1.0_dp))
+
+      model(:, :) = MATMUL(hessian, steps)
+      residual(:, :) = compatible_targets - model
+      step_residual(:, :) = MATMUL(TRANSPOSE(steps), residual)
+      step_residual(:, :) = 0.5_dp*(step_residual + TRANSPOSE(step_residual))
+      correction(:, :) = MATMUL(residual, TRANSPOSE(step_inverse)) + &
+                         MATMUL(step_inverse, TRANSPOSE(residual)) - &
+                         MATMUL(step_inverse, MATMUL(step_residual, TRANSPOSE(step_inverse)))
+      correction(:, :) = 0.5_dp*(correction + TRANSPOSE(correction))
+      updated_hessian(:, :) = hessian + update_weight*correction
+
+      residual_norm = SQRT(MAX(0.0_dp, SUM(residual**2)))
+      correction_norm = SQRT(MAX(0.0_dp, SUM((updated_hessian - hessian)**2)))
+      updated_residual(:, :) = compatible_targets - MATMUL(updated_hessian, steps)
+      updated_residual_norm = SQRT(MAX(0.0_dp, SUM(updated_residual**2)))
+      ready = correction_norm == correction_norm .AND. &
+              updated_residual_norm == updated_residual_norm .AND. &
+              compatibility_norm == compatibility_norm
+      IF (.NOT. ready) updated_hessian(:, :) = hessian(:, :)
+      DEALLOCATE (compatible_targets, correction, model, residual, step_inverse, updated_residual)
+
+   END SUBROUTINE qs_scf_kp_symmetric_multisecant_update
 
 ! **************************************************************************************************
 !> \brief Decide whether accepted Mermin drops promote the vector-secant candidate.
@@ -22691,19 +22785,22 @@ CONTAINS
                                                             global_spin, group, ie, imo, &
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
-      LOGICAL                                            :: update_finite, valid
+      LOGICAL                                            :: multisecant_finite, multisecant_ready, &
+                                                            previous_valid, update_finite, valid
       REAL(KIND=dp) :: alignment, base_hessian_norm, correction_norm, correction_ratio, &
-         curvature_ratio, energy_mean, model_alignment, model_norm, orthogonal_fraction, &
+         curvature_ratio, energy_mean, model_alignment, model_norm, multisecant_compatibility, &
+         multisecant_correction_norm, multisecant_correction_ratio, multisecant_independence, &
+         multisecant_residual_norm, multisecant_updated_residual_norm, orthogonal_fraction, &
          residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
          rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
-         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
-         updated_rotation_residual_norm, y_norm, ynorm
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: model_energy, model_rotation, &
-                                                            secant_energy, secant_rotation, &
-                                                            step_energy, step_rotation, &
-                                                            target_rotation
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dense_im, dense_re, &
-                                                            updated_rotation_hessian
+         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty
+      REAL(KIND=dp) :: updated_rotation_residual_norm, y_norm, ynorm
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: model_energy, model_rotation, &
+         previous_secant_energy, previous_secant_rotation, previous_step_energy, &
+         previous_step_rotation, secant_energy, secant_rotation, step_energy, step_rotation, &
+         target_rotation
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: dense_im, dense_re, multisecant_steps, &
+         multisecant_targets, updated_multisecant_hessian, updated_rotation_hessian
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
@@ -22712,15 +22809,22 @@ CONTAINS
          update_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
          ALLOCATE (step_rotation(nrot), secant_rotation(nrot), model_rotation(nrot), &
-                   step_energy(nener), secant_energy(nener), model_energy(nener))
+                   step_energy(nener), secant_energy(nener), model_energy(nener), &
+                   previous_step_rotation(nrot), previous_secant_rotation(nrot), &
+                   previous_step_energy(nener), previous_secant_energy(nener))
          step_rotation(:) = 0.0_dp
          secant_rotation(:) = 0.0_dp
          model_rotation(:) = 0.0_dp
          step_energy(:) = 0.0_dp
          secant_energy(:) = 0.0_dp
          model_energy(:) = 0.0_dp
+         previous_step_rotation(:) = 0.0_dp
+         previous_secant_rotation(:) = 0.0_dp
+         previous_step_energy(:) = 0.0_dp
+         previous_secant_energy(:) = 0.0_dp
 
          valid = .TRUE.
+         previous_valid = .TRUE.
          DO local_channel = 1, SIZE(local_ot_env)
             global_channel = first_channel + local_channel - 1
             IF (global_channel < 1 .OR. global_channel > SIZE(channel_nmo)) CYCLE
@@ -22736,6 +22840,14 @@ CONTAINS
                     ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_y_im) .AND. &
                     ASSOCIATED(local_ot_env(local_channel)%ener_mermin_s) .AND. &
                     ASSOCIATED(local_ot_env(local_channel)%ener_mermin_y)
+            previous_valid = previous_valid .AND. &
+                             local_ot_env(local_channel)%mermin_secant_previous_ready .AND. &
+                             ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_previous) .AND. &
+                             ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_previous_im) .AND. &
+                             ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_y_previous) .AND. &
+                             ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_y_previous_im) .AND. &
+                             ASSOCIATED(local_ot_env(local_channel)%ener_mermin_s_previous) .AND. &
+                             ASSOCIATED(local_ot_env(local_channel)%ener_mermin_y_previous)
             IF (.NOT. valid) CYCLE
 
             ALLOCATE (dense_re(nmo, nmo), dense_im(nmo, nmo))
@@ -22765,21 +22877,57 @@ CONTAINS
                   secant_rotation(r) = 2.0_dp*dense_im(var_i(r), var_j(r))
                END SELECT
             END DO
+            IF (previous_valid) THEN
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_s_previous, dense_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_s_previous_im, dense_im)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_re)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO r = 1, nrot
+                  IF (var_channel(r) /= global_channel) CYCLE
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     previous_step_rotation(r) = dense_re(var_i(r), var_j(r))
+                  CASE (2)
+                     previous_step_rotation(r) = dense_im(var_i(r), var_j(r))
+                  END SELECT
+               END DO
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_y_previous, dense_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_y_previous_im, dense_im)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_re)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO r = 1, nrot
+                  IF (var_channel(r) /= global_channel) CYCLE
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     previous_secant_rotation(r) = 2.0_dp*dense_re(var_i(r), var_j(r))
+                  CASE (2)
+                     previous_secant_rotation(r) = 2.0_dp*dense_im(var_i(r), var_j(r))
+                  END SELECT
+               END DO
+            END IF
             DEALLOCATE (dense_re, dense_im)
 
             DO imo = 1, nmo
                ie = e_offset(global_channel) + imo - 1
                step_energy(ie) = local_ot_env(local_channel)%ener_mermin_s(imo)
                secant_energy(ie) = local_ot_env(local_channel)%ener_mermin_y(imo)
+               IF (previous_valid) THEN
+                  previous_step_energy(ie) = local_ot_env(local_channel)%ener_mermin_s_previous(imo)
+                  previous_secant_energy(ie) = local_ot_env(local_channel)%ener_mermin_y_previous(imo)
+               END IF
             END DO
          END DO
 
          valid_i = MERGE(1, 0, valid)
          IF (global_schur_replicated) CALL para_env_inter_kp%min(valid_i)
          valid = valid_i > 0
+         valid_i = MERGE(1, 0, previous_valid)
+         IF (global_schur_replicated) CALL para_env_inter_kp%min(valid_i)
+         previous_valid = valid_i > 0
          IF (.NOT. valid) THEN
             DEALLOCATE (step_rotation, secant_rotation, model_rotation, &
-                        step_energy, secant_energy, model_energy)
+                        step_energy, secant_energy, model_energy, previous_step_rotation, &
+                        previous_secant_rotation, previous_step_energy, previous_secant_energy)
             RETURN
          END IF
          IF (global_schur_replicated) THEN
@@ -22787,6 +22935,12 @@ CONTAINS
             CALL para_env_inter_kp%sum(secant_rotation)
             CALL para_env_inter_kp%sum(step_energy)
             CALL para_env_inter_kp%sum(secant_energy)
+            IF (previous_valid) THEN
+               CALL para_env_inter_kp%sum(previous_step_rotation)
+               CALL para_env_inter_kp%sum(previous_secant_rotation)
+               CALL para_env_inter_kp%sum(previous_step_energy)
+               CALL para_env_inter_kp%sum(previous_secant_energy)
+            END IF
          END IF
 
          active_energy_count = COUNT(occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
@@ -22794,6 +22948,8 @@ CONTAINS
             IF (occ_curv(ie) + tether_curv(ie) <= EPSILON(MAXVAL(occ_curv + tether_curv))) THEN
                step_energy(ie) = 0.0_dp
                secant_energy(ie) = 0.0_dp
+               previous_step_energy(ie) = 0.0_dp
+               previous_secant_energy(ie) = 0.0_dp
             END IF
          END DO
          IF (active_energy_count > 0) THEN
@@ -22805,6 +22961,16 @@ CONTAINS
             WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
                secant_energy = secant_energy - energy_mean
             END WHERE
+            IF (previous_valid) THEN
+               energy_mean = SUM(previous_step_energy)/REAL(active_energy_count, KIND=dp)
+               WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
+                  previous_step_energy = previous_step_energy - energy_mean
+               END WHERE
+               energy_mean = SUM(previous_secant_energy)/REAL(active_energy_count, KIND=dp)
+               WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
+                  previous_secant_energy = previous_secant_energy - energy_mean
+               END WHERE
+            END IF
          END IF
 
          CALL qs_scf_kp_coupled_secant_model(rotation_hessian, energy_hessian, energy_cross, &
@@ -22860,6 +23026,36 @@ CONTAINS
                         local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
          IF (update_ready) rotation_hessian_secant(:, :) = updated_rotation_hessian(:, :)
 
+         multisecant_finite = .FALSE.
+         multisecant_ready = .FALSE.
+         multisecant_independence = 0.0_dp
+         multisecant_compatibility = 0.0_dp
+         multisecant_correction_norm = 0.0_dp
+         multisecant_residual_norm = 0.0_dp
+         multisecant_updated_residual_norm = 0.0_dp
+         multisecant_correction_ratio = 0.0_dp
+         IF (previous_valid) THEN
+            ALLOCATE (multisecant_steps(nrot, 2), multisecant_targets(nrot, 2), &
+                      updated_multisecant_hessian(nrot, nrot))
+            multisecant_steps(:, 1) = previous_step_rotation
+            multisecant_steps(:, 2) = step_rotation
+            multisecant_targets(:, 1) = previous_secant_rotation + &
+                                        MATMUL(TRANSPOSE(energy_cross), previous_step_energy)
+            multisecant_targets(:, 2) = target_rotation
+            CALL qs_scf_kp_symmetric_multisecant_update( &
+               rotation_hessian, multisecant_steps, multisecant_targets, 1.0_dp, &
+               updated_multisecant_hessian, multisecant_finite, multisecant_independence, &
+               multisecant_compatibility, multisecant_correction_norm, multisecant_residual_norm, &
+               multisecant_updated_residual_norm)
+            multisecant_correction_ratio = &
+               multisecant_correction_norm/MAX(base_hessian_norm, EPSILON(1.0_dp))
+            multisecant_ready = multisecant_finite .AND. active_subspace .AND. &
+                                residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                multisecant_independence >= 5.0E-2_dp .AND. &
+                                multisecant_compatibility <= 1.0E-1_dp .AND. &
+                                multisecant_correction_ratio <= 0.35_dp
+         END IF
+
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,12(1X,ES16.8))') &
      " OT Schur accepted vector model group selected_sty global_sty sths ratio ynorm mnorm rnorm rrot rener align ym_align orth:", &
@@ -22877,9 +23073,19 @@ CONTAINS
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,ES16.8)') &
             " OT Schur accepted rotation secant correction group Frobenius:", &
             target_group, correction_norm
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),6(1X,ES16.8))') &
+            " OT Schur rotation multisecant shadow group hist finite eligible indep compat rnorm unorm corr cratio:", &
+            target_group, previous_valid, multisecant_finite, multisecant_ready, &
+            multisecant_independence, multisecant_compatibility, multisecant_residual_norm, &
+            multisecant_updated_residual_norm, multisecant_correction_norm, multisecant_correction_ratio
 
          DEALLOCATE (step_rotation, secant_rotation, model_rotation, &
-                     step_energy, secant_energy, model_energy, target_rotation, updated_rotation_hessian)
+                     step_energy, secant_energy, model_energy, previous_step_rotation, &
+                     previous_secant_rotation, previous_step_energy, previous_secant_energy, &
+                     target_rotation, updated_rotation_hessian)
+         IF (ALLOCATED(multisecant_steps)) &
+            DEALLOCATE (multisecant_steps, multisecant_targets, updated_multisecant_hessian)
 
       END SUBROUTINE audit_kpoint_ot_vector_secant_model
 

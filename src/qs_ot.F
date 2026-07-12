@@ -63,6 +63,8 @@ MODULE qs_ot
    PRIVATE :: qs_ot_ref_decide
    PRIVATE :: qs_ot_ref_update
    PRIVATE :: qs_ot_reset_ref_rotation_history
+   PRIVATE :: qs_ot_transport_ref_rotation_history
+   PRIVATE :: qs_ot_transport_ref_rotation_pair
    PRIVATE :: qs_ot_refine
    PRIVATE :: qs_ot_on_the_fly_localize
 
@@ -108,13 +110,15 @@ CONTAINS
 !> \param outer_deriv_im imaginary part of kernel(e_i,e_j)*inner_deriv_ij
 !> \param adjoint use the adjoint Frechet kernel for gradients
 !> \param inverse apply the regularized inverse Frechet kernel
+!> \param right_trivialized premultiply the mapped tangent/covector by exp(-X)
 ! **************************************************************************************************
    SUBROUTINE qs_ot_apply_complex_frechet_dbcsr(evals, inner_deriv_re, inner_deriv_im, &
-                                                outer_deriv_re, outer_deriv_im, adjoint, inverse)
+                                                outer_deriv_re, outer_deriv_im, adjoint, inverse, &
+                                                right_trivialized)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       TYPE(dbcsr_type)                                   :: inner_deriv_re, inner_deriv_im, &
                                                             outer_deriv_re, outer_deriv_im
-      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint, inverse
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint, inverse, right_trivialized
 
       COMPLEX(KIND=dp)                                   :: cval_in, cval_out, kernel
       INTEGER                                            :: col, i, j, max_blocks, nblocks, row
@@ -122,7 +126,8 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: col_blk_offset, col_blk_size, row_blk_offset, &
                                                             row_blk_size
       LOGICAL                                            :: found_im, found_out_im, found_out_re, &
-                                                            found_re, use_adjoint, use_inverse
+                                                            found_re, use_adjoint, use_inverse, &
+                                                            use_right_trivialized
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
                                                             block_out_re
       REAL(KIND=dp)                                      :: e1, e2, im_part, kernel_abs, re_part
@@ -133,6 +138,8 @@ CONTAINS
       IF (PRESENT(adjoint)) use_adjoint = adjoint
       use_inverse = .FALSE.
       IF (PRESENT(inverse)) use_inverse = inverse
+      use_right_trivialized = .FALSE.
+      IF (PRESENT(right_trivialized)) use_right_trivialized = right_trivialized
 
       ! Re/Im parts can have different sparse block patterns. Build an explicit
       ! union pattern and treat missing partner blocks as zero.
@@ -215,6 +222,8 @@ CONTAINS
             ELSE
                cval_out = cval_in*kernel
             END IF
+            IF (use_right_trivialized) &
+               cval_out = EXP(CMPLX(0.0_dp, e1, KIND=dp))*cval_out
             block_out_re(i, j) = REAL(cval_out, KIND=dp)
             block_out_im(i, j) = AIMAG(cval_out)
          END DO
@@ -688,8 +697,9 @@ CONTAINS
       !
       TYPE(qs_ot_type)                                   :: qs_ot_env
 
-      ! CG carries a useful step-length/conjugacy memory across REF absorptions.  Resetting it
-      ! here turns the Al k-point metallic case back into slow steepest-descent-like progress.
+      ! CG history was transported into the absorbed REF coordinates immediately before this
+      ! call. Preserve its step-length/conjugacy memory; resetting it makes metallic k-point OT
+      ! revert to slow steepest-descent-like progress.
       IF (qs_ot_env%settings%ot_method == "CG") RETURN
 
       qs_ot_env%OT_energy(:) = 0.0_dp
@@ -725,6 +735,133 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%energy_h)) qs_ot_env%energy_h(:) = 0.0_dp
 
    END SUBROUTINE qs_ot_reset_ref_rotation_history
+
+! **************************************************************************************************
+!> \brief Transport one complex generator tangent/covector through a finite REF absorption.
+!> \param qs_ot_env complex OT state containing the accepted unitary U
+!> \param matrix_re real part of the generator-coordinate quantity
+!> \param matrix_im imaginary part of the generator-coordinate quantity
+!> \param gradient use the inverse-adjoint map for a covector instead of the tangent map
+! **************************************************************************************************
+   SUBROUTINE qs_ot_transport_ref_rotation_pair(qs_ot_env, matrix_re, matrix_im, gradient)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(dbcsr_type), POINTER                          :: matrix_re, matrix_im
+      LOGICAL, INTENT(IN)                                :: gradient
+
+      TYPE(dbcsr_type)                                   :: frechet_im, frechet_re, inner_im, &
+                                                            inner_re, kernel_im, kernel_re, tmp, &
+                                                            work_im, work_re
+
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_evals))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_evec_re))
+      CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_evec_im))
+      CPASSERT(ASSOCIATED(matrix_re))
+      CPASSERT(ASSOCIATED(matrix_im))
+
+      CALL dbcsr_copy(work_re, matrix_re, name="transport_work_re")
+      CALL dbcsr_copy(work_im, matrix_re, name="transport_work_im")
+      CALL dbcsr_copy(tmp, matrix_re, name="transport_tmp")
+      CALL dbcsr_copy(inner_re, matrix_re, name="transport_inner_re")
+      CALL dbcsr_copy(inner_im, matrix_re, name="transport_inner_im")
+
+      ! Move A to the eigenbasis of the accepted generator: V^H A V.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_re, qs_ot_env%rot_mat_evec_re, 0.0_dp, work_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_im, qs_ot_env%rot_mat_evec_im, 0.0_dp, tmp)
+      CALL dbcsr_add(work_re, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_re, qs_ot_env%rot_mat_evec_im, 0.0_dp, work_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_im, qs_ot_env%rot_mat_evec_re, 0.0_dp, tmp)
+      CALL dbcsr_add(work_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_re, work_re, 0.0_dp, inner_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_im, work_im, 1.0_dp, inner_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_re, work_im, 0.0_dp, inner_im)
+      CALL dbcsr_multiply('T', 'N', -1.0_dp, qs_ot_env%rot_mat_evec_im, work_re, 1.0_dp, inner_im)
+
+      IF (gradient) THEN
+         CALL qs_ot_apply_complex_frechet_dbcsr(qs_ot_env%rot_mat_evals, inner_re, inner_im, &
+                                                kernel_re, kernel_im, adjoint=.TRUE., inverse=.TRUE., &
+                                                right_trivialized=.TRUE.)
+      ELSE
+         CALL qs_ot_apply_complex_frechet_dbcsr(qs_ot_env%rot_mat_evals, inner_re, inner_im, &
+                                                kernel_re, kernel_im, right_trivialized=.TRUE.)
+      END IF
+
+      ! Return the already right-trivialized tangent (or dual inverse map)
+      ! from the generator eigenbasis.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_re, kernel_re, 0.0_dp, work_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_im, kernel_im, 0.0_dp, tmp)
+      CALL dbcsr_add(work_re, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_re, kernel_im, 0.0_dp, work_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_evec_im, kernel_re, 0.0_dp, tmp)
+      CALL dbcsr_add(work_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+      CALL dbcsr_copy(frechet_re, matrix_re, name="transport_frechet_re")
+      CALL dbcsr_copy(frechet_im, matrix_re, name="transport_frechet_im")
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, work_re, qs_ot_env%rot_mat_evec_re, 0.0_dp, frechet_re)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, work_im, qs_ot_env%rot_mat_evec_im, 1.0_dp, frechet_re)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, work_im, qs_ot_env%rot_mat_evec_re, 0.0_dp, frechet_im)
+      CALL dbcsr_multiply('N', 'T', -1.0_dp, work_re, qs_ot_env%rot_mat_evec_im, 1.0_dp, frechet_im)
+      CALL dbcsr_copy(matrix_re, frechet_re)
+      CALL dbcsr_copy(matrix_im, frechet_im)
+
+      CALL dbcsr_release(frechet_im)
+      CALL dbcsr_release(frechet_re)
+      CALL dbcsr_release(inner_im)
+      CALL dbcsr_release(inner_re)
+      CALL dbcsr_release(kernel_im)
+      CALL dbcsr_release(kernel_re)
+      CALL dbcsr_release(tmp)
+      CALL dbcsr_release(work_im)
+      CALL dbcsr_release(work_re)
+
+   END SUBROUTINE qs_ot_transport_ref_rotation_pair
+
+! **************************************************************************************************
+!> \brief Move CG and Mermin rotation history into the newly absorbed complex REF basis.
+!> \param qs_ot_env complex OT state containing the accepted unitary U
+! **************************************************************************************************
+   SUBROUTINE qs_ot_transport_ref_rotation_history(qs_ot_env)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+
+      IF (qs_ot_env%settings%ot_method /= "CG") RETURN
+      IF (.NOT. qs_ot_env%settings%do_rotation) RETURN
+
+      IF (ASSOCIATED(qs_ot_env%rot_mat_gx) .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_gx, &
+                                                qs_ot_env%rot_mat_gx_im, gradient=.TRUE.)
+      IF (ASSOCIATED(qs_ot_env%rot_mat_pgx) .AND. ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_pgx, &
+                                                qs_ot_env%rot_mat_pgx_im, gradient=.FALSE.)
+      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old) .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_gx_old, &
+                                                qs_ot_env%rot_mat_gx_old_im, gradient=.TRUE.)
+      IF (ASSOCIATED(qs_ot_env%rot_mat_dx) .AND. ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_dx, &
+                                                qs_ot_env%rot_mat_dx_im, gradient=.FALSE.)
+      IF (qs_ot_env%mermin_ls_vector_start_valid .AND. &
+          ASSOCIATED(qs_ot_env%rot_mat_mermin_g0) .AND. ASSOCIATED(qs_ot_env%rot_mat_mermin_g0_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_g0, &
+                                                qs_ot_env%rot_mat_mermin_g0_im, gradient=.TRUE.)
+      IF (qs_ot_env%mermin_secant_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s) .AND. ASSOCIATED(qs_ot_env%rot_mat_mermin_s_im)) &
+            CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_s, &
+                                                   qs_ot_env%rot_mat_mermin_s_im, gradient=.FALSE.)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y) .AND. ASSOCIATED(qs_ot_env%rot_mat_mermin_y_im)) &
+            CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_y, &
+                                                   qs_ot_env%rot_mat_mermin_y_im, gradient=.TRUE.)
+      END IF
+      IF (qs_ot_env%mermin_secant_previous_ready .AND. &
+          ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous) .AND. &
+          ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_s_previous, &
+                                                qs_ot_env%rot_mat_mermin_s_previous_im, gradient=.FALSE.)
+      IF (qs_ot_env%mermin_secant_previous_ready .AND. &
+          ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous) .AND. &
+          ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous_im)) &
+         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_y_previous, &
+                                                qs_ot_env%rot_mat_mermin_y_previous_im, gradient=.TRUE.)
+
+   END SUBROUTINE qs_ot_transport_ref_rotation_history
 
 ! **************************************************************************************************
 !> \brief ...
@@ -980,6 +1117,7 @@ CONTAINS
          CALL dbcsr_copy(c_re, matrix_c)
          CALL dbcsr_copy(c_im, matrix_c_im)
          IF (qs_ot_env%settings%do_rotation) THEN
+            CALL qs_ot_transport_ref_rotation_history(qs_ot_env)
             CALL dbcsr_set(qs_ot_env%rot_mat_x, 0.0_dp)
             CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
             CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
