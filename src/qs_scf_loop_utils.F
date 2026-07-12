@@ -250,7 +250,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate, &
-             qs_scf_kp_vector_secant_promoted
+             qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
 
@@ -482,7 +482,7 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_symmetric_multisecant_update
 
 ! **************************************************************************************************
-!> \brief Decide whether accepted Mermin drops promote the vector-secant candidate.
+!> \brief Decide whether accepted Mermin drops promote a secant candidate.
 !> \param samples number of accepted candidate probes
 !> \param min_samples minimum number of probes
 !> \param predicted_sum accumulated predicted Mermin drop
@@ -493,9 +493,9 @@ CONTAINS
 !> \param min_quality minimum aggregate and averaged quality
 !> \return whether the candidate has repeatable accepted-step support
 ! **************************************************************************************************
-   PURE FUNCTION qs_scf_kp_vector_secant_promoted(samples, min_samples, predicted_sum, measured_sum, &
-                                                  quality, quality_ema, residual_quality_ema, &
-                                                  min_quality) RESULT(promoted)
+   PURE FUNCTION qs_scf_kp_secant_candidate_promoted(samples, min_samples, predicted_sum, measured_sum, &
+                                                     quality, quality_ema, residual_quality_ema, &
+                                                     min_quality) RESULT(promoted)
       INTEGER, INTENT(IN)                                :: samples, min_samples
       REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, quality, &
                                                             quality_ema, residual_quality_ema, &
@@ -507,7 +507,7 @@ CONTAINS
                  quality_ema >= min_quality .AND. quality >= 0.5_dp*min_quality .AND. &
                  residual_quality_ema >= min_quality
 
-   END FUNCTION qs_scf_kp_vector_secant_promoted
+   END FUNCTION qs_scf_kp_secant_candidate_promoted
 
 ! **************************************************************************************************
 !> \brief Stage the coupled occupation response only inside its local metallic basin.
@@ -2032,6 +2032,14 @@ CONTAINS
          local_ot_env(1)%schur_vector_secant_residual_quality_ema = 0.0_dp
          local_ot_env(1)%schur_vector_secant_drop_sum = 0.0_dp
          local_ot_env(1)%schur_vector_secant_measured_sum = 0.0_dp
+         local_ot_env(1)%schur_multisecant_candidate_enabled = .FALSE.
+         local_ot_env(1)%schur_multisecant_quality_samples = 0
+         local_ot_env(1)%schur_multisecant_quality = 0.0_dp
+         local_ot_env(1)%schur_multisecant_quality_ema = 0.0_dp
+         local_ot_env(1)%schur_multisecant_residual_quality = 0.0_dp
+         local_ot_env(1)%schur_multisecant_residual_quality_ema = 0.0_dp
+         local_ot_env(1)%schur_multisecant_drop_sum = 0.0_dp
+         local_ot_env(1)%schur_multisecant_measured_sum = 0.0_dp
       END IF
 
       IF (changed .OR. samples /= previous_samples) THEN
@@ -2071,6 +2079,7 @@ CONTAINS
       local_ot_env(1)%schur_split_shadow_pending = .FALSE.
       local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
       local_ot_env(1)%schur_vector_secant_pending = .FALSE.
+      local_ot_env(1)%schur_multisecant_pending = .FALSE.
       local_ot_env(1)%schur_dense_metric_shadow_pending = .FALSE.
       local_ot_env(1)%schur_projector_mode_pending = .FALSE.
       local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
@@ -5352,89 +5361,90 @@ CONTAINS
          constrained_predicted_drop, constrained_quality_ratio, &
          dense_metric_shadow_predicted_drop, dense_metric_shadow_quality_ratio, &
          gauge_residual_quality_ratio, measured_drop, metric_residual_quality, &
-         occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, predicted_drop, &
-         projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality, &
-         projector_density_audit_quality_ratio, projector_density_descent_base_predicted_drop
-      REAL(KIND=dp) :: projector_density_descent_incremental_measured_drop, &
+         multisecant_predicted_drop, multisecant_quality_ratio, occgap_shadow_predicted_drop, &
+         occgap_shadow_quality_ratio, predicted_drop, &
+         projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality
+      REAL(KIND=dp) :: projector_density_audit_quality_ratio, &
+         projector_density_descent_base_predicted_drop, &
+         projector_density_descent_incremental_measured_drop, &
          projector_density_descent_incremental_predicted_drop, &
          projector_density_descent_incremental_quality_ratio, &
          projector_density_descent_predicted_drop, projector_density_descent_quality_ratio, &
          projector_density_descent_selected_predicted_drop, &
          projector_density_descent_selected_quality_ratio, projector_density_descent_support, &
-         projector_density_full_direct_predicted_drop, &
-         projector_density_full_direct_quality_ratio, &
-         projector_density_full_direct_selected_predicted_drop, &
-         projector_density_full_direct_selected_quality_ratio
-      REAL(KIND=dp) :: projector_density_full_global_predicted_drop, &
+         projector_density_full_direct_predicted_drop, projector_density_full_direct_quality_ratio
+      REAL(KIND=dp) :: projector_density_full_direct_selected_predicted_drop, &
+         projector_density_full_direct_selected_quality_ratio, &
+         projector_density_full_global_predicted_drop, &
          projector_density_full_global_quality_ratio, &
          projector_density_full_global_selected_predicted_drop, &
          projector_density_full_global_selected_quality_ratio, projector_density_full_min_drop, &
          projector_density_full_predicted_drop, projector_density_full_quality_ratio, &
          projector_density_full_selected_predicted_drop, &
-         projector_density_full_selected_quality_ratio, projector_density_lowcurv_quality, &
-         projector_density_lowcurv_ratio, projector_density_predicted_drop, &
-         projector_density_quality_ratio, projector_diagref_correction_ratio
-      REAL(KIND=dp) :: projector_diagref_predicted_drop, projector_diagref_quality_ratio, &
+         projector_density_full_selected_quality_ratio, projector_density_lowcurv_quality
+      REAL(KIND=dp) :: projector_density_lowcurv_ratio, projector_density_predicted_drop, &
+         projector_density_quality_ratio, projector_diagref_correction_ratio, &
+         projector_diagref_predicted_drop, projector_diagref_quality_ratio, &
          projector_inactive_offdiag_abs_ratio, projector_inactive_offdiag_negative, &
          projector_inactive_offdiag_predicted_drop, projector_inactive_offdiag_quality_ratio, &
          projector_inactive_offdiag_selected_predicted_drop, &
          projector_inactive_offdiag_selected_quality_ratio, &
-         projector_inactive_offdiag_signed_ratio, projector_inactive_offdiag_step_negative, &
-         projector_mixed_direct_predicted_drop, projector_mixed_direct_quality_ratio, &
-         projector_mode_predicted_drop, projector_mode_quality_ratio
-      REAL(KIND=dp) :: projector_mode_response_drop_ratio, projector_mode_response_negative, &
-         projector_mode_step_negative, projector_mode_trust, projector_offdiag_abs_ratio, &
-         projector_offdiag_negative, projector_offdiag_predicted_drop, &
-         projector_offdiag_quality_ratio, projector_offdiag_selected_predicted_drop, &
-         projector_offdiag_selected_quality_ratio, projector_offdiag_signed_ratio, &
-         projector_offdiag_step_negative, projector_physical_compensation_quality, &
-         projector_physical_compensation_ratio, projector_physical_correction_quality, &
-         projector_physical_correction_ratio
-      REAL(KIND=dp) :: projector_physical_direct_density_cshadow_coverage, &
+         projector_inactive_offdiag_signed_ratio, projector_inactive_offdiag_step_negative
+      REAL(KIND=dp) :: projector_mixed_direct_predicted_drop, &
+         projector_mixed_direct_quality_ratio, projector_mode_predicted_drop, &
+         projector_mode_quality_ratio, projector_mode_response_drop_ratio, &
+         projector_mode_response_negative, projector_mode_step_negative, projector_mode_trust, &
+         projector_offdiag_abs_ratio, projector_offdiag_negative, &
+         projector_offdiag_predicted_drop, projector_offdiag_quality_ratio, &
+         projector_offdiag_selected_predicted_drop, projector_offdiag_selected_quality_ratio, &
+         projector_offdiag_signed_ratio, projector_offdiag_step_negative, &
+         projector_physical_compensation_quality
+      REAL(KIND=dp) :: projector_physical_compensation_ratio, &
+         projector_physical_correction_quality, projector_physical_correction_ratio, &
+         projector_physical_direct_density_cshadow_coverage, &
          projector_physical_direct_density_cshadow_predicted_drop, &
          projector_physical_direct_density_cshadow_quality_ratio, &
          projector_physical_direct_density_fshadow_coverage, &
          projector_physical_direct_density_fshadow_predicted_drop, &
          projector_physical_direct_density_fshadow_quality_ratio, &
          projector_physical_direct_density_selected_predicted_drop, &
-         projector_physical_direct_density_selected_quality_ratio, &
-         projector_physical_direct_predicted_drop, projector_physical_direct_quality, &
-         projector_physical_direct_quality_ratio
-      REAL(KIND=dp) :: projector_physical_direct_ratio, &
-         projector_physical_direct_selected_predicted_drop, &
+         projector_physical_direct_density_selected_quality_ratio
+      REAL(KIND=dp) :: projector_physical_direct_predicted_drop, &
+         projector_physical_direct_quality, projector_physical_direct_quality_ratio, &
+         projector_physical_direct_ratio, projector_physical_direct_selected_predicted_drop, &
          projector_physical_direct_selected_quality_ratio, projector_physical_metric_quality, &
          projector_physical_metric_ratio, projector_physical_negative_quality, &
          projector_physical_predicted_drop, projector_physical_quality_ratio, &
          projector_physical_selected_predicted_drop, projector_physical_selected_quality, &
-         projector_physical_selected_quality_ratio, projector_physical_selected_ratio, &
-         projector_physical_shift_quality, projector_physical_shift_ratio, &
-         projector_physical_trace_active_avg
-      REAL(KIND=dp) :: projector_physical_trace_active_diag_avg, &
-         projector_physical_trace_active_diag_quality, projector_physical_trace_active_free_avg, &
-         projector_physical_trace_active_free_quality, projector_physical_trace_active_quality, &
-         projector_physical_trace_actual_avg, projector_physical_trace_actual_diag_avg, &
-         projector_physical_trace_actual_diag_quality, projector_physical_trace_actual_free_avg, &
-         projector_physical_trace_actual_free_quality, projector_physical_trace_actual_quality, &
-         projector_physical_trace_invariant_avg, projector_physical_trace_invariant_diag_avg
-      REAL(KIND=dp) :: projector_physical_trace_invariant_diag_quality, &
+         projector_physical_selected_quality_ratio
+      REAL(KIND=dp) :: projector_physical_selected_ratio, projector_physical_shift_quality, &
+         projector_physical_shift_ratio, projector_physical_trace_active_avg, &
+         projector_physical_trace_active_diag_avg, projector_physical_trace_active_diag_quality, &
+         projector_physical_trace_active_free_avg, projector_physical_trace_active_free_quality, &
+         projector_physical_trace_active_quality, projector_physical_trace_actual_avg, &
+         projector_physical_trace_actual_diag_avg, projector_physical_trace_actual_diag_quality, &
+         projector_physical_trace_actual_free_avg, projector_physical_trace_actual_free_quality
+      REAL(KIND=dp) :: projector_physical_trace_actual_quality, &
+         projector_physical_trace_invariant_avg, projector_physical_trace_invariant_diag_avg, &
+         projector_physical_trace_invariant_diag_quality, &
          projector_physical_trace_invariant_free_avg, &
          projector_physical_trace_invariant_free_quality, &
          projector_physical_trace_invariant_quality, projector_physical_trace_raw_avg, &
          projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality, &
          projector_physical_trace_raw_free_avg, projector_physical_trace_raw_free_quality, &
-         projector_physical_trace_raw_quality, projector_physical_weight_quality, &
-         projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
-         projector_response_predicted_drop
-      REAL(KIND=dp) :: projector_response_quality_ratio, &
-         projector_response_selected_predicted_drop, projector_response_selected_quality_ratio, &
-         projector_spectral_predicted_drop, projector_spectral_quality_ratio, &
-         projector_spectral_selected_predicted_drop, projector_spectral_selected_quality_ratio, &
-         quality_ratio, raw_residual_quality_ratio, residual_current_delta, residual_drop, &
-         residual_quality_ratio, sample_accepted_drop, sample_gap, sample_gap_ratio, &
-         sample_quality, sample_reference_drop, split_shadow_calibrated_predicted_drop, &
-         split_shadow_calibrated_quality_ratio
-      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio, &
-         vector_secant_predicted_drop, vector_secant_quality_ratio
+         projector_physical_trace_raw_quality
+      REAL(KIND=dp) :: projector_physical_weight_quality, projector_plateau_gap_predicted_drop, &
+         projector_plateau_gap_quality_ratio, projector_response_predicted_drop, &
+         projector_response_quality_ratio, projector_response_selected_predicted_drop, &
+         projector_response_selected_quality_ratio, projector_spectral_predicted_drop, &
+         projector_spectral_quality_ratio, projector_spectral_selected_predicted_drop, &
+         projector_spectral_selected_quality_ratio, quality_ratio, raw_residual_quality_ratio, &
+         residual_current_delta, residual_drop, residual_quality_ratio, sample_accepted_drop, &
+         sample_gap, sample_gap_ratio
+      REAL(KIND=dp) :: sample_quality, sample_reference_drop, &
+         split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio, &
+         split_shadow_predicted_drop, split_shadow_quality_ratio, vector_secant_predicted_drop, &
+         vector_secant_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -5566,6 +5576,7 @@ CONTAINS
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
             local_ot_env(1)%schur_vector_secant_pending = .FALSE.
+            local_ot_env(1)%schur_multisecant_pending = .FALSE.
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -5863,7 +5874,7 @@ CONTAINS
             local_ot_env(1)%schur_vector_secant_measured_sum = &
                local_ot_env(1)%schur_vector_secant_measured_sum + MAX(0.0_dp, measured_drop)
             local_ot_env(1)%schur_vector_secant_candidate_enabled = &
-               qs_scf_kp_vector_secant_promoted( &
+               qs_scf_kp_secant_candidate_promoted( &
                samples, ot_kp_schur_calibration_min_samples, &
                local_ot_env(1)%schur_vector_secant_drop_sum, &
                local_ot_env(1)%schur_vector_secant_measured_sum, &
@@ -5882,6 +5893,57 @@ CONTAINS
                vector_secant_predicted_drop, measured_drop, &
                local_ot_env(1)%schur_vector_secant_measured_sum/ &
                MAX(local_ot_env(1)%schur_vector_secant_drop_sum, EPSILON(1.0_dp))
+         END IF
+
+         multisecant_predicted_drop = local_ot_env(1)%schur_multisecant_drop
+         multisecant_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%schur_multisecant_pending .AND. &
+             multisecant_predicted_drop > EPSILON(multisecant_predicted_drop)) THEN
+            multisecant_quality_ratio = MAX(0.0_dp, measured_drop)/multisecant_predicted_drop
+            local_ot_env(1)%schur_multisecant_quality = multisecant_quality_ratio
+            local_ot_env(1)%schur_multisecant_residual_quality = &
+               MAX(0.0_dp, MIN(1.0_dp, residual_quality_ratio))
+            samples = MIN(local_ot_env(1)%schur_multisecant_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_multisecant_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_multisecant_quality_ema = multisecant_quality_ratio
+               local_ot_env(1)%schur_multisecant_residual_quality_ema = &
+                  local_ot_env(1)%schur_multisecant_residual_quality
+            ELSE
+               local_ot_env(1)%schur_multisecant_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_multisecant_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*multisecant_quality_ratio
+               local_ot_env(1)%schur_multisecant_residual_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_multisecant_residual_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha* &
+                  local_ot_env(1)%schur_multisecant_residual_quality
+            END IF
+            local_ot_env(1)%schur_multisecant_drop_sum = &
+               local_ot_env(1)%schur_multisecant_drop_sum + multisecant_predicted_drop
+            local_ot_env(1)%schur_multisecant_measured_sum = &
+               local_ot_env(1)%schur_multisecant_measured_sum + MAX(0.0_dp, measured_drop)
+            local_ot_env(1)%schur_multisecant_candidate_enabled = &
+               qs_scf_kp_secant_candidate_promoted( &
+               samples, ot_kp_schur_calibration_min_samples, &
+               local_ot_env(1)%schur_multisecant_drop_sum, &
+               local_ot_env(1)%schur_multisecant_measured_sum, &
+               multisecant_quality_ratio, &
+               local_ot_env(1)%schur_multisecant_quality_ema, &
+               local_ot_env(1)%schur_multisecant_residual_quality_ema, &
+               ot_kp_schur_calibrated_quality_min_ratio)
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
+               " OT Schur LS multisecant history samples promoted q qema rq rqema pred meas ratio:", &
+               samples, local_ot_env(1)%schur_multisecant_candidate_enabled, &
+               multisecant_quality_ratio, local_ot_env(1)%schur_multisecant_quality_ema, &
+               local_ot_env(1)%schur_multisecant_residual_quality, &
+               local_ot_env(1)%schur_multisecant_residual_quality_ema, &
+               multisecant_predicted_drop, measured_drop, &
+               local_ot_env(1)%schur_multisecant_measured_sum/ &
+               MAX(local_ot_env(1)%schur_multisecant_drop_sum, EPSILON(1.0_dp))
          END IF
 
          projector_mode_predicted_drop = local_ot_env(1)%schur_projector_mode_drop
@@ -7702,6 +7764,7 @@ CONTAINS
          local_ot_env(1)%schur_split_shadow_pending = .FALSE.
          local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
          local_ot_env(1)%schur_vector_secant_pending = .FALSE.
+         local_ot_env(1)%schur_multisecant_pending = .FALSE.
          local_ot_env(1)%schur_dense_metric_shadow_pending = .FALSE.
          local_ot_env(1)%schur_projector_mode_pending = .FALSE.
          local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
@@ -8445,6 +8508,8 @@ CONTAINS
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
             local_ot_env(1)%schur_vector_secant_pending = .FALSE.
             local_ot_env(1)%schur_vector_secant_drop = 0.0_dp
+            local_ot_env(1)%schur_multisecant_pending = .FALSE.
+            local_ot_env(1)%schur_multisecant_drop = 0.0_dp
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -8648,20 +8713,21 @@ CONTAINS
       LOGICAL :: exact_density_response_ready, exact_energy_model_ready, &
          exact_physical_response_ready, failed, inactive_gauge_projection_used, &
          metric_attempt_current_bridge, metric_attempt_response, metric_attempt_selectable, &
-         metric_attempt_tail_bridge, new_search_point, physical_delta_group_ready, &
+         metric_attempt_tail_bridge, multisecant_update_eligible, multisecant_update_ready, &
+         multisecant_update_used, new_search_point, physical_delta_group_ready, &
          physical_delta_norm_ready, physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
          projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, projector_inactive_offdiag_tail_refresh_probe
-      LOGICAL :: projector_inactive_offdiag_tail_refresh_ready, &
-         projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
-         projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
-         projector_physical_candidate_selected, projector_physical_direct_basis_tail_limited, &
-         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
-         projector_physical_direct_candidate_used, &
+         projector_inactive_offdiag_candidate_ready
+      LOGICAL :: projector_inactive_offdiag_tail_refresh_probe, &
+         projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
+         projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
+         projector_physical_candidate_ready, projector_physical_candidate_selected, &
+         projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
+         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
-         projector_physical_direct_density_candidate_selected, &
-         projector_physical_direct_density_fshadow_ready
-      LOGICAL :: projector_physical_direct_density_quality_ready, &
+         projector_physical_direct_density_candidate_selected
+      LOGICAL :: projector_physical_direct_density_fshadow_ready, &
+         projector_physical_direct_density_quality_ready, &
          projector_physical_direct_density_residual_bad, &
          projector_physical_direct_density_selected_probe_ready, &
          projector_physical_direct_density_tail_probe_ready, &
@@ -8669,9 +8735,9 @@ CONTAINS
          projector_physical_direct_effective_response_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
          projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
-         projector_physical_direct_shadow_enabled, &
-         projector_physical_direct_spectral_candidate_ready
-      LOGICAL :: projector_physical_direct_spectral_candidate_selected, &
+         projector_physical_direct_shadow_enabled
+      LOGICAL :: projector_physical_direct_spectral_candidate_ready, &
+         projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_quality_ready, &
          projector_physical_direct_spectral_probe_ready, &
@@ -8679,10 +8745,11 @@ CONTAINS
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
-         projector_response_candidate_selected, response_model_available, schur_active_subspace
-      LOGICAL :: solved, split_candidate_diagnostic, split_candidate_enabled, &
-         split_candidate_ready, split_candidate_selected, split_residual_competitive, &
-         trust_rejected, vector_secant_update_eligible, vector_secant_update_ready
+         projector_response_candidate_selected
+      LOGICAL :: response_model_available, schur_active_subspace, solved, &
+         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
+         split_candidate_selected, split_residual_competitive, trust_rejected, &
+         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
          accepted_model_drop, accepted_model_gap_ratio, accepted_occgap_shadow_drop, &
          accepted_occgap_shadow_gap_ratio, accepted_projector_coupled_weight, &
@@ -9433,10 +9500,10 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_plateau_exact, &
          response_exact, response_exact_physical, response_exact_raw, response_occ, &
          response_occ_physical, response_physical_model, response_split, rot_hessian, &
-         rot_hessian_coupled, rot_hessian_orbital_schur, rot_hessian_projector, &
-         rot_hessian_projector_physical, rot_hessian_projector_physical_active, &
-         rot_hessian_projector_physical_diagref, rot_hessian_projector_physical_offdiag, &
-         rot_hessian_projector_physical_offdiag_active, &
+         rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_orbital_schur, &
+         rot_hessian_projector, rot_hessian_projector_physical, &
+         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
+         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_active, &
          rot_hessian_projector_physical_offdiag_plateau
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_secant, schur, &
@@ -9741,6 +9808,7 @@ CONTAINS
                    response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
+                   rot_hessian_multisecant(nrot, nrot), &
                    rot_hessian_secant(nrot, nrot), &
                    rot_hessian_orbital_schur(nrot, nrot), &
                    projector_physical_direct_base_delta(nrot, nrot), &
@@ -9897,6 +9965,7 @@ CONTAINS
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
+         rot_hessian_multisecant(:, :) = 0.0_dp
          rot_hessian_secant(:, :) = 0.0_dp
          rot_hessian_orbital_schur(:, :) = 0.0_dp
          rot_hessian_projector(:, :) = 0.0_dp
@@ -10312,8 +10381,12 @@ CONTAINS
          dense_trust_quality = 1.0_dp
          energy_gauge_weight = 0.0_dp
          exact_energy_model_ready = .FALSE.
+         multisecant_update_eligible = .FALSE.
+         multisecant_update_ready = .FALSE.
+         multisecant_update_used = .FALSE.
          vector_secant_update_eligible = .FALSE.
          vector_secant_update_ready = .FALSE.
+         vector_secant_update_used = .FALSE.
          exact_response_diag_avg = 0.0_dp
          response_mixed_diag_avg = 0.0_dp
          projector_hessian_abs_avg = 0.0_dp
@@ -11296,7 +11369,8 @@ CONTAINS
                         response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
                         projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
                         projector_physical_direct_delta, &
-                        rot_hessian_coupled, rot_hessian_secant, rot_hessian_orbital_schur, &
+                        rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_secant, &
+                        rot_hessian_orbital_schur, &
                         rot_hessian_projector, &
                         projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
                         rot_hessian_projector_physical, &
@@ -12932,19 +13006,32 @@ CONTAINS
                                                      occ_curv, tether_curv, rot_hessian_coupled, &
                                                      energy_hessian_reference, energy_cross, &
                                                      residual_delta, schur_active_subspace, &
-                                                     rot_hessian_secant, &
-                                                     vector_secant_update_eligible)
+                                                     rot_hessian_secant, rot_hessian_multisecant, &
+                                                     vector_secant_update_eligible, &
+                                                     multisecant_update_eligible)
          vector_secant_update_ready = vector_secant_update_eligible .AND. &
                                       (local_ot_env(1)%schur_vector_secant_candidate_enabled .OR. &
                                        local_ot_env(1)%schur_vector_secant_quality_samples < &
                                        ot_kp_schur_calibration_min_samples)
+         multisecant_update_ready = multisecant_update_eligible .AND. &
+                                    (local_ot_env(1)%schur_multisecant_candidate_enabled .OR. &
+                                     local_ot_env(1)%schur_multisecant_quality_samples < &
+                                     ot_kp_schur_calibration_min_samples)
          IF (.NOT. vector_secant_update_ready) rot_hessian_secant(:, :) = rot_hessian_coupled(:, :)
+         IF (.NOT. multisecant_update_ready) &
+            rot_hessian_multisecant(:, :) = rot_hessian_coupled(:, :)
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
             " OT Schur vector-secant candidate group eligible apply promoted samples:", &
             target_group, vector_secant_update_eligible, vector_secant_update_ready, &
             local_ot_env(1)%schur_vector_secant_candidate_enabled, &
             local_ot_env(1)%schur_vector_secant_quality_samples
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
+            " OT Schur multisecant candidate group eligible apply promoted samples:", &
+            target_group, multisecant_update_eligible, multisecant_update_ready, &
+            local_ot_env(1)%schur_multisecant_candidate_enabled, &
+            local_ot_env(1)%schur_multisecant_quality_samples
 
          IF (sigma > EPSILON(sigma)) THEN
             response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
@@ -14198,8 +14285,12 @@ CONTAINS
                IF (exact_attempt_response) &
                   projector_coupled_weight = MAX(projector_coupled_weight, &
                                                  projector_density_history_weight)
-               IF (vector_secant_update_ready) THEN
+               IF (multisecant_update_ready) THEN
+                  schur(:, :) = rot_hessian_multisecant(:, :)
+                  multisecant_update_used = .TRUE.
+               ELSE IF (vector_secant_update_ready) THEN
                   schur(:, :) = rot_hessian_secant(:, :)
+                  vector_secant_update_used = .TRUE.
                ELSE
                   schur(:, :) = rot_hessian_coupled(:, :)
                END IF
@@ -20217,8 +20308,10 @@ CONTAINS
                IF (.NOT. split_candidate_selected) THEN
                   IF (selected_attempt == 3) selected_flavor = 30
                   IF (selected_attempt == 3 .AND. inactive_gauge_projection_used) selected_flavor = 42
-                  IF (selected_attempt == 3 .AND. vector_secant_update_ready .AND. &
+                  IF (selected_attempt == 3 .AND. vector_secant_update_used .AND. &
                       .NOT. inactive_gauge_projection_used) selected_flavor = 43
+                  IF (selected_attempt == 3 .AND. multisecant_update_used .AND. &
+                      .NOT. inactive_gauge_projection_used) selected_flavor = 44
                   ! Projector/density candidates are built by the exact-response
                   ! dense attempt and may be selected later while comparing
                   ! against the raw fallback.  Preserve their sub-flavor so the
@@ -20378,11 +20471,17 @@ CONTAINS
             local_ot_env(1)%schur_model_delta = MAX(local_ot_env(1)%schur_model_delta, residual_delta)
             local_ot_env(1)%schur_model_control_delta = &
                MAX(local_ot_env(1)%schur_model_control_delta, density_projector_control_delta)
-            IF (vector_secant_update_ready .AND. schur_used_attempt == 3 .AND. &
+            IF (vector_secant_update_used .AND. schur_used_attempt == 3 .AND. &
                 accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
                local_ot_env(1)%schur_vector_secant_pending = .TRUE.
                local_ot_env(1)%schur_vector_secant_drop = &
                   local_ot_env(1)%schur_vector_secant_drop + accepted_model_calibrated_drop
+            END IF
+            IF (multisecant_update_used .AND. schur_used_attempt == 3 .AND. &
+                accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
+               local_ot_env(1)%schur_multisecant_pending = .TRUE.
+               local_ot_env(1)%schur_multisecant_drop = &
+                  local_ot_env(1)%schur_multisecant_drop + accepted_model_calibrated_drop
             END IF
             IF (accepted_occgap_shadow_drop > EPSILON(accepted_occgap_shadow_drop)) THEN
                local_ot_env(1)%schur_occgap_shadow_pending = .TRUE.
@@ -22732,7 +22831,8 @@ CONTAINS
                      projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
-                     rot_hessian_coupled, rot_hessian_secant, rot_hessian_orbital_schur, &
+                     rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_secant, &
+                     rot_hessian_orbital_schur, &
                      rot_hessian_projector, &
                      projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
                      projector_physical_direct_schur_vec, &
@@ -22763,13 +22863,17 @@ CONTAINS
 !> \param residual_delta current fixed-N Mermin residual
 !> \param active_subspace rotations were restricted to the thermal Fermi subspace
 !> \param rotation_hessian_secant accepted-secant rotation candidate
+!> \param rotation_hessian_multisecant compatible two-secant rotation candidate
 !> \param update_ready whether the candidate passed the physical trust gate
+!> \param multisecant_update_ready whether the two-secant candidate passed its geometry gate
 ! **************************************************************************************************
       SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rotation_hessian, &
                                                      energy_hessian, energy_cross, residual_delta, &
-                                                     active_subspace, rotation_hessian_secant, update_ready)
+                                                     active_subspace, rotation_hessian_secant, &
+                                                     rotation_hessian_multisecant, update_ready, &
+                                                     multisecant_update_ready)
       INTEGER, INTENT(IN)                                :: target_group
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset, var_channel, &
                                                             var_i, var_j, var_kind
@@ -22778,15 +22882,16 @@ CONTAINS
                                                             energy_cross
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       LOGICAL, INTENT(IN)                                :: active_subspace
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_hessian_secant
-      LOGICAL, INTENT(OUT)                               :: update_ready
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_hessian_secant, &
+                                                            rotation_hessian_multisecant
+      LOGICAL, INTENT(OUT)                               :: update_ready, multisecant_update_ready
 
       INTEGER                                            :: active_energy_count, global_channel, &
                                                             global_spin, group, ie, imo, &
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
-      LOGICAL                                            :: multisecant_finite, multisecant_ready, &
-                                                            previous_valid, update_finite, valid
+      LOGICAL                                            :: multisecant_finite, previous_valid, &
+                                                            update_finite, valid
       REAL(KIND=dp) :: alignment, base_hessian_norm, correction_norm, correction_ratio, &
          curvature_ratio, energy_mean, model_alignment, model_norm, multisecant_compatibility, &
          multisecant_correction_norm, multisecant_correction_ratio, multisecant_independence, &
@@ -22805,8 +22910,11 @@ CONTAINS
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
          CPASSERT(ALL(SHAPE(rotation_hessian_secant) == SHAPE(rotation_hessian)))
+         CPASSERT(ALL(SHAPE(rotation_hessian_multisecant) == SHAPE(rotation_hessian)))
          rotation_hessian_secant(:, :) = rotation_hessian(:, :)
+         rotation_hessian_multisecant(:, :) = rotation_hessian(:, :)
          update_ready = .FALSE.
+         multisecant_update_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
          ALLOCATE (step_rotation(nrot), secant_rotation(nrot), model_rotation(nrot), &
                    step_energy(nener), secant_energy(nener), model_energy(nener), &
@@ -23027,7 +23135,6 @@ CONTAINS
          IF (update_ready) rotation_hessian_secant(:, :) = updated_rotation_hessian(:, :)
 
          multisecant_finite = .FALSE.
-         multisecant_ready = .FALSE.
          multisecant_independence = 0.0_dp
          multisecant_compatibility = 0.0_dp
          multisecant_correction_norm = 0.0_dp
@@ -23049,11 +23156,16 @@ CONTAINS
                multisecant_updated_residual_norm)
             multisecant_correction_ratio = &
                multisecant_correction_norm/MAX(base_hessian_norm, EPSILON(1.0_dp))
-            multisecant_ready = multisecant_finite .AND. active_subspace .AND. &
-                                residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-                                multisecant_independence >= 5.0E-2_dp .AND. &
-                                multisecant_compatibility <= 1.0E-1_dp .AND. &
-                                multisecant_correction_ratio <= 0.35_dp
+            multisecant_update_ready = multisecant_finite .AND. active_subspace .AND. &
+                                       residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                       multisecant_independence >= 5.0E-2_dp .AND. &
+                                       multisecant_compatibility <= 1.0E-1_dp .AND. &
+                                       multisecant_correction_ratio <= 0.35_dp .AND. &
+                                       local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                       ot_kp_schur_calibration_min_samples .AND. &
+                                       local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
+            IF (multisecant_update_ready) &
+               rotation_hessian_multisecant(:, :) = updated_multisecant_hessian(:, :)
          END IF
 
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
@@ -23076,7 +23188,7 @@ CONTAINS
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),6(1X,ES16.8))') &
             " OT Schur rotation multisecant shadow group hist finite eligible indep compat rnorm unorm corr cratio:", &
-            target_group, previous_valid, multisecant_finite, multisecant_ready, &
+            target_group, previous_valid, multisecant_finite, multisecant_update_ready, &
             multisecant_independence, multisecant_compatibility, multisecant_residual_norm, &
             multisecant_updated_residual_norm, multisecant_correction_norm, multisecant_correction_ratio
 

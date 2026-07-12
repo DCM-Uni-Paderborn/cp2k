@@ -291,6 +291,8 @@ MODULE qs_ot_types
       LOGICAL :: schur_occgap_shadow_pending = .FALSE.
       LOGICAL :: schur_vector_secant_pending = .FALSE.
       LOGICAL :: schur_vector_secant_candidate_enabled = .FALSE.
+      LOGICAL :: schur_multisecant_pending = .FALSE.
+      LOGICAL :: schur_multisecant_candidate_enabled = .FALSE.
       LOGICAL :: schur_projector_mode_pending = .FALSE.
       LOGICAL :: schur_projector_offdiag_pending = .FALSE.
       LOGICAL :: schur_projector_inactive_offdiag_pending = .FALSE.
@@ -323,6 +325,7 @@ MODULE qs_ot_types
       INTEGER :: schur_split_quality_samples = 0, schur_coupled_quality_samples = 0
       INTEGER :: schur_split_shadow_quality_samples = 0
       INTEGER :: schur_vector_secant_quality_samples = 0
+      INTEGER :: schur_multisecant_quality_samples = 0
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
       INTEGER :: schur_projector_offdiag_selected_quality_samples = 0
@@ -417,6 +420,13 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_vector_secant_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_vector_secant_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_vector_secant_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_residual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_multisecant_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_drop = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -1036,6 +1046,8 @@ CONTAINS
       qs_ot_env%schur_occgap_shadow_pending = .FALSE.
       qs_ot_env%schur_vector_secant_pending = .FALSE.
       qs_ot_env%schur_vector_secant_candidate_enabled = .FALSE.
+      qs_ot_env%schur_multisecant_pending = .FALSE.
+      qs_ot_env%schur_multisecant_candidate_enabled = .FALSE.
       qs_ot_env%schur_projector_mode_pending = .FALSE.
       qs_ot_env%schur_projector_offdiag_pending = .FALSE.
       qs_ot_env%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -1073,6 +1085,7 @@ CONTAINS
       qs_ot_env%schur_coupled_quality_samples = 0
       qs_ot_env%schur_split_shadow_quality_samples = 0
       qs_ot_env%schur_vector_secant_quality_samples = 0
+      qs_ot_env%schur_multisecant_quality_samples = 0
       qs_ot_env%schur_occgap_shadow_quality_samples = 0
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
@@ -1187,6 +1200,13 @@ CONTAINS
       qs_ot_env%schur_vector_secant_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_vector_secant_drop_sum = 0.0_dp
       qs_ot_env%schur_vector_secant_measured_sum = 0.0_dp
+      qs_ot_env%schur_multisecant_drop = 0.0_dp
+      qs_ot_env%schur_multisecant_quality = 0.0_dp
+      qs_ot_env%schur_multisecant_quality_ema = 0.0_dp
+      qs_ot_env%schur_multisecant_residual_quality = 0.0_dp
+      qs_ot_env%schur_multisecant_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_multisecant_drop_sum = 0.0_dp
+      qs_ot_env%schur_multisecant_measured_sum = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_drop = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality_ema = 0.0_dp

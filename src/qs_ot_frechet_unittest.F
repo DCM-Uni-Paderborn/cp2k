@@ -56,9 +56,9 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_vector_secant_promoted
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -165,7 +165,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
    CALL check_kpoint_symmetric_multisecant_update("k-point OT symmetric multisecant update", &
                                                   5.0E-13_dp, nfail)
-   CALL check_kpoint_vector_secant_promotion("k-point OT vector secant promotion", nfail)
+   CALL check_kpoint_secant_candidate_promotion("k-point OT secant candidate promotion", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -4671,29 +4671,29 @@ CONTAINS
    END SUBROUTINE check_kpoint_symmetric_multisecant_update
 
 ! **************************************************************************************************
-!> \brief check accepted-drop and residual calibration for the vector-secant candidate
+!> \brief check accepted-drop and residual calibration shared by secant candidates
 !> \param label ...
 !> \param nfail ...
 ! **************************************************************************************************
-   SUBROUTINE check_kpoint_vector_secant_promotion(label, nfail)
+   SUBROUTINE check_kpoint_secant_candidate_promotion(label, nfail)
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL                                            :: bad_drop, bad_recent, bad_residual, &
                                                             good, young, zero_drop
 
-      good = qs_scf_kp_vector_secant_promoted(3, 3, 4.0_dp, 3.0_dp, &
-                                              0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
-      young = qs_scf_kp_vector_secant_promoted(2, 3, 4.0_dp, 3.0_dp, &
-                                               0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
-      bad_drop = qs_scf_kp_vector_secant_promoted(3, 3, 4.0_dp, 0.5_dp, &
+      good = qs_scf_kp_secant_candidate_promoted(3, 3, 4.0_dp, 3.0_dp, &
+                                                 0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
+      young = qs_scf_kp_secant_candidate_promoted(2, 3, 4.0_dp, 3.0_dp, &
                                                   0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
-      bad_recent = qs_scf_kp_vector_secant_promoted(3, 3, 4.0_dp, 3.0_dp, &
-                                                    0.10_dp, 0.80_dp, 0.60_dp, 0.25_dp)
-      bad_residual = qs_scf_kp_vector_secant_promoted(3, 3, 4.0_dp, 3.0_dp, &
-                                                      0.75_dp, 0.80_dp, 0.10_dp, 0.25_dp)
-      zero_drop = qs_scf_kp_vector_secant_promoted(3, 3, 0.0_dp, 0.0_dp, &
-                                                   0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
+      bad_drop = qs_scf_kp_secant_candidate_promoted(3, 3, 4.0_dp, 0.5_dp, &
+                                                     0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
+      bad_recent = qs_scf_kp_secant_candidate_promoted(3, 3, 4.0_dp, 3.0_dp, &
+                                                       0.10_dp, 0.80_dp, 0.60_dp, 0.25_dp)
+      bad_residual = qs_scf_kp_secant_candidate_promoted(3, 3, 4.0_dp, 3.0_dp, &
+                                                         0.75_dp, 0.80_dp, 0.10_dp, 0.25_dp)
+      zero_drop = qs_scf_kp_secant_candidate_promoted(3, 3, 0.0_dp, 0.0_dp, &
+                                                      0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
       IF (.NOT. good .OR. young .OR. bad_drop .OR. bad_recent .OR. bad_residual .OR. zero_drop) THEN
          nfail = nfail + 1
          WRITE (*, '(A,6(1X,L1))') TRIM(label)//" FAILED with good/young/drop/recent/residual/zero", &
@@ -4702,7 +4702,7 @@ CONTAINS
          WRITE (*, '(A)') TRIM(label)//" OK"
       END IF
 
-   END SUBROUTINE check_kpoint_vector_secant_promotion
+   END SUBROUTINE check_kpoint_secant_candidate_promotion
 
 ! **************************************************************************************************
 !> \brief Check that an irreducible representative takes a one-member search direction.
