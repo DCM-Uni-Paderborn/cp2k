@@ -54,9 +54,61 @@ MODULE preconditioner_apply
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'preconditioner_apply'
 
    PUBLIC :: apply_preconditioner_cfm_complex, apply_preconditioner_dbcsr, &
-             apply_preconditioner_dbcsr_complex, apply_preconditioner_fm
+             apply_preconditioner_dbcsr_complex, apply_preconditioner_fm, &
+             full_all_response_metric_dense
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Build the reduced column-resolved metric of a complex FULL_ALL inverse Hessian.
+!> \param spectral_residual W^H R, with W the full generalized eigenvector matrix
+!> \param full_evals full generalized eigenvalues associated with rows of W
+!> \param occ_evals reference orbital energies associated with output columns
+!> \param energy_gap lower bound applied to every spectral denominator
+!> \param response_metric R^H P_j R for every output column j
+!> \param column_scale optional additional positive scaling of P_j
+! **************************************************************************************************
+   SUBROUTINE full_all_response_metric_dense(spectral_residual, full_evals, occ_evals, energy_gap, &
+                                             response_metric, column_scale)
+
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: spectral_residual
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: full_evals, occ_evals
+      REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(OUT)  :: response_metric
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: column_scale
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: weighted_residual
+      INTEGER                                            :: imo, nfull, nmo
+      REAL(KIND=dp)                                      :: scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: weights
+
+      nfull = SIZE(spectral_residual, 1)
+      nmo = SIZE(spectral_residual, 2)
+      CPASSERT(SIZE(full_evals) == nfull)
+      CPASSERT(SIZE(occ_evals) == nmo)
+      CPASSERT(SIZE(response_metric, 1) == nmo)
+      CPASSERT(SIZE(response_metric, 2) == nmo)
+      CPASSERT(SIZE(response_metric, 3) == nmo)
+      IF (PRESENT(column_scale)) THEN
+         CPASSERT(SIZE(column_scale) == nmo)
+      END IF
+
+      ALLOCATE (weighted_residual(nfull, nmo), weights(nfull))
+      DO imo = 1, nmo
+         scale = 1.0_dp
+         IF (PRESENT(column_scale)) scale = column_scale(imo)
+         CPASSERT(scale >= 0.0_dp)
+         weights(:) = scale/MAX(energy_gap, full_evals(:) - occ_evals(imo))
+         weighted_residual(:, :) = &
+            SPREAD(CMPLX(weights(:), 0.0_dp, KIND=dp), DIM=2, NCOPIES=nmo)*spectral_residual(:, :)
+         response_metric(:, :, imo) = &
+            MATMUL(CONJG(TRANSPOSE(spectral_residual)), weighted_residual)
+         response_metric(:, :, imo) = 0.5_dp*(response_metric(:, :, imo) + &
+                                              CONJG(TRANSPOSE(response_metric(:, :, imo))))
+      END DO
+      DEALLOCATE (weighted_residual, weights)
+
+   END SUBROUTINE full_all_response_metric_dense
 
 ! **************************************************************************************************
 !> \brief applies a previously created preconditioner to a full matrix

@@ -239,12 +239,49 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
              qs_scf_kp_full_all_spin_normalization, &
+             qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Contract the FULL_ALL complement metric with finite complex occupation-matrix responses.
+!> \param response_metric reduced R^H P_j R metric for every output orbital j
+!> \param occupation_response d(U F U^H)/dx_r for every real rotation variable r
+!> \param correction positive orbital-complement Schur correction B^T P B
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_orbital_schur_correction(response_metric, occupation_response, correction)
+
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), INTENT(IN)   :: response_metric, occupation_response
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: correction
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: metric_response
+      INTEGER                                            :: imo, nmo, nrot
+
+      nmo = SIZE(response_metric, 1)
+      nrot = SIZE(occupation_response, 3)
+      CPASSERT(SIZE(response_metric, 2) == nmo)
+      CPASSERT(SIZE(response_metric, 3) == nmo)
+      CPASSERT(SIZE(occupation_response, 1) == nmo)
+      CPASSERT(SIZE(occupation_response, 2) == nmo)
+      CPASSERT(SIZE(correction, 1) == nrot)
+      CPASSERT(SIZE(correction, 2) == nrot)
+
+      correction(:, :) = 0.0_dp
+      ALLOCATE (metric_response(nmo, nrot))
+      DO imo = 1, nmo
+         metric_response(:, :) = MATMUL(response_metric(:, :, imo), &
+                                        occupation_response(:, imo, :))
+         correction(:, :) = correction(:, :) + &
+                            REAL(MATMUL(CONJG(TRANSPOSE(occupation_response(:, imo, :))), metric_response), KIND=dp)
+      END DO
+      correction(:, :) = 0.5_dp*(correction(:, :) + TRANSPOSE(correction(:, :)))
+      DEALLOCATE (metric_response)
+
+   END SUBROUTINE qs_scf_kp_orbital_schur_correction
 
 ! **************************************************************************************************
 !> \brief Stage the coupled occupation response only inside its local metallic basin.

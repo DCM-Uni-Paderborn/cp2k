@@ -40,6 +40,7 @@ PROGRAM qs_ot_frechet_unittest
                                               mp_world_finalize,&
                                               mp_world_init
    USE preconditioner,                  ONLY: apply_preconditioner,&
+                                              full_all_response_metric_dense,&
                                               make_complex_full_all
    USE preconditioner_types,            ONLY: preconditioner_type
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
@@ -53,7 +54,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
         qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate
 
    IMPLICIT NONE
 
@@ -89,6 +91,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_complex_full_all_preconditioner("complex FULL_ALL phase covariance", &
                                               5.0E-11_dp, nfail, mp_comm)
+   CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
+                                             5.0E-7_dp, nfail)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_symmetry_preconditioned_metric("k-point symmetry preconditioned metric", &
                                                     5.0E-14_dp, nfail)
@@ -1115,6 +1119,222 @@ CONTAINS
       CALL mp_para_env_release(para_env)
 
    END SUBROUTINE check_complex_full_all_preconditioner
+
+! **************************************************************************************************
+!> \brief Check the complex orbital-complement Schur term against direct and finite-difference forms.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_full_all_orbital_schur(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nfull = 5, nmo = 3, nrot = 4
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp, &
+                                                            response_step = 2.0E-5_dp
+
+      COMPLEX(KIND=dp), DIMENSION(nfull)                 :: response_r, response_s
+      COMPLEX(KIND=dp), DIMENSION(nfull, nmo)            :: spectral_residual, &
+                                                            spectral_residual_phase
+      COMPLEX(KIND=dp), DIMENSION(nmo)                   :: phases
+      COMPLEX(KIND=dp), DIMENSION(nmo, nmo)              :: occ_m, occ_matrix, occ_p, occ_zero, u, &
+                                                            u_m, u_p
+      COMPLEX(KIND=dp), DIMENSION(nmo, nmo, nmo)         :: metric, metric_phase, metric_reference
+      COMPLEX(KIND=dp), DIMENSION(nmo, nmo, nrot)        :: docc, docc_phase
+      INTEGER                                            :: i, imo, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
+      REAL(KIND=dp)                                      :: correction_error, direct_error, &
+                                                            energy_m, energy_p, fd_error, &
+                                                            gauge_error, hermitian_error, &
+                                                            min_eval, quad, scale
+      REAL(KIND=dp), DIMENSION(nfull)                    :: full_evals, weights
+      REAL(KIND=dp), DIMENSION(nmo)                      :: column_scale, occ_evals
+      REAL(KIND=dp), DIMENSION(nmo, nmo)                 :: x_im, x_m_im, x_m_re, x_p_im, x_p_re, &
+                                                            x_re
+      REAL(KIND=dp), DIMENSION(nrot)                     :: direction, evals
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: correction, correction_direct, &
+                                                            correction_modes, correction_phase
+
+      spectral_residual(:, 1) = [CMPLX(0.21_dp, -0.08_dp, KIND=dp), &
+                                 CMPLX(-0.13_dp, 0.17_dp, KIND=dp), &
+                                 CMPLX(0.07_dp, 0.11_dp, KIND=dp), &
+                                 CMPLX(-0.19_dp, -0.04_dp, KIND=dp), &
+                                 CMPLX(0.05_dp, -0.14_dp, KIND=dp)]
+      spectral_residual(:, 2) = [CMPLX(-0.09_dp, 0.12_dp, KIND=dp), &
+                                 CMPLX(0.16_dp, -0.03_dp, KIND=dp), &
+                                 CMPLX(-0.04_dp, 0.18_dp, KIND=dp), &
+                                 CMPLX(0.11_dp, 0.06_dp, KIND=dp), &
+                                 CMPLX(-0.15_dp, -0.07_dp, KIND=dp)]
+      spectral_residual(:, 3) = [CMPLX(0.14_dp, 0.02_dp, KIND=dp), &
+                                 CMPLX(-0.06_dp, -0.15_dp, KIND=dp), &
+                                 CMPLX(0.19_dp, -0.05_dp, KIND=dp), &
+                                 CMPLX(-0.08_dp, 0.13_dp, KIND=dp), &
+                                 CMPLX(0.10_dp, 0.09_dp, KIND=dp)]
+      full_evals(:) = [-0.42_dp, -0.15_dp, 0.08_dp, 0.37_dp, 0.81_dp]
+      occ_evals(:) = [-0.31_dp, -0.04_dp, 0.19_dp]
+      column_scale(:) = [0.8_dp, 1.25_dp, 0.55_dp]
+
+      CALL full_all_response_metric_dense(spectral_residual, full_evals, occ_evals, 0.09_dp, &
+                                          metric, column_scale)
+      DO imo = 1, nmo
+         weights(:) = column_scale(imo)/MAX(0.09_dp, full_evals(:) - occ_evals(imo))
+         metric_reference(:, :, imo) = MATMUL(CONJG(TRANSPOSE(spectral_residual)), &
+                                              SPREAD(CMPLX(weights(:), 0.0_dp, KIND=dp), &
+                                                     DIM=2, NCOPIES=nmo)*spectral_residual)
+      END DO
+
+      x_re(:, :) = 0.0_dp
+      x_im(:, :) = 0.0_dp
+      x_re(1, 2) = 0.21_dp
+      x_re(2, 1) = -x_re(1, 2)
+      x_re(2, 3) = -0.16_dp
+      x_re(3, 2) = -x_re(2, 3)
+      x_im(1, 3) = 0.13_dp
+      x_im(3, 1) = x_im(1, 3)
+      x_im(2, 3) = -0.07_dp
+      x_im(3, 2) = x_im(2, 3)
+      occ_matrix(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      occ_matrix(1, 1) = CMPLX(1.72_dp, 0.0_dp, KIND=dp)
+      occ_matrix(2, 2) = CMPLX(0.91_dp, 0.0_dp, KIND=dp)
+      occ_matrix(3, 3) = CMPLX(0.24_dp, 0.0_dp, KIND=dp)
+      var_i(:) = [1, 1, 1, 2]
+      var_j(:) = [2, 2, 3, 3]
+      var_kind(:) = [1, 2, 1, 2]
+
+      CALL dense_rotation_u(x_re, x_im, u)
+      occ_zero(:, :) = MATMUL(u, MATMUL(occ_matrix, CONJG(TRANSPOSE(u))))
+      DO r = 1, nrot
+         x_p_re(:, :) = x_re(:, :)
+         x_p_im(:, :) = x_im(:, :)
+         x_m_re(:, :) = x_re(:, :)
+         x_m_im(:, :) = x_im(:, :)
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(r), var_j(r), &
+                                              var_kind(r), response_step)
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(r), var_j(r), &
+                                              var_kind(r), -response_step)
+         CALL dense_rotation_u(x_p_re, x_p_im, u_p)
+         CALL dense_rotation_u(x_m_re, x_m_im, u_m)
+         occ_p(:, :) = MATMUL(u_p, MATMUL(occ_matrix, CONJG(TRANSPOSE(u_p))))
+         occ_m(:, :) = MATMUL(u_m, MATMUL(occ_matrix, CONJG(TRANSPOSE(u_m))))
+         docc(:, :, r) = (occ_p(:, :) - occ_m(:, :))/(2.0_dp*response_step)
+      END DO
+
+      CALL qs_scf_kp_orbital_schur_correction(metric, docc, correction)
+      correction_direct(:, :) = 0.0_dp
+      DO s = 1, nrot
+         DO r = 1, nrot
+            DO imo = 1, nmo
+               weights(:) = column_scale(imo)/MAX(0.09_dp, full_evals(:) - occ_evals(imo))
+               response_r(:) = MATMUL(spectral_residual, docc(:, imo, r))
+               response_s(:) = MATMUL(spectral_residual, docc(:, imo, s))
+               correction_direct(r, s) = correction_direct(r, s) + &
+                                         REAL(SUM(CONJG(response_r(:))*CMPLX(weights(:), 0.0_dp, KIND=dp)*response_s(:)), KIND=dp)
+            END DO
+         END DO
+      END DO
+
+      direction(:) = [0.43_dp, -0.31_dp, 0.27_dp, 0.18_dp]
+      x_p_re(:, :) = x_re(:, :)
+      x_p_im(:, :) = x_im(:, :)
+      x_m_re(:, :) = x_re(:, :)
+      x_m_im(:, :) = x_im(:, :)
+      DO r = 1, nrot
+         CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(r), var_j(r), &
+                                              var_kind(r), fd_step*direction(r))
+         CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(r), var_j(r), &
+                                              var_kind(r), -fd_step*direction(r))
+      END DO
+      CALL dense_rotation_u(x_p_re, x_p_im, u_p)
+      CALL dense_rotation_u(x_m_re, x_m_im, u_m)
+      occ_p(:, :) = MATMUL(u_p, MATMUL(occ_matrix, CONJG(TRANSPOSE(u_p))))
+      occ_m(:, :) = MATMUL(u_m, MATMUL(occ_matrix, CONJG(TRANSPOSE(u_m))))
+      energy_p = dense_full_all_eliminated_energy(spectral_residual, full_evals, occ_evals, &
+                                                  0.09_dp, column_scale, occ_p - occ_zero)
+      energy_m = dense_full_all_eliminated_energy(spectral_residual, full_evals, occ_evals, &
+                                                  0.09_dp, column_scale, occ_m - occ_zero)
+      quad = DOT_PRODUCT(direction, MATMUL(correction, direction))
+
+      phases(:) = [EXP(CMPLX(0.0_dp, 0.37_dp, KIND=dp)), &
+                   EXP(CMPLX(0.0_dp, -0.61_dp, KIND=dp)), &
+                   EXP(CMPLX(0.0_dp, 0.83_dp, KIND=dp))]
+      DO j = 1, nmo
+         spectral_residual_phase(:, j) = phases(j)*spectral_residual(:, j)
+         DO i = 1, nmo
+            DO r = 1, nrot
+               docc_phase(i, j, r) = CONJG(phases(i))*docc(i, j, r)*phases(j)
+            END DO
+         END DO
+      END DO
+      CALL full_all_response_metric_dense(spectral_residual_phase, full_evals, occ_evals, 0.09_dp, &
+                                          metric_phase, column_scale)
+      CALL qs_scf_kp_orbital_schur_correction(metric_phase, docc_phase, correction_phase)
+
+      hermitian_error = 0.0_dp
+      DO imo = 1, nmo
+         hermitian_error = MAX(hermitian_error, &
+                               MAXVAL(ABS(metric(:, :, imo) - CONJG(TRANSPOSE(metric(:, :, imo))))))
+      END DO
+      direct_error = MAXVAL(ABS(metric - metric_reference))
+      correction_error = MAXVAL(ABS(correction - correction_direct))
+      fd_error = ABS((energy_p + energy_m)/(fd_step*fd_step) + quad)
+      gauge_error = MAXVAL(ABS(correction_phase - correction))
+      correction_modes(:, :) = correction(:, :)
+      CALL diamat_all(correction_modes, evals)
+      min_eval = MINVAL(evals)
+      scale = MAX(1.0_dp, MAXVAL(ABS(correction)))
+
+      IF (direct_error > tol*scale .OR. correction_error > tol*scale .OR. &
+          fd_error > tol*scale .OR. gauge_error > tol*scale .OR. &
+          hermitian_error > tol*scale .OR. min_eval < -tol*scale .OR. quad <= 1.0E-8_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "failed metric/correction/fd/gauge/hermitian/mineval/quad", &
+            direct_error, correction_error, fd_error, gauge_error, hermitian_error, min_eval, quad
+      ELSE
+         WRITE (*, '(A,1X,A,7(1X,ES12.5))') TRIM(label), &
+            "OK metric/correction/fd/gauge/hermitian/mineval/quad", &
+            direct_error, correction_error, fd_error, gauge_error, hermitian_error, min_eval, quad
+      END IF
+
+   END SUBROUTINE check_complex_full_all_orbital_schur
+
+! **************************************************************************************************
+!> \brief Eliminated complementary-orbital quadratic energy for the FULL_ALL Schur fixture.
+!> \param spectral_residual ...
+!> \param full_evals ...
+!> \param occ_evals ...
+!> \param energy_gap ...
+!> \param column_scale ...
+!> \param delta_occ ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION dense_full_all_eliminated_energy(spectral_residual, full_evals, occ_evals, energy_gap, &
+                                             column_scale, delta_occ) RESULT(energy)
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: spectral_residual
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: full_evals, occ_evals
+      REAL(KIND=dp), INTENT(IN)                          :: energy_gap
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: column_scale
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: delta_occ
+      REAL(KIND=dp)                                      :: energy
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: response
+      INTEGER                                            :: imo, nfull
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: weights
+
+      nfull = SIZE(spectral_residual, 1)
+      ALLOCATE (response(nfull), weights(nfull))
+      energy = 0.0_dp
+      DO imo = 1, SIZE(spectral_residual, 2)
+         response(:) = MATMUL(spectral_residual, delta_occ(:, imo))
+         weights(:) = column_scale(imo)/MAX(energy_gap, full_evals(:) - occ_evals(imo))
+         energy = energy - 0.5_dp* &
+                  REAL(SUM(CONJG(response(:))*CMPLX(weights(:), 0.0_dp, KIND=dp)*response(:)), KIND=dp)
+      END DO
+      DEALLOCATE (response, weights)
+
+   END FUNCTION dense_full_all_eliminated_energy
 
 ! **************************************************************************************************
 !> \brief Fill the dense companion to the sparse Frechet pattern tests.
