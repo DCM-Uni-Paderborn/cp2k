@@ -246,6 +246,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate
 
@@ -319,6 +320,71 @@ CONTAINS
                         MATMUL(energy_cross, step_rotation)
 
    END SUBROUTINE qs_scf_kp_coupled_secant_model
+
+! **************************************************************************************************
+!> \brief Apply a symmetric least-change update that satisfies one vector secant.
+!> \param hessian symmetric reference Hessian
+!> \param step accepted step s
+!> \param target measured gradient difference y
+!> \param weight fraction of the exact secant update in [0,1]
+!> \param updated_hessian symmetric updated Hessian
+!> \param ready whether the update was finite and well defined
+!> \param correction_norm Frobenius norm of the applied correction
+!> \param residual_norm norm of y-Hs before the update
+!> \param updated_residual_norm norm of y-H_new*s after the update
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_symmetric_secant_update(hessian, step, TARGET, weight, &
+                                                updated_hessian, ready, correction_norm, &
+                                                residual_norm, updated_residual_norm)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step, TARGET
+      REAL(KIND=dp), INTENT(IN)                          :: weight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_hessian
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT)                         :: correction_norm, residual_norm, &
+                                                            updated_residual_norm
+
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp)                                      :: residual_dot_step, step_norm_sq, &
+                                                            update_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: residual, updated_residual
+
+      n = SIZE(step)
+      CPASSERT(ALL(SHAPE(hessian) == [n, n]))
+      CPASSERT(SIZE(TARGET) == n)
+      CPASSERT(ALL(SHAPE(updated_hessian) == [n, n]))
+
+      updated_hessian(:, :) = hessian(:, :)
+      ready = .FALSE.
+      correction_norm = 0.0_dp
+      residual_norm = 0.0_dp
+      updated_residual_norm = 0.0_dp
+      IF (n <= 0) RETURN
+
+      step_norm_sq = DOT_PRODUCT(step, step)
+      IF (step_norm_sq <= EPSILON(1.0_dp)) RETURN
+      update_weight = MIN(1.0_dp, MAX(0.0_dp, weight))
+      IF (update_weight <= EPSILON(1.0_dp)) RETURN
+
+      ALLOCATE (residual(n), updated_residual(n))
+      residual(:) = TARGET(:) - MATMUL(hessian, step)
+      residual_dot_step = DOT_PRODUCT(residual, step)
+      DO j = 1, n
+         DO i = 1, n
+            updated_hessian(i, j) = updated_hessian(i, j) + update_weight* &
+                                    ((residual(i)*step(j) + step(i)*residual(j))/step_norm_sq - &
+                                     residual_dot_step*step(i)*step(j)/(step_norm_sq*step_norm_sq))
+         END DO
+      END DO
+      residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(residual, residual)))
+      correction_norm = SQRT(MAX(0.0_dp, SUM((updated_hessian - hessian)**2)))
+      updated_residual(:) = TARGET(:) - MATMUL(updated_hessian, step)
+      updated_residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(updated_residual, updated_residual)))
+      ready = correction_norm == correction_norm .AND. updated_residual_norm == updated_residual_norm
+      IF (.NOT. ready) updated_hessian(:, :) = hessian(:, :)
+      DEALLOCATE (residual, updated_residual)
+
+   END SUBROUTINE qs_scf_kp_symmetric_secant_update
 
 ! **************************************************************************************************
 !> \brief Stage the coupled occupation response only inside its local metallic basin.
@@ -22487,14 +22553,19 @@ CONTAINS
                                                             global_spin, group, ie, imo, &
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
-      LOGICAL                                            :: valid
-      REAL(KIND=dp) :: alignment, curvature_ratio, energy_mean, model_alignment, model_norm, &
-         orthogonal_fraction, residual_energy_norm, residual_norm, residual_rotation_norm, snorm, &
-         step_norm, sths, stored_sty, sty, y_norm, ynorm
+      LOGICAL                                            :: update_ready, valid
+      REAL(KIND=dp) :: alignment, correction_norm, curvature_ratio, energy_mean, model_alignment, &
+         model_norm, orthogonal_fraction, residual_energy_norm, residual_norm, &
+         residual_rotation_norm, rotation_curvature_ratio, rotation_model_alignment, &
+         rotation_model_norm, rotation_residual_norm, rotation_stbs, rotation_sty, &
+         rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, updated_rotation_residual_norm, &
+         y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: model_energy, model_rotation, &
                                                             secant_energy, secant_rotation, &
-                                                            step_energy, step_rotation
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dense_im, dense_re
+                                                            step_energy, step_rotation, &
+                                                            target_rotation
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dense_im, dense_re, &
+                                                            updated_rotation_hessian
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
@@ -22618,6 +22689,23 @@ CONTAINS
          IF (ABS(sty) > EPSILON(sty)) curvature_ratio = sths/sty
          stored_sty = local_ot_env(1)%mermin_secant_sty
 
+         rotation_y_norm = DOT_PRODUCT(secant_rotation, secant_rotation)
+         rotation_model_norm = DOT_PRODUCT(model_rotation, model_rotation)
+         rotation_sty = DOT_PRODUCT(step_rotation, secant_rotation)
+         rotation_stbs = DOT_PRODUCT(step_rotation, model_rotation)
+         rotation_curvature_ratio = 0.0_dp
+         IF (ABS(rotation_sty) > EPSILON(rotation_sty)) &
+            rotation_curvature_ratio = rotation_stbs/rotation_sty
+         rotation_model_alignment = 0.0_dp
+         IF (rotation_model_norm > TINY(1.0_dp) .AND. rotation_y_norm > TINY(1.0_dp)) &
+            rotation_model_alignment = DOT_PRODUCT(secant_rotation, model_rotation)/ &
+                                       (SQRT(rotation_model_norm)*SQRT(rotation_y_norm))
+         ALLOCATE (target_rotation(nrot), updated_rotation_hessian(nrot, nrot))
+         target_rotation(:) = secant_rotation(:) + MATMUL(TRANSPOSE(energy_cross), step_energy)
+         CALL qs_scf_kp_symmetric_secant_update(rotation_hessian, step_rotation, target_rotation, 1.0_dp, &
+                                                updated_rotation_hessian, update_ready, correction_norm, &
+                                                rotation_residual_norm, updated_rotation_residual_norm)
+
          IF (logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,12(1X,ES16.8))') &
      " OT Schur accepted vector model group selected_sty global_sty sths ratio ynorm mnorm rnorm rrot rener align ym_align orth:", &
@@ -22625,9 +22713,19 @@ CONTAINS
             SQRT(MAX(0.0_dp, model_norm)), SQRT(MAX(0.0_dp, residual_norm)), &
             SQRT(MAX(0.0_dp, residual_rotation_norm)), SQRT(MAX(0.0_dp, residual_energy_norm)), &
             alignment, model_alignment, orthogonal_fraction
+         IF (logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,8(1X,ES16.8))') &
+            " OT Schur accepted rotation secant shadow group ready sty stbs ratio ynorm mnorm align rnorm unorm:", &
+            target_group, update_ready, rotation_sty, rotation_stbs, rotation_curvature_ratio, &
+            SQRT(MAX(0.0_dp, rotation_y_norm)), SQRT(MAX(0.0_dp, rotation_model_norm)), &
+            rotation_model_alignment, rotation_residual_norm, updated_rotation_residual_norm
+         IF (logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,ES16.8)') &
+            " OT Schur accepted rotation secant correction group Frobenius:", &
+            target_group, correction_norm
 
          DEALLOCATE (step_rotation, secant_rotation, model_rotation, &
-                     step_energy, secant_energy, model_energy)
+                     step_energy, secant_energy, model_energy, target_rotation, updated_rotation_hessian)
 
       END SUBROUTINE audit_kpoint_ot_vector_secant_model
 

@@ -56,7 +56,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -160,6 +161,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_search_stagnant("k-point OT stagnant-search restart", nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
+   CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -4480,6 +4482,45 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_coupled_secant_model
+
+! **************************************************************************************************
+!> \brief check the symmetric least-change response update
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_symmetric_secant_update(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: ready
+      REAL(KIND=dp)                                      :: correction_norm, error, residual_norm, &
+                                                            updated_residual_norm
+      REAL(KIND=dp), DIMENSION(3)                        :: step, TARGET
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: hessian, updated_hessian
+
+      hessian(:, :) = RESHAPE([2.0_dp, 0.2_dp, -0.1_dp, &
+                               0.2_dp, -0.5_dp, 0.3_dp, &
+                               -0.1_dp, 0.3_dp, 1.2_dp], [3, 3])
+      step(:) = [0.4_dp, -0.3_dp, 0.2_dp]
+      TARGET(:) = [1.1_dp, -0.2_dp, 0.7_dp]
+      CALL qs_scf_kp_symmetric_secant_update(hessian, step, TARGET, 1.0_dp, &
+                                             updated_hessian, ready, correction_norm, &
+                                             residual_norm, updated_residual_norm)
+      error = MAX(MAXVAL(ABS(MATMUL(updated_hessian, step) - TARGET)), &
+                  MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))))
+      IF (.NOT. ready .OR. correction_norm <= 0.0_dp .OR. residual_norm <= 0.0_dp .OR. &
+          updated_residual_norm > tol .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,4(1X,ES16.8),1X,L1)') TRIM(label)//" FAILED with error/residual/update/correction/ready", &
+            error, residual_norm, updated_residual_norm, correction_norm, ready
+      ELSE
+         WRITE (*, '(A,4(1X,ES16.8))') TRIM(label)//" OK with error/residual/update/correction", &
+            error, residual_norm, updated_residual_norm, correction_norm
+      END IF
+
+   END SUBROUTINE check_kpoint_symmetric_secant_update
 
 ! **************************************************************************************************
 !> \brief Check that an irreducible representative takes a one-member search direction.
