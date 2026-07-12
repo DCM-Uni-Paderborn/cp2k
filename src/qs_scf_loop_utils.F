@@ -4129,6 +4129,9 @@ CONTAINS
          density_projector_weight, fractional_weight, kTS, max_partial, maxocc, min_fermi_dist, &
          min_trust_scale, mu, occ_tail, residual_delta, tether_energy, tether_grad_max, &
          trusted_step_max, weighted_electrons
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: spin_fractional_weight, spin_kTS, &
+                                                            spin_max_partial, spin_min_fermi_dist, &
+                                                            spin_mu, spin_weighted_electrons
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -4150,9 +4153,19 @@ CONTAINS
 
       kp => kpoints%kp_env(1)%kpoint_env
       nspin = SIZE(kp%mos, 2)
+      ALLOCATE (spin_fractional_weight(nspin), spin_kTS(nspin), spin_max_partial(nspin), &
+                spin_min_fermi_dist(nspin), spin_mu(nspin), spin_weighted_electrons(nspin))
+      spin_fractional_weight = 0.0_dp
+      spin_kTS = 0.0_dp
+      spin_max_partial = 0.0_dp
+      spin_min_fermi_dist = HUGE(1.0_dp)
+      spin_mu = 0.0_dp
+      spin_weighted_electrons = 0.0_dp
       DO ispin = 1, nspin
-         kTS = kTS + kp%mos(1, ispin)%kTS
-         mu = mu + kp%mos(1, ispin)%mu
+         spin_kTS(ispin) = kp%mos(1, ispin)%kTS
+         spin_mu(ispin) = kp%mos(1, ispin)%mu
+         kTS = kTS + spin_kTS(ispin)
+         mu = mu + spin_mu(ispin)
       END DO
       mu = mu/REAL(nspin, KIND=dp)
 
@@ -4168,6 +4181,12 @@ CONTAINS
                fractional_weight = fractional_weight + wkp(ikpoint)*occ_tail
                weighted_electrons = weighted_electrons + wkp(ikpoint)*occupation_numbers(imo)
                min_fermi_dist = MIN(min_fermi_dist, ABS(eigenvalues(imo) - kp%mos(1, ispin)%mu))
+               spin_max_partial(ispin) = MAX(spin_max_partial(ispin), occ_tail)
+               spin_fractional_weight(ispin) = spin_fractional_weight(ispin) + wkp(ikpoint)*occ_tail
+               spin_weighted_electrons(ispin) = &
+                  spin_weighted_electrons(ispin) + wkp(ikpoint)*occupation_numbers(imo)
+               spin_min_fermi_dist(ispin) = &
+                  MIN(spin_min_fermi_dist(ispin), ABS(eigenvalues(imo) - kp%mos(1, ispin)%mu))
             END DO
          END DO
       END DO
@@ -4176,6 +4195,12 @@ CONTAINS
       CALL para_env_inter_kp%sum(weighted_electrons)
       CALL para_env_inter_kp%max(max_partial)
       CALL para_env_inter_kp%min(min_fermi_dist)
+      DO ispin = 1, nspin
+         CALL para_env_inter_kp%sum(spin_fractional_weight(ispin))
+         CALL para_env_inter_kp%sum(spin_weighted_electrons(ispin))
+         CALL para_env_inter_kp%max(spin_max_partial(ispin))
+         CALL para_env_inter_kp%min(spin_min_fermi_dist(ispin))
+      END DO
 
       DO local_channel = 1, SIZE(local_ot_env)
          residual_delta = MAX(residual_delta, local_ot_env(local_channel)%delta)
@@ -4202,12 +4227,23 @@ CONTAINS
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8))') &
             " OT k-point smearing kTS mu weighted_N frac_weight max_partial min_abs_eps_mu:", &
             kTS, mu, weighted_electrons, fractional_weight, max_partial, min_fermi_dist
+         IF (nspin > 1) THEN
+            DO ispin = 1, nspin
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I2,6(1X,ES16.8))') &
+                  " OT k-point smearing spin kTS mu weighted_N frac_weight max_partial min_abs_eps_mu:", &
+                  ispin, spin_kTS(ispin), spin_mu(ispin), spin_weighted_electrons(ispin), &
+                  spin_fractional_weight(ispin), spin_max_partial(ispin), spin_min_fermi_dist(ispin)
+            END DO
+         END IF
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8),1X,I5)') &
             " OT k-point residual model delta pdelta dproj frac trusted scale tether_E tether_g ls:", &
             residual_delta, density_projector_model_delta, density_projector_weight, &
             density_projector_fraction, trusted_step_max, min_trust_scale, tether_energy, &
             tether_grad_max, local_ot_env(1)%line_search_count
       END IF
+
+      DEALLOCATE (spin_fractional_weight, spin_kTS, spin_max_partial, spin_min_fermi_dist, &
+                  spin_mu, spin_weighted_electrons)
 
    END SUBROUTINE qs_scf_loop_print_ot_kp_smearing
 

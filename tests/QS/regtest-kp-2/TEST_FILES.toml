@@ -59,6 +59,11 @@
 # and the full-grid path in 28 at -8.15998672984139 Ha.  The reduced/full
 # endpoint difference is 3.6E-7 Ha.  No first/last-band, AUTO-exhausted,
 # MAX-ITER, or "Unsupported content type" signature is printed.
+# Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
+# physics companion.  With two spins, two irreducible k-points, and fixed
+# magnetization it converges in 153 uninterrupted MPI-2 OT steps to
+# -8.14036040968823 Ha, within 5.3E-7 Ha of diagonalization while retaining
+# weighted spin populations 7/5 and finite entropy.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.89619451102384},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.89619451102384},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.2585752E-7},
