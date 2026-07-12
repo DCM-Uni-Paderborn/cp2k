@@ -16,7 +16,9 @@ MODULE preconditioner_apply
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_gemm
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_info,&
+                                              cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
+                                              cp_cfm_set_submatrix,&
                                               cp_cfm_to_fm,&
                                               cp_cfm_type,&
                                               cp_fm_to_cfm
@@ -141,24 +143,34 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Apply the complex state-selective FULL_ALL spectral operator.
+!>      The optional constrained branch is an exact reference for coupled
+!>      REF/rotation models; the production path remains unconstrained.
 !> \param preconditioner_env complex k-point preconditioner
 !> \param matrix_in complex input channel
 !> \param matrix_out complex output channel
+!> \param matrix_constraint optional covariant constraint basis B=S*C
 ! **************************************************************************************************
-   SUBROUTINE apply_preconditioner_cfm_complex(preconditioner_env, matrix_in, matrix_out)
+   SUBROUTINE apply_preconditioner_cfm_complex(preconditioner_env, matrix_in, matrix_out, &
+                                               matrix_constraint)
 
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(cp_cfm_type), INTENT(IN)                      :: matrix_in, matrix_out
+      TYPE(cp_cfm_type), INTENT(IN), OPTIONAL            :: matrix_constraint
 
       CHARACTER(len=*), PARAMETER :: routineN = 'apply_preconditioner_cfm_complex'
 
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: constraint_dense, metric, &
+                                                            metric_reference, rhs, rhs_reference, &
+                                                            spectral_dense, weighted_constraint
       COMPLEX(KIND=dp), CONTIGUOUS, DIMENSION(:, :), &
          POINTER                                         :: local_data
-      INTEGER                                            :: handle, i, j, k, n, ncol_local, &
+      INTEGER                                            :: handle, i, info, j, k, n, ncol_local, &
                                                             nrow_local
       INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
-      REAL(KIND=dp)                                      :: scale
-      TYPE(cp_cfm_type)                                  :: matrix_spectral
+      REAL(KIND=dp)                                      :: regularization, scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: metric_scale, weights
+      TYPE(cp_cfm_type)                                  :: matrix_constraint_spectral, &
+                                                            matrix_spectral
 
       CALL timeset(routineN, handle)
 
@@ -174,16 +186,75 @@ CONTAINS
                          name='complex FULL_ALL spectral input')
       CALL cp_cfm_gemm('C', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
                        matrix_in, z_zero, matrix_spectral)
-      CALL cp_cfm_get_info(matrix_spectral, nrow_local=nrow_local, ncol_local=ncol_local, &
-                           row_indices=row_indices, col_indices=col_indices, local_data=local_data)
-      DO j = 1, ncol_local
-         DO i = 1, nrow_local
-            scale = 1.0_dp/MAX(preconditioner_env%energy_gap, &
-                               preconditioner_env%full_evals(row_indices(i)) - &
-                               preconditioner_env%occ_evals(col_indices(j)))
-            local_data(i, j) = scale*local_data(i, j)
+      IF (PRESENT(matrix_constraint)) THEN
+         CALL cp_cfm_get_info(matrix_constraint, nrow_global=nrow_local, ncol_global=ncol_local)
+         CPASSERT(nrow_local == n)
+         CPASSERT(ncol_local == k)
+         CALL cp_cfm_create(matrix_constraint_spectral, matrix_in%matrix_struct, &
+                            name='complex FULL_ALL spectral constraint')
+         CALL cp_cfm_gemm('C', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
+                          matrix_constraint, z_zero, matrix_constraint_spectral)
+
+         ALLOCATE (constraint_dense(n, k), spectral_dense(n, k), weighted_constraint(n, k))
+         ALLOCATE (metric(k, k), metric_reference(k, k), rhs(k, 1), rhs_reference(k, 1))
+         ALLOCATE (metric_scale(k), weights(n))
+         CALL cp_cfm_get_submatrix(matrix_constraint_spectral, constraint_dense)
+         CALL cp_cfm_get_submatrix(matrix_spectral, spectral_dense)
+         DO j = 1, k
+            DO i = 1, n
+               weights(i) = 1.0_dp/MAX(preconditioner_env%energy_gap, &
+                                       preconditioner_env%full_evals(i) - &
+                                       preconditioner_env%occ_evals(j))
+            END DO
+            weighted_constraint(:, :) = &
+               SPREAD(CMPLX(weights(:), 0.0_dp, KIND=dp), DIM=2, NCOPIES=k)*constraint_dense(:, :)
+            metric(:, :) = MATMUL(CONJG(TRANSPOSE(constraint_dense)), weighted_constraint)
+            rhs(:, 1) = MATMUL(CONJG(TRANSPOSE(constraint_dense)), &
+                               CMPLX(weights(:), 0.0_dp, KIND=dp)*spectral_dense(:, j))
+            ! M=B^H P_j B is Hermitian positive definite.  Equilibrating its
+            ! diagonal keeps the small dense solve stable when FULL_ALL spans
+            ! eigenvalue gaps of very different size.
+            metric(:, :) = 0.5_dp*(metric(:, :) + CONJG(TRANSPOSE(metric(:, :))))
+            DO i = 1, k
+               metric_scale(i) = 1.0_dp/SQRT(MAX(REAL(metric(i, i), KIND=dp), TINY(1.0_dp)))
+            END DO
+            DO i = 1, k
+               metric(i, :) = metric_scale(i)*metric(i, :)*metric_scale(:)
+            END DO
+            rhs(:, 1) = metric_scale(:)*rhs(:, 1)
+            metric_reference(:, :) = metric(:, :)
+            rhs_reference(:, :) = rhs(:, :)
+            CALL zposv('U', k, 1, metric, k, rhs, k, info)
+            IF (info /= 0) THEN
+               metric(:, :) = metric_reference(:, :)
+               rhs(:, :) = rhs_reference(:, :)
+               regularization = 100.0_dp*EPSILON(1.0_dp)*REAL(MAX(1, k), KIND=dp)
+               DO i = 1, k
+                  metric(i, i) = metric(i, i) + CMPLX(regularization, 0.0_dp, KIND=dp)
+               END DO
+               CALL zposv('U', k, 1, metric, k, rhs, k, info)
+            END IF
+            CPASSERT(info == 0)
+            rhs(:, 1) = metric_scale(:)*rhs(:, 1)
+            spectral_dense(:, j) = CMPLX(weights(:), 0.0_dp, KIND=dp)* &
+                                   (spectral_dense(:, j) - MATMUL(constraint_dense, rhs(:, 1)))
          END DO
-      END DO
+         CALL cp_cfm_set_submatrix(matrix_spectral, spectral_dense)
+         DEALLOCATE (constraint_dense, metric, metric_reference, metric_scale, rhs, rhs_reference, &
+                     spectral_dense, weighted_constraint, weights)
+         CALL cp_cfm_release(matrix_constraint_spectral)
+      ELSE
+         CALL cp_cfm_get_info(matrix_spectral, nrow_local=nrow_local, ncol_local=ncol_local, &
+                              row_indices=row_indices, col_indices=col_indices, local_data=local_data)
+         DO j = 1, ncol_local
+            DO i = 1, nrow_local
+               scale = 1.0_dp/MAX(preconditioner_env%energy_gap, &
+                                  preconditioner_env%full_evals(row_indices(i)) - &
+                                  preconditioner_env%occ_evals(col_indices(j)))
+               local_data(i, j) = scale*local_data(i, j)
+            END DO
+         END DO
+      END IF
       CALL cp_cfm_gemm('N', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
                        matrix_spectral, z_zero, matrix_out)
       CALL cp_cfm_release(matrix_spectral)
@@ -199,20 +270,25 @@ CONTAINS
 !> \param matrix_in_im imaginary input channel
 !> \param matrix_out_re real output channel
 !> \param matrix_out_im imaginary output channel
+!> \param matrix_constraint_re optional real part of B=S*C
+!> \param matrix_constraint_im optional imaginary part of B=S*C
 ! **************************************************************************************************
    SUBROUTINE apply_preconditioner_dbcsr_complex(preconditioner_env, matrix_in_re, matrix_in_im, &
-                                                 matrix_out_re, matrix_out_im)
+                                                 matrix_out_re, matrix_out_im, &
+                                                 matrix_constraint_re, matrix_constraint_im)
 
       TYPE(preconditioner_type)                          :: preconditioner_env
       TYPE(dbcsr_type)                                   :: matrix_in_re, matrix_in_im, &
                                                             matrix_out_re, matrix_out_im
+      TYPE(dbcsr_type), OPTIONAL                         :: matrix_constraint_re, &
+                                                            matrix_constraint_im
 
       CHARACTER(len=*), PARAMETER :: routineN = 'apply_preconditioner_dbcsr_complex'
 
       INTEGER                                            :: handle, k, n
-      TYPE(cp_cfm_type)                                  :: matrix_in, matrix_out
-      TYPE(cp_fm_type)                                   :: matrix_in_im_fm, matrix_in_re_fm, &
-                                                            matrix_out_im_fm, matrix_out_re_fm
+      TYPE(cp_cfm_type)                                  :: matrix_constraint, matrix_in, matrix_out
+      TYPE(cp_fm_type) :: matrix_constraint_im_fm, matrix_constraint_re_fm, matrix_in_im_fm, &
+         matrix_in_re_fm, matrix_out_im_fm, matrix_out_re_fm
 
       CALL timeset(routineN, handle)
 
@@ -239,7 +315,25 @@ CONTAINS
       CALL cp_cfm_create(matrix_out, matrix_in_re_fm%matrix_struct, name='complex FULL_ALL output')
       CALL cp_fm_to_cfm(matrix_in_re_fm, matrix_in_im_fm, matrix_in)
 
-      CALL apply_preconditioner_cfm_complex(preconditioner_env, matrix_in, matrix_out)
+      IF (PRESENT(matrix_constraint_re) .OR. PRESENT(matrix_constraint_im)) THEN
+         CPASSERT(PRESENT(matrix_constraint_re) .AND. PRESENT(matrix_constraint_im))
+         CALL cp_fm_create(matrix_constraint_re_fm, preconditioner_env%complex_fm%matrix_struct, &
+                           nrow=n, ncol=k, name='complex FULL_ALL constraint real')
+         CALL cp_fm_create(matrix_constraint_im_fm, preconditioner_env%complex_fm%matrix_struct, &
+                           nrow=n, ncol=k, name='complex FULL_ALL constraint imaginary')
+         CALL copy_dbcsr_to_fm(matrix_constraint_re, matrix_constraint_re_fm)
+         CALL copy_dbcsr_to_fm(matrix_constraint_im, matrix_constraint_im_fm)
+         CALL cp_cfm_create(matrix_constraint, matrix_in_re_fm%matrix_struct, &
+                            name='complex FULL_ALL constraint')
+         CALL cp_fm_to_cfm(matrix_constraint_re_fm, matrix_constraint_im_fm, matrix_constraint)
+         CALL apply_preconditioner_cfm_complex(preconditioner_env, matrix_in, matrix_out, &
+                                               matrix_constraint)
+         CALL cp_cfm_release(matrix_constraint)
+         CALL cp_fm_release(matrix_constraint_im_fm)
+         CALL cp_fm_release(matrix_constraint_re_fm)
+      ELSE
+         CALL apply_preconditioner_cfm_complex(preconditioner_env, matrix_in, matrix_out)
+      END IF
 
       CALL cp_cfm_to_fm(matrix_out, matrix_out_re_fm, matrix_out_im_fm)
       CALL dbcsr_set(matrix_out_re, 0.0_dp)

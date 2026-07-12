@@ -812,18 +812,21 @@ CONTAINS
 
       COMPLEX(KIND=dp)                                   :: value
       COMPLEX(KIND=dp), DIMENSION(k)                     :: phases
-      COMPLEX(KIND=dp), DIMENSION(k, k)                  :: chc
-      COMPLEX(KIND=dp), DIMENSION(n, k) :: c0, c0_conjugate, c0_phase, gradient, &
-         gradient_conjugate, gradient_phase, output, output_conjugate, output_phase, reference, &
-         spectral
+      COMPLEX(KIND=dp), DIMENSION(k, 1)                  :: rhs
+      COMPLEX(KIND=dp), DIMENSION(k, k)                  :: chc, metric
+      COMPLEX(KIND=dp), DIMENSION(n, k) :: c0, c0_conjugate, c0_phase, current, current_phase, &
+         gradient, gradient_conjugate, gradient_phase, output, output_conjugate, output_phase, &
+         reference, spectral, tangent_gradient, tangent_output, unconstrained, z_constraint
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: h, h_conjugate, identity, w
-      INTEGER                                            :: i, j
-      REAL(KIND=dp)                                      :: descent, gauge_error, imaginary_norm, &
-                                                            orthogonality_error, reference_error, &
-                                                            time_reversal_error
+      INTEGER                                            :: i, info, j
+      INTEGER, DIMENSION(k)                              :: ipiv
+      REAL(KIND=dp) :: constraint_gauge_error, descent, gauge_error, imaginary_norm, &
+         orthogonality_error, reference_error, stale_descent_error, stale_overlap, &
+         tangent_descent, tangent_error, time_reversal_error
       REAL(KIND=dp), DIMENSION(k)                        :: c0_evals
+      REAL(KIND=dp), DIMENSION(n)                        :: weights
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_cfm_type) :: c0_cfm, c0_conjugate_cfm, c0_phase_cfm, gradient_cfm, &
+      TYPE(cp_cfm_type) :: c0_cfm, c0_conjugate_cfm, c0_phase_cfm, current_cfm, gradient_cfm, &
          gradient_conjugate_cfm, gradient_phase_cfm, h_cfm, h_conjugate_cfm, output_cfm, &
          output_conjugate_cfm, output_phase_cfm, s_cfm
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
@@ -971,17 +974,95 @@ CONTAINS
       descent = REAL(SUM(CONJG(gradient)*output), KIND=dp)
       imaginary_norm = MAXVAL(ABS(AIMAG(output(:, 1))))
 
+      ! Mimic a REF step that has moved away from the fixed FULL_ALL reference subspace.
+      ! The column-resolved P-metric projection must solve the constrained inverse
+      ! Hessian, not discard the useful complementary curvature with an output Q.
+      current(:, 1) = COS(0.31_dp)*c0(:, 1) + SIN(0.31_dp)*w(:, 3)
+      current(:, 2) = COS(-0.27_dp)*c0(:, 2) + SIN(-0.27_dp)*w(:, 4)
+      tangent_gradient = gradient - MATMUL(current, MATMUL(CONJG(TRANSPOSE(current)), gradient))
+      spectral = MATMUL(CONJG(TRANSPOSE(w)), tangent_gradient)
+      z_constraint = MATMUL(CONJG(TRANSPOSE(w)), current)
+      DO j = 1, k
+         DO i = 1, n
+            weights(i) = 1.0_dp/MAX(preconditioner_env%energy_gap, &
+                                    preconditioner_env%full_evals(i) - &
+                                    preconditioner_env%occ_evals(j))
+         END DO
+         unconstrained(:, j) = CMPLX(weights(:), 0.0_dp, KIND=dp)*spectral(:, j)
+         metric(:, :) = MATMUL(CONJG(TRANSPOSE(z_constraint)), &
+                               SPREAD(CMPLX(weights(:), 0.0_dp, KIND=dp), DIM=2, NCOPIES=k)*z_constraint)
+         rhs(:, 1) = MATMUL(CONJG(TRANSPOSE(z_constraint)), unconstrained(:, j))
+         CALL zgesv(k, 1, metric, k, ipiv, rhs, k, info)
+         IF (info /= 0) THEN
+            nfail = nfail + 1
+            WRITE (*, '(A,1X,I6)') 'Singular constrained FULL_ALL unit-test metric', info
+            rhs(:, 1) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         END IF
+         spectral(:, j) = CMPLX(weights(:), 0.0_dp, KIND=dp)* &
+                          (spectral(:, j) - MATMUL(z_constraint, rhs(:, 1)))
+      END DO
+      reference = MATMUL(w, spectral)
+      unconstrained = MATMUL(w, unconstrained)
+      stale_overlap = MAXVAL(ABS(MATMUL(CONJG(TRANSPOSE(current)), unconstrained)))
+
+      CALL cp_cfm_create(current_cfm, c0_cfm%matrix_struct, nrow=n, ncol=k, &
+                         name='complex FULL_ALL current constraint')
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_set_element(current_cfm, i, j, current(i, j))
+            CALL cp_cfm_set_element(gradient_cfm, i, j, tangent_gradient(i, j))
+         END DO
+      END DO
+      CALL apply_preconditioner(preconditioner_env, gradient_cfm, output_cfm, current_cfm)
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_get_element(output_cfm, i, j, value)
+            tangent_output(i, j) = value
+         END DO
+      END DO
+      tangent_error = MAXVAL(ABS(MATMUL(CONJG(TRANSPOSE(current)), tangent_output)))
+      stale_descent_error = MAXVAL(ABS(tangent_output - reference))
+      tangent_descent = REAL(SUM(CONJG(tangent_gradient)*tangent_output), KIND=dp)
+
+      ! A unitary change of basis in the constrained subspace must leave the
+      ! P-metric inverse unchanged.  Mix both constraint columns with a complex
+      ! unitary while leaving the input and physical tangent unchanged.
+      current_phase(:, 1) = COS(0.37_dp)*current(:, 1) + &
+                            phases(1)*SIN(0.37_dp)*current(:, 2)
+      current_phase(:, 2) = -CONJG(phases(1))*SIN(0.37_dp)*current(:, 1) + &
+                            COS(0.37_dp)*current(:, 2)
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_set_element(c0_phase_cfm, i, j, current_phase(i, j))
+         END DO
+      END DO
+      CALL apply_preconditioner(preconditioner_env, gradient_cfm, output_phase_cfm, c0_phase_cfm)
+      DO j = 1, k
+         DO i = 1, n
+            CALL cp_cfm_get_element(output_phase_cfm, i, j, value)
+            output_phase(i, j) = value
+         END DO
+      END DO
+      constraint_gauge_error = MAXVAL(ABS(output_phase - tangent_output))
+      CALL cp_cfm_release(current_cfm)
+
       IF (reference_error > tol .OR. gauge_error > tol .OR. time_reversal_error > tol .OR. &
           orthogonality_error > tol .OR. &
-          descent <= 0.0_dp .OR. imaginary_norm <= 1.0E-8_dp) THEN
+          descent <= 0.0_dp .OR. imaginary_norm <= 1.0E-8_dp .OR. &
+          stale_overlap <= 1.0E-8_dp .OR. tangent_error > tol .OR. stale_descent_error > tol .OR. &
+          tangent_descent <= 0.0_dp .OR. constraint_gauge_error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            'failed with ref/gauge/time-reversal/ortho/descent/imag', reference_error, gauge_error, &
-            time_reversal_error, orthogonality_error, descent, imaginary_norm
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
+            'failed with ref/gauge/time-reversal/ortho/descent/imag/stale/tangent/referr/tdescent/cgauge', &
+            reference_error, gauge_error, time_reversal_error, orthogonality_error, descent, &
+            imaginary_norm, stale_overlap, tangent_error, stale_descent_error, tangent_descent, &
+            constraint_gauge_error
       ELSE
-         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
-            'OK with ref/gauge/time-reversal/ortho/descent/imag', reference_error, gauge_error, &
-            time_reversal_error, orthogonality_error, descent, imaginary_norm
+         WRITE (*, '(A,1X,A,11(1X,ES12.5))') TRIM(label), &
+            'OK with ref/gauge/time-reversal/ortho/descent/imag/stale/tangent/referr/tdescent/cgauge', &
+            reference_error, gauge_error, time_reversal_error, orthogonality_error, descent, &
+            imaginary_norm, stale_overlap, tangent_error, stale_descent_error, tangent_descent, &
+            constraint_gauge_error
       END IF
 
       CALL cp_cfm_release(preconditioner_conjugate_env%complex_fm)
