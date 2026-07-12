@@ -107,13 +107,14 @@ CONTAINS
 !> \param outer_deriv_re real part of kernel(e_i,e_j)*inner_deriv_ij
 !> \param outer_deriv_im imaginary part of kernel(e_i,e_j)*inner_deriv_ij
 !> \param adjoint use the adjoint Frechet kernel for gradients
+!> \param inverse apply the regularized inverse Frechet kernel
 ! **************************************************************************************************
    SUBROUTINE qs_ot_apply_complex_frechet_dbcsr(evals, inner_deriv_re, inner_deriv_im, &
-                                                outer_deriv_re, outer_deriv_im, adjoint)
+                                                outer_deriv_re, outer_deriv_im, adjoint, inverse)
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: evals
       TYPE(dbcsr_type)                                   :: inner_deriv_re, inner_deriv_im, &
                                                             outer_deriv_re, outer_deriv_im
-      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjoint, inverse
 
       COMPLEX(KIND=dp)                                   :: cval_in, cval_out, kernel
       INTEGER                                            :: col, i, j, max_blocks, nblocks, row
@@ -121,15 +122,17 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: col_blk_offset, col_blk_size, row_blk_offset, &
                                                             row_blk_size
       LOGICAL                                            :: found_im, found_out_im, found_out_re, &
-                                                            found_re, use_adjoint
+                                                            found_re, use_adjoint, use_inverse
       REAL(dp), DIMENSION(:, :), POINTER                 :: block_in_im, block_in_re, block_out_im, &
                                                             block_out_re
-      REAL(KIND=dp)                                      :: e1, e2, im_part, re_part
+      REAL(KIND=dp)                                      :: e1, e2, im_part, kernel_abs, re_part
       TYPE(dbcsr_distribution_type)                      :: dist
       TYPE(dbcsr_iterator_type)                          :: iter
 
       use_adjoint = .FALSE.
       IF (PRESENT(adjoint)) use_adjoint = adjoint
+      use_inverse = .FALSE.
+      IF (PRESENT(inverse)) use_inverse = inverse
 
       ! Re/Im parts can have different sparse block patterns. Build an explicit
       ! union pattern and treat missing partner blocks as zero.
@@ -199,7 +202,19 @@ CONTAINS
             cval_in = CMPLX(re_part, im_part, dp)
             kernel = qs_ot_complex_exp_frechet_kernel(e1, e2)
             IF (use_adjoint) kernel = CONJG(kernel)
-            cval_out = cval_in*kernel
+            IF (use_inverse) THEN
+               kernel_abs = ABS(kernel)
+               IF (kernel_abs > SQRT(EPSILON(1.0_dp))) THEN
+                  cval_out = cval_in/kernel
+               ELSE
+                  ! Moore-Penrose continuation at a singular exponential map
+                  ! (generator eigenvalues separated by an integer 2*pi).
+                  cval_out = cval_in*CONJG(kernel)/ &
+                             (kernel_abs**2 + EPSILON(1.0_dp))
+               END IF
+            ELSE
+               cval_out = cval_in*kernel
+            END IF
             block_out_re(i, j) = REAL(cval_out, KIND=dp)
             block_out_im(i, j) = AIMAG(cval_out)
          END DO

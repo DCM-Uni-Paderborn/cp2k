@@ -698,7 +698,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block_p
       REAL(KIND=dp), DIMENSION(n)                        :: evals
       TYPE(dbcsr_distribution_type)                      :: dist
-      TYPE(dbcsr_type)                                   :: inner_im, inner_re, outer_im, outer_re
+      TYPE(dbcsr_type)                                   :: inner_im, inner_re, inverse_im, &
+                                                            inverse_re, outer_im, outer_re
 
       evals = [0.7_dp, -0.2_dp, 1.4_dp, -1.1_dp]
       CALL setup_sparse_pattern_data(z)
@@ -750,6 +751,29 @@ CONTAINS
       IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
 
       err = MAXVAL(ABS(dbcsr_out - dense_ref))
+
+      CALL qs_ot_apply_complex_frechet_dbcsr(evals, outer_re, outer_im, inverse_re, inverse_im, &
+                                             inverse=.TRUE.)
+      dbcsr_out(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_re, 1, 1, block_p, found)
+      IF (found) dbcsr_out(1:2, 1:2) = dbcsr_out(1:2, 1:2) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_im, 1, 1, block_p, found)
+      IF (found) dbcsr_out(1:2, 1:2) = dbcsr_out(1:2, 1:2) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_re, 1, 2, block_p, found)
+      IF (found) dbcsr_out(1:2, 3:4) = dbcsr_out(1:2, 3:4) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_im, 1, 2, block_p, found)
+      IF (found) dbcsr_out(1:2, 3:4) = dbcsr_out(1:2, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_re, 2, 1, block_p, found)
+      IF (found) dbcsr_out(3:4, 1:2) = dbcsr_out(3:4, 1:2) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_im, 2, 1, block_p, found)
+      IF (found) dbcsr_out(3:4, 1:2) = dbcsr_out(3:4, 1:2) + CMPLX(0.0_dp, block_p, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_re, 2, 2, block_p, found)
+      IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(block_p, 0.0_dp, KIND=dp)
+      CALL dbcsr_get_block_p(inverse_im, 2, 2, block_p, found)
+      IF (found) dbcsr_out(3:4, 3:4) = dbcsr_out(3:4, 3:4) + CMPLX(0.0_dp, block_p, KIND=dp)
+      err = MAX(err, MAXVAL(ABS(dbcsr_out - z)))
+      CALL dbcsr_release(inverse_re)
+      CALL dbcsr_release(inverse_im)
       CALL dbcsr_release(outer_re)
       CALL dbcsr_release(outer_im)
 
