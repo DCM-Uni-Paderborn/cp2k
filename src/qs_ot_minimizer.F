@@ -556,7 +556,6 @@ CONTAINS
          qs_ot_env(ichannel)%mermin_ls_energy_slope = 0.0_dp
       END DO
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level < high_print_level) RETURN
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
       IF (.NOT. qs_ot_env(1)%use_dx) RETURN
 
@@ -650,7 +649,6 @@ CONTAINS
 
       IF (.NOT. qs_ot_env(1)%mermin_ls_sample_pending) RETURN
       logger => cp_get_default_logger()
-      IF (logger%iter_info%print_level < high_print_level) RETURN
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
 
       alpha = qs_ot_env(1)%mermin_ls_next_pos
