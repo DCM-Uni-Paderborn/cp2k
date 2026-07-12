@@ -48,7 +48,8 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot_minimizer,                 ONLY: ot_kpoint_cg_residual_growth_guard,&
                                               ot_kpoint_mermin_restart_step,&
                                               ot_kpoint_mermin_search_stagnant,&
-                                              ot_kpoint_multiplicity_direction_scale
+                                              ot_kpoint_multiplicity_direction_scale,&
+                                              ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
         qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_release_ready, &
@@ -157,6 +158,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_restart_step("k-point OT failed-search restart step", &
                                          5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_search_stagnant("k-point OT stagnant-search restart", nfail)
+   CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
    CALL check_complex_occ_projector_hessian("complex occupation-projector Hessian", &
@@ -4412,6 +4414,34 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_search_stagnant
+
+! **************************************************************************************************
+!> \brief check vector secant alignment and orthogonal response decomposition
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_secant_geometry(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: alignment, error, orthogonal_fraction, &
+                                                            snorm, ynorm
+
+      CALL ot_kpoint_secant_geometry(4.0_dp, 25.0_dp, 6.0_dp, snorm, ynorm, &
+                                     alignment, orthogonal_fraction)
+      error = MAX(ABS(snorm - 2.0_dp), ABS(ynorm - 5.0_dp), ABS(alignment - 0.6_dp), &
+                  ABS(orthogonal_fraction - 0.8_dp))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
+      ELSE
+         WRITE (*, '(A,4(1X,ES16.8))') TRIM(label)//" OK with snorm/ynorm/alignment/orthogonal", &
+            snorm, ynorm, alignment, orthogonal_fraction
+      END IF
+
+   END SUBROUTINE check_kpoint_secant_geometry
 
 ! **************************************************************************************************
 !> \brief Check that an irreducible representative takes a one-member search direction.

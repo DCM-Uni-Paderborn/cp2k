@@ -3844,6 +3844,24 @@ CONTAINS
             CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_gx_old_im, template=matrix_s, m=nmo, n=nmo, &
                                                sym=dbcsr_type_no_symmetry)
          END IF
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_g0)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_g0, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_g0_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_g0_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_s)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_s, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_s_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_s_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_y)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_y, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_y_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_y_im, template=matrix_s, m=nmo, n=nmo, &
+                                            sym=dbcsr_type_no_symmetry)
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_e_im, m_diis)
             CALL dbcsr_allocate_matrix_set(qs_ot_env%rot_mat_h_x_im, m_diis)
@@ -3861,6 +3879,11 @@ CONTAINS
       IF (qs_ot_env%settings%do_ener) THEN
          ALLOCATE (qs_ot_env%ener_pgx(nmo))
          qs_ot_env%ener_pgx(:) = 0.0_dp
+         ALLOCATE (qs_ot_env%ener_mermin_g0(nmo), qs_ot_env%ener_mermin_s(nmo), &
+                   qs_ot_env%ener_mermin_y(nmo))
+         qs_ot_env%ener_mermin_g0(:) = 0.0_dp
+         qs_ot_env%ener_mermin_s(:) = 0.0_dp
+         qs_ot_env%ener_mermin_y(:) = 0.0_dp
       END IF
 
       qs_ot_env%has_complex_kpoint_state = .TRUE.

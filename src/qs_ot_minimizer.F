@@ -47,6 +47,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_multiplicity_direction_scale, &
               ot_kpoint_mermin_search_stagnant, &
               ot_kpoint_mermin_restart_step, &
+              ot_kpoint_secant_geometry, &
               ot_mini
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_ot_minimizer'
@@ -542,12 +543,14 @@ CONTAINS
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
       INTEGER                                            :: ichannel
+      LOGICAL                                            :: vector_valid
       REAL(KIND=dp)                                      :: energy_slope, matrix_slope, &
                                                             rotation_slope, slope_sum, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
 
       DO ichannel = 1, SIZE(qs_ot_env)
          qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .FALSE.
+         qs_ot_env(ichannel)%mermin_ls_vector_start_valid = .FALSE.
          qs_ot_env(ichannel)%mermin_ls_matrix_slope = 0.0_dp
          qs_ot_env(ichannel)%mermin_ls_rotation_slope = 0.0_dp
          qs_ot_env(ichannel)%mermin_ls_energy_slope = 0.0_dp
@@ -590,6 +593,24 @@ CONTAINS
             qs_ot_env(ichannel)%mermin_ls_energy_slope = &
                DOT_PRODUCT(qs_ot_env(ichannel)%ener_gx, qs_ot_env(ichannel)%ener_dx)
          END IF
+         vector_valid = qs_ot_env(1)%settings%do_rotation .OR. qs_ot_env(1)%settings%do_ener
+         IF (qs_ot_env(1)%settings%do_rotation) THEN
+            vector_valid = vector_valid .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_g0) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_g0_im)
+            IF (vector_valid) THEN
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_g0, &
+                               qs_ot_env(ichannel)%rot_mat_gx)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_g0_im, &
+                               qs_ot_env(ichannel)%rot_mat_gx_im)
+            END IF
+         END IF
+         IF (qs_ot_env(1)%settings%do_ener) THEN
+            vector_valid = vector_valid .AND. ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_g0)
+            IF (vector_valid) &
+               qs_ot_env(ichannel)%ener_mermin_g0(:) = qs_ot_env(ichannel)%ener_gx(:)
+         END IF
+         qs_ot_env(ichannel)%mermin_ls_vector_start_valid = vector_valid
          qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .TRUE.
          matrix_slope = matrix_slope + qs_ot_env(ichannel)%mermin_ls_matrix_slope
          rotation_slope = rotation_slope + qs_ot_env(ichannel)%mermin_ls_rotation_slope
@@ -616,12 +637,15 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
-      INTEGER                                            :: ichannel, valid_i
-      LOGICAL                                            :: valid
+      INTEGER                                            :: ichannel, valid_i, vector_valid_i
+      LOGICAL                                            :: valid, vector_valid
       REAL(KIND=dp) :: alpha, auxiliary_curvature, current_energy, current_matrix, &
          current_rotation, current_total, energy_curvature, initial_energy, initial_matrix, &
          initial_rotation, initial_total, matrix_curvature, matrix_fraction, rotation_curvature, &
-         secant_consistency, tmp, total_curvature
+         secant_alignment, secant_consistency, secant_energy_s2, secant_energy_sty, &
+         secant_energy_y2, secant_orthogonal_fraction, secant_rotation_s2, secant_rotation_sty, &
+         secant_rotation_y2, secant_s2, secant_snorm, secant_sty, secant_y2, secant_ynorm, tmp, &
+         total_curvature
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. qs_ot_env(1)%mermin_ls_sample_pending) RETURN
@@ -629,16 +653,25 @@ CONTAINS
       IF (logger%iter_info%print_level < high_print_level) RETURN
       IF (.NOT. use_three_point_mermin_search(qs_ot_env)) RETURN
 
+      alpha = qs_ot_env(1)%mermin_ls_next_pos
       valid = .TRUE.
+      vector_valid = ABS(alpha) > 1.0E4_dp*EPSILON(1.0_dp)
       initial_matrix = 0.0_dp
       initial_rotation = 0.0_dp
       initial_energy = 0.0_dp
       current_matrix = 0.0_dp
       current_rotation = 0.0_dp
       current_energy = 0.0_dp
+      secant_rotation_s2 = 0.0_dp
+      secant_rotation_y2 = 0.0_dp
+      secant_rotation_sty = 0.0_dp
+      secant_energy_s2 = 0.0_dp
+      secant_energy_y2 = 0.0_dp
+      secant_energy_sty = 0.0_dp
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
          valid = valid .AND. qs_ot_env(ichannel)%mermin_ls_component_slope_valid
+         vector_valid = vector_valid .AND. qs_ot_env(ichannel)%mermin_ls_vector_start_valid
          initial_matrix = initial_matrix + qs_ot_env(ichannel)%mermin_ls_matrix_slope
          initial_rotation = initial_rotation + qs_ot_env(ichannel)%mermin_ls_rotation_slope
          initial_energy = initial_energy + qs_ot_env(ichannel)%mermin_ls_energy_slope
@@ -678,18 +711,85 @@ CONTAINS
             current_energy = current_energy + &
                              DOT_PRODUCT(qs_ot_env(ichannel)%ener_gx, qs_ot_env(ichannel)%ener_dx)
          END IF
+         IF (.NOT. vector_valid) CYCLE
+         IF (qs_ot_env(1)%settings%do_rotation) THEN
+            vector_valid = ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_im) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_y_im)
+            IF (.NOT. vector_valid) CYCLE
+            CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s, &
+                            qs_ot_env(ichannel)%rot_mat_dx)
+            CALL dbcsr_scale(qs_ot_env(ichannel)%rot_mat_mermin_s, alpha)
+            CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_im, &
+                            qs_ot_env(ichannel)%rot_mat_dx_im)
+            CALL dbcsr_scale(qs_ot_env(ichannel)%rot_mat_mermin_s_im, alpha)
+            CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y, &
+                            qs_ot_env(ichannel)%rot_mat_gx)
+            CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_y, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_g0, &
+                           alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+            CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
+                            qs_ot_env(ichannel)%rot_mat_gx_im)
+            CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_g0_im, &
+                           alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_s, tmp)
+            secant_rotation_s2 = secant_rotation_s2 + 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s_im, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_s_im, tmp)
+            secant_rotation_s2 = secant_rotation_s2 + 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_y, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_y, tmp)
+            secant_rotation_y2 = secant_rotation_y2 + 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_y_im, tmp)
+            secant_rotation_y2 = secant_rotation_y2 + 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_y, tmp)
+            secant_rotation_sty = secant_rotation_sty + 0.5_dp*tmp
+            CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s_im, &
+                           qs_ot_env(ichannel)%rot_mat_mermin_y_im, tmp)
+            secant_rotation_sty = secant_rotation_sty + 0.5_dp*tmp
+         END IF
+         IF (qs_ot_env(1)%settings%do_ener) THEN
+            vector_valid = ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_y)
+            IF (.NOT. vector_valid) CYCLE
+            qs_ot_env(ichannel)%ener_mermin_s(:) = alpha*qs_ot_env(ichannel)%ener_dx(:)
+            qs_ot_env(ichannel)%ener_mermin_y(:) = qs_ot_env(ichannel)%ener_gx(:) - &
+                                                   qs_ot_env(ichannel)%ener_mermin_g0(:)
+            secant_energy_s2 = secant_energy_s2 + &
+                               DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_s, &
+                                           qs_ot_env(ichannel)%ener_mermin_s)
+            secant_energy_y2 = secant_energy_y2 + &
+                               DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_y, &
+                                           qs_ot_env(ichannel)%ener_mermin_y)
+            secant_energy_sty = secant_energy_sty + &
+                                DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_s, &
+                                            qs_ot_env(ichannel)%ener_mermin_y)
+         END IF
       END DO
       valid_i = MERGE(1, 0, valid)
       CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, valid_i)
       valid = valid_i > 0
+      vector_valid_i = MERGE(1, 0, vector_valid)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, vector_valid_i)
+      vector_valid = vector_valid_i > 0
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_matrix)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_rotation)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_energy)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, current_matrix)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, current_rotation)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, current_energy)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_rotation_s2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_rotation_y2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_rotation_sty)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_energy_s2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_energy_y2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_energy_sty)
 
-      alpha = qs_ot_env(1)%mermin_ls_next_pos
       valid = valid .AND. ABS(alpha) > 1.0E4_dp*EPSILON(1.0_dp)
       initial_total = initial_matrix + initial_rotation + initial_energy
       current_total = current_matrix + current_rotation + current_energy
@@ -700,6 +800,16 @@ CONTAINS
       energy_curvature = 0.0_dp
       matrix_fraction = 0.0_dp
       secant_consistency = 0.0_dp
+      secant_s2 = secant_rotation_s2 + secant_energy_s2
+      secant_y2 = secant_rotation_y2 + secant_energy_y2
+      secant_sty = secant_rotation_sty + secant_energy_sty
+      IF (.NOT. vector_valid) THEN
+         secant_s2 = 0.0_dp
+         secant_y2 = 0.0_dp
+         secant_sty = 0.0_dp
+      END IF
+      CALL ot_kpoint_secant_geometry(secant_s2, secant_y2, secant_sty, secant_snorm, &
+                                     secant_ynorm, secant_alignment, secant_orthogonal_fraction)
       IF (valid) THEN
          matrix_curvature = (current_matrix - initial_matrix)/alpha
          rotation_curvature = (current_rotation - initial_rotation)/alpha
@@ -714,6 +824,17 @@ CONTAINS
                               MAX(ABS(total_curvature), ABS(energy_curvature), EPSILON(1.0_dp))
       END IF
 
+      DO ichannel = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         qs_ot_env(ichannel)%mermin_secant_ready = vector_valid
+         IF (.NOT. vector_valid) CYCLE
+         qs_ot_env(ichannel)%mermin_secant_sty = secant_sty
+         qs_ot_env(ichannel)%mermin_secant_snorm = secant_snorm
+         qs_ot_env(ichannel)%mermin_secant_ynorm = secant_ynorm
+         qs_ot_env(ichannel)%mermin_secant_alignment = secant_alignment
+         qs_ot_env(ichannel)%mermin_secant_orthogonal_fraction = secant_orthogonal_fraction
+      END DO
+
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
             " OT Mermin accepted secant slopes valid alpha imat irot iener cmat crot cener current:", &
@@ -723,9 +844,38 @@ CONTAINS
             " OT Mermin accepted secant curvature matrix rotation energy gradient Mermin fraction consistency:", &
             matrix_curvature, rotation_curvature, auxiliary_curvature, total_curvature, &
             energy_curvature, matrix_fraction, secant_consistency
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,10(1X,ES16.8))') &
+            " OT Mermin accepted vector secant valid srot sener yrot yener styrot styener snorm ynorm align orth:", &
+            vector_valid, secant_rotation_s2, secant_energy_s2, secant_rotation_y2, &
+            secant_energy_y2, secant_rotation_sty, secant_energy_sty, secant_snorm, &
+            secant_ynorm, secant_alignment, secant_orthogonal_fraction
       END IF
 
    END SUBROUTINE audit_kpoint_mermin_accepted_secant
+
+! **************************************************************************************************
+!> \brief Euclidean geometry of an accepted vector secant
+!> \param s2 squared step norm
+!> \param y2 squared gradient-difference norm
+!> \param sty secant curvature s^T y
+!> \param snorm step norm
+!> \param ynorm gradient-difference norm
+!> \param alignment cosine between s and y
+!> \param orthogonal_fraction fraction of y orthogonal to s
+! **************************************************************************************************
+   PURE SUBROUTINE ot_kpoint_secant_geometry(s2, y2, sty, snorm, ynorm, alignment, orthogonal_fraction)
+      REAL(KIND=dp), INTENT(IN)                          :: s2, y2, sty
+      REAL(KIND=dp), INTENT(OUT)                         :: snorm, ynorm, alignment, &
+                                                            orthogonal_fraction
+
+      snorm = SQRT(MAX(0.0_dp, s2))
+      ynorm = SQRT(MAX(0.0_dp, y2))
+      alignment = 0.0_dp
+      IF (snorm*ynorm > EPSILON(1.0_dp)) &
+         alignment = MAX(-1.0_dp, MIN(1.0_dp, sty/(snorm*ynorm)))
+      orthogonal_fraction = SQRT(MAX(0.0_dp, 1.0_dp - alignment*alignment))
+
+   END SUBROUTINE ot_kpoint_secant_geometry
 
 ! **************************************************************************************************
 !> \brief reduce a k-point integer with MIN when a distributed communicator is present

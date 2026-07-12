@@ -202,9 +202,16 @@ MODULE qs_ot_types
       ! They intentionally are not restart payload: a restarted in-flight
       ! search must collect a fresh direction before auditing its curvature.
       LOGICAL          :: mermin_ls_component_slope_valid = .FALSE.
+      LOGICAL          :: mermin_ls_vector_start_valid = .FALSE.
+      LOGICAL          :: mermin_secant_ready = .FALSE.
       REAL(KIND=dp)    :: mermin_ls_matrix_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_rotation_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_energy_slope = 0.0_dp
+      REAL(KIND=dp)    :: mermin_secant_sty = 0.0_dp
+      REAL(KIND=dp)    :: mermin_secant_snorm = 0.0_dp
+      REAL(KIND=dp)    :: mermin_secant_ynorm = 0.0_dp
+      REAL(KIND=dp)    :: mermin_secant_alignment = 0.0_dp
+      REAL(KIND=dp)    :: mermin_secant_orthogonal_fraction = 0.0_dp
       REAL(KIND=dp)    :: delta = -1.0_dp, gnorm = -1.0_dp, gnorm_old = -1.0_dp, etotal = -1.0_dp, gradient = -1.0_dp
       LOGICAL          :: energy_only = .FALSE.
       INTEGER          :: diis_iter = -1
@@ -247,6 +254,12 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_gx_old_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_dx => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_dx_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_g0 => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_g0_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_y_im => NULL()
 
       REAL(KIND=dp), DIMENSION(:), POINTER :: rot_mat_evals => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_re => NULL()
@@ -714,6 +727,9 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_pgx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx_old => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_g0 => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_y => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: matrix_occ_precond_scale => NULL()
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :) :: orbital_schur_response_metric
@@ -976,6 +992,13 @@ CONTAINS
       qs_ot_env%mermin_ls_accepted_quality_ema = 1.0_dp
       qs_ot_env%mermin_ls_accepted_gap = 0.0_dp
       qs_ot_env%mermin_ls_accepted_gap_ema = 0.0_dp
+      qs_ot_env%mermin_ls_vector_start_valid = .FALSE.
+      qs_ot_env%mermin_secant_ready = .FALSE.
+      qs_ot_env%mermin_secant_sty = 0.0_dp
+      qs_ot_env%mermin_secant_snorm = 0.0_dp
+      qs_ot_env%mermin_secant_ynorm = 0.0_dp
+      qs_ot_env%mermin_secant_alignment = 0.0_dp
+      qs_ot_env%mermin_secant_orthogonal_fraction = 0.0_dp
 
       qs_ot_env%energy_only = .FALSE.
       qs_ot_env%gnorm_old = 1.0_dp
@@ -1798,7 +1821,10 @@ CONTAINS
                qs_ot_env%rot_mat_h_x_im, qs_ot_env%rot_mat_gx, qs_ot_env%rot_mat_gx_im, &
                qs_ot_env%rot_mat_pgx, qs_ot_env%rot_mat_pgx_im, &
                qs_ot_env%rot_mat_gx_old, qs_ot_env%rot_mat_gx_old_im, qs_ot_env%rot_mat_dx, &
-               qs_ot_env%rot_mat_dx_im, qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
+               qs_ot_env%rot_mat_dx_im, qs_ot_env%rot_mat_mermin_g0, qs_ot_env%rot_mat_mermin_g0_im, &
+               qs_ot_env%rot_mat_mermin_s, qs_ot_env%rot_mat_mermin_s_im, &
+               qs_ot_env%rot_mat_mermin_y, qs_ot_env%rot_mat_mermin_y_im, &
+               qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
                qs_ot_env%rot_mat_dedu_im, qs_ot_env%rot_mat_chc, qs_ot_env%rot_mat_chc_im, &
                qs_ot_env%rot_mat_evec_re, qs_ot_env%rot_mat_evec_im)
 
@@ -1986,6 +2012,12 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_gx_old_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_dx)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dx)
          IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_dx_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_g0)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_g0)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_g0_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_g0_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_im)
       END IF
 
       IF (qs_ot_env%settings%do_ener) THEN
@@ -1995,6 +2027,9 @@ CONTAINS
             DEALLOCATE (qs_ot_env%matrix_occ_precond_scale)
          IF (ASSOCIATED(qs_ot_env%ener_gx)) DEALLOCATE (qs_ot_env%ener_gx)
          IF (ASSOCIATED(qs_ot_env%ener_pgx)) DEALLOCATE (qs_ot_env%ener_pgx)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_g0)) DEALLOCATE (qs_ot_env%ener_mermin_g0)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_s)) DEALLOCATE (qs_ot_env%ener_mermin_s)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_y)) DEALLOCATE (qs_ot_env%ener_mermin_y)
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)
             IF (ASSOCIATED(qs_ot_env%ener_h_e)) DEALLOCATE (qs_ot_env%ener_h_e)
