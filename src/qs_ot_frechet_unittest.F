@@ -48,14 +48,12 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_mermin_restart_step,&
                                               ot_kpoint_mermin_search_stagnant,&
                                               ot_kpoint_multiplicity_direction_scale
-   USE qs_scf_loop_utils,               ONLY: qs_scf_kp_decouple_inactive_gauge,&
-                                              qs_scf_kp_density_control_delta,&
-                                              qs_scf_kp_fermi_guard_transition,&
-                                              qs_scf_kp_full_all_spin_normalization,&
-                                              qs_scf_kp_occ_metric_continuation,&
-                                              qs_scf_kp_occ_preconditioner_transition,&
-                                              qs_scf_kp_subspace_is_collapsed,&
-                                              qs_scf_kp_subspace_refresh_gate
+   USE qs_scf_loop_utils,               ONLY: &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate
 
    IMPLICIT NONE
 
@@ -141,6 +139,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_inactive_gauge_decoupling("inactive k-point gauge decoupling", &
                                         5.0E-14_dp, nfail)
    CALL check_fermi_guard_transition("k-point Fermi guard transition", nfail)
+   CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
@@ -3722,6 +3721,33 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fermi_guard_transition
+
+! **************************************************************************************************
+!> \brief Check that calibrated frontier support is released only in the converged residual basin.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_guard_release(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp
+
+      LOGICAL                                            :: failed
+
+      failed = qs_scf_kp_fermi_guard_release_ready(3, 1.0E-8_dp, eps_scf) .OR. &
+               qs_scf_kp_fermi_guard_release_ready(4, 2.0E-2_dp, eps_scf) .OR. &
+               qs_scf_kp_fermi_guard_release_ready(4, 1.1E-3_dp, eps_scf) .OR. &
+               .NOT. qs_scf_kp_fermi_guard_release_ready(4, 1.0E-3_dp, eps_scf) .OR. &
+               .NOT. qs_scf_kp_fermi_guard_release_ready(8, 1.0E-6_dp, eps_scf)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_fermi_guard_release
 
 ! **************************************************************************************************
 !> \brief Check accepted-tail and high-residual stagnant collapsed-subspace recovery.

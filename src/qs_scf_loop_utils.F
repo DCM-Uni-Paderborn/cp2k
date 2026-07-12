@@ -235,6 +235,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_added_mos_auto_post_resize_steps, &
              qs_scf_kp_decouple_inactive_gauge, &
              qs_scf_kp_density_control_delta, &
+             qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
              qs_scf_kp_full_all_spin_normalization, &
              qs_scf_kp_occ_metric_continuation, &
@@ -1104,7 +1105,8 @@ CONTAINS
          CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
                                                          nspin_ot, kp_range, wkp, para_env_inter_kp, &
                                                          scf_control%smear, trial_eigenvalues, &
-                                                         trial_occupation, trial_mu, fermi_window_guarded)
+                                                         trial_occupation, trial_mu, scf_control%eps_scf, &
+                                                         fermi_window_guarded)
       END IF
       IF (fermi_window_guarded) THEN
          CALL qs_scf_loop_smear_ot_kp_trial_eigenvalues(kpoints, nspin_ot, wkp, scf_control%smear, &
@@ -2259,12 +2261,13 @@ CONTAINS
 !> \param trial_eigenvalues ...
 !> \param trial_occupation ...
 !> \param trial_mu ...
+!> \param eps_scf ...
 !> \param guarded ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
                                                          nspin_ot, kp_range, wkp, para_env_inter_kp, &
                                                          smear, trial_eigenvalues, trial_occupation, &
-                                                         trial_mu, guarded)
+                                                         trial_mu, eps_scf, guarded)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
@@ -2276,15 +2279,15 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: trial_eigenvalues
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_occupation
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: trial_mu
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
       LOGICAL, INTENT(OUT)                               :: guarded
 
       INTEGER :: adjusted, calibration_samples, current_nmo, group, ikpoint, imo, ispin, &
          local_channel, local_kpoint, ngroups, nkpoint, trial_nmo
       LOGICAL                                            :: fractional_support_lost, guard_group, &
                                                             lower_frontier, upper_frontier
-      REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
-                                                            frontier_dist, maxocc, occ_tail, &
-                                                            release_weight, sigma, trial_release
+      REAL(KIND=dp) :: anchor_window, distance_tol, eps, frontier_dist, maxocc, occ_tail, &
+         release_weight, residual_delta, sigma, trial_release
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: current_max_partial, frac_weight, lower_dist, &
          max_partial, maxocc_group, min_abs_eps_mu, release_current, release_trial, upper_dist
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
@@ -2300,7 +2303,12 @@ CONTAINS
       ! minimization, including a legitimately gapped coarse k mesh.
       calibration_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
       CALL para_env_inter_kp%min(calibration_samples)
-      IF (calibration_samples >= ot_kp_schur_calibration_min_samples) RETURN
+      residual_delta = 0.0_dp
+      DO local_channel = 1, SIZE(local_ot_env)
+         residual_delta = MAX(residual_delta, local_ot_env(local_channel)%delta)
+      END DO
+      CALL para_env_inter_kp%max(residual_delta)
+      IF (qs_scf_kp_fermi_guard_release_ready(calibration_samples, residual_delta, eps_scf)) RETURN
 
       sigma = smear%electronic_temperature
       IF (sigma <= 1.0E-14_dp) RETURN
@@ -2514,6 +2522,27 @@ CONTAINS
       guard = trial_release + 10.0_dp*EPSILON(1.0_dp) < current_release
 
    END FUNCTION qs_scf_kp_fermi_guard_transition
+
+! **************************************************************************************************
+!> \brief whether accepted response history and SCF residual make frontier release physically safe
+!> \param calibration_samples accepted Mermin model-quality samples
+!> \param residual_delta current physical OT residual
+!> \param eps_scf requested SCF convergence threshold
+!> \return true only after calibration and entry into the converged residual basin
+! **************************************************************************************************
+   FUNCTION qs_scf_kp_fermi_guard_release_ready(calibration_samples, residual_delta, eps_scf) &
+      RESULT(release_ready)
+      INTEGER, INTENT(IN)                                :: calibration_samples
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, eps_scf
+      LOGICAL                                            :: release_ready
+
+      REAL(KIND=dp)                                      :: residual_limit
+
+      residual_limit = MAX(10.0_dp*MAX(eps_scf, 0.0_dp), SQRT(MAX(eps_scf, 0.0_dp)))
+      release_ready = calibration_samples >= ot_kp_schur_calibration_min_samples .AND. &
+                      residual_delta <= residual_limit
+
+   END FUNCTION qs_scf_kp_fermi_guard_release_ready
 
 ! **************************************************************************************************
 !> \brief residual-gated canonical projector blend weight for k-point OT
