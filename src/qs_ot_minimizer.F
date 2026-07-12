@@ -2480,8 +2480,9 @@ CONTAINS
       schur_last_attempt = qs_ot_env(1)%schur_cg_attempt
       schur_last_flavor = qs_ot_env(1)%schur_cg_flavor
       ! Expose Split/Dense Schur model changes next to CG beta.  Dense
-      ! sub-flavor changes are diagnosed here, but only explicitly mixed
-      ! sub-flavor windows suppress accepted-step quality calibration.
+      ! sub-flavor changes are diagnosed here.  Explicitly mixed gauge windows
+      ! and activation/deactivation of the accepted-secant Hessian reset CG;
+      ! ordinary calibrated candidate changes keep their accumulated history.
       schur_history_change = qs_ot_occupation_preconditioner_active(qs_ot_env(1)) .AND. &
                              qs_ot_env(1)%settings%do_rotation .AND. &
                              (((schur_attempt /= schur_last_attempt) .AND. &
@@ -2491,7 +2492,8 @@ CONTAINS
                                schur_flavor /= schur_last_flavor .AND. &
                                schur_flavor /= 0 .AND. schur_last_flavor /= 0 .AND. &
                                (schur_flavor < 0 .OR. schur_last_flavor < 0 .OR. &
-                                schur_flavor == 42 .OR. schur_last_flavor == 42)))
+                                schur_flavor == 42 .OR. schur_last_flavor == 42 .OR. &
+                                schur_flavor == 43 .OR. schur_last_flavor == 43)))
       schur_history_mixed = .FALSE.
 
       gnorm_matrix_re = 0.0_dp

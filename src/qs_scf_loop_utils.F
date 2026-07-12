@@ -248,7 +248,8 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_occ_preconditioner_transition, &
              qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_subspace_is_collapsed, &
-             qs_scf_kp_subspace_refresh_gate
+             qs_scf_kp_subspace_refresh_gate, &
+             qs_scf_kp_vector_secant_promoted
 
 CONTAINS
 
@@ -325,7 +326,7 @@ CONTAINS
 !> \brief Apply a symmetric least-change update that satisfies one vector secant.
 !> \param hessian symmetric reference Hessian
 !> \param step accepted step s
-!> \param target measured gradient difference y
+!> \param secant_target measured gradient difference y
 !> \param weight fraction of the exact secant update in [0,1]
 !> \param updated_hessian symmetric updated Hessian
 !> \param ready whether the update was finite and well defined
@@ -333,11 +334,11 @@ CONTAINS
 !> \param residual_norm norm of y-Hs before the update
 !> \param updated_residual_norm norm of y-H_new*s after the update
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_kp_symmetric_secant_update(hessian, step, TARGET, weight, &
+   SUBROUTINE qs_scf_kp_symmetric_secant_update(hessian, step, secant_target, weight, &
                                                 updated_hessian, ready, correction_norm, &
                                                 residual_norm, updated_residual_norm)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
-      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step, TARGET
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step, secant_target
       REAL(KIND=dp), INTENT(IN)                          :: weight
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_hessian
       LOGICAL, INTENT(OUT)                               :: ready
@@ -351,7 +352,7 @@ CONTAINS
 
       n = SIZE(step)
       CPASSERT(ALL(SHAPE(hessian) == [n, n]))
-      CPASSERT(SIZE(TARGET) == n)
+      CPASSERT(SIZE(secant_target) == n)
       CPASSERT(ALL(SHAPE(updated_hessian) == [n, n]))
 
       updated_hessian(:, :) = hessian(:, :)
@@ -367,7 +368,7 @@ CONTAINS
       IF (update_weight <= EPSILON(1.0_dp)) RETURN
 
       ALLOCATE (residual(n), updated_residual(n))
-      residual(:) = TARGET(:) - MATMUL(hessian, step)
+      residual(:) = secant_target(:) - MATMUL(hessian, step)
       residual_dot_step = DOT_PRODUCT(residual, step)
       DO j = 1, n
          DO i = 1, n
@@ -378,13 +379,41 @@ CONTAINS
       END DO
       residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(residual, residual)))
       correction_norm = SQRT(MAX(0.0_dp, SUM((updated_hessian - hessian)**2)))
-      updated_residual(:) = TARGET(:) - MATMUL(updated_hessian, step)
+      updated_residual(:) = secant_target(:) - MATMUL(updated_hessian, step)
       updated_residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(updated_residual, updated_residual)))
       ready = correction_norm == correction_norm .AND. updated_residual_norm == updated_residual_norm
       IF (.NOT. ready) updated_hessian(:, :) = hessian(:, :)
       DEALLOCATE (residual, updated_residual)
 
    END SUBROUTINE qs_scf_kp_symmetric_secant_update
+
+! **************************************************************************************************
+!> \brief Decide whether accepted Mermin drops promote the vector-secant candidate.
+!> \param samples number of accepted candidate probes
+!> \param min_samples minimum number of probes
+!> \param predicted_sum accumulated predicted Mermin drop
+!> \param measured_sum accumulated accepted Mermin drop
+!> \param quality most recent accepted/predicted drop ratio
+!> \param quality_ema exponential average of the drop ratio
+!> \param residual_quality_ema exponential average of residual improvement
+!> \param min_quality minimum aggregate and averaged quality
+!> \return whether the candidate has repeatable accepted-step support
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_vector_secant_promoted(samples, min_samples, predicted_sum, measured_sum, &
+                                                  quality, quality_ema, residual_quality_ema, &
+                                                  min_quality) RESULT(promoted)
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      REAL(KIND=dp), INTENT(IN)                          :: predicted_sum, measured_sum, quality, &
+                                                            quality_ema, residual_quality_ema, &
+                                                            min_quality
+      LOGICAL                                            :: promoted
+
+      promoted = samples >= min_samples .AND. predicted_sum > EPSILON(1.0_dp) .AND. &
+                 measured_sum > 0.0_dp .AND. measured_sum/predicted_sum >= min_quality .AND. &
+                 quality_ema >= min_quality .AND. quality >= 0.5_dp*min_quality .AND. &
+                 residual_quality_ema >= min_quality
+
+   END FUNCTION qs_scf_kp_vector_secant_promoted
 
 ! **************************************************************************************************
 !> \brief Stage the coupled occupation response only inside its local metallic basin.
@@ -1900,6 +1929,16 @@ CONTAINS
          IF (changed) &
             local_ot_env(local_channel)%kpoint_occ_metric_residual_quality_ema = 0.0_dp
       END DO
+      IF (changed) THEN
+         local_ot_env(1)%schur_vector_secant_candidate_enabled = .FALSE.
+         local_ot_env(1)%schur_vector_secant_quality_samples = 0
+         local_ot_env(1)%schur_vector_secant_quality = 0.0_dp
+         local_ot_env(1)%schur_vector_secant_quality_ema = 0.0_dp
+         local_ot_env(1)%schur_vector_secant_residual_quality = 0.0_dp
+         local_ot_env(1)%schur_vector_secant_residual_quality_ema = 0.0_dp
+         local_ot_env(1)%schur_vector_secant_drop_sum = 0.0_dp
+         local_ot_env(1)%schur_vector_secant_measured_sum = 0.0_dp
+      END IF
 
       IF (changed .OR. samples /= previous_samples) THEN
          logger => cp_get_default_logger()
@@ -1937,6 +1976,7 @@ CONTAINS
       local_ot_env(1)%schur_constrained_pending = .FALSE.
       local_ot_env(1)%schur_split_shadow_pending = .FALSE.
       local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+      local_ot_env(1)%schur_vector_secant_pending = .FALSE.
       local_ot_env(1)%schur_dense_metric_shadow_pending = .FALSE.
       local_ot_env(1)%schur_projector_mode_pending = .FALSE.
       local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
@@ -5299,7 +5339,8 @@ CONTAINS
          residual_quality_ratio, sample_accepted_drop, sample_gap, sample_gap_ratio, &
          sample_quality, sample_reference_drop, split_shadow_calibrated_predicted_drop, &
          split_shadow_calibrated_quality_ratio
-      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio
+      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio, &
+         vector_secant_predicted_drop, vector_secant_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -5430,6 +5471,7 @@ CONTAINS
             local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_vector_secant_pending = .FALSE.
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -5695,6 +5737,57 @@ CONTAINS
                      ot_kp_schur_quality_ema_alpha*residual_quality_ratio
                END IF
             END SELECT
+         END IF
+
+         vector_secant_predicted_drop = local_ot_env(1)%schur_vector_secant_drop
+         vector_secant_quality_ratio = 0.0_dp
+         IF (mermin_search .AND. local_ot_env(1)%schur_vector_secant_pending .AND. &
+             vector_secant_predicted_drop > EPSILON(vector_secant_predicted_drop)) THEN
+            vector_secant_quality_ratio = MAX(0.0_dp, measured_drop)/vector_secant_predicted_drop
+            local_ot_env(1)%schur_vector_secant_quality = vector_secant_quality_ratio
+            local_ot_env(1)%schur_vector_secant_residual_quality = &
+               MAX(0.0_dp, MIN(1.0_dp, residual_quality_ratio))
+            samples = MIN(local_ot_env(1)%schur_vector_secant_quality_samples + 1, HUGE(samples) - 1)
+            local_ot_env(1)%schur_vector_secant_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_vector_secant_quality_ema = vector_secant_quality_ratio
+               local_ot_env(1)%schur_vector_secant_residual_quality_ema = &
+                  local_ot_env(1)%schur_vector_secant_residual_quality
+            ELSE
+               local_ot_env(1)%schur_vector_secant_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_vector_secant_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*vector_secant_quality_ratio
+               local_ot_env(1)%schur_vector_secant_residual_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_vector_secant_residual_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha* &
+                  local_ot_env(1)%schur_vector_secant_residual_quality
+            END IF
+            local_ot_env(1)%schur_vector_secant_drop_sum = &
+               local_ot_env(1)%schur_vector_secant_drop_sum + vector_secant_predicted_drop
+            local_ot_env(1)%schur_vector_secant_measured_sum = &
+               local_ot_env(1)%schur_vector_secant_measured_sum + MAX(0.0_dp, measured_drop)
+            local_ot_env(1)%schur_vector_secant_candidate_enabled = &
+               qs_scf_kp_vector_secant_promoted( &
+               samples, ot_kp_schur_calibration_min_samples, &
+               local_ot_env(1)%schur_vector_secant_drop_sum, &
+               local_ot_env(1)%schur_vector_secant_measured_sum, &
+               vector_secant_quality_ratio, &
+               local_ot_env(1)%schur_vector_secant_quality_ema, &
+               local_ot_env(1)%schur_vector_secant_residual_quality_ema, &
+               ot_kp_schur_calibrated_quality_min_ratio)
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
+               " OT Schur LS vector-secant history samples promoted q qema rq rqema pred meas ratio:", &
+               samples, local_ot_env(1)%schur_vector_secant_candidate_enabled, &
+               vector_secant_quality_ratio, local_ot_env(1)%schur_vector_secant_quality_ema, &
+               local_ot_env(1)%schur_vector_secant_residual_quality, &
+               local_ot_env(1)%schur_vector_secant_residual_quality_ema, &
+               vector_secant_predicted_drop, measured_drop, &
+               local_ot_env(1)%schur_vector_secant_measured_sum/ &
+               MAX(local_ot_env(1)%schur_vector_secant_drop_sum, EPSILON(1.0_dp))
          END IF
 
          projector_mode_predicted_drop = local_ot_env(1)%schur_projector_mode_drop
@@ -7514,6 +7607,7 @@ CONTAINS
          local_ot_env(1)%schur_constrained_pending = .FALSE.
          local_ot_env(1)%schur_split_shadow_pending = .FALSE.
          local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+         local_ot_env(1)%schur_vector_secant_pending = .FALSE.
          local_ot_env(1)%schur_dense_metric_shadow_pending = .FALSE.
          local_ot_env(1)%schur_projector_mode_pending = .FALSE.
          local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
@@ -8255,6 +8349,8 @@ CONTAINS
             local_ot_env(1)%schur_constrained_pending = .FALSE.
             local_ot_env(1)%schur_split_shadow_pending = .FALSE.
             local_ot_env(1)%schur_occgap_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_vector_secant_pending = .FALSE.
+            local_ot_env(1)%schur_vector_secant_drop = 0.0_dp
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -8492,7 +8588,7 @@ CONTAINS
          projector_response_candidate_selected, response_model_available, schur_active_subspace
       LOGICAL :: solved, split_candidate_diagnostic, split_candidate_enabled, &
          split_candidate_ready, split_candidate_selected, split_residual_competitive, &
-         trust_rejected
+         trust_rejected, vector_secant_update_eligible, vector_secant_update_ready
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
          accepted_model_drop, accepted_model_gap_ratio, accepted_occgap_shadow_drop, &
          accepted_occgap_shadow_gap_ratio, accepted_projector_coupled_weight, &
@@ -9249,7 +9345,8 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_active, &
          rot_hessian_projector_physical_offdiag_plateau
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
-         rot_hessian_projector_physical_offdiag_plateau_active, schur, schur_metric
+         rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_secant, schur, &
+         schur_metric
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -9550,6 +9647,7 @@ CONTAINS
                    response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
+                   rot_hessian_secant(nrot, nrot), &
                    rot_hessian_orbital_schur(nrot, nrot), &
                    projector_physical_direct_base_delta(nrot, nrot), &
                    projector_physical_direct_curv_evec(nrot, nrot), &
@@ -9705,6 +9803,7 @@ CONTAINS
          response_split(:, :) = 0.0_dp
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
+         rot_hessian_secant(:, :) = 0.0_dp
          rot_hessian_orbital_schur(:, :) = 0.0_dp
          rot_hessian_projector(:, :) = 0.0_dp
          rot_hessian_projector_physical(:, :) = 0.0_dp
@@ -10119,6 +10218,8 @@ CONTAINS
          dense_trust_quality = 1.0_dp
          energy_gauge_weight = 0.0_dp
          exact_energy_model_ready = .FALSE.
+         vector_secant_update_eligible = .FALSE.
+         vector_secant_update_ready = .FALSE.
          exact_response_diag_avg = 0.0_dp
          response_mixed_diag_avg = 0.0_dp
          projector_hessian_abs_avg = 0.0_dp
@@ -11101,7 +11202,8 @@ CONTAINS
                         response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
                         projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
                         projector_physical_direct_delta, &
-                        rot_hessian_coupled, rot_hessian_orbital_schur, rot_hessian_projector, &
+                        rot_hessian_coupled, rot_hessian_secant, rot_hessian_orbital_schur, &
+                        rot_hessian_projector, &
                         projector_physical_direct_schur_mat, projector_physical_direct_schur_vec, &
                         rot_hessian_projector_physical, &
                         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
@@ -12730,12 +12832,25 @@ CONTAINS
             exact_response_diag_avg = exact_response_diag_avg/REAL(MAX(1, nrot), KIND=dp)
             response_mixed_diag_avg = response_mixed_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          END IF
-         IF (new_search_point .AND. exact_energy_model_ready .AND. &
-             logger%iter_info%print_level >= high_print_level) &
+         IF (new_search_point .AND. exact_energy_model_ready) &
             CALL audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rot_hessian_coupled, &
-                                                     energy_hessian_reference, energy_cross)
+                                                     energy_hessian_reference, energy_cross, &
+                                                     residual_delta, schur_active_subspace, &
+                                                     rot_hessian_secant, &
+                                                     vector_secant_update_eligible)
+         vector_secant_update_ready = vector_secant_update_eligible .AND. &
+                                      (local_ot_env(1)%schur_vector_secant_candidate_enabled .OR. &
+                                       local_ot_env(1)%schur_vector_secant_quality_samples < &
+                                       ot_kp_schur_calibration_min_samples)
+         IF (.NOT. vector_secant_update_ready) rot_hessian_secant(:, :) = rot_hessian_coupled(:, :)
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
+            " OT Schur vector-secant candidate group eligible apply promoted samples:", &
+            target_group, vector_secant_update_eligible, vector_secant_update_ready, &
+            local_ot_env(1)%schur_vector_secant_candidate_enabled, &
+            local_ot_env(1)%schur_vector_secant_quality_samples
 
          IF (sigma > EPSILON(sigma)) THEN
             response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
@@ -13989,7 +14104,12 @@ CONTAINS
                IF (exact_attempt_response) &
                   projector_coupled_weight = MAX(projector_coupled_weight, &
                                                  projector_density_history_weight)
-               schur(:, :) = rot_hessian_coupled(:, :) + &
+               IF (vector_secant_update_ready) THEN
+                  schur(:, :) = rot_hessian_secant(:, :)
+               ELSE
+                  schur(:, :) = rot_hessian_coupled(:, :)
+               END IF
+               schur(:, :) = schur(:, :) + &
                              projector_coupled_weight*(rot_hessian_projector(:, :) - rot_hessian(:, :))
                IF (exact_attempt_response .AND. exact_physical_response_ready .AND. &
                    residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
@@ -20003,6 +20123,8 @@ CONTAINS
                IF (.NOT. split_candidate_selected) THEN
                   IF (selected_attempt == 3) selected_flavor = 30
                   IF (selected_attempt == 3 .AND. inactive_gauge_projection_used) selected_flavor = 42
+                  IF (selected_attempt == 3 .AND. vector_secant_update_ready .AND. &
+                      .NOT. inactive_gauge_projection_used) selected_flavor = 43
                   ! Projector/density candidates are built by the exact-response
                   ! dense attempt and may be selected later while comparing
                   ! against the raw fallback.  Preserve their sub-flavor so the
@@ -20162,6 +20284,12 @@ CONTAINS
             local_ot_env(1)%schur_model_delta = MAX(local_ot_env(1)%schur_model_delta, residual_delta)
             local_ot_env(1)%schur_model_control_delta = &
                MAX(local_ot_env(1)%schur_model_control_delta, density_projector_control_delta)
+            IF (vector_secant_update_ready .AND. schur_used_attempt == 3 .AND. &
+                accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
+               local_ot_env(1)%schur_vector_secant_pending = .TRUE.
+               local_ot_env(1)%schur_vector_secant_drop = &
+                  local_ot_env(1)%schur_vector_secant_drop + accepted_model_calibrated_drop
+            END IF
             IF (accepted_occgap_shadow_drop > EPSILON(accepted_occgap_shadow_drop)) THEN
                local_ot_env(1)%schur_occgap_shadow_pending = .TRUE.
                local_ot_env(1)%schur_occgap_shadow_drop = &
@@ -22510,7 +22638,8 @@ CONTAINS
                      projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
-                     rot_hessian_coupled, rot_hessian_orbital_schur, rot_hessian_projector, &
+                     rot_hessian_coupled, rot_hessian_secant, rot_hessian_orbital_schur, &
+                     rot_hessian_projector, &
                      projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
                      projector_physical_direct_schur_vec, &
                      rot_hessian_projector_physical, &
@@ -22537,29 +22666,38 @@ CONTAINS
 !> \param rotation_hessian finite complex rotation block
 !> \param energy_hessian dense fixed-N auxiliary-energy block
 !> \param energy_cross signed rotation/energy cross block
+!> \param residual_delta current fixed-N Mermin residual
+!> \param active_subspace rotations were restricted to the thermal Fermi subspace
+!> \param rotation_hessian_secant accepted-secant rotation candidate
+!> \param update_ready whether the candidate passed the physical trust gate
 ! **************************************************************************************************
       SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rotation_hessian, &
-                                                     energy_hessian, energy_cross)
+                                                     energy_hessian, energy_cross, residual_delta, &
+                                                     active_subspace, rotation_hessian_secant, update_ready)
       INTEGER, INTENT(IN)                                :: target_group
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset, var_channel, &
                                                             var_i, var_j, var_kind
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian, &
                                                             energy_cross
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+      LOGICAL, INTENT(IN)                                :: active_subspace
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_hessian_secant
+      LOGICAL, INTENT(OUT)                               :: update_ready
 
       INTEGER                                            :: active_energy_count, global_channel, &
                                                             global_spin, group, ie, imo, &
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
-      LOGICAL                                            :: update_ready, valid
-      REAL(KIND=dp) :: alignment, correction_norm, curvature_ratio, energy_mean, model_alignment, &
-         model_norm, orthogonal_fraction, residual_energy_norm, residual_norm, &
-         residual_rotation_norm, rotation_curvature_ratio, rotation_model_alignment, &
-         rotation_model_norm, rotation_residual_norm, rotation_stbs, rotation_sty, &
-         rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, updated_rotation_residual_norm, &
-         y_norm, ynorm
+      LOGICAL                                            :: update_finite, valid
+      REAL(KIND=dp) :: alignment, base_hessian_norm, correction_norm, correction_ratio, &
+         curvature_ratio, energy_mean, model_alignment, model_norm, orthogonal_fraction, &
+         residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
+         rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
+         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
+         updated_rotation_residual_norm, y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: model_energy, model_rotation, &
                                                             secant_energy, secant_rotation, &
                                                             step_energy, step_rotation, &
@@ -22569,6 +22707,9 @@ CONTAINS
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
+         CPASSERT(ALL(SHAPE(rotation_hessian_secant) == SHAPE(rotation_hessian)))
+         rotation_hessian_secant(:, :) = rotation_hessian(:, :)
+         update_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
          ALLOCATE (step_rotation(nrot), secant_rotation(nrot), model_rotation(nrot), &
                    step_energy(nener), secant_energy(nener), model_energy(nener))
@@ -22703,23 +22844,36 @@ CONTAINS
          ALLOCATE (target_rotation(nrot), updated_rotation_hessian(nrot, nrot))
          target_rotation(:) = secant_rotation(:) + MATMUL(TRANSPOSE(energy_cross), step_energy)
          CALL qs_scf_kp_symmetric_secant_update(rotation_hessian, step_rotation, target_rotation, 1.0_dp, &
-                                                updated_rotation_hessian, update_ready, correction_norm, &
+                                                updated_rotation_hessian, update_finite, correction_norm, &
                                                 rotation_residual_norm, updated_rotation_residual_norm)
+         base_hessian_norm = SQRT(MAX(0.0_dp, SUM(rotation_hessian**2)))
+         correction_ratio = correction_norm/MAX(base_hessian_norm, EPSILON(1.0_dp))
+         update_ready = update_finite .AND. &
+                        active_subspace .AND. &
+                        residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                        rotation_sty > EPSILON(rotation_sty) .AND. &
+                        rotation_stbs > EPSILON(rotation_stbs) .AND. &
+                        rotation_curvature_ratio >= 0.15_dp .AND. rotation_curvature_ratio <= 1.25_dp .AND. &
+                        rotation_model_alignment >= 0.90_dp .AND. correction_ratio <= 0.35_dp .AND. &
+                        local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                        ot_kp_schur_calibration_min_samples .AND. &
+                        local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
+         IF (update_ready) rotation_hessian_secant(:, :) = updated_rotation_hessian(:, :)
 
-         IF (logger%para_env%is_source()) &
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,12(1X,ES16.8))') &
      " OT Schur accepted vector model group selected_sty global_sty sths ratio ynorm mnorm rnorm rrot rener align ym_align orth:", &
             target_group, sty, stored_sty, sths, curvature_ratio, SQRT(MAX(0.0_dp, y_norm)), &
             SQRT(MAX(0.0_dp, model_norm)), SQRT(MAX(0.0_dp, residual_norm)), &
             SQRT(MAX(0.0_dp, residual_rotation_norm)), SQRT(MAX(0.0_dp, residual_energy_norm)), &
             alignment, model_alignment, orthogonal_fraction
-         IF (logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,8(1X,ES16.8))') &
-            " OT Schur accepted rotation secant shadow group ready sty stbs ratio ynorm mnorm align rnorm unorm:", &
-            target_group, update_ready, rotation_sty, rotation_stbs, rotation_curvature_ratio, &
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),9(1X,ES16.8))') &
+           " OT Schur accepted rotation secant shadow group finite eligible sty stbs ratio ynorm mnorm align rnorm unorm cratio:", &
+            target_group, update_finite, update_ready, rotation_sty, rotation_stbs, rotation_curvature_ratio, &
             SQRT(MAX(0.0_dp, rotation_y_norm)), SQRT(MAX(0.0_dp, rotation_model_norm)), &
-            rotation_model_alignment, rotation_residual_norm, updated_rotation_residual_norm
-         IF (logger%para_env%is_source()) &
+            rotation_model_alignment, rotation_residual_norm, updated_rotation_residual_norm, correction_ratio
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,ES16.8)') &
             " OT Schur accepted rotation secant correction group Frobenius:", &
             target_group, correction_norm
