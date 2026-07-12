@@ -235,6 +235,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_added_mos_auto_post_resize_steps, &
              qs_scf_kp_decouple_inactive_gauge, &
              qs_scf_kp_density_control_delta, &
+             qs_scf_kp_fermi_entropy_state, &
              qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
              qs_scf_kp_full_all_spin_normalization, &
@@ -884,8 +885,9 @@ CONTAINS
          max_ener_nmo, nkpoint, nlocal_channels, nmo, nspin_ot, ref_guard_attempt
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL :: fermi_window_guarded, initial_density_rebase, initial_density_reference, &
-         protect_mermin_ls_sample, ref_guard_ok, ref_guarded, transfer_step, &
-         update_ot_energy_state, update_ot_energy_state_after, use_real_wfn
+         minimizer_step_taken, post_fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, &
+         ref_guarded, transfer_step, update_ot_energy_state, update_ot_energy_state_after, &
+         use_real_wfn
       REAL(KIND=dp) :: ener_nondiag, full_all_spin_scale, maxocc, occupation_floor, &
          occupation_floor_fraction, occupation_scale_full, ref_guard_max, ref_guard_min, &
          ref_guard_scale, trial_kTS
@@ -924,6 +926,7 @@ CONTAINS
       NULLIFY (rot_mat_x_old, rot_mat_x_old_im)
       added_mos_auto_grow = .FALSE.
       ot_kp_subspace_refresh = .FALSE.
+      minimizer_step_taken = .FALSE.
 
       CPASSERT(ASSOCIATED(scf_env%qs_ot_env))
       CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, energy=energy, kpoints=kpoints, rho=rho)
@@ -1242,6 +1245,7 @@ CONTAINS
          protect_mermin_ls_sample = .FALSE.
          update_ot_energy_state_after = .TRUE.
       ELSE
+         minimizer_step_taken = .TRUE.
          CALL ot_mini(local_ot_env, matrix_hc, matrix_hc_im=matrix_hc_im, &
                       para_env_inter_kp=para_env_inter_kp)
          protect_mermin_ls_sample = local_ot_env(1)%mermin_ls_sample_pending .AND. &
@@ -1295,6 +1299,33 @@ CONTAINS
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I4,3(1X,ES16.8))') &
                " OT k-point REF-overlap guard attempts scale min max:", &
                ref_guard_attempt, ref_guard_scale, ref_guard_min, ref_guard_max
+         END IF
+      END IF
+      post_fermi_window_guarded = .FALSE.
+      IF (minimizer_step_taken .AND. update_ot_energy_state_after) THEN
+         ! ot_mini can close an energy-only line search and create the next
+         ! coupled direction in one call.  Guard that newly accepted energy
+         ! step as well; the pre-minimizer check cannot see it yet.
+         CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
+                                                       kp_range, wkp, para_env_inter_kp, &
+                                                       scf_control%smear, trial_eigenvalues, &
+                                                       trial_occupation, trial_mu, trial_kTS)
+         CALL qs_scf_loop_guard_ot_kp_trial_fermi_window(kpoints, local_ot_env, first_channel, &
+                                                         nspin_ot, kp_range, wkp, para_env_inter_kp, &
+                                                         scf_control%smear, trial_eigenvalues, &
+                                                         trial_occupation, trial_mu, scf_control%eps_scf, &
+                                                         post_fermi_window_guarded)
+         IF (post_fermi_window_guarded) THEN
+            fermi_window_guarded = .TRUE.
+            CALL qs_scf_loop_reset_ot_kp_guard_state(local_ot_env)
+            DO local_channel = 1, SIZE(local_ot_env)
+               local_ot_env(local_channel)%OT_METHOD_FULL = "OT FER"
+               local_ot_env(local_channel)%delta = &
+                  MAX(local_ot_env(local_channel)%delta, 2.0_dp*scf_control%eps_scf)
+               local_ot_env(local_channel)%energy_only = .FALSE.
+            END DO
+            protect_mermin_ls_sample = .FALSE.
+            update_ot_energy_state_after = .TRUE.
          END IF
       END IF
       CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta, &
@@ -1356,7 +1387,8 @@ CONTAINS
             added_mos_auto_grow = qs_scf_loop_ot_kp_added_mos_auto_tail_grow(kpoints, scf_env, &
                                                                              scf_control, nspin_ot)
       END IF
-      CALL qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp)
+      CALL qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp, &
+                                            scf_control%smear)
       IF (.NOT. added_mos_auto_grow) THEN
          fmwork => scf_env%scf_work1
          IF (ASSOCIATED(scf_env%p_mix_new)) THEN
@@ -2316,8 +2348,10 @@ CONTAINS
 
       trial_nmo = SIZE(trial_eigenvalues, 1)
       nkpoint = SIZE(trial_eigenvalues, 2)
-      ngroups = 1
-      IF (nspin_ot == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) ngroups = 2
+      ! A shared chemical potential couples the fixed-N constraint, but each
+      ! spin channel still needs finite local support for inter-spin charge
+      ! transfer.  Do not let one fractional spin hide collapse of the other.
+      ngroups = nspin_ot
       ALLOCATE (current_max_partial(ngroups), frac_weight(ngroups), lower_dist(ngroups), &
                 max_partial(ngroups), maxocc_group(ngroups), min_abs_eps_mu(ngroups), &
                 release_current(ngroups), release_trial(ngroups), upper_dist(ngroups))
@@ -4115,20 +4149,22 @@ CONTAINS
 !> \param local_ot_env ...
 !> \param wkp ...
 !> \param para_env_inter_kp ...
+!> \param smear ...
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp)
+   SUBROUTINE qs_scf_loop_print_ot_kp_smearing(kpoints, local_ot_env, wkp, para_env_inter_kp, smear)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      TYPE(smear_type), INTENT(IN)                       :: smear
 
       INTEGER                                            :: ikpoint, imo, ispin, local_channel, &
                                                             local_kpoint, nmo, nspin
       REAL(KIND=dp) :: density_projector_fraction, density_projector_model_delta, &
          density_projector_weight, fractional_weight, kTS, max_partial, maxocc, min_fermi_dist, &
-         min_trust_scale, mu, occ_tail, residual_delta, tether_energy, tether_grad_max, &
-         trusted_step_max, weighted_electrons
+         min_trust_scale, mu, occ_fraction, occ_tail, residual_delta, sigma, tether_energy, &
+         tether_grad_max, trusted_step_max, weighted_electrons
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: spin_fractional_weight, spin_kTS, &
                                                             spin_max_partial, spin_min_fermi_dist, &
                                                             spin_mu, spin_weighted_electrons
@@ -4162,12 +4198,16 @@ CONTAINS
       spin_mu = 0.0_dp
       spin_weighted_electrons = 0.0_dp
       DO ispin = 1, nspin
-         spin_kTS(ispin) = kp%mos(1, ispin)%kTS
          spin_mu(ispin) = kp%mos(1, ispin)%mu
-         kTS = kTS + spin_kTS(ispin)
          mu = mu + spin_mu(ispin)
       END DO
+      IF (smear%method /= smear_fermi_dirac) THEN
+         DO ispin = 1, nspin
+            spin_kTS(ispin) = kp%mos(1, ispin)%kTS
+         END DO
+      END IF
       mu = mu/REAL(nspin, KIND=dp)
+      sigma = smear%electronic_temperature
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -4187,6 +4227,14 @@ CONTAINS
                   spin_weighted_electrons(ispin) + wkp(ikpoint)*occupation_numbers(imo)
                spin_min_fermi_dist(ispin) = &
                   MIN(spin_min_fermi_dist(ispin), ABS(eigenvalues(imo) - kp%mos(1, ispin)%mu))
+               IF (smear%method == smear_fermi_dirac .AND. sigma > 1.0E-14_dp .AND. &
+                   maxocc > EPSILON(maxocc)) THEN
+                  occ_fraction = MAX(0.0_dp, MIN(1.0_dp, occupation_numbers(imo)/maxocc))
+                  IF (occ_fraction > 0.0_dp .AND. occ_fraction < 1.0_dp) &
+                     spin_kTS(ispin) = spin_kTS(ispin) + wkp(ikpoint)* &
+                                       qs_scf_kp_fermi_entropy_state(occupation_numbers(imo), &
+                                                                     maxocc, sigma)
+               END IF
             END DO
          END DO
       END DO
@@ -4200,7 +4248,9 @@ CONTAINS
          CALL para_env_inter_kp%sum(spin_weighted_electrons(ispin))
          CALL para_env_inter_kp%max(spin_max_partial(ispin))
          CALL para_env_inter_kp%min(spin_min_fermi_dist(ispin))
+         IF (smear%method == smear_fermi_dirac) CALL para_env_inter_kp%sum(spin_kTS(ispin))
       END DO
+      kTS = SUM(spin_kTS)
 
       DO local_channel = 1, SIZE(local_ot_env)
          residual_delta = MAX(residual_delta, local_ot_env(local_channel)%delta)
@@ -4246,6 +4296,28 @@ CONTAINS
                   spin_mu, spin_weighted_electrons)
 
    END SUBROUTINE qs_scf_loop_print_ot_kp_smearing
+
+! **************************************************************************************************
+!> \brief one-state Fermi-Dirac contribution to the Mermin smearing correction
+!> \param occupation orbital occupation in [0,maxocc]
+!> \param maxocc maximum orbital occupation
+!> \param sigma electronic temperature in Hartree
+!> \return negative T*S contribution for one state before its k-point weight
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_fermi_entropy_state(occupation, maxocc, sigma) RESULT(kTS)
+      REAL(KIND=dp), INTENT(IN)                          :: occupation, maxocc, sigma
+      REAL(KIND=dp)                                      :: kTS
+
+      REAL(KIND=dp)                                      :: occ_fraction
+
+      kTS = 0.0_dp
+      IF (maxocc <= EPSILON(maxocc) .OR. sigma <= 1.0E-14_dp) RETURN
+      occ_fraction = MAX(0.0_dp, MIN(1.0_dp, occupation/maxocc))
+      IF (occ_fraction <= 0.0_dp .OR. occ_fraction >= 1.0_dp) RETURN
+      kTS = sigma*maxocc*(occ_fraction*LOG(occ_fraction) + &
+                          (1.0_dp - occ_fraction)*LOG(1.0_dp - occ_fraction))
+
+   END FUNCTION qs_scf_kp_fermi_entropy_state
 
 ! **************************************************************************************************
 !> \brief prepare per-channel Fermi-window trust data for k-point OT energy variables

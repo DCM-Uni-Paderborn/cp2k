@@ -50,10 +50,10 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_multiplicity_direction_scale
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_release_ready, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate
 
    IMPLICIT NONE
 
@@ -140,6 +140,7 @@ PROGRAM qs_ot_frechet_unittest
                                         5.0E-14_dp, nfail)
    CALL check_fermi_guard_transition("k-point Fermi guard transition", nfail)
    CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
+   CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
@@ -3748,6 +3749,34 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fermi_guard_release
+
+! **************************************************************************************************
+!> \brief Check stable endpoint and fractional one-state Fermi entropy contributions.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_entropy_state(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: maxocc = 2.0_dp, sigma = 0.01_dp
+
+      REAL(KIND=dp)                                      :: error
+
+      error = MAX(ABS(qs_scf_kp_fermi_entropy_state(0.0_dp, maxocc, sigma)), &
+                  ABS(qs_scf_kp_fermi_entropy_state(maxocc, maxocc, sigma)))
+      error = MAX(error, ABS(qs_scf_kp_fermi_entropy_state(0.5_dp*maxocc, maxocc, sigma) + &
+                             sigma*maxocc*LOG(2.0_dp)))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_fermi_entropy_state
 
 ! **************************************************************************************************
 !> \brief Check accepted-tail and high-residual stagnant collapsed-subspace recovery.

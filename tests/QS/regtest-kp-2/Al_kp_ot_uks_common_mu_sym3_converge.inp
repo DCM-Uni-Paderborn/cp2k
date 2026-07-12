@@ -1,0 +1,81 @@
+! Slow/manual common-chemical-potential companion for spin- and
+! symmetry-resolved metallic k-point OT. This input is intentionally not
+! listed in TEST_FILES.toml. Unlike the fixed-moment companion, both spin
+! channels share one fixed-N Mermin constraint and can exchange population.
+! It also covers the complex FULL_ALL preconditioner endpoint.
+!
+! Local 2026-07 OMP_NUM_THREADS=1, MPI-2 reference from a fresh directory:
+! OT converges in 184 steps at EPS_SCF 1E-6, with
+! Mermin F = -8.16155071307069 Ha and kTS = -0.00024435534750 Ha. Matching
+! diagonalization gives -8.16155090938556 Ha, a difference of 2.0E-7 Ha,
+! and both methods give weighted spin populations 6.33333 and 5.66667. The
+! residual-aware per-spin frontier guard is exercised once during startup.
+&GLOBAL
+  PRINT_LEVEL HIGH
+  PROJECT Al_kp_ot_uks_common_mu_sym3_converge
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    MULTIPLICITY 3
+    POTENTIAL_FILE_NAME POTENTIAL
+    UKS TRUE
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 40
+    &END MGRID
+    &PRINT
+      &KPOINTS ON
+      &END KPOINTS
+    &END PRINT
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS 12
+      EPS_SCF 1.0E-6
+      MAX_SCF 210
+      SCF_GUESS ATOMIC
+      &OT
+        ALGORITHM IRAC
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER CG
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_ALL
+        ROTATION
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 300
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 6.0 6.0 6.0
+    &END CELL
+    &COORD
+      Al        -0.4201082476       -0.4201082770       -0.4201082658
+      Al         2.1120503717        0.1540265147        0.1540265525
+      Al         0.1540266214        2.1120506065        0.1540265605
+      Al         0.1540266183        0.1540265196        2.1120505165
+    &END COORD
+    &KIND Al
+      BASIS_SET DZVP-GTH-PADE-CONFINED
+      MAGNETIZATION 0.5
+      POTENTIAL GTH-PADE-q3
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
