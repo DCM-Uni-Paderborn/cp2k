@@ -45,6 +45,7 @@ MODULE preconditioner
                                               apply_preconditioner_dbcsr,&
                                               apply_preconditioner_dbcsr_complex,&
                                               apply_preconditioner_fm,&
+                                              full_all_response_metric_dbcsr_complex,&
                                               full_all_response_metric_dense
    USE preconditioner_makes,            ONLY: make_complex_full_all,&
                                               make_preconditioner_matrix
@@ -71,7 +72,8 @@ MODULE preconditioner
 
    PUBLIC :: make_complex_full_all, make_preconditioner, &
              make_preconditioner_complex_full_all, restart_preconditioner
-   PUBLIC :: apply_preconditioner, full_all_response_metric_dense, prepare_preconditioner
+   PUBLIC :: apply_preconditioner, full_all_response_metric_dbcsr_complex, &
+             full_all_response_metric_dense, prepare_preconditioner
 
 ! The public interface for apply preconditioner, the routines can be found in preconditioner_apply.F
    INTERFACE apply_preconditioner

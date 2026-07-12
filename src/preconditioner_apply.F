@@ -55,7 +55,7 @@ MODULE preconditioner_apply
 
    PUBLIC :: apply_preconditioner_cfm_complex, apply_preconditioner_dbcsr, &
              apply_preconditioner_dbcsr_complex, apply_preconditioner_fm, &
-             full_all_response_metric_dense
+             full_all_response_metric_dbcsr_complex, full_all_response_metric_dense
 
 CONTAINS
 
@@ -109,6 +109,68 @@ CONTAINS
       DEALLOCATE (weighted_residual, weights)
 
    END SUBROUTINE full_all_response_metric_dense
+
+! **************************************************************************************************
+!> \brief Build R^H P_j R directly from paired real/imaginary DBCSR residual matrices.
+!> \param preconditioner_env complex FULL_ALL preconditioner
+!> \param residual_re real part of the unweighted REF complement residual
+!> \param residual_im imaginary part of the unweighted REF complement residual
+!> \param response_metric reduced column-resolved FULL_ALL metric
+!> \param column_scale optional additional positive scaling of P_j
+! **************************************************************************************************
+   SUBROUTINE full_all_response_metric_dbcsr_complex(preconditioner_env, residual_re, residual_im, &
+                                                     response_metric, column_scale)
+
+      TYPE(preconditioner_type), INTENT(IN)              :: preconditioner_env
+      TYPE(dbcsr_type), INTENT(IN)                       :: residual_re, residual_im
+      COMPLEX(KIND=dp), ALLOCATABLE, &
+         DIMENSION(:, :, :), INTENT(INOUT)               :: response_metric
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: column_scale
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: spectral_residual
+      INTEGER                                            :: k, n
+      TYPE(cp_cfm_type)                                  :: residual, residual_spectral
+      TYPE(cp_fm_type)                                   :: residual_im_fm, residual_re_fm
+
+      CPASSERT(preconditioner_env%in_use == ot_precond_full_all)
+      CPASSERT(ASSOCIATED(preconditioner_env%complex_fm))
+      CPASSERT(ASSOCIATED(preconditioner_env%full_evals))
+      CPASSERT(ASSOCIATED(preconditioner_env%occ_evals))
+      CALL dbcsr_get_info(residual_re, nfullrows_total=n, nfullcols_total=k)
+      CPASSERT(n == SIZE(preconditioner_env%full_evals))
+      CPASSERT(k == SIZE(preconditioner_env%occ_evals))
+
+      IF (ALLOCATED(response_metric)) THEN
+         IF (ANY(SHAPE(response_metric) /= [k, k, k])) DEALLOCATE (response_metric)
+      END IF
+      IF (.NOT. ALLOCATED(response_metric)) ALLOCATE (response_metric(k, k, k))
+      ALLOCATE (spectral_residual(n, k))
+
+      CALL cp_fm_create(residual_re_fm, preconditioner_env%complex_fm%matrix_struct, &
+                        nrow=n, ncol=k, name='complex FULL_ALL response residual real')
+      CALL cp_fm_create(residual_im_fm, preconditioner_env%complex_fm%matrix_struct, &
+                        nrow=n, ncol=k, name='complex FULL_ALL response residual imaginary')
+      CALL copy_dbcsr_to_fm(residual_re, residual_re_fm)
+      CALL copy_dbcsr_to_fm(residual_im, residual_im_fm)
+      CALL cp_cfm_create(residual, residual_re_fm%matrix_struct, &
+                         name='complex FULL_ALL response residual')
+      CALL cp_cfm_create(residual_spectral, residual_re_fm%matrix_struct, &
+                         name='complex FULL_ALL spectral response residual')
+      CALL cp_fm_to_cfm(residual_re_fm, residual_im_fm, residual)
+      CALL cp_cfm_gemm('C', 'N', n, k, n, z_one, preconditioner_env%complex_fm, &
+                       residual, z_zero, residual_spectral)
+      CALL cp_cfm_get_submatrix(residual_spectral, spectral_residual)
+      CALL full_all_response_metric_dense(spectral_residual, preconditioner_env%full_evals, &
+                                          preconditioner_env%occ_evals, preconditioner_env%energy_gap, &
+                                          response_metric, column_scale)
+
+      CALL cp_cfm_release(residual_spectral)
+      CALL cp_cfm_release(residual)
+      CALL cp_fm_release(residual_im_fm)
+      CALL cp_fm_release(residual_re_fm)
+      DEALLOCATE (spectral_residual)
+
+   END SUBROUTINE full_all_response_metric_dbcsr_complex
 
 ! **************************************************************************************************
 !> \brief applies a previously created preconditioner to a full matrix

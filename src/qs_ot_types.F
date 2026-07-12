@@ -219,6 +219,7 @@ MODULE qs_ot_types
       LOGICAL          :: kpoint_occ_preconditioner_active = .FALSE.
       INTEGER          :: kpoint_occ_preconditioner_ready_samples = 0
       REAL(KIND=dp)    :: kpoint_occ_metric_residual_quality_ema = 0.0_dp
+      LOGICAL          :: orbital_schur_response_ready = .FALSE.
 
       LOGICAL          :: do_taylor = .FALSE.
       INTEGER          :: taylor_order = -1
@@ -715,6 +716,7 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx_old => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: matrix_occ_precond_scale => NULL()
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :) :: orbital_schur_response_metric
       REAL(KIND=dp), POINTER, DIMENSION(:, :) :: ener_h_e => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:, :) :: ener_h_x => NULL()
       LOGICAL :: kpoint_preconditioned_direction_ready = .FALSE.
@@ -983,6 +985,7 @@ CONTAINS
       qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_ready_samples = 0
       qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
+      qs_ot_env%orbital_schur_response_ready = .FALSE.
       qs_ot_env%schur_model_pending = .FALSE.
       qs_ot_env%schur_model_quality_ready = .FALSE.
       qs_ot_env%schur_constrained_pending = .FALSE.
@@ -2004,11 +2007,15 @@ CONTAINS
          END IF
       END IF
 
+      IF (ALLOCATED(qs_ot_env%orbital_schur_response_metric)) &
+         DEALLOCATE (qs_ot_env%orbital_schur_response_metric)
+
       qs_ot_env%state_allocated = .FALSE.
       qs_ot_env%has_complex_kpoint_state = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_active = .FALSE.
       qs_ot_env%kpoint_occ_preconditioner_ready_samples = 0
       qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
+      qs_ot_env%orbital_schur_response_ready = .FALSE.
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
       qs_ot_env%ener_direction_linear = .FALSE.
 
