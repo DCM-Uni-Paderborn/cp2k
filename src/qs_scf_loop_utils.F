@@ -84,7 +84,8 @@ MODULE qs_scf_loop_utils
                                               qs_ot_get_derivative_ref_complex,&
                                               qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_rot_mat_derivative_complex
-   USE qs_ot_minimizer,                 ONLY: ot_kpoint_secant_geometry,&
+   USE qs_ot_minimizer,                 ONLY: ot_kpoint_physical_residual_split,&
+                                              ot_kpoint_secant_geometry,&
                                               ot_mini
    USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
                                               ot_scf_mini
@@ -216,7 +217,6 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_density_fdir_probe_ratio = 8.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_refresh_ratio = 2.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_residual_ratio = 8.0E-1_dp, &
-                                        ot_kp_schur_physical_env_raw_floor_eps_factor = 3.0_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_ratio = 1.0E-1_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_min_ratio = 2.0E-2_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_quality = 9.9E-1_dp, &
@@ -251,6 +251,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_residual_split, &
              qs_scf_kp_symmetric_multisecant_update, &
              qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_subspace_is_collapsed, &
@@ -2020,12 +2021,29 @@ CONTAINS
    END SUBROUTINE qs_scf_loop_do_ot_kp
 
 ! **************************************************************************************************
+!> \brief separate the OT model residual from an outer SCF exit floor
+!> \param optimizer_delta globally synchronized intrinsic minimizer residual
+!> \param exit_floor_delta additional physical/raw residual floor for SCF exit
+!> \param model_delta residual retained by the OT minimizer and response model
+!> \param outer_delta residual exposed to the outer SCF convergence check
+! **************************************************************************************************
+   PURE SUBROUTINE qs_scf_kp_residual_split(optimizer_delta, exit_floor_delta, model_delta, outer_delta)
+
+      REAL(KIND=dp), INTENT(IN)                          :: optimizer_delta, exit_floor_delta
+      REAL(KIND=dp), INTENT(OUT)                         :: model_delta, outer_delta
+
+      model_delta = MAX(0.0_dp, optimizer_delta)
+      outer_delta = MAX(model_delta, MAX(0.0_dp, exit_floor_delta))
+
+   END SUBROUTINE qs_scf_kp_residual_split
+
+! **************************************************************************************************
 !> \brief synchronize k-point OT residual over distributed k-point groups
 !> \param local_ot_env ...
 !> \param para_env_inter_kp ...
 !> \param residual_delta ...
 !> \param eps_scf apply the raw-residual exit floor when synchronizing the outer SCF residual;
-!>        omit it for internal minimizer/model feedback, where the capped local delta is wanted
+!>        omit it for internal minimizer/model evaluations
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_delta, eps_scf)
 
@@ -2035,8 +2053,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
 
       INTEGER                                            :: local_channel
-      REAL(KIND=dp) :: env_delta, gap_weight, ot_delta, physical_delta, projected_delta, &
-         projected_raw_ratio, quality_weight, raw_delta, raw_floor_ratio, tail_weight
+      REAL(KIND=dp) :: exit_floor_delta, gap_weight, model_delta, ot_delta, physical_delta, &
+         physical_exit_floor_delta, physical_model_delta, projected_delta, projected_raw_ratio, &
+         quality_weight, raw_delta, raw_floor_ratio, tail_weight
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -2046,24 +2065,29 @@ CONTAINS
       ! values before this synchronization point.
       ot_delta = local_ot_env(1)%delta
       CALL para_env_inter_kp%max(ot_delta)
-      residual_delta = ot_delta
-      env_delta = ot_delta
+      exit_floor_delta = 0.0_dp
       raw_delta = 0.0_dp
       physical_delta = 0.0_dp
       projected_delta = 0.0_dp
-      IF (local_ot_env(1)%kpoint_physical_delta_ready .AND. &
-          local_ot_env(1)%kpoint_physical_delta > 0.0_dp .AND. &
-          local_ot_env(1)%kpoint_raw_delta > 0.0_dp) THEN
-         raw_delta = local_ot_env(1)%kpoint_raw_delta
+      IF (local_ot_env(1)%kpoint_raw_delta > 0.0_dp) raw_delta = local_ot_env(1)%kpoint_raw_delta
+      IF (local_ot_env(1)%kpoint_physical_delta > 0.0_dp) &
          physical_delta = local_ot_env(1)%kpoint_physical_delta
+      IF (local_ot_env(1)%kpoint_projected_delta > 0.0_dp) &
          projected_delta = local_ot_env(1)%kpoint_projected_delta
-         IF (projected_delta <= 0.0_dp) projected_delta = physical_delta
-      END IF
+      IF (projected_delta <= 0.0_dp) projected_delta = physical_delta
       CALL para_env_inter_kp%max(raw_delta)
       CALL para_env_inter_kp%max(physical_delta)
       CALL para_env_inter_kp%max(projected_delta)
       IF (PRESENT(eps_scf)) THEN
-         IF (eps_scf > 0.0_dp .AND. raw_delta > residual_delta) THEN
+         CALL ot_kpoint_physical_residual_split( &
+            raw_delta, physical_delta, local_ot_env(1)%kpoint_physical_delta_ready, &
+            eps_scf, local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+            local_ot_env(1)%mermin_ls_accepted_quality_ema, local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+            physical_model_delta, physical_exit_floor_delta)
+         CALL para_env_inter_kp%max(physical_exit_floor_delta)
+         exit_floor_delta = MAX(exit_floor_delta, physical_exit_floor_delta)
+         IF (eps_scf > 0.0_dp .AND. raw_delta > ot_delta .AND. &
+             local_ot_env(1)%kpoint_physical_delta_ready) THEN
             raw_floor_ratio = ot_kp_schur_physical_exit_raw_floor_ratio
             IF (physical_delta > 0.0_dp .AND. physical_delta <= eps_scf .AND. &
                 local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
@@ -2091,13 +2115,12 @@ CONTAINS
                raw_floor_ratio = MIN(raw_floor_ratio, projected_raw_ratio)
             END IF
             CALL para_env_inter_kp%max(raw_floor_ratio)
-            residual_delta = MAX(residual_delta, raw_floor_ratio*raw_delta)
-            env_delta = MAX(env_delta, MIN(residual_delta, &
-                                           ot_kp_schur_physical_env_raw_floor_eps_factor*eps_scf))
+            exit_floor_delta = MAX(exit_floor_delta, raw_floor_ratio*raw_delta)
          END IF
       END IF
+      CALL qs_scf_kp_residual_split(ot_delta, exit_floor_delta, model_delta, residual_delta)
       DO local_channel = 1, SIZE(local_ot_env)
-         local_ot_env(local_channel)%delta = env_delta
+         local_ot_env(local_channel)%delta = model_delta
       END DO
 
    END SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta

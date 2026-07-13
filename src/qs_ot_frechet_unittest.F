@@ -51,6 +51,7 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_mermin_restart_step,&
                                               ot_kpoint_mermin_search_stagnant,&
                                               ot_kpoint_multiplicity_direction_scale,&
+                                              ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_schur_transport, &
@@ -60,9 +61,9 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_residual_split, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -161,6 +162,9 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_control_delta("k-point OT accepted density-projector tail", &
                                            5.0E-15_dp, nfail)
+   CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
+   CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
+                                             5.0E-15_dp, nfail)
    CALL check_kpoint_occ_metric_continuation("k-point OT occupation-metric continuation", &
                                              5.0E-13_dp, nfail)
    CALL check_kpoint_cg_residual_growth_guard("k-point OT accepted residual growth guard", &
@@ -4430,6 +4434,71 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_density_control_delta
+
+! **************************************************************************************************
+!> \brief Check that an outer raw-residual floor does not feed back into the OT model.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_residual_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: model_delta, outer_delta
+
+      CALL qs_scf_kp_residual_split(7.0E-7_dp, 3.0E-6_dp, model_delta, outer_delta)
+      failed = ABS(model_delta - 7.0E-7_dp) > tol .OR. ABS(outer_delta - 3.0E-6_dp) > tol
+      CALL qs_scf_kp_residual_split(2.0E-6_dp, 5.0E-7_dp, model_delta, outer_delta)
+      failed = failed .OR. ABS(model_delta - 2.0E-6_dp) > tol .OR. &
+               ABS(outer_delta - 2.0E-6_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES16.8))') TRIM(label), "failed", model_delta, outer_delta
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_residual_split
+
+! **************************************************************************************************
+!> \brief Check calibrated physical residual control without contaminating the response model.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_physical_residual_split(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: exit_floor, model_delta
+
+      CALL ot_kpoint_physical_residual_split(5.0E-6_dp, 4.0E-7_dp, .FALSE., 1.0E-6_dp, &
+                                             8, 0.9_dp, 0.01_dp, model_delta, exit_floor)
+      failed = ABS(model_delta - 4.0E-7_dp) > tol .OR. ABS(exit_floor - 3.0E-6_dp) > tol
+      CALL ot_kpoint_physical_residual_split(5.0E-6_dp, 4.0E-7_dp, .TRUE., 1.0E-6_dp, &
+                                             8, 0.9_dp, 0.01_dp, model_delta, exit_floor)
+      failed = failed .OR. ABS(model_delta - 4.0E-7_dp) > tol .OR. ABS(exit_floor) > tol
+      CALL ot_kpoint_physical_residual_split(5.0E-6_dp, 4.0E-7_dp, .FALSE., 1.0E-6_dp, &
+                                             7, 0.9_dp, 0.01_dp, model_delta, exit_floor)
+      failed = failed .OR. ABS(model_delta - 5.0E-6_dp) > tol .OR. ABS(exit_floor) > tol
+      CALL ot_kpoint_physical_residual_split(2.0E-6_dp, 4.0E-7_dp, .FALSE., 1.0E-6_dp, &
+                                             8, 0.9_dp, 0.01_dp, model_delta, exit_floor)
+      failed = failed .OR. ABS(model_delta - 2.0E-6_dp) > tol .OR. ABS(exit_floor) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,ES16.8))') TRIM(label), "failed", model_delta, exit_floor
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_physical_residual_split
 
 ! **************************************************************************************************
 !> \brief Check continuous inverse-occupation scaling from accepted Mermin steps.

@@ -47,6 +47,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_fermi_window_energy_coordinate, &
               ot_kpoint_fermi_window_direction_scale, &
               ot_kpoint_multiplicity_direction_scale, &
+              ot_kpoint_physical_residual_split, &
               ot_kpoint_mermin_search_stagnant, &
               ot_kpoint_mermin_restart_step, &
               ot_kpoint_secant_geometry, &
@@ -96,6 +97,49 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief separate a calibrated physical model residual from its conservative SCF exit floor
+!> \param raw_delta preconditioned residual
+!> \param physical_delta measured fixed-N physical residual
+!> \param physical_ready whether all physical response groups are converged
+!> \param eps_scf requested SCF threshold
+!> \param quality_samples number of accepted Mermin calibration samples
+!> \param accepted_quality accepted/predicted Mermin-drop quality
+!> \param accepted_gap accepted-to-best line-search gap
+!> \param model_delta residual used by the minimizer and response model
+!> \param exit_floor_delta additional residual floor used only for the outer SCF exit
+! **************************************************************************************************
+   PURE SUBROUTINE ot_kpoint_physical_residual_split(raw_delta, physical_delta, physical_ready, &
+                                                     eps_scf, quality_samples, accepted_quality, &
+                                                     accepted_gap, model_delta, exit_floor_delta)
+      REAL(KIND=dp), INTENT(IN)                          :: raw_delta, physical_delta
+      LOGICAL, INTENT(IN)                                :: physical_ready
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
+      INTEGER, INTENT(IN)                                :: quality_samples
+      REAL(KIND=dp), INTENT(IN)                          :: accepted_quality, accepted_gap
+      REAL(KIND=dp), INTENT(OUT)                         :: model_delta, exit_floor_delta
+
+      REAL(KIND=dp)                                      :: physical_control_delta
+
+      model_delta = MAX(0.0_dp, raw_delta)
+      exit_floor_delta = 0.0_dp
+      IF (physical_delta <= 0.0_dp .OR. physical_delta >= model_delta) RETURN
+
+      IF (physical_ready) THEN
+         model_delta = physical_delta
+         RETURN
+      END IF
+      IF (eps_scf <= 0.0_dp .OR. quality_samples < ot_cg_kp_physical_control_min_samples .OR. &
+          accepted_quality < ot_cg_kp_physical_control_quality .OR. &
+          accepted_gap > ot_cg_kp_physical_control_gap) RETURN
+
+      physical_control_delta = MAX(physical_delta, ot_cg_kp_physical_control_eps_factor*eps_scf)
+      IF (physical_control_delta >= model_delta) RETURN
+      model_delta = physical_delta
+      exit_floor_delta = physical_control_delta
+
+   END SUBROUTINE ot_kpoint_physical_residual_split
 
 ! **************************************************************************************************
 !> \brief advance the auxiliary-energy coordinate inside an independent symmetric trust interval
@@ -3008,12 +3052,13 @@ CONTAINS
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, gnorm_rot_re)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, gnorm_rot_im)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, gnorm_ener)
+      physical_control_delta = 0.0_dp
       nvar = ot_kpoint_channel_nvar(qs_ot_env, do_ks, do_ener)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, nvar)
       ! Handling the case of no free variables to optimize
       IF (nvar > 0.0_dp) THEN
-         qs_ot_env(1)%delta = SQRT(ABS(gnorm_metric)/nvar)
-         raw_delta = qs_ot_env(1)%delta
+         raw_delta = SQRT(ABS(gnorm_metric)/nvar)
+         qs_ot_env(1)%delta = raw_delta
          qs_ot_env(1)%kpoint_raw_delta = raw_delta
          qs_ot_env(1)%kpoint_physical_delta = -1.0_dp
          qs_ot_env(1)%kpoint_projected_delta = -1.0_dp
@@ -3026,23 +3071,11 @@ CONTAINS
             physical_delta = SQRT(ABS(physical_gnorm_metric)/nvar)
             qs_ot_env(1)%kpoint_physical_delta = physical_delta
             qs_ot_env(1)%kpoint_projected_delta = physical_delta
-            IF (qs_ot_env(1)%kpoint_physical_delta_ready) THEN
-               IF (physical_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_delta
-            ELSE IF (qs_ot_env(1)%kpoint_eps_scf > 0.0_dp .AND. &
-                     physical_delta > 0.0_dp .AND. physical_delta < qs_ot_env(1)%delta .AND. &
-                     qs_ot_env(1)%mermin_ls_accepted_quality_samples >= &
-                     ot_cg_kp_physical_control_min_samples .AND. &
-                     qs_ot_env(1)%mermin_ls_accepted_quality_ema >= &
-                     ot_cg_kp_physical_control_quality .AND. &
-                     qs_ot_env(1)%mermin_ls_accepted_gap_ema <= &
-                     ot_cg_kp_physical_control_gap) THEN
-               ! Keep non-ready tail steps above EPS_SCF, but steer trust/projector logic
-               ! with the measured fixed-N residual instead of a preconditioned raw spike.
-               physical_control_delta = MAX(physical_delta, &
-                                            ot_cg_kp_physical_control_eps_factor* &
-                                            qs_ot_env(1)%kpoint_eps_scf)
-               IF (physical_control_delta < qs_ot_env(1)%delta) qs_ot_env(1)%delta = physical_control_delta
-            END IF
+            CALL ot_kpoint_physical_residual_split( &
+               raw_delta, physical_delta, qs_ot_env(1)%kpoint_physical_delta_ready, &
+               qs_ot_env(1)%kpoint_eps_scf, qs_ot_env(1)%mermin_ls_accepted_quality_samples, &
+               qs_ot_env(1)%mermin_ls_accepted_quality_ema, qs_ot_env(1)%mermin_ls_accepted_gap_ema, &
+               qs_ot_env(1)%delta, physical_control_delta)
          END IF
          beta_pr = (qs_ot_env(1)%gnorm - gnorm_cross)/qs_ot_env(1)%gnorm_old
       ELSE
@@ -3180,10 +3213,11 @@ CONTAINS
             gnorm_matrix_re, gnorm_matrix_im, gnorm_rot_re, gnorm_rot_im, &
             gnorm_ener, qs_ot_env(1)%gnorm
          IF (qs_ot_env(1)%kpoint_physical_delta_groups > 0) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,I6,8(1X,ES16.8))') &
-            " OT CG physical residual ready groups raw effective guarded projected matrix phys_rot phys_eps gauge:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,1X,I6,9(1X,ES16.8))') &
+            " OT CG physical residual ready groups raw model exit physical projected matrix phys_rot phys_eps gauge:", &
             qs_ot_env(1)%kpoint_physical_delta_ready, qs_ot_env(1)%kpoint_physical_delta_groups, &
-            qs_ot_env(1)%kpoint_raw_delta, qs_ot_env(1)%delta, qs_ot_env(1)%kpoint_physical_delta, &
+            qs_ot_env(1)%kpoint_raw_delta, qs_ot_env(1)%delta, physical_control_delta, &
+            qs_ot_env(1)%kpoint_physical_delta, &
             qs_ot_env(1)%kpoint_projected_delta, &
             MAX(0.0_dp, raw_matrix_gnorm_re) + MAX(0.0_dp, raw_matrix_gnorm_im), &
             qs_ot_env(1)%kpoint_physical_rot_gnorm, &

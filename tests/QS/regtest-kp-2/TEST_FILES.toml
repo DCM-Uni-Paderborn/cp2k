@@ -65,10 +65,10 @@
 # -8.14036040968823 Ha, within 5.3E-7 Ha of diagonalization while retaining
 # weighted spin populations 7/5 and finite entropy.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
-# four-channel anchor.  FULL_ALL converges in 184 MPI-2 steps to
-# -8.16155071307069 Ha, within 2.0E-7 Ha of diagonalization, and reproduces
-# the unconstrained spin populations 6.33333/5.66667.  FULL_SINGLE_INVERSE
-# independently reaches the same branch within 4.4E-7 Ha in 115 steps.
+# four-channel anchor.  FULL_ALL converges in 188 MPI-2 steps to
+# -8.16155075188063 Ha, within 1.6E-7 Ha of diagonalization, and reproduces
+# the unconstrained spin populations 6.33333/5.66667.  A serial run converges
+# in 158 steps within 4.4E-7 Ha and exchanges only the equivalent spin labels.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-7.89619451102384},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-7.89619451102384},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-1.2585752E-7},
