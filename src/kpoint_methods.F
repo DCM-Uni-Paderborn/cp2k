@@ -970,7 +970,7 @@ CONTAINS
                ALLOCATE (kp%pmat(nc, nspin))
                DO is = 1, nspin
                   DO ic = 1, nc
-                     CALL cp_fm_create(kp%pmat(ic, is), matrix_struct)
+                     CALL cp_fm_create(kp%pmat(ic, is), matrix_struct, set_zero=.TRUE.)
                   END DO
                END DO
                ! energy weighted density matrix
@@ -978,7 +978,7 @@ CONTAINS
                ALLOCATE (kp%wmat(nc, nspin))
                DO is = 1, nspin
                   DO ic = 1, nc
-                     CALL cp_fm_create(kp%wmat(ic, is), matrix_struct)
+                     CALL cp_fm_create(kp%wmat(ic, is), matrix_struct, set_zero=.TRUE.)
                   END DO
                END DO
             END DO

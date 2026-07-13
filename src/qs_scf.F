@@ -90,7 +90,7 @@ MODULE qs_scf
         ot_precond_full_all, ot_precond_full_kinetic, ot_precond_full_single, &
         ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
         outer_scf_becke_constraint, outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
-        outer_scf_optimizer_newton_ls, restart_guess, sic_eo, smear_fermi_dirac, smear_gaussian, &
+        gxtb, outer_scf_optimizer_newton_ls, restart_guess, sic_eo, smear_fermi_dirac, smear_gaussian, &
         smear_mp, smear_mv, tblite_scc_mixer_tblite
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
@@ -230,6 +230,9 @@ MODULE qs_scf
                                               tb_native_scc_mixer_active,&
                                               tb_scf_mixer_error,&
                                               tb_update_charges
+#if defined(__TBLITE_GXTB)
+   USE tblite_interface,                ONLY: tb_sync_gxtb_kpoint_density
+#endif
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -492,7 +495,6 @@ CONTAINS
       internal_tblite_density_full_step = dft_control%qs_control%xtb .AND. &
                                           .NOT. dft_control%qs_control%xtb_control%do_tblite .AND. &
                                           dft_control%qs_control%xtb_control%tblite_scc_mixer == tblite_scc_mixer_tblite
-
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
 
       dft_section => section_vals_get_subs_vals(input, "DFT")
@@ -909,6 +911,11 @@ CONTAINS
                density_full_step = diis_step .OR. tblite_native_mixer .OR. internal_tblite_density_full_step
                CALL qs_scf_density_mixing(scf_env, rho, para_env, density_full_step)
             END IF
+#if defined(__TBLITE_GXTB)
+            IF (do_kpoints .AND. dft_control%qs_control%xtb_control%do_tblite) THEN
+               CALL tb_sync_gxtb_kpoint_density(qs_env, diis_step)
+            END IF
+#endif
             IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
                 .NOT. (dft_control%qs_control%do_ls_scf .OR. scf_control%use_ot)) THEN
                scf_env%iter_delta = MAX(scf_env%iter_delta, &
@@ -921,8 +928,21 @@ CONTAINS
                                         charge_mixing_scc_error(scf_env%mixing_store, scf_control%eps_scf))
             END IF
             IF (tblite_native_mixer) THEN
-               scf_env%iter_param = dft_control%qs_control%xtb_control%tblite_mixer_damping
-               scf_env%iter_method = "TBLite/Diag"
+               IF (dft_control%qs_control%xtb_control%tblite_method == gxtb) THEN
+                  IF (scf_env%iter_count == 1) THEN
+                     scf_env%iter_param = 1.0_dp
+                     scf_env%iter_method = "GXTB-Raw"
+                  ELSEIF (scf_env%iter_count <= 3) THEN
+                     scf_env%iter_param = 0.2_dp
+                     scf_env%iter_method = "GXTB-Simple"
+                  ELSE
+                     scf_env%iter_param = 1.0_dp
+                     scf_env%iter_method = "GXTB-FDIIS"
+                  END IF
+               ELSE
+                  scf_env%iter_param = dft_control%qs_control%xtb_control%tblite_mixer_damping
+                  scf_env%iter_method = "TBLite/Diag"
+               END IF
             ELSE IF (internal_tblite_mixer) THEN
                scf_env%iter_method = "TBLite/Diag"
                IF (dft_control%qs_control%dftb) THEN
@@ -1401,6 +1421,15 @@ CONTAINS
       IF (dft_control%restricted) nspin_ot = 1
       IF (do_kpoints) THEN
          CALL get_kpoint_info(kpoints, nkp=nkpoint, kp_range=kp_range, wkp=wkp)
+      END IF
+
+      IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+          dft_control%qs_control%xtb_control%tblite_method == gxtb) THEN
+         IF (tb_native_scc_mixer_active(dft_control)) THEN
+            IF (scf_env%method /= general_diag_method_nr .OR. dft_control%roks .OR. &
+                scf_control%diagonalization%mom) &
+               CPABORT("The native g-xTB potential mixer requires standard diagonalization without ROKS or MOM")
+         END IF
       END IF
 
       ! if using mo_coeff_b then copy to fm

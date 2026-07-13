@@ -74,7 +74,7 @@ MODULE qs_scf_diagonalization
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: &
         cholesky_dbcsr, cholesky_inverse, cholesky_off, cholesky_reduce, cholesky_restore, &
-        core_guess, diag_update_method_adiis, general_roks, high_spin_roks, ot_precond_full_all, &
+        core_guess, diag_update_method_adiis, general_roks, gxtb, high_spin_roks, ot_precond_full_all, &
         ot_precond_full_kinetic, ot_precond_full_single_inverse, ot_precond_none, &
         ot_precond_s_inverse, restart_guess
    USE input_cp2k_kpoints,              ONLY: lattice_fft_auto,&
@@ -158,6 +158,12 @@ MODULE qs_scf_diagonalization
    USE qs_scf_types,                    ONLY: qs_scf_env_type,&
                                               subspace_env_type
    USE scf_control_types,               ONLY: scf_control_type
+#if defined(__TBLITE_GXTB)
+   USE tblite_interface,                ONLY: tb_apply_gxtb_kpoint_fm,&
+                                              tb_mix_gxtb_gamma_fm,&
+                                              tb_native_scc_mixer_active,&
+                                              tb_prepare_gxtb_kpoint_mixer
+#endif
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, &
 !$                    omp_get_thread_num
@@ -251,13 +257,14 @@ CONTAINS
 !> \param scf_control ...
 !> \param scf_section ...
 !> \param diis_step ...
+!> \param qs_env ...
 !> \par History
 !>      03.2006 created [Joost VandeVondele]
 ! **************************************************************************************************
 
    SUBROUTINE general_eigenproblem(scf_env, mos, matrix_ks, &
                                    matrix_s, scf_control, scf_section, &
-                                   diis_step)
+                                   diis_step, qs_env)
 
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(mo_set_type), DIMENSION(:), INTENT(IN)        :: mos
@@ -265,19 +272,33 @@ CONTAINS
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(section_vals_type), POINTER                   :: scf_section
       LOGICAL, INTENT(INOUT)                             :: diis_step
+      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
 
       INTEGER                                            :: cdiis_cholesky_method, cdiis_ncall, &
                                                             ispin, nspin
       LOGICAL                                            :: cdiis_step, do_level_shift, owns_ortho, &
                                                             use_adiis, use_cdiis, use_jacobi, &
-                                                            use_subspace_fock
+                                                            use_native_gxtb_mixer, use_subspace_fock
       REAL(KIND=dp)                                      :: cdiis_error, diis_error, diis_weight, &
                                                             eps_diis
       TYPE(cp_fm_type), POINTER                          :: ortho
       TYPE(dbcsr_type), POINTER                          :: effective_ks_dbcsr, ortho_dbcsr
+      TYPE(dft_control_type), POINTER                    :: dft_control
 
       nspin = SIZE(matrix_ks)
-      NULLIFY (effective_ks_dbcsr, ortho, ortho_dbcsr)
+      NULLIFY (dft_control, effective_ks_dbcsr, ortho, ortho_dbcsr)
+
+      use_native_gxtb_mixer = .FALSE.
+#if defined(__TBLITE_GXTB)
+      IF (PRESENT(qs_env)) THEN
+         CALL get_qs_env(qs_env, dft_control=dft_control)
+         IF (ASSOCIATED(dft_control)) THEN
+            use_native_gxtb_mixer = dft_control%qs_control%xtb_control%do_tblite .AND. &
+                                    dft_control%qs_control%xtb_control%tblite_method == gxtb .AND. &
+                                    tb_native_scc_mixer_active(dft_control)
+         END IF
+      END IF
+#endif
 
       use_adiis = scf_control%diagonalization%update_method == diag_update_method_adiis
       use_subspace_fock = .FALSE.
@@ -298,6 +319,7 @@ CONTAINS
             use_cdiis = scf_env%iter_delta < eps_diis .OR. scf_env%scf_diis_buffer%ncall > 0
          END IF
       END IF
+      IF (use_native_gxtb_mixer) use_cdiis = .FALSE.
 
       DO ispin = 1, nspin
          IF (use_cdiis) THEN
@@ -309,6 +331,10 @@ CONTAINS
             CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, scf_env%scf_work1(ispin))
          END IF
       END DO
+
+#if defined(__TBLITE_GXTB)
+      IF (PRESENT(qs_env)) CALL tb_mix_gxtb_gamma_fm(qs_env, matrix_ks, scf_env%scf_work1)
+#endif
 
       IF (use_adiis) THEN
          diis_step = .FALSE.
@@ -356,7 +382,8 @@ CONTAINS
          END IF
          scf_env%scf_subspace_buffer%diis_weight = diis_weight
       ELSE
-         IF (scf_env%iter_count > 1 .AND. .NOT. scf_env%skip_diis) THEN
+         IF (scf_env%iter_count > 1 .AND. .NOT. scf_env%skip_diis .AND. &
+             .NOT. use_native_gxtb_mixer) THEN
             CALL qs_diis_b_step(scf_env%scf_diis_buffer, mos, scf_env%scf_work1, &
                                 scf_env%scf_work2, scf_env%iter_delta, diis_error, diis_step, &
                                 eps_diis, scf_control%nmixing, &
@@ -558,10 +585,11 @@ CONTAINS
 !> \param scf_section ...
 !> \param diis_step ...
 !> \param probe ...
+!> \param qs_env ...
 ! **************************************************************************************************
    SUBROUTINE do_general_diag(scf_env, mos, matrix_ks, &
                               matrix_s, scf_control, scf_section, &
-                              diis_step, probe)
+                              diis_step, probe, qs_env)
 
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(mo_set_type), DIMENSION(:), INTENT(INOUT)     :: mos
@@ -571,14 +599,20 @@ CONTAINS
       LOGICAL, INTENT(INOUT)                             :: diis_step
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
 
       INTEGER                                            :: ispin, nspin
       REAL(KIND=dp)                                      :: total_zeff_corr
 
       nspin = SIZE(matrix_ks)
 
-      CALL general_eigenproblem(scf_env, mos, matrix_ks, &
-                                matrix_s, scf_control, scf_section, diis_step)
+      IF (PRESENT(qs_env)) THEN
+         CALL general_eigenproblem(scf_env, mos, matrix_ks, &
+                                   matrix_s, scf_control, scf_section, diis_step, qs_env)
+      ELSE
+         CALL general_eigenproblem(scf_env, mos, matrix_ks, &
+                                   matrix_s, scf_control, scf_section, diis_step)
+      END IF
 
       total_zeff_corr = 0.0_dp
       total_zeff_corr = scf_env%sum_zeff_corr
@@ -645,7 +679,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: update_p
       LOGICAL, INTENT(INOUT)                             :: diis_step
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: diis_error
-      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
+      TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
       TYPE(dbcsr_p_type), DIMENSION(:, :), OPTIONAL, &
@@ -686,6 +720,7 @@ CONTAINS
       TYPE(rskp_grid_type)                               :: s_grid
       TYPE(rskp_grid_type), ALLOCATABLE, DIMENSION(:)    :: ks_grid
       TYPE(section_vals_type), POINTER                   :: scf_section
+      TYPE(dft_control_type), POINTER                    :: dft_control
 
       CALL timeset(routineN, handle)
 
@@ -701,12 +736,21 @@ CONTAINS
       my_added_mos_auto_grow = .FALSE.
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
 
-      NULLIFY (adiis_ks, effective_ks, sab_nl)
+      NULLIFY (adiis_ks, dft_control, effective_ks, sab_nl)
       CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
                            nkp_groups=nkp_groups, kp_dist=kp_dist, sab_nl=sab_nl, &
                            cell_to_index=cell_to_index, nkp_grid=nkp_grid, lattice_fft=lattice_fft)
       CPASSERT(ASSOCIATED(sab_nl))
       kplocal = kp_range(2) - kp_range(1) + 1
+
+#if defined(__TBLITE_GXTB)
+      CALL get_qs_env(qs_env, dft_control=dft_control)
+      IF (ASSOCIATED(dft_control)) THEN
+         IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+             dft_control%qs_control%xtb_control%tblite_method == gxtb .AND. .NOT. update_p) &
+            CPABORT("Post-SCF g-xTB k-point diagonalization is not yet implemented")
+      END IF
+#endif
 
       !Whether we use DIIS for k-points
       do_diis = .FALSE.
@@ -729,6 +773,13 @@ CONTAINS
            .NOT. use_real_wfn .AND. PRESENT(diis_error) .AND. PRESENT(qs_env)) .OR. &
           adiis_cdiis) do_diis = .TRUE.
       IF (my_transfer_only) do_diis = .FALSE.
+#if defined(__TBLITE_GXTB)
+      IF (do_diis .AND. ASSOCIATED(dft_control)) THEN
+         IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+             dft_control%qs_control%xtb_control%tblite_method == gxtb .AND. &
+             tb_native_scc_mixer_active(dft_control)) do_diis = .FALSE.
+      END IF
+#endif
 
       adiis_ks => matrix_ks
       IF (use_adiis) THEN
@@ -875,6 +926,10 @@ CONTAINS
       IF (my_store_ot_kinetic) ninfo = 6
       ALLOCATE (info(kplocal*nspin*nkp_groups, ninfo))
 
+#if defined(__TBLITE_GXTB)
+      CALL tb_prepare_gxtb_kpoint_mixer(qs_env, matrix_ks, kpoints, scf_env)
+#endif
+
       ! Setup and start all the communication
       indx = 0
       DO ikp = 1, kplocal
@@ -895,6 +950,9 @@ CONTAINS
                   END IF
                   CALL dbcsr_desymmetrize(rmatrix, tmpmat)
                   CALL copy_dbcsr_to_fm(tmpmat, fmwork(1))
+#if defined(__TBLITE_GXTB)
+                  CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fmwork(1))
+#endif
                   ! s matrix is not spin dependent
                   IF (use_grid_fft) THEN
                      CALL rskp_transform_grid_extract(s_grid, ik, rmatrix)
@@ -919,6 +977,9 @@ CONTAINS
                   CALL copy_dbcsr_to_fm(tmpmat, fmwork(1))
                   CALL dbcsr_desymmetrize(cmatrix, tmpmat)
                   CALL copy_dbcsr_to_fm(tmpmat, fmwork(2))
+#if defined(__TBLITE_GXTB)
+                  CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fmwork(1), fmwork(2))
+#endif
                   ! s matrix is not spin dependent, double the work
                   IF (use_grid_fft) THEN
                      CALL rskp_transform_grid_extract(s_grid, ik, rmatrix, cmatrix)
