@@ -237,6 +237,7 @@ MODULE qs_scf_loop_utils
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
              qs_scf_kp_added_mos_auto_post_resize_steps, &
              qs_scf_kp_coupled_multisecant_update, &
+             qs_scf_kp_coupled_schur_transport, &
              qs_scf_kp_coupled_secant_model, &
              qs_scf_kp_decouple_inactive_gauge, &
              qs_scf_kp_density_control_delta, &
@@ -483,7 +484,7 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_symmetric_multisecant_update
 
 ! **************************************************************************************************
-!> \brief Update the coupled rotation/cross blocks while preserving analytic H_ee.
+!> \brief Apply a dimensionally scaled full coupled two-secant update.
 !> \param rotation_hessian rotation block H_RR
 !> \param energy_hessian fixed-N energy block H_ee
 !> \param energy_cross signed cross block C
@@ -493,7 +494,7 @@ CONTAINS
 !> \param energy_targets observed energy-gradient differences
 !> \param weight fraction of the least-change correction
 !> \param updated_rotation_hessian corrected rotation block
-!> \param updated_energy_hessian unchanged analytic energy block
+!> \param updated_energy_hessian corrected energy block
 !> \param updated_energy_cross corrected signed cross block
 !> \param ready whether the full update was finite and independent
 !> \param independence normalized determinant of the two-step Gram matrix
@@ -523,19 +524,15 @@ CONTAINS
          residual_norm, updated_residual_norm, reference_norm, rotation_correction_ratio, &
          cross_correction_ratio
 
-      INTEGER                                            :: i, j, nener, nrot
-      REAL(KIND=dp) :: block_floor, block_max, correction_rotation, det, gram_scale, &
-         residual_rotation, update_weight, updated_residual_rotation
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: energy_scale, rotation_scale
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross_scaled, energy_hessian_scaled, &
-         energy_steps_scaled, energy_targets_scaled, model_energy, model_rotation, &
-         rotation_hessian_scaled, rotation_steps_scaled, rotation_targets_scaled, step_inverse, &
-         target_cross_action, target_rotation_action, updated_energy_cross_scaled, &
-         updated_model_energy, updated_model_rotation, updated_rotation_hessian_scaled
-      REAL(KIND=dp), DIMENSION(2, 2)                     :: gram, gram_inverse
+      INTEGER                                            :: i, j, nener, nfull, nrot
+      REAL(KIND=dp)                                      :: block_floor, block_max
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coordinate_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: full_hessian, full_steps, full_targets, &
+                                                            updated_full_hessian
 
       nrot = SIZE(rotation_hessian, 1)
       nener = SIZE(energy_hessian, 1)
+      nfull = nrot + nener
       CPASSERT(SIZE(rotation_hessian, 2) == nrot)
       CPASSERT(SIZE(energy_hessian, 2) == nener)
       CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
@@ -560,18 +557,18 @@ CONTAINS
       rotation_correction_ratio = 0.0_dp
       cross_correction_ratio = 0.0_dp
       IF (nrot <= 0 .OR. nener <= 0) RETURN
-      update_weight = MIN(1.0_dp, MAX(0.0_dp, weight))
-      IF (update_weight <= EPSILON(1.0_dp)) RETURN
-      ALLOCATE (rotation_scale(nrot), energy_scale(nener), &
-                rotation_hessian_scaled(nrot, nrot), energy_hessian_scaled(nener, nener), &
-                energy_cross_scaled(nener, nrot), rotation_steps_scaled(nrot, 2), &
-                energy_steps_scaled(nener, 2), rotation_targets_scaled(nrot, 2), &
-                energy_targets_scaled(nener, 2), step_inverse(nrot, 2), &
-                target_cross_action(nener, 2), target_rotation_action(nrot, 2), &
-                updated_rotation_hessian_scaled(nrot, nrot), &
-                updated_energy_cross_scaled(nener, nrot), model_rotation(nrot, 2), &
-                model_energy(nener, 2), updated_model_rotation(nrot, 2), &
-                updated_model_energy(nener, 2))
+      ALLOCATE (coordinate_scale(nfull), full_hessian(nfull, nfull), full_steps(nfull, 2), &
+                full_targets(nfull, 2), updated_full_hessian(nfull, nfull))
+
+      full_hessian(:, :) = 0.0_dp
+      full_hessian(1:nrot, 1:nrot) = rotation_hessian(:, :)
+      full_hessian(1:nrot, nrot + 1:nfull) = -TRANSPOSE(energy_cross(:, :))
+      full_hessian(nrot + 1:nfull, 1:nrot) = -energy_cross(:, :)
+      full_hessian(nrot + 1:nfull, nrot + 1:nfull) = energy_hessian(:, :)
+      full_steps(1:nrot, :) = rotation_steps(:, :)
+      full_steps(nrot + 1:nfull, :) = energy_steps(:, :)
+      full_targets(1:nrot, :) = rotation_targets(:, :)
+      full_targets(nrot + 1:nfull, :) = energy_targets(:, :)
 
       ! Rotation coordinates are dimensionless while auxiliary energies carry
       ! energy units.  Normalize each block with its reference diagonal before
@@ -581,125 +578,131 @@ CONTAINS
       IF (block_max > TINY(1.0_dp)) THEN
          block_floor = SQRT(EPSILON(1.0_dp))*block_max
          DO i = 1, nrot
-            rotation_scale(i) = SQRT(MAX(ABS(rotation_hessian(i, i)), block_floor))
+            coordinate_scale(i) = SQRT(MAX(ABS(rotation_hessian(i, i)), block_floor))
          END DO
       ELSE
-         rotation_scale(:) = 1.0_dp
+         coordinate_scale(1:nrot) = 1.0_dp
       END IF
       block_max = MAXVAL(ABS([(energy_hessian(i, i), i=1, nener)]))
       IF (block_max > TINY(1.0_dp)) THEN
          block_floor = SQRT(EPSILON(1.0_dp))*block_max
          DO i = 1, nener
-            energy_scale(i) = SQRT(MAX(ABS(energy_hessian(i, i)), block_floor))
+            coordinate_scale(nrot + i) = SQRT(MAX(ABS(energy_hessian(i, i)), block_floor))
          END DO
       ELSE
-         energy_scale(:) = 1.0_dp
+         coordinate_scale(nrot + 1:nfull) = 1.0_dp
       END IF
 
-      DO j = 1, nrot
-         DO i = 1, nrot
-            rotation_hessian_scaled(i, j) = rotation_hessian(i, j)/ &
-                                            (rotation_scale(i)*rotation_scale(j))
+      DO j = 1, nfull
+         DO i = 1, nfull
+            full_hessian(i, j) = full_hessian(i, j)/ &
+                                 (coordinate_scale(i)*coordinate_scale(j))
          END DO
       END DO
-      DO j = 1, nener
-         DO i = 1, nener
-            energy_hessian_scaled(i, j) = energy_hessian(i, j)/ &
-                                          (energy_scale(i)*energy_scale(j))
-         END DO
-      END DO
-      DO j = 1, nrot
-         DO i = 1, nener
-            energy_cross_scaled(i, j) = energy_cross(i, j)/ &
-                                        (energy_scale(i)*rotation_scale(j))
-         END DO
-      END DO
-      DO i = 1, nrot
-         rotation_steps_scaled(i, :) = rotation_scale(i)*rotation_steps(i, :)
-         rotation_targets_scaled(i, :) = rotation_targets(i, :)/rotation_scale(i)
-      END DO
-      DO i = 1, nener
-         energy_steps_scaled(i, :) = energy_scale(i)*energy_steps(i, :)
-         energy_targets_scaled(i, :) = energy_targets(i, :)/energy_scale(i)
+      DO i = 1, nfull
+         full_steps(i, :) = coordinate_scale(i)*full_steps(i, :)
+         full_targets(i, :) = full_targets(i, :)/coordinate_scale(i)
       END DO
 
-      reference_norm = SQRT(MAX(0.0_dp, SUM(rotation_hessian_scaled**2) + &
-                                2.0_dp*SUM(energy_cross_scaled**2) + &
-                                SUM(energy_hessian_scaled**2)))
-      gram(:, :) = MATMUL(TRANSPOSE(rotation_steps_scaled), rotation_steps_scaled)
-      gram_scale = gram(1, 1)*gram(2, 2)
-      IF (gram_scale <= EPSILON(1.0_dp)) RETURN
-      det = gram_scale - gram(1, 2)*gram(2, 1)
-      independence = MAX(0.0_dp, det/gram_scale)
-      IF (det <= SQRT(EPSILON(1.0_dp))*gram_scale) RETURN
-      gram_inverse(1, 1) = gram(2, 2)/det
-      gram_inverse(1, 2) = -gram(1, 2)/det
-      gram_inverse(2, 1) = -gram(2, 1)/det
-      gram_inverse(2, 2) = gram(1, 1)/det
-      step_inverse(:, :) = MATMUL(rotation_steps_scaled, gram_inverse)
-
-      ! The fixed-N occupation Hessian is available analytically at every SCF
-      ! point.  Preserve it and use the energy-gradient secants to determine
-      ! only the cross-block action C*S_R.  The remaining rotation targets then
-      ! define the least-change symmetric H_RR update.
-      target_cross_action(:, :) = MATMUL(energy_hessian_scaled, energy_steps_scaled) - &
-                                  energy_targets_scaled
-      updated_energy_cross_scaled(:, :) = energy_cross_scaled + update_weight* &
-                                          MATMUL(target_cross_action - &
-                                                 MATMUL(energy_cross_scaled, rotation_steps_scaled), &
-                                                 TRANSPOSE(step_inverse))
-      target_rotation_action(:, :) = rotation_targets_scaled + &
-                                     MATMUL(TRANSPOSE(updated_energy_cross_scaled), &
-                                            energy_steps_scaled)
+      reference_norm = SQRT(MAX(0.0_dp, SUM(full_hessian**2)))
       CALL qs_scf_kp_symmetric_multisecant_update( &
-         rotation_hessian_scaled, rotation_steps_scaled, target_rotation_action, update_weight, &
-         updated_rotation_hessian_scaled, ready, independence, compatibility_norm, &
-         correction_rotation, residual_rotation, updated_residual_rotation)
-
-      model_rotation(:, :) = MATMUL(rotation_hessian_scaled, rotation_steps_scaled) - &
-                             MATMUL(TRANSPOSE(energy_cross_scaled), energy_steps_scaled)
-      model_energy(:, :) = MATMUL(energy_hessian_scaled, energy_steps_scaled) - &
-                           MATMUL(energy_cross_scaled, rotation_steps_scaled)
-      updated_model_rotation(:, :) = MATMUL(updated_rotation_hessian_scaled, rotation_steps_scaled) - &
-                                     MATMUL(TRANSPOSE(updated_energy_cross_scaled), energy_steps_scaled)
-      updated_model_energy(:, :) = MATMUL(energy_hessian_scaled, energy_steps_scaled) - &
-                                   MATMUL(updated_energy_cross_scaled, rotation_steps_scaled)
-      residual_norm = SQRT(MAX(0.0_dp, SUM((rotation_targets_scaled - model_rotation)**2) + &
-                               SUM((energy_targets_scaled - model_energy)**2)))
-      updated_residual_norm = &
-         SQRT(MAX(0.0_dp, SUM((rotation_targets_scaled - updated_model_rotation)**2) + &
-                  SUM((energy_targets_scaled - updated_model_energy)**2)))
-      correction_norm = SQRT(MAX(0.0_dp, &
-                                 SUM((updated_rotation_hessian_scaled - rotation_hessian_scaled)**2) + &
-                                 2.0_dp*SUM((updated_energy_cross_scaled - energy_cross_scaled)**2)))
+         full_hessian, full_steps, full_targets, weight, updated_full_hessian, ready, independence, &
+         compatibility_norm, correction_norm, residual_norm, updated_residual_norm)
       rotation_correction_ratio = &
-         SQRT(MAX(0.0_dp, SUM((updated_rotation_hessian_scaled - rotation_hessian_scaled)**2)))/ &
-         MAX(SQRT(MAX(0.0_dp, SUM(rotation_hessian_scaled**2))), EPSILON(1.0_dp))
+         SQRT(MAX(0.0_dp, SUM((updated_full_hessian(1:nrot, 1:nrot) - &
+                               full_hessian(1:nrot, 1:nrot))**2)))/ &
+         MAX(SQRT(MAX(0.0_dp, SUM(full_hessian(1:nrot, 1:nrot)**2))), EPSILON(1.0_dp))
       cross_correction_ratio = &
-         SQRT(MAX(0.0_dp, SUM((updated_energy_cross_scaled - energy_cross_scaled)**2)))/ &
-         MAX(SQRT(MAX(0.0_dp, SUM(energy_cross_scaled**2))), EPSILON(1.0_dp))
-      ready = ready .AND. correction_norm == correction_norm .AND. &
-              updated_residual_norm == updated_residual_norm
+         SQRT(MAX(0.0_dp, SUM((updated_full_hessian(nrot + 1:nfull, 1:nrot) - &
+                               full_hessian(nrot + 1:nfull, 1:nrot))**2)))/ &
+         MAX(SQRT(MAX(0.0_dp, SUM(full_hessian(nrot + 1:nfull, 1:nrot)**2))), EPSILON(1.0_dp))
       IF (ready) THEN
-         DO j = 1, nrot
-            DO i = 1, nrot
-               updated_rotation_hessian(i, j) = updated_rotation_hessian_scaled(i, j)* &
-                                                rotation_scale(i)*rotation_scale(j)
-            END DO
-            DO i = 1, nener
-               updated_energy_cross(i, j) = updated_energy_cross_scaled(i, j)* &
-                                            energy_scale(i)*rotation_scale(j)
+         DO j = 1, nfull
+            DO i = 1, nfull
+               updated_full_hessian(i, j) = updated_full_hessian(i, j)* &
+                                            coordinate_scale(i)*coordinate_scale(j)
             END DO
          END DO
+         updated_rotation_hessian(:, :) = updated_full_hessian(1:nrot, 1:nrot)
+         updated_energy_cross(:, :) = -updated_full_hessian(nrot + 1:nfull, 1:nrot)
+         updated_energy_hessian(:, :) = updated_full_hessian(nrot + 1:nfull, nrot + 1:nfull)
       END IF
-      DEALLOCATE (rotation_scale, energy_scale, rotation_hessian_scaled, energy_hessian_scaled, &
-                  energy_cross_scaled, rotation_steps_scaled, energy_steps_scaled, &
-                  rotation_targets_scaled, energy_targets_scaled, step_inverse, target_cross_action, &
-                  target_rotation_action, updated_rotation_hessian_scaled, &
-                  updated_energy_cross_scaled, model_rotation, model_energy, &
-                  updated_model_rotation, updated_model_energy)
+      DEALLOCATE (coordinate_scale, full_hessian, full_steps, full_targets, updated_full_hessian)
 
    END SUBROUTINE qs_scf_kp_coupled_multisecant_update
+
+! **************************************************************************************************
+!> \brief Transport a full coupled response into the reduced rotation Schur block.
+!> \param rotation_hessian analytic rotation block
+!> \param energy_hessian analytic fixed-N energy block
+!> \param energy_cross analytic signed cross block
+!> \param response_rotation_hessian response-corrected rotation block
+!> \param response_energy_hessian response-corrected energy block
+!> \param response_energy_cross response-corrected signed cross block
+!> \param transported_rotation_hessian analytic rotation block plus the reduced response correction
+!> \param ready whether both energy blocks were invertible and the result finite
+!> \param correction_ratio relative Frobenius norm of the reduced rotation correction
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_schur_transport(rotation_hessian, energy_hessian, energy_cross, &
+                                                response_rotation_hessian, response_energy_hessian, &
+                                                response_energy_cross, transported_rotation_hessian, &
+                                                ready, correction_ratio)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
+         energy_cross, response_rotation_hessian, response_energy_hessian, response_energy_cross
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: transported_rotation_hessian
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT)                         :: correction_ratio
+
+      INTEGER                                            :: info, nener, nrot
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: analytic_energy, analytic_response, &
+                                                            response_energy, response_response
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
+      CPASSERT(ALL(SHAPE(response_rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(response_energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(response_energy_cross) == [nener, nrot]))
+      CPASSERT(ALL(SHAPE(transported_rotation_hessian) == [nrot, nrot]))
+
+      transported_rotation_hessian(:, :) = rotation_hessian(:, :)
+      ready = .FALSE.
+      correction_ratio = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0) RETURN
+      ALLOCATE (ipiv(nener), analytic_energy(nener, nener), analytic_response(nener, nrot), &
+                response_energy(nener, nener), response_response(nener, nrot))
+      analytic_energy(:, :) = 0.5_dp*(energy_hessian + TRANSPOSE(energy_hessian))
+      analytic_response(:, :) = energy_cross(:, :)
+      CALL dgesv(nener, nrot, analytic_energy, nener, ipiv, analytic_response, nener, info)
+      IF (info /= 0) THEN
+         DEALLOCATE (ipiv, analytic_energy, analytic_response, response_energy, response_response)
+         RETURN
+      END IF
+      response_energy(:, :) = 0.5_dp*(response_energy_hessian + &
+                                      TRANSPOSE(response_energy_hessian))
+      response_response(:, :) = response_energy_cross(:, :)
+      CALL dgesv(nener, nrot, response_energy, nener, ipiv, response_response, nener, info)
+      IF (info == 0) THEN
+         transported_rotation_hessian(:, :) = response_rotation_hessian - &
+                                              MATMUL(TRANSPOSE(response_energy_cross), &
+                                                     response_response) + &
+                                              MATMUL(TRANSPOSE(energy_cross), analytic_response)
+         transported_rotation_hessian(:, :) = 0.5_dp* &
+                                              (transported_rotation_hessian + &
+                                               TRANSPOSE(transported_rotation_hessian))
+         correction_ratio = SQRT(MAX(0.0_dp, &
+                                     SUM((transported_rotation_hessian - rotation_hessian)**2)))/ &
+                            MAX(SQRT(MAX(0.0_dp, SUM(rotation_hessian**2))), EPSILON(1.0_dp))
+         ready = ALL(transported_rotation_hessian == transported_rotation_hessian) .AND. &
+                 correction_ratio == correction_ratio
+      END IF
+      IF (.NOT. ready) transported_rotation_hessian(:, :) = rotation_hessian(:, :)
+      DEALLOCATE (ipiv, analytic_energy, analytic_response, response_energy, response_response)
+
+   END SUBROUTINE qs_scf_kp_coupled_schur_transport
 
 ! **************************************************************************************************
 !> \brief Decide whether accepted Mermin drops promote a secant candidate.
@@ -23149,19 +23152,19 @@ CONTAINS
                                                             global_spin, group, ie, imo, &
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
-      LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, multisecant_finite, &
-         previous_valid, update_finite, valid
+      LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, coupled_schur_eligible, &
+         coupled_schur_finite, multisecant_finite, previous_valid, update_finite, valid
       REAL(KIND=dp) :: alignment, base_hessian_norm, correction_norm, correction_ratio, &
          coupled_multisecant_compatibility, coupled_multisecant_correction_norm, &
          coupled_multisecant_correction_ratio, coupled_multisecant_cross_correction_ratio, &
          coupled_multisecant_hessian_norm, coupled_multisecant_independence, &
          coupled_multisecant_residual_norm, coupled_multisecant_rotation_correction_ratio, &
-         coupled_multisecant_updated_residual_norm, curvature_ratio, energy_mean, model_alignment, &
-         model_norm, multisecant_compatibility, multisecant_correction_norm, &
-         multisecant_correction_ratio
-      REAL(KIND=dp) :: multisecant_independence, multisecant_residual_norm, &
-         multisecant_updated_residual_norm, orthogonal_fraction, residual_energy_norm, &
-         residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
+         coupled_multisecant_updated_residual_norm, coupled_schur_correction_ratio, &
+         curvature_ratio, energy_mean, model_alignment, model_norm, multisecant_compatibility, &
+         multisecant_correction_norm
+      REAL(KIND=dp) :: multisecant_correction_ratio, multisecant_independence, &
+         multisecant_residual_norm, multisecant_updated_residual_norm, orthogonal_fraction, &
+         residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
          rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
          rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
          updated_rotation_residual_norm, y_norm, ynorm
@@ -23170,9 +23173,9 @@ CONTAINS
          previous_step_rotation, secant_energy, secant_rotation, step_energy, step_rotation, &
          target_rotation
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: coupled_energy_cross, coupled_energy_hessian, &
-         coupled_rotation_hessian, coupled_rotation_targets, dense_im, dense_re, &
-         multisecant_energy_steps, multisecant_energy_targets, multisecant_rotation_steps, &
-         multisecant_rotation_targets, updated_rotation_hessian
+         coupled_rotation_hessian, coupled_rotation_targets, coupled_schur_rotation_hessian, &
+         dense_im, dense_re, multisecant_energy_steps, multisecant_energy_targets, &
+         multisecant_rotation_steps, multisecant_rotation_targets, updated_rotation_hessian
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
@@ -23423,10 +23426,14 @@ CONTAINS
          coupled_multisecant_correction_ratio = 0.0_dp
          coupled_multisecant_rotation_correction_ratio = 0.0_dp
          coupled_multisecant_cross_correction_ratio = 0.0_dp
+         coupled_schur_finite = .FALSE.
+         coupled_schur_eligible = .FALSE.
+         coupled_schur_correction_ratio = 0.0_dp
          IF (previous_valid) THEN
             ALLOCATE (multisecant_rotation_steps(nrot, 2), multisecant_energy_steps(nener, 2), &
                       multisecant_rotation_targets(nrot, 2), multisecant_energy_targets(nener, 2), &
                       coupled_rotation_targets(nrot, 2), coupled_rotation_hessian(nrot, nrot), &
+                      coupled_schur_rotation_hessian(nrot, nrot), &
                       coupled_energy_hessian(nener, nener), coupled_energy_cross(nener, nrot))
             multisecant_rotation_steps(:, 1) = previous_step_rotation(:)
             multisecant_rotation_steps(:, 2) = step_rotation(:)
@@ -23472,6 +23479,19 @@ CONTAINS
                coupled_multisecant_cross_correction_ratio)
             coupled_multisecant_correction_ratio = coupled_multisecant_correction_norm/ &
                                                    MAX(coupled_multisecant_hessian_norm, EPSILON(1.0_dp))
+            IF (coupled_multisecant_finite) &
+               CALL qs_scf_kp_coupled_schur_transport( &
+               rotation_hessian, energy_hessian, energy_cross, coupled_rotation_hessian, &
+               coupled_energy_hessian, coupled_energy_cross, coupled_schur_rotation_hessian, &
+               coupled_schur_finite, coupled_schur_correction_ratio)
+            coupled_schur_eligible = coupled_schur_finite .AND. active_subspace .AND. &
+                                     residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                     coupled_multisecant_independence >= 5.0E-2_dp .AND. &
+                                     coupled_multisecant_compatibility <= 1.0E-1_dp .AND. &
+                                     coupled_schur_correction_ratio <= 0.35_dp .AND. &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                     ot_kp_schur_calibration_min_samples .AND. &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
             coupled_multisecant_ready = coupled_multisecant_finite .AND. active_subspace .AND. &
                                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
                                         coupled_multisecant_independence >= 5.0E-2_dp .AND. &
@@ -23516,6 +23536,10 @@ CONTAINS
             coupled_multisecant_residual_norm, coupled_multisecant_updated_residual_norm, &
             coupled_multisecant_correction_norm, coupled_multisecant_correction_ratio, &
             coupled_multisecant_rotation_correction_ratio, coupled_multisecant_cross_correction_ratio
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),1X,ES16.8)') &
+            " OT Schur coupled reduced shadow group finite eligible correction ratio:", &
+            target_group, coupled_schur_finite, coupled_schur_eligible, coupled_schur_correction_ratio
 
          DEALLOCATE (step_rotation, secant_rotation, model_rotation, &
                      step_energy, secant_energy, model_energy, previous_step_rotation, &
@@ -23525,7 +23549,7 @@ CONTAINS
             DEALLOCATE (multisecant_rotation_steps, multisecant_energy_steps, &
                         multisecant_rotation_targets, multisecant_energy_targets, &
                         coupled_rotation_targets, coupled_rotation_hessian, &
-                        coupled_energy_hessian, coupled_energy_cross)
+                        coupled_schur_rotation_hessian, coupled_energy_hessian, coupled_energy_cross)
 
       END SUBROUTINE audit_kpoint_ot_vector_secant_model
 

@@ -51,14 +51,15 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_multiplicity_direction_scale,&
                                               ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_fermi_entropy_state, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -4685,17 +4686,20 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
-      LOGICAL                                            :: ready, scaled_ready
-      REAL(KIND=dp) :: compatibility, correction_norm, cross_correction_ratio, error, &
-         independence, reference_norm, residual_norm, rotation_correction_ratio, &
-         scaled_compatibility, scaled_correction_norm, scaled_cross_correction_ratio, &
-         scaled_independence, scaled_reference_norm, scaled_residual_norm, &
-         scaled_rotation_correction_ratio, scaled_updated_residual_norm, updated_residual_norm
-      REAL(KIND=dp), DIMENSION(2, 2) :: energy_cross, energy_hessian, energy_steps, &
-         energy_targets, rotation_hessian, rotation_steps, rotation_targets, scaled_energy_cross, &
-         scaled_energy_hessian, scaled_energy_steps, scaled_energy_targets, &
+      LOGICAL                                            :: ready, scaled_ready, &
+                                                            scaled_transport_ready, transport_ready
+      REAL(KIND=dp) :: analytic_det, compatibility, correction_norm, cross_correction_ratio, &
+         error, independence, reference_norm, residual_norm, response_det, &
+         rotation_correction_ratio, scaled_compatibility, scaled_correction_norm, &
+         scaled_cross_correction_ratio, scaled_independence, scaled_reference_norm, &
+         scaled_residual_norm, scaled_rotation_correction_ratio, scaled_transport_ratio, &
+         scaled_updated_residual_norm, transport_ratio, updated_residual_norm
+      REAL(KIND=dp), DIMENSION(2, 2) :: analytic_response, energy_cross, energy_hessian, &
+         energy_steps, energy_targets, expected_transport, response_response, rotation_hessian, &
+         rotation_steps, rotation_targets, scaled_energy_cross, scaled_energy_hessian, &
+         scaled_energy_steps, scaled_energy_targets, scaled_transport, &
          scaled_updated_energy_cross, scaled_updated_energy_hessian, &
-         scaled_updated_rotation_hessian, true_energy_cross, true_energy_hessian, &
+         scaled_updated_rotation_hessian, transport, true_energy_cross, true_energy_hessian, &
          true_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
          updated_rotation_hessian
 
@@ -4726,7 +4730,6 @@ CONTAINS
                          MATMUL(updated_energy_cross, rotation_steps) - energy_targets)) + &
               MAXVAL(ABS(updated_rotation_hessian - TRANSPOSE(updated_rotation_hessian))) + &
               MAXVAL(ABS(updated_energy_hessian - TRANSPOSE(updated_energy_hessian))) + &
-              MAXVAL(ABS(updated_energy_hessian - energy_hessian)) + &
               compatibility + updated_residual_norm
 
       scaled_energy_hessian(:, :) = energy_hessian(:, :)/energy_coordinate_scale**2
@@ -4753,7 +4756,35 @@ CONTAINS
               ABS(scaled_rotation_correction_ratio - rotation_correction_ratio) + &
               ABS(scaled_cross_correction_ratio - cross_correction_ratio)
 
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. independence <= 0.0_dp .OR. reference_norm <= 0.0_dp .OR. &
+      CALL qs_scf_kp_coupled_schur_transport( &
+         rotation_hessian, energy_hessian, energy_cross, updated_rotation_hessian, &
+         updated_energy_hessian, updated_energy_cross, transport, transport_ready, transport_ratio)
+      CALL qs_scf_kp_coupled_schur_transport( &
+         rotation_hessian, scaled_energy_hessian, scaled_energy_cross, scaled_updated_rotation_hessian, &
+         scaled_updated_energy_hessian, scaled_updated_energy_cross, scaled_transport, &
+         scaled_transport_ready, scaled_transport_ratio)
+      analytic_det = energy_hessian(1, 1)*energy_hessian(2, 2) - &
+                     energy_hessian(1, 2)*energy_hessian(2, 1)
+      response_det = updated_energy_hessian(1, 1)*updated_energy_hessian(2, 2) - &
+                     updated_energy_hessian(1, 2)*updated_energy_hessian(2, 1)
+      analytic_response(1, :) = (energy_hessian(2, 2)*energy_cross(1, :) - &
+                                 energy_hessian(1, 2)*energy_cross(2, :))/analytic_det
+      analytic_response(2, :) = (-energy_hessian(2, 1)*energy_cross(1, :) + &
+                                 energy_hessian(1, 1)*energy_cross(2, :))/analytic_det
+      response_response(1, :) = (updated_energy_hessian(2, 2)*updated_energy_cross(1, :) - &
+                                 updated_energy_hessian(1, 2)*updated_energy_cross(2, :))/response_det
+      response_response(2, :) = (-updated_energy_hessian(2, 1)*updated_energy_cross(1, :) + &
+                                 updated_energy_hessian(1, 1)*updated_energy_cross(2, :))/response_det
+      expected_transport(:, :) = updated_rotation_hessian - &
+                                 MATMUL(TRANSPOSE(updated_energy_cross), response_response) + &
+                                 MATMUL(TRANSPOSE(energy_cross), analytic_response)
+      error = error + MAXVAL(ABS(transport - expected_transport)) + &
+              MAXVAL(ABS(transport - TRANSPOSE(transport))) + &
+              MAXVAL(ABS(scaled_transport - transport)) + &
+              ABS(scaled_transport_ratio - transport_ratio)
+
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. transport_ready .OR. &
+          .NOT. scaled_transport_ready .OR. independence <= 0.0_dp .OR. reference_norm <= 0.0_dp .OR. &
           correction_norm <= 0.0_dp .OR. &
           residual_norm <= updated_residual_norm .OR. error > tol) THEN
          nfail = nfail + 1
