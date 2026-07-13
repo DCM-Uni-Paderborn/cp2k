@@ -29,6 +29,10 @@ typedef struct {
   int size;
   int prev_match;
   grid_sphere_cache_entry *entries;
+  int nretired;
+  int retired_capacity;
+  int **retired_offsets;
+  int **retired_storage;
 } grid_sphere_cache;
 
 /*******************************************************************************

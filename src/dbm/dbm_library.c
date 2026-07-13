@@ -45,6 +45,9 @@ void dbm_library_init(void) {
   max_threads = omp_get_max_threads();
   per_thread_counters = malloc(max_threads * sizeof(int64_t *));
   assert(per_thread_counters != NULL);
+  for (int ithread = 0; ithread < max_threads; ithread++) {
+    per_thread_counters[ithread] = NULL;
+  }
 
   // Using parallel regions to ensure memory is allocated near a thread's core.
 #pragma omp parallel default(none) shared(per_thread_counters)                 \
@@ -55,6 +58,14 @@ void dbm_library_init(void) {
     per_thread_counters[ithread] = malloc(counters_size);
     assert(per_thread_counters[ithread] != NULL);
     memset(per_thread_counters[ithread], 0, counters_size);
+  }
+  for (int ithread = 0; ithread < max_threads; ithread++) {
+    if (per_thread_counters[ithread] == NULL) {
+      const size_t counters_size = DBM_NUM_COUNTERS * sizeof(int64_t);
+      per_thread_counters[ithread] = malloc(counters_size);
+      assert(per_thread_counters[ithread] != NULL);
+      memset(per_thread_counters[ithread], 0, counters_size);
+    }
   }
 
   library_initialized = true;

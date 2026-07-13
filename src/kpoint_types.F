@@ -76,6 +76,8 @@ MODULE kpoint_types
 !> \param wmat      associated energy weighted density matrix (r/i,spin)
 !> \param smat      associated overlap matrix (for ADMM) (r/i,spin)
 !> \param amat      associated ADMM basis projection matrix (r/i,spin)
+!> \param ot_hmat   channel-local Kohn-Sham matrix for k-point OT (r/i,spin)
+!> \param ot_smat   channel-local overlap matrix for k-point OT (r/i)
 !> \param shalf     S(K)^(1/2) DFT+U Lowdin method (real wfn)
 !> \param cshalf    S(K)^(1/2) DFT+U Lowdin method (complex wfn)
 !> \author JGH
@@ -90,6 +92,8 @@ MODULE kpoint_types
       TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: wmat => NULL()
       TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: smat => NULL()
       TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: amat => NULL()
+      TYPE(cp_fm_type), DIMENSION(:, :), POINTER        :: ot_hmat => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: ot_smat => NULL()
       TYPE(cp_fm_type)                                  :: shalf
       TYPE(cp_cfm_type)                                 :: cshalf
    END TYPE kpoint_env_type
@@ -1058,6 +1062,8 @@ CONTAINS
       NULLIFY (kp_env%wmat)
       NULLIFY (kp_env%smat)
       NULLIFY (kp_env%amat)
+      NULLIFY (kp_env%ot_hmat)
+      NULLIFY (kp_env%ot_smat)
 
    END SUBROUTINE kpoint_env_create
 
@@ -1086,6 +1092,8 @@ CONTAINS
          CALL cp_fm_release(kp_env%wmat)
          CALL cp_fm_release(kp_env%smat)
          CALL cp_fm_release(kp_env%amat)
+         CALL cp_fm_release(kp_env%ot_hmat)
+         CALL cp_fm_release(kp_env%ot_smat)
 
          CALL cp_fm_release(kp_env%shalf)
          CALL cp_cfm_release(kp_env%cshalf)

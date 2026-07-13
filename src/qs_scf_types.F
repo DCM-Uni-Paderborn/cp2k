@@ -57,8 +57,14 @@ MODULE qs_scf_types
                                  filter_matrix_diag_method_nr = 20, &
                                  smeagol_method_nr = 41
 
+   INTEGER, PARAMETER, PUBLIC :: qs_ot_restart_adaptive_nint = 15, &
+                                 qs_ot_restart_adaptive_nlog = 13, &
+                                 qs_ot_restart_adaptive_nreal = 89
+
    PUBLIC :: qs_scf_env_type
+   PUBLIC :: qs_ot_restart_dense_matrix_type
    PUBLIC :: scf_env_release, scf_env_create, scf_env_did_change
+   PUBLIC :: qs_scf_ot_restart_clear
    PUBLIC :: krylov_space_type, krylov_space_create, subspace_env_type
    PUBLIC :: diag_subspace_env_create
 
@@ -93,6 +99,359 @@ MODULE qs_scf_types
    TYPE floating_basis_type
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: gradient => NULL()
    END TYPE floating_basis_type
+
+   TYPE qs_ot_restart_dense_matrix_type
+      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE :: data
+   END TYPE qs_ot_restart_dense_matrix_type
+
+   TYPE qs_ot_restart_channel_type
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: spin_index = 0, kpoint_index = 0, local_kpoint_index = 0
+      INTEGER :: nmo = 0, nmo_ortho = 0
+      INTEGER :: diis_m = 0
+      LOGICAL :: has_complex_kpoint_state = .FALSE., do_rotation = .FALSE., do_ener = .FALSE.
+      LOGICAL :: has_matrix_x = .FALSE., has_matrix_x_im = .FALSE.
+      LOGICAL :: has_rot_mat_x = .FALSE., has_rot_mat_x_im = .FALSE., has_ener_x = .FALSE.
+      LOGICAL :: has_matrix_dx = .FALSE., has_matrix_dx_im = .FALSE.
+      LOGICAL :: has_matrix_gx_old = .FALSE., has_matrix_gx_old_im = .FALSE.
+      LOGICAL :: has_rot_mat_dx = .FALSE., has_rot_mat_dx_im = .FALSE.
+      LOGICAL :: has_rot_mat_gx_old = .FALSE., has_rot_mat_gx_old_im = .FALSE.
+      LOGICAL :: has_ener_dx = .FALSE., has_ener_gx_old = .FALSE.
+      LOGICAL :: has_diis_scalars = .FALSE., has_matrix_history = .FALSE.
+      LOGICAL :: has_matrix_history_im = .FALSE., has_rot_history = .FALSE.
+      LOGICAL :: has_rot_history_im = .FALSE., has_ener_history = .FALSE.
+      REAL(KIND=dp) :: kpoint_weight = 0.0_dp
+      REAL(KIND=dp) :: ot_pos(53) = 0.0_dp, ot_energy(53) = 0.0_dp, ot_grad(53) = 0.0_dp
+      INTEGER :: line_search_left = -1, line_search_right = -1, line_search_mid = -1
+      INTEGER :: line_search_count = -1, diis_iter = -1
+      LOGICAL :: line_search_might_be_done = .FALSE., energy_only = .FALSE.
+      LOGICAL :: ener_direction_linear = .FALSE.
+      LOGICAL :: mermin_ls_sample_pending = .FALSE.
+      INTEGER :: mermin_ls_best_sample_index = 0
+      INTEGER :: mermin_ls_accepted_quality_samples = 0
+      REAL(KIND=dp) :: delta = 0.0_dp, gnorm = 0.0_dp, gnorm_old = 0.0_dp
+      REAL(KIND=dp) :: etotal = 0.0_dp, gradient = 0.0_dp, ds_min = 0.0_dp
+      REAL(KIND=dp) :: broyden_adaptive_sigma = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_reference_energy = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_best_sample_energy = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_best_sample_drop = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_model_drop = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_model_quality = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_best_sample_pos = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_next_pos = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
+      INTEGER, DIMENSION(qs_ot_restart_adaptive_nint) :: adaptive_int = 0
+      LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog) :: adaptive_log = .FALSE.
+      REAL(KIND=dp), DIMENSION(qs_ot_restart_adaptive_nreal) :: adaptive_real = 0.0_dp
+      INTEGER :: density_quality_samples = 0, density_audit_samples = 0
+      INTEGER :: density_descent_quality_samples = 0
+      INTEGER :: density_descent_selected_quality_samples = 0
+      INTEGER :: response_selected_quality_samples = 0
+      INTEGER :: density_full_selected_quality_samples = 0
+      INTEGER :: density_full_direct_quality_samples = 0
+      INTEGER :: density_fdir_sel_quality_samples = 0
+      INTEGER :: density_full_global_quality_samples = 0
+      INTEGER :: density_full_global_sel_quality_samples = 0
+      INTEGER :: physical_quality_samples = 0
+      INTEGER :: physical_selected_quality_samples = 0
+      INTEGER :: physical_direct_quality_samples = 0
+      INTEGER :: physical_direct_selected_quality_samples = 0
+      INTEGER :: phys_direct_density_sel_quality_samples = 0
+      INTEGER :: mixed_direct_quality_samples = 0
+      INTEGER :: spectral_selected_quality_samples = 0, spectral_selected_failure_samples = 0
+      LOGICAL :: density_descent_support_ready = .FALSE.
+      REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_lowcurv_ema = 0.0_dp, density_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_quality = 0.0_dp, density_descent_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_coeff_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_support = 0.0_dp, density_descent_support_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_descent_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: response_selected = 0.0_dp
+      REAL(KIND=dp) :: response_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: response_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: response_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: response_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: response_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: response_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_drop = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_trust = 1.0_dp
+      REAL(KIND=dp) :: density_full_direct_trust_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_direct_weighted_trust = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_weighted_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_abs_trust = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_abs_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_selected = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_resid_quality = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_resid_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_drop = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_trust = 1.0_dp
+      REAL(KIND=dp) :: density_full_global_trust_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_global_weighted_trust = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_weighted_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_abs_trust = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_abs_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_selected = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_quality = 0.0_dp, physical_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_drop_sum = 0.0_dp, physical_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_resid_quality = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_resid_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: phys_direct_density_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_quality = 0.0_dp, mixed_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_drop_sum = 0.0_dp, mixed_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_weight = 0.0_dp, mixed_direct_weight_ema = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: spectral_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: spectral_selected_measured_sum = 0.0_dp
+      TYPE(cp_fm_type), POINTER :: matrix_x => NULL(), matrix_x_im => NULL()
+      TYPE(cp_fm_type), POINTER :: rot_mat_x => NULL(), rot_mat_x_im => NULL()
+      TYPE(cp_fm_type), POINTER :: matrix_dx => NULL(), matrix_dx_im => NULL()
+      TYPE(cp_fm_type), POINTER :: matrix_gx_old => NULL(), matrix_gx_old_im => NULL()
+      TYPE(cp_fm_type), POINTER :: rot_mat_dx => NULL(), rot_mat_dx_im => NULL()
+      TYPE(cp_fm_type), POINTER :: rot_mat_gx_old => NULL(), rot_mat_gx_old_im => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER :: matrix_h_e => NULL(), matrix_h_x => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER :: matrix_h_e_im => NULL(), matrix_h_x_im => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER :: rot_mat_h_e => NULL(), rot_mat_h_x => NULL()
+      TYPE(cp_fm_type), DIMENSION(:), POINTER :: rot_mat_h_e_im => NULL(), rot_mat_h_x_im => NULL()
+      TYPE(qs_ot_restart_dense_matrix_type) :: matrix_x_dense, matrix_x_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: rot_mat_x_dense, rot_mat_x_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: matrix_dx_dense, matrix_dx_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: matrix_gx_old_dense, matrix_gx_old_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: rot_mat_dx_dense, rot_mat_dx_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type) :: rot_mat_gx_old_dense, rot_mat_gx_old_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: matrix_h_e_dense, &
+                                                                          matrix_h_x_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: matrix_h_e_im_dense, &
+                                                                          matrix_h_x_im_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: rot_mat_h_e_dense, &
+                                                                          rot_mat_h_x_dense
+      TYPE(qs_ot_restart_dense_matrix_type), DIMENSION(:), ALLOCATABLE :: rot_mat_h_e_im_dense, &
+                                                                          rot_mat_h_x_im_dense
+      REAL(KIND=dp), DIMENSION(:), POINTER :: ener_x => NULL(), ener_dx => NULL(), ener_gx_old => NULL()
+      REAL(KIND=dp), DIMENSION(:), POINTER :: c_diis => NULL(), c_broy => NULL(), energy_h => NULL()
+      INTEGER, DIMENSION(:), POINTER :: ipivot => NULL()
+      REAL(KIND=dp), DIMENSION(:, :), POINTER :: ls_diis => NULL(), lss_diis => NULL()
+      REAL(KIND=dp), DIMENSION(:, :), POINTER :: ener_h_e => NULL(), ener_h_x => NULL()
+   END TYPE qs_ot_restart_channel_type
+
+   TYPE qs_ot_restart_cache_type
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: format_version = 0, nchannel = 0
+      TYPE(qs_ot_restart_channel_type), DIMENSION(:), POINTER :: channel => NULL()
+   END TYPE qs_ot_restart_cache_type
+
+   TYPE qs_ot_schur_density_calibration_channel_type
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: spin_index = 0, kpoint_index = 0
+      INTEGER :: density_quality_samples = 0, density_audit_samples = 0
+      INTEGER :: density_descent_quality_samples = 0
+      INTEGER :: physical_quality_samples = 0, physical_direct_quality_samples = 0
+      INTEGER :: physical_direct_selected_quality_samples = 0
+      INTEGER :: physical_direct_density_sel_quality_samples = 0
+      INTEGER :: mixed_direct_quality_samples = 0
+      INTEGER :: density_full_selected_quality_samples = 0
+      INTEGER :: density_full_direct_quality_samples = 0
+      INTEGER :: density_fdir_sel_quality_samples = 0
+      INTEGER :: density_full_global_quality_samples = 0
+      INTEGER :: density_full_global_sel_quality_samples = 0
+      INTEGER :: mermin_ls_accepted_quality_samples = 0
+      INTEGER :: physical_selected_quality_samples = 0
+      REAL(KIND=dp) :: density_quality = 0.0_dp, density_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_drop_sum = 0.0_dp, density_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_lowcurv_ema = 0.0_dp, density_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_amplification_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_ema = 0.0_dp
+      REAL(KIND=dp) :: density_audit_lowcurv_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_quality = 0.0_dp, density_descent_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_descent_coeff_ema = 0.0_dp
+      REAL(KIND=dp) :: density_descent_support = 0.0_dp, density_descent_support_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_trust_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_direct_weighted_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_direct_abs_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_resid_quality = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_resid_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_fdir_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_trust_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_global_weighted_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_abs_trust_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_selected = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: density_full_global_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_quality = 0.0_dp, physical_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_drop_sum = 0.0_dp, physical_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_actual_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_raw_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_active_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_diag_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_trace_invariant_free_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_quality_shadow_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_selected_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_resid_quality = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_resid_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: physical_direct_density_sel_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_quality = 0.0_dp, mixed_direct_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_drop_sum = 0.0_dp, mixed_direct_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: mixed_direct_weight_ema = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_accepted_gap_ema = 0.0_dp
+      LOGICAL :: density_descent_support_ready = .FALSE.
+   END TYPE qs_ot_schur_density_calibration_channel_type
+
+   TYPE qs_ot_schur_density_calibration_cache_type
+      LOGICAL :: valid = .FALSE.
+      INTEGER :: nchannel = 0
+      TYPE(qs_ot_schur_density_calibration_channel_type), DIMENSION(:), POINTER :: channel => NULL()
+   END TYPE qs_ot_schur_density_calibration_cache_type
 ! **************************************************************************************************
    TYPE qs_scf_env_type
       TYPE(qs_outer_scf_type) :: outer_scf = qs_outer_scf_type()
@@ -112,6 +471,9 @@ MODULE qs_scf_types
       TYPE(dbcsr_type), POINTER :: ortho_dbcsr => NULL(), buf1_dbcsr => NULL(), buf2_dbcsr => NULL()
       TYPE(preconditioner_p_type), DIMENSION(:), POINTER :: ot_preconditioner => NULL()
       TYPE(qs_ot_type), POINTER, DIMENSION(:)  :: qs_ot_env => NULL()
+      TYPE(qs_ot_restart_cache_type) :: qs_ot_restart = qs_ot_restart_cache_type()
+      TYPE(qs_ot_schur_density_calibration_cache_type) :: qs_ot_schur_density_calibration = &
+                                                          qs_ot_schur_density_calibration_cache_type()
       TYPE(qs_diis_buffer_type), POINTER :: scf_diis_buffer => NULL()
       TYPE(subspace_env_type), POINTER :: subspace_env => NULL()
       TYPE(davidson_type), POINTER, DIMENSION(:) :: block_davidson_env => NULL()
@@ -174,6 +536,13 @@ CONTAINS
       NULLIFY (scf_env%p_mix_new)
       NULLIFY (scf_env%ot_preconditioner)
       NULLIFY (scf_env%qs_ot_env)
+      scf_env%qs_ot_restart%valid = .FALSE.
+      scf_env%qs_ot_restart%format_version = 0
+      scf_env%qs_ot_restart%nchannel = 0
+      NULLIFY (scf_env%qs_ot_restart%channel)
+      scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = 0
+      NULLIFY (scf_env%qs_ot_schur_density_calibration%channel)
       NULLIFY (scf_env%scf_diis_buffer)
       NULLIFY (scf_env%buf1_dbcsr)
       NULLIFY (scf_env%buf2_dbcsr)
@@ -317,6 +686,13 @@ CONTAINS
          END DO
          DEALLOCATE (scf_env%qs_ot_env)
       END IF
+      IF (ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) THEN
+         DEALLOCATE (scf_env%qs_ot_schur_density_calibration%channel)
+      END IF
+      scf_env%qs_ot_schur_density_calibration%valid = .FALSE.
+      scf_env%qs_ot_schur_density_calibration%nchannel = 0
+      NULLIFY (scf_env%qs_ot_schur_density_calibration%channel)
+      CALL qs_scf_ot_restart_clear(scf_env)
       IF (ASSOCIATED(scf_env%scf_diis_buffer)) THEN
          CALL qs_diis_b_release(scf_env%scf_diis_buffer)
          DEALLOCATE (scf_env%scf_diis_buffer)
@@ -365,6 +741,116 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE scf_env_release
+
+! **************************************************************************************************
+!> \brief clear cached k-point OT restart data
+!> \param scf_env the environment containing the restart cache
+! **************************************************************************************************
+   SUBROUTINE qs_scf_ot_restart_clear(scf_env)
+      TYPE(qs_scf_env_type), INTENT(INOUT)               :: scf_env
+
+      INTEGER                                            :: ichannel
+
+      IF (ASSOCIATED(scf_env%qs_ot_restart%channel)) THEN
+         DO ichannel = 1, SIZE(scf_env%qs_ot_restart%channel)
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_x)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_x)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_x_im)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_x_im)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_dx)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_dx)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_dx)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_dx_im)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%matrix_gx_old_im)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_dx_im)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im)) THEN
+               CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im)
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%rot_mat_gx_old_im)
+            END IF
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_h_e_im)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%matrix_h_x_im)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_e_im)
+            CALL cp_fm_release(scf_env%qs_ot_restart%channel(ichannel)%rot_mat_h_x_im)
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ener_x)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_x)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ener_dx)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_dx)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ener_gx_old)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_gx_old)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%c_diis)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%c_diis)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%c_broy)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%c_broy)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%energy_h)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%energy_h)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ipivot)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ipivot)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ls_diis)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ls_diis)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%lss_diis)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%lss_diis)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ener_h_e)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_h_e)
+            END IF
+            IF (ASSOCIATED(scf_env%qs_ot_restart%channel(ichannel)%ener_h_x)) THEN
+               DEALLOCATE (scf_env%qs_ot_restart%channel(ichannel)%ener_h_x)
+            END IF
+         END DO
+         DEALLOCATE (scf_env%qs_ot_restart%channel)
+      END IF
+      scf_env%qs_ot_restart%valid = .FALSE.
+      scf_env%qs_ot_restart%format_version = 0
+      scf_env%qs_ot_restart%nchannel = 0
+      NULLIFY (scf_env%qs_ot_restart%channel)
+
+   END SUBROUTINE qs_scf_ot_restart_clear
 
 ! **************************************************************************************************
 !> \brief  creates krylov space

@@ -158,9 +158,8 @@ CONTAINS
       IF (ASSOCIATED(scf_env)) THEN
          IF ((scf_env%method == ot_method_nr .AND. tddfpt_control%nlumo > 0) .OR. &
              (scf_env%method == ot_method_nr .AND. print_virtuals_newtonx)) THEN
-            ! As OT with ADDED_MOS/=0 is currently not implemented, the following block is equivalent to:
-            ! nmo_virt = tddfpt_control%nlumo
-            ! number of already computed unoccupied orbitals (added_mos) .
+            ! Account for virtual orbitals already present in the ground-state MO set
+            ! through ADDED_MOS; only missing virtuals need to be generated here.
             nmo_virt = HUGE(0)
             DO ispin = 1, nspins
                CALL get_mo_set(mos(ispin), nmo=nmo_avail, homo=nmo_occ)

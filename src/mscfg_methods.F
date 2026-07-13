@@ -25,6 +25,7 @@ MODULE mscfg_methods
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_unit_nr,&
                                               cp_logger_type
+   USE cp_parser_methods,               ONLY: read_integer_object
    USE cp_subsys_methods,               ONLY: create_small_subsys
    USE cp_subsys_types,                 ONLY: cp_subsys_get,&
                                               cp_subsys_release,&
@@ -57,6 +58,7 @@ MODULE mscfg_methods
                                               qs_environment_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
+   USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -141,9 +143,9 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calcs_on_isolated_molecules'
 
-      CHARACTER(LEN=default_string_length)               :: name
+      CHARACTER(LEN=default_string_length)               :: added_mos_string, error_message, name
       CHARACTER(LEN=default_string_length), &
-         DIMENSION(:), POINTER                           :: atom_type
+         DIMENSION(:), POINTER                           :: added_mos_values, atom_type
       INTEGER :: first_atom, force_method, global_charge, global_multpl, handle, i, ifrag, imo, &
          isize, j, k, last_atom, my_targ, nb_eigenval_stored, nmo, nmo_of_frag, nmosets_of_frag, &
          tot_added_mos, tot_isize
@@ -164,7 +166,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       NULLIFY (subsys_loc, subsys, particles, para_env, atom_index, atom_type, &
-               force_env_section, qs_env_loc, mscfg_env, qs_env, qs_energy)
+               added_mos_values, force_env_section, qs_env_loc, mscfg_env, qs_env, qs_energy)
       CALL force_env_get(force_env, force_env_section=force_env_section, &
                          qs_env=qs_env)
       CALL section_vals_val_get(force_env_section, "METHOD", i_val=force_method)
@@ -191,7 +193,22 @@ CONTAINS
          smear_almo_scf = qs_env%scf_control%smear%do_smear
          IF (smear_almo_scf) THEN
             scf_section => section_vals_get_subs_vals(dft_section, "SCF")
-            CALL section_vals_val_get(scf_section, "added_mos", i_val=tot_added_mos) !! Get total number of added MOs
+            CALL section_vals_val_get(scf_section, "added_mos", c_vals=added_mos_values) !! Get total number of added MOs
+            CPASSERT(ASSOCIATED(added_mos_values))
+            IF (SIZE(added_mos_values) /= 1) THEN
+               CPABORT("ALMO smearing currently requires a single ADDED_MOS value")
+            END IF
+            added_mos_string = ADJUSTL(added_mos_values(1))
+            CALL uppercase(added_mos_string)
+            IF (TRIM(added_mos_string) == "AUTO") THEN
+               CPABORT("ALMO smearing currently does not support ADDED_MOS AUTO")
+            END IF
+            CALL read_integer_object(TRIM(added_mos_values(1)), tot_added_mos, error_message)
+            IF (LEN_TRIM(error_message) > 0) THEN
+               CALL cp_abort(__LOCATION__, &
+                             "Invalid ADDED_MOS value '"//TRIM(added_mos_values(1))// &
+                             "'. Use an integer for ALMO smearing.")
+            END IF
             tot_isize = last_atom_of_frag(nfrags) - first_atom_of_frag(1) + 1 !! Get total number of atoms (assume consecutive atoms)
             !! Check that number of added MOs matches the number of atoms
             !! (to ensure compatibility, since each fragment will be computed with such parameters)
@@ -279,7 +296,8 @@ CONTAINS
          ! If smearing requested, setup ADDED_MOS correctly for each fragment (i.e. number of atoms in fragment)
          !
          IF (smear_almo_scf) THEN
-            CALL section_vals_val_set(scf_section, "added_mos", i_val=isize)
+            WRITE (added_mos_string, FMT="(I0)") isize
+            CALL section_vals_val_set(scf_section, "added_mos", c_val=TRIM(added_mos_string))
          END IF
          !
          ! Create the environment of a subsystem
@@ -504,4 +522,3 @@ CONTAINS
    END FUNCTION do_mol_loop
 
 END MODULE mscfg_methods
-

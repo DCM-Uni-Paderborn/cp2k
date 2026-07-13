@@ -57,8 +57,8 @@ MODULE qs_scf_initialization
         broy_mix, cholesky_dbcsr, cholesky_inverse, cholesky_off, diag_block_davidson, &
         diag_block_krylov, diag_filter_matrix, diag_ot, diag_standard, direct_p_mix, kerker_mix, &
         modified_broy_mix, multisec_mix, new_pulay_mix, no_mix, ot2cdft, outer_scf_none, &
-        plus_u_lowdin, pulay_mix, smeagol_runtype_emtransport, wfi_frozen_method_nr, &
-        wfi_ps_method_nr, wfi_use_guess_method_nr
+        plus_u_lowdin, pulay_mix, smeagol_runtype_emtransport, smear_fermi_dirac, &
+        wfi_frozen_method_nr, wfi_ps_method_nr, wfi_use_guess_method_nr
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
@@ -769,7 +769,8 @@ CONTAINS
       LOGICAL                                            :: has_unit_metric
 
       INTEGER                                            :: ispin, nao, nmo
-      LOGICAL                                            :: do_kpoints, need_coeff_b, not_se_or_tb
+      LOGICAL                                            :: do_kpoints, need_coeff_b, not_se_or_tb, &
+                                                            ot_energies, ot_rotation
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
@@ -778,6 +779,8 @@ CONTAINS
       not_se_or_tb = .NOT. (dft_control%qs_control%dftb .OR. dft_control%qs_control%xtb .OR. &
                             dft_control%qs_control%semi_empirical)
       need_coeff_b = .FALSE.
+      ot_energies = .FALSE.
+      ot_rotation = .FALSE.
       scf_env%needs_ortho = .FALSE.
 
       IF (dft_control%smeagol_control%smeagol_enabled .AND. &
@@ -879,12 +882,21 @@ CONTAINS
       ELSEIF (scf_control%use_ot) THEN
          scf_env%method = ot_method_nr
          need_coeff_b = .TRUE.
-         IF (SUM(ABS(scf_control%added_mos)) > 0) &
-            CPABORT("OT with ADDED_MOS/=0 not implemented")
+         CALL section_vals_val_get(scf_section, "OT%ENERGIES", l_val=ot_energies)
+         CALL section_vals_val_get(scf_section, "OT%ROTATION", l_val=ot_rotation)
+         IF (scf_control%smear%do_smear) THEN
+            IF (.NOT. ot_energies) &
+               CPABORT("OT with smearing requires OT%ENERGIES.")
+            IF (.NOT. ot_rotation) &
+               CPABORT("OT with smearing requires OT%ROTATION.")
+            IF (scf_control%smear%method /= smear_fermi_dirac) &
+               CPABORT("OT with smearing currently supports only FERMI_DIRAC.")
+         END IF
+         IF (SUM(ABS(scf_control%added_mos)) > 0 .AND. .NOT. ot_energies) &
+            CPABORT("OT with ADDED_MOS requires OT%ENERGIES.")
          IF (dft_control%restricted .AND. dft_control%nspins /= 2) &
             CPABORT("nspin must be 2 for restricted (ROKS)")
-         IF (do_kpoints) &
-            CPABORT("OT not possible with kpoint calculations")
+         ! K-point OT is allowed to reach the spin/k-point channel allocation stub.
       ELSEIF (scf_env%method /= smeagol_method_nr) THEN
          CPABORT("OT or DIAGONALIZATION have to be set")
       END IF

@@ -986,15 +986,15 @@ CONTAINS
 
       CHARACTER(len=2)                                   :: element_symbol
       INTEGER :: gfn_type, handle, ikind, ispin, iw, lmax_sphere, maxl, maxlgto, maxlgto_lri, &
-         maxlgto_nuc, maxlppl, maxlppnl, method_id, multiplicity, my_ival, n_ao, n_mo_add, natom, &
-         nelectron, ngauss, nkind, nlumo_dos, nlumo_molden, nlumo_required, output_unit, &
-         sort_basis, tnadd_method
+         maxlgto_nuc, maxlppl, maxlppnl, method_id, multiplicity, my_ival, n_ao, n_mo_add, &
+         n_mo_auto, natom, nelectron, ngauss, nkind, nlumo_dos, nlumo_molden, nlumo_required, &
+         output_unit, sort_basis, tnadd_method
       INTEGER, DIMENSION(2)                              :: n_mo, nelectron_spin
       INTEGER, DIMENSION(5)                              :: occ
       INTEGER, DIMENSION(:), POINTER                     :: mo_index_range
       LOGICAL :: all_potential_present, be_silent, cneo_potential_present, do_kpoints, do_ri_hfx, &
          do_ri_mp2, do_ri_rpa, do_ri_sos_mp2, do_rpa_ri_exx, do_wfc_im_time, e1terms, &
-         has_unit_metric, lribas, mp2_present, orb_gradient, paw_atom
+         has_unit_metric, implicit_ot_added_mos_auto, lribas, mp2_present, orb_gradient, paw_atom
       REAL(KIND=dp)                                      :: alpha, ccore, ewald_rcut, fxx, maxocc, &
                                                             rc, rcut, total_zeff_corr, &
                                                             verlet_skin, zeff_correction
@@ -2110,6 +2110,34 @@ CONTAINS
       CALL qs_subsys_set(subsys, &
                          nelectron_total=nelectron, &
                          nelectron_spin=nelectron_spin)
+
+      IF (ANY(scf_control%added_mos_auto) .AND. .NOT. scf_control%smear%do_smear) THEN
+         CPABORT("ADDED_MOS AUTO requires smearing")
+      END IF
+
+      implicit_ot_added_mos_auto = scf_control%use_ot .AND. scf_control%smear%do_smear .AND. &
+                                   ALL(scf_control%added_mos == 0) .AND. &
+                                   .NOT. ANY(scf_control%added_mos_auto)
+      IF (scf_control%smear%do_smear .AND. &
+          (ANY(scf_control%added_mos_auto) .OR. implicit_ot_added_mos_auto)) THEN
+         n_mo_auto = MAX(4, CEILING(0.2_dp*REAL(MAXVAL(n_mo(1:dft_control%nspins)), KIND=dp)))
+         DO ispin = 1, dft_control%nspins
+            IF (scf_control%added_mos_auto(ispin) .OR. implicit_ot_added_mos_auto) THEN
+               scf_control%added_mos(ispin) = MIN(n_mo_auto, MAX(0, n_ao - n_mo(ispin)))
+               scf_control%added_mos_auto(ispin) = .TRUE.
+            END IF
+         END DO
+         IF (output_unit > 0) THEN
+            IF (dft_control%nspins == 2) THEN
+               WRITE (UNIT=output_unit, FMT="(T2,A,2I5)") &
+                  "SCF smearing: automatically selected ADDED_MOS:", &
+                  scf_control%added_mos(1:dft_control%nspins)
+            ELSE
+               WRITE (UNIT=output_unit, FMT="(T2,A,I0)") &
+                  "SCF smearing: automatically selected ADDED_MOS: ", scf_control%added_mos(1)
+            END IF
+         END IF
+      END IF
 
       ! Ensure that all orbitals requested for printout are added even
       ! if the keyword ADDED_MOS was not specified or set properly

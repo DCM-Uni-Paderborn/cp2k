@@ -794,8 +794,8 @@ CONTAINS
       CALL sirius_get_energy(gs_handler, 'total', etotal)
       energy%etotal = etotal
 
-      ! extract entropy (TS returned by sirius is always negative, sign
-      ! convention in QE)
+      ! Extract electronic entropy energy T*S. SIRIUS reports demet as
+      ! -T*S following the QE sign convention.
       etotal = 0.0_C_DOUBLE
       CALL sirius_get_energy(gs_handler, 'demet', etotal)
       energy%entropy = -etotal

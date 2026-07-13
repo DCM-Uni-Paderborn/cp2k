@@ -238,8 +238,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="ADDED_MOS", &
                           description="Number of additional molecular orbitals added for each spin channel. "// &
                           "This is commonly needed for smearing, excited-state, or post-Hartree-Fock calculations. "// &
-                          "Use -1 to add all available orbitals.", &
-                          usage="ADDED_MOS", default_i_val=0, n_var=-1)
+                          "Use -1 to add all available orbitals. Use AUTO to let CP2K choose an experimental "// &
+                          "automatic buffer for smearing.", &
+                          usage="ADDED_MOS {integer|AUTO}", default_c_val="0", n_var=-1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -910,7 +911,9 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="OCCUPATION_PRECONDITIONER", &
-                          description="Preconditioner with the occupation numbers (FD smearing)", &
+                          description="Apply a diagonal fixed-electron-number Mermin curvature "// &
+                          "preconditioner and remove the constant energy-shift null mode for OT energy "// &
+                          "variables (FD smearing).", &
                           usage="OCCUPATION_PRECONDITIONER", lone_keyword_l_val=.TRUE., &
                           default_l_val=.FALSE.)
       CALL section_add_keyword(section, keyword)
@@ -926,6 +929,36 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="NONDIAG_ENERGY_STRENGTH", &
                           description="The prefactor for the non-diagonal energy penalty (FD smearing)", &
                           usage="NONDIAG_ENERGY_STRENGTH", default_r_val=1.0_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER", &
+                          description="Add a gauge-projected Fermi-window tether between OT auxiliary "// &
+                          "energies and the current Rayleigh diagonal (FD smearing).", &
+                          usage="CANONICAL_TETHER", lone_keyword_l_val=.TRUE., &
+                          default_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER_ADAPTIVE", &
+                          description="Adapt the canonical tether strength from the active Fermi-window "// &
+                          "Rayleigh/auxiliary-energy gap outside line-search trial points.", &
+                          usage="CANONICAL_TETHER_ADAPTIVE", lone_keyword_l_val=.TRUE., &
+                          default_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER_STRENGTH", &
+                          description="Base prefactor for the canonical OT auxiliary-energy tether "// &
+                          "(FD smearing).", &
+                          usage="CANONICAL_TETHER_STRENGTH", default_r_val=1.0E-3_dp)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="CANONICAL_TETHER_MAX_STRENGTH", &
+                          description="Maximum adaptive prefactor for the canonical OT auxiliary-energy "// &
+                          "tether (FD smearing).", &
+                          usage="CANONICAL_TETHER_MAX_STRENGTH", default_r_val=1.5E-3_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

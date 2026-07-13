@@ -1,7 +1,14 @@
 import traceback
 from typing import Any, Dict
 
-from matcher_classes import Matcher, MatchResult, GenericMatcher, TextPresenceMatcher
+from matcher_classes import (
+    GenericMatcher,
+    IntSequenceMatcher,
+    Matcher,
+    MatchResult,
+    TextAbsenceMatcher,
+    TextPresenceMatcher,
+)
 
 
 # ======================================================================================
@@ -26,6 +33,23 @@ registry = MatcherRegistry()
 
 # Total energy in Hartree
 registry["E_total"] = GenericMatcher(r"Total energy:", col=3)
+registry["Mermin_free_energy"] = GenericMatcher(
+    r"Mermin free energy \(E - T\*S\):\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
+registry["OT_SCF_convergence"] = GenericMatcher(
+    r"^\s*\d+\s+OT\s+\S+\s+\S+\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
+registry["ADDED_MOS_AUTO"] = GenericMatcher(
+    r"SCF smearing: automatically selected ADDED_MOS:\s+([0-9]+)",
+    col=1,
+    regex=True,
+)
+registry["ADDED_MOS_AUTO_GROW_SEQUENCE"] = IntSequenceMatcher(
+    r"K-point ADDED_MOS AUTO: growing virtual-space buffer to:\s+([0-9]+)"
+)
+registry["Electronic_entropic_energy"] = GenericMatcher(
+    r"Electronic entropic energy:", col=4
+)
 
 registry["M002"] = GenericMatcher(r"MD| Potential energy", col=5)
 registry["M003"] = GenericMatcher(r"Total energy [eV]:", col=4)
@@ -39,7 +63,30 @@ registry["Vib_frc_const"] = GenericMatcher(r"VIB|Frc consts", col=4)  # M128
 
 registry["M009"] = GenericMatcher(r"PINT| Total energy =", col=5)
 registry["M010"] = GenericMatcher(r"BAND TOTAL ENERGY [au]", col=6)
-registry["M011"] = GenericMatcher(r"ENERGY| Total FORCE_EVAL", col=9)
+registry["M011"] = GenericMatcher(
+    r"ENERGY\|\s+Total FORCE_EVAL \( .* \) energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
+registry["FORCE_EVAL_TS_term"] = GenericMatcher(
+    r"ENERGY\|\s+Total FORCE_EVAL \( .* \) T\*S term "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
+registry["FORCE_EVAL_free_energy"] = GenericMatcher(
+    r"ENERGY\|\s+Total FORCE_EVAL \( .* \) free energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
+registry["Mermin_FORCE_EVAL_free_energy"] = GenericMatcher(
+    r"ENERGY\|\s+Mermin FORCE_EVAL \( .* \) free energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
 registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", col=5)
 registry["Kubo_sigma_iso"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S/cm]", col=3)
 registry["Kubo_sigma_iso_2d"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S]", col=3)
@@ -79,6 +126,12 @@ registry["WANNIER90_BLOCH_PHASE_GAUGE"] = TextPresenceMatcher(
 registry["WANNIER90_REUSE_VALIDATION"] = TextPresenceMatcher(
     "WANNIER90| Reused MO validation: subspace deviation"
 )
+registry["N_kpoints"] = GenericMatcher(
+    r"BRILLOUIN\| List of Kpoints \[2 Pi/Bohr\]\s+([0-9]+)", col=1, regex=True
+)
+registry["Kpoint_weight_1"] = GenericMatcher(r"BRILLOUIN|     1", col=3)
+registry["Kpoint_weight_2"] = GenericMatcher(r"BRILLOUIN|     2", col=3)
+registry["Kpoint_weight_3"] = GenericMatcher(r"BRILLOUIN|     3", col=3)
 registry["M012"] = GenericMatcher(r"B2(T) =", col=4)
 registry["M013"] = GenericMatcher(r"sparseness function f2 =", col=5)
 registry["M014"] = GenericMatcher(r"CheckSum Shifts =", col=4)
@@ -188,9 +241,19 @@ registry["GAUXC_molecular_xc_virial_fd_diff"] = GenericMatcher(
 registry["XTB_reference_cli_failed"] = TextPresenceMatcher(
     "tblite reference CLI check failed to run."
 )
+registry["SCF_guess_restart"] = TextPresenceMatcher(
+    "Density guess:                                   RESTART"
+)
+registry["NO_TEXT"] = TextAbsenceMatcher()
 registry["M083"] = GenericMatcher(r"1[   1] - 2[   1]", col=7)
 registry["M084"] = GenericMatcher(r"Ionization potential of the excited atom:", col=7)
 registry["M085"] = GenericMatcher(r"Total FORCE_EVAL ( SIRIUS ) energy", col=9)
+registry["SIRIUS_Mermin_free_energy"] = GenericMatcher(
+    r"ENERGY\|\s+Mermin FORCE_EVAL \( SIRIUS \) free energy "
+    r"(?:\[[^\]]+\]|\([^)]+\):?)\s+([-+0-9.EeDd]+)",
+    col=1,
+    regex=True,
+)
 registry["M086"] = GenericMatcher(r"DIPOLE : CheckSum  =", col=5)
 registry["M087"] = GenericMatcher(r"POLAR : CheckSum  =", col=5)
 registry["XAS_excit_ener"] = GenericMatcher(r"XAS excitation energy (eV):", col=7)

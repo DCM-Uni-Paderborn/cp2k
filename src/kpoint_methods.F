@@ -90,6 +90,8 @@ MODULE kpoint_methods
                                               neighbor_list_iterator_p_type,&
                                               neighbor_list_iterator_release,&
                                               neighbor_list_set_p_type
+   USE qs_ot_types,                     ONLY: qs_ot_check_channel_context,&
+                                              qs_ot_type
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: Smearkp,&
                                               Smearkp2
@@ -105,6 +107,7 @@ MODULE kpoint_methods
    PUBLIC :: kpoint_initialize, kpoint_env_initialize, kpoint_initialize_mos, kpoint_initialize_mo_set
    PUBLIC :: kpoint_init_cell_index, kpoint_set_mo_occupation
    PUBLIC :: kpoint_density_matrices, kpoint_density_transform
+   PUBLIC :: kpoint_fixed_spin_targets
    PUBLIC :: rskp_transform, lowdin_kp_trans, lowdin_kp_mo_coeff
 
 ! **************************************************************************************************
@@ -1205,17 +1208,38 @@ CONTAINS
    END SUBROUTINE rskp_transform
 
 ! **************************************************************************************************
+!> \brief electron targets for separately smeared fixed-spin channels
+!> \param nelectron total electron number
+!> \param fixed_mag_mom prescribed N_alpha-N_beta
+!> \param nel_a alpha target
+!> \param nel_b beta target
+! **************************************************************************************************
+   PURE SUBROUTINE kpoint_fixed_spin_targets(nelectron, fixed_mag_mom, nel_a, nel_b)
+
+      REAL(KIND=dp), INTENT(IN)                          :: nelectron, fixed_mag_mom
+      REAL(KIND=dp), INTENT(OUT)                         :: nel_a, nel_b
+
+      nel_a = 0.5_dp*(nelectron + fixed_mag_mom)
+      nel_b = nelectron - nel_a
+
+   END SUBROUTINE kpoint_fixed_spin_targets
+
+! **************************************************************************************************
 !> \brief Given the eigenvalues of all kpoints, calculates the occupation numbers
 !> \param kpoint  Kpoint environment
 !> \param smear   Smearing information
 !> \param probe ...
+!> \param added_mos_auto ...
+!> \param added_mos_auto_grow ...
 ! **************************************************************************************************
-   SUBROUTINE kpoint_set_mo_occupation(kpoint, smear, probe)
+   SUBROUTINE kpoint_set_mo_occupation(kpoint, smear, probe, added_mos_auto, added_mos_auto_grow)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(smear_type)                                   :: smear
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
+      LOGICAL, DIMENSION(:), INTENT(IN), OPTIONAL        :: added_mos_auto
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_set_mo_occupation'
 
@@ -1223,7 +1247,9 @@ CONTAINS
                                                             nb, ncol_global, ne_a, ne_b, &
                                                             nelectron, nkp, nmo, nrow_global, nspin
       INTEGER, DIMENSION(2)                              :: kp_range
-      REAL(KIND=dp)                                      :: kTS, kTS_spin(2), mu, mus(2), nel
+      LOGICAL                                            :: my_added_mos_auto_grow
+      REAL(KIND=dp)                                      :: kTS, kTS_spin(2), mu, mus(2), nel, &
+                                                            nel_a_target, nel_b_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: smatrix
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: weig, wocc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :)  :: icoeff, rcoeff
@@ -1234,6 +1260,10 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
 
       CALL timeset(routineN, handle)
+
+      my_added_mos_auto_grow = .FALSE.
+      IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
+      kTS_spin(:) = 0.0_dp
 
       ! first collect all the eigenvalues
       CALL get_kpoint_info(kpoint, nkp=nkp)
@@ -1246,6 +1276,11 @@ CONTAINS
          CALL get_mo_set(kp%mos(1, 2), nmo=nb, nelectron=ne_b)
          CPASSERT(nmo == nb)
       END IF
+      nel_a_target = REAL(ne_a, KIND=dp)
+      nel_b_target = REAL(ne_b, KIND=dp)
+      IF (nspin == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) &
+         CALL kpoint_fixed_spin_targets(REAL(ne_a + ne_b, KIND=dp), smear%fixed_mag_mom, &
+                                        nel_a_target, nel_b_target)
       ALLOCATE (weig(nmo, nkp, nspin), wocc(nmo, nkp, nspin))
       weig = 0.0_dp
       wocc = 0.0_dp
@@ -1309,13 +1344,14 @@ CONTAINS
 
          IF (nspin == 1) THEN
             nel = REAL(nelectron, KIND=dp)
-            CALL probe_occupancy_kp(wocc(:, :, :), mus(1), kTS, weig(:, :, :), rcoeff(:, :, :, :), icoeff(:, :, :, :), 2.0d0, &
+            CALL probe_occupancy_kp(wocc(:, :, :), mus(1), kTS_spin(1), weig(:, :, :), &
+                                    rcoeff(:, :, :, :), icoeff(:, :, :, :), 2.0d0, &
                                     probe, nel, wkp)
          ELSE
             nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
             CALL probe_occupancy_kp(wocc(:, :, :), mu, kTS, weig(:, :, :), rcoeff(:, :, :, :), icoeff(:, :, :, :), 1.0d0, &
                                     probe, nel, wkp)
-            kTS = kTS/2._dp
+            kTS_spin(1:2) = 0.5_dp*kTS
             mus(1:2) = mu
          END IF
 
@@ -1327,7 +1363,7 @@ CONTAINS
                CALL get_mo_set(mo_set, eigenvalues=eigenvalues, occupation_numbers=occupation)
                eigenvalues(1:nmo) = weig(1:nmo, ik, ispin)
                occupation(1:nmo) = wocc(1:nmo, ik, ispin)
-               mo_set%kTS = kTS
+               mo_set%kTS = kTS_spin(ispin)
                mo_set%mu = mus(ispin)
 
                CALL get_mo_set(mo_set, mo_coeff=mo_coeff)
@@ -1370,47 +1406,39 @@ CONTAINS
                ! finite electronic temperature
                IF (nspin == 1) THEN
                   nel = REAL(nelectron, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%electronic_temperature, 2.0_dp, smear_fermi_dirac)
-                  kTS_spin(1) = kTS
-               ELSE IF (smear%fixed_mag_mom > 0.0_dp) THEN
-                  nel = REAL(ne_a, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               ELSE IF (smear%fixed_mag_mom >= 0.0_dp) THEN
+                  nel = nel_a_target
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
-                  kTS_spin(1) = kTS
-                  nel = REAL(ne_b, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
+                  nel = nel_b_target
+                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
                                smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
-                  kTS_spin(2) = kTS
                ELSE
                   nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
                   CALL Smearkp2(wocc(:, :, :), mu, kTS, weig(:, :, :), nel, wkp, &
                                 smear%electronic_temperature, smear_fermi_dirac)
-                  kTS = kTS/2._dp
-                  kTS_spin(1:2) = kTS
+                  kTS_spin(1:2) = 0.5_dp*kTS
                   mus(1:2) = mu
                END IF
             CASE (smear_gaussian, smear_mp, smear_mv)
                IF (nspin == 1) THEN
                   nel = REAL(nelectron, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%smearing_width, 2.0_dp, smear%method)
-                  kTS_spin(1) = kTS
-               ELSE IF (smear%fixed_mag_mom > 0.0_dp) THEN
-                  nel = REAL(ne_a, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               ELSE IF (smear%fixed_mag_mom >= 0.0_dp) THEN
+                  nel = nel_a_target
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                                smear%smearing_width, 1.0_dp, smear%method)
-                  kTS_spin(1) = kTS
-                  nel = REAL(ne_b, KIND=dp)
-                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
+                  nel = nel_b_target
+                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
                                smear%smearing_width, 1.0_dp, smear%method)
-                  kTS_spin(2) = kTS
                ELSE
                   nel = REAL(ne_a, KIND=dp) + REAL(ne_b, KIND=dp)
                   CALL Smearkp2(wocc(:, :, :), mu, kTS, weig(:, :, :), nel, wkp, &
                                 smear%smearing_width, smear%method)
-                  kTS = kTS/2._dp
-                  kTS_spin(1:2) = kTS
+                  kTS_spin(1:2) = 0.5_dp*kTS
                   mus(1:2) = mu
                END IF
             CASE DEFAULT
@@ -1420,18 +1448,35 @@ CONTAINS
             ! fixed occupations (2/1)
             IF (nspin == 1) THEN
                nel = REAL(nelectron, KIND=dp)
-               CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                             0.0_dp, 2.0_dp, smear_gaussian)
-               kTS_spin(1) = kTS
             ELSE
-               nel = REAL(ne_a, KIND=dp)
-               CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
+               nel = nel_a_target
+               CALL Smearkp(wocc(:, :, 1), mus(1), kTS_spin(1), weig(:, :, 1), nel, wkp, &
                             0.0_dp, 1.0_dp, smear_gaussian)
-               kTS_spin(1) = kTS
-               nel = REAL(ne_b, KIND=dp)
-               CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
+               nel = nel_b_target
+               CALL Smearkp(wocc(:, :, 2), mus(2), kTS_spin(2), weig(:, :, 2), nel, wkp, &
                             0.0_dp, 1.0_dp, smear_gaussian)
-               kTS_spin(2) = kTS
+            END IF
+         END IF
+         IF (smear%do_smear) THEN
+            IF (PRESENT(added_mos_auto)) THEN
+               CALL kpoint_check_added_mos_auto_occupation(wocc, wkp, smear, nspin, &
+                                                           added_mos_auto, nao, my_added_mos_auto_grow)
+            END IF
+            IF (.NOT. my_added_mos_auto_grow) &
+               CALL kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
+         END IF
+         IF (my_added_mos_auto_grow) THEN
+            IF (PRESENT(added_mos_auto_grow)) THEN
+               added_mos_auto_grow = .TRUE.
+               DEALLOCATE (weig, wocc)
+               CALL timestop(handle)
+               RETURN
+            ELSE
+               CALL cp_abort(__LOCATION__, &
+                             "K-point ADDED_MOS AUTO needs a larger virtual-space buffer, "// &
+                             "but this call path cannot grow it.")
             END IF
          END IF
          DO ikpgr = 1, kplocal
@@ -1454,6 +1499,219 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_set_mo_occupation
+
+! **************************************************************************************************
+!> \brief summarize whether k-point smearing reaches the first or last available band
+!> \param wocc ...
+!> \param wkp ...
+!> \param smear ...
+!> \param nspin ...
+!> \param has_weight ...
+!> \param first_fractional ...
+!> \param last_occupied ...
+!> \param last_occupied_spin ...
+!> \param first_fractional_spin ...
+!> \param first_fractional_kpoint ...
+!> \param last_occupied_spin_index ...
+!> \param last_occupied_kpoint ...
+!> \param first_fractional_measure ...
+!> \param last_occupied_measure ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_smearing_edge_status(wocc, wkp, smear, nspin, has_weight, &
+                                          first_fractional, last_occupied, last_occupied_spin, &
+                                          first_fractional_spin, first_fractional_kpoint, &
+                                          last_occupied_spin_index, last_occupied_kpoint, &
+                                          first_fractional_measure, last_occupied_measure)
+
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: wocc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      INTEGER, INTENT(IN)                                :: nspin
+      LOGICAL, INTENT(OUT)                               :: has_weight, first_fractional, &
+                                                            last_occupied
+      LOGICAL, DIMENSION(:), INTENT(OUT), OPTIONAL       :: last_occupied_spin
+      INTEGER, INTENT(OUT), OPTIONAL                     :: first_fractional_spin, &
+                                                            first_fractional_kpoint, &
+                                                            last_occupied_spin_index, &
+                                                            last_occupied_kpoint
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: first_fractional_measure, &
+                                                            last_occupied_measure
+
+      INTEGER                                            :: ik, ispin, nmo
+      LOGICAL                                            :: band_fractional, band_occupied
+      REAL(KIND=dp)                                      :: eps_occ, first_measure, last_measure, &
+                                                            maxocc, weight, weight_threshold
+
+      has_weight = .FALSE.
+      first_fractional = .FALSE.
+      last_occupied = .FALSE.
+      IF (PRESENT(last_occupied_spin)) last_occupied_spin(:) = .FALSE.
+      IF (PRESENT(first_fractional_spin)) first_fractional_spin = 0
+      IF (PRESENT(first_fractional_kpoint)) first_fractional_kpoint = 0
+      IF (PRESENT(last_occupied_spin_index)) last_occupied_spin_index = 0
+      IF (PRESENT(last_occupied_kpoint)) last_occupied_kpoint = 0
+      IF (PRESENT(first_fractional_measure)) first_fractional_measure = 0.0_dp
+      IF (PRESENT(last_occupied_measure)) last_occupied_measure = 0.0_dp
+
+      IF (.NOT. smear%do_smear) RETURN
+
+      nmo = SIZE(wocc, 1)
+      IF (nmo < 1) RETURN
+
+      eps_occ = MAX(smear%eps_fermi_dirac, 10.0_dp*EPSILON(1.0_dp))
+      weight_threshold = 10.0_dp*EPSILON(1.0_dp)
+
+      DO ispin = 1, MIN(nspin, SIZE(wocc, 3))
+         maxocc = 1.0_dp
+         IF (nspin == 1) maxocc = 2.0_dp
+         DO ik = 1, MIN(SIZE(wkp), SIZE(wocc, 2))
+            weight = ABS(wkp(ik))
+            IF (weight <= weight_threshold) CYCLE
+            has_weight = .TRUE.
+            first_measure = weight*ABS(wocc(1, ik, ispin) - maxocc)
+            last_measure = weight*ABS(wocc(nmo, ik, ispin))
+            band_fractional = first_measure > weight*eps_occ
+            IF (band_fractional) THEN
+               first_fractional = .TRUE.
+               IF (PRESENT(first_fractional_measure)) THEN
+                  IF (first_measure > first_fractional_measure) THEN
+                     first_fractional_measure = first_measure
+                     IF (PRESENT(first_fractional_spin)) first_fractional_spin = ispin
+                     IF (PRESENT(first_fractional_kpoint)) first_fractional_kpoint = ik
+                  END IF
+               END IF
+            END IF
+            band_occupied = last_measure > weight*eps_occ
+            last_occupied = last_occupied .OR. band_occupied
+            IF (band_occupied .AND. PRESENT(last_occupied_spin)) THEN
+               IF (ispin <= SIZE(last_occupied_spin)) last_occupied_spin(ispin) = .TRUE.
+            END IF
+            IF (band_occupied .AND. PRESENT(last_occupied_measure)) THEN
+               IF (last_measure > last_occupied_measure) THEN
+                  last_occupied_measure = last_measure
+                  IF (PRESENT(last_occupied_spin_index)) last_occupied_spin_index = ispin
+                  IF (PRESENT(last_occupied_kpoint)) last_occupied_kpoint = ik
+               END IF
+            END IF
+         END DO
+      END DO
+
+   END SUBROUTINE kpoint_smearing_edge_status
+
+! **************************************************************************************************
+!> \brief request ADDED_MOS AUTO growth if k-point smearing occupies the last band
+!> \param wocc ...
+!> \param wkp ...
+!> \param smear ...
+!> \param nspin ...
+!> \param added_mos_auto ...
+!> \param nao ...
+!> \param added_mos_auto_grow ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_check_added_mos_auto_occupation(wocc, wkp, smear, nspin, &
+                                                     added_mos_auto, nao, added_mos_auto_grow)
+
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: wocc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      INTEGER, INTENT(IN)                                :: nspin
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: added_mos_auto
+      INTEGER, INTENT(IN)                                :: nao
+      LOGICAL, INTENT(OUT)                               :: added_mos_auto_grow
+
+      CHARACTER(LEN=256)                                 :: message
+      INTEGER                                            :: ispin, last_occupied_kpoint, &
+                                                            last_occupied_spin_index, nmo
+      LOGICAL                                            :: first_fractional, has_weight, &
+                                                            last_occupied
+      LOGICAL, DIMENSION(nspin)                          :: last_occupied_spin
+      REAL(KIND=dp)                                      :: last_occupied_measure
+
+      added_mos_auto_grow = .FALSE.
+      IF (.NOT. ANY(added_mos_auto)) RETURN
+      IF (.NOT. smear%do_smear) RETURN
+
+      CALL kpoint_smearing_edge_status(wocc, wkp, smear, nspin, has_weight, &
+                                       first_fractional, last_occupied, &
+                                       last_occupied_spin=last_occupied_spin, &
+                                       last_occupied_spin_index=last_occupied_spin_index, &
+                                       last_occupied_kpoint=last_occupied_kpoint, &
+                                       last_occupied_measure=last_occupied_measure)
+      IF (.NOT. has_weight) RETURN
+
+      nmo = SIZE(wocc, 1)
+      DO ispin = 1, MIN(nspin, SIZE(added_mos_auto))
+         IF (.NOT. added_mos_auto(ispin)) CYCLE
+         IF (.NOT. last_occupied_spin(ispin)) CYCLE
+         IF (nmo >= nao) THEN
+            WRITE (message, '(A,I0,A,I0,A,ES12.5,A)') &
+               "K-point ADDED_MOS AUTO exhausted the AO basis but the highest band is still occupied"// &
+               " at spin ", last_occupied_spin_index, ", k-point ", last_occupied_kpoint, &
+               ", weighted occupation ", last_occupied_measure, &
+               ". Use a larger basis or a lower electronic temperature."
+            CALL cp_abort(__LOCATION__, TRIM(message))
+         END IF
+         added_mos_auto_grow = .TRUE.
+         RETURN
+      END DO
+
+   END SUBROUTINE kpoint_check_added_mos_auto_occupation
+
+! **************************************************************************************************
+!> \brief warn if k-point smearing reaches the first or last available band
+!> \param wocc ...
+!> \param wkp ...
+!> \param smear ...
+!> \param nspin ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_check_smearing_occupation(wocc, wkp, smear, nspin)
+
+      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: wocc
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      INTEGER, INTENT(IN)                                :: nspin
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_check_smearing_occupation'
+
+      CHARACTER(LEN=256)                                 :: message
+      INTEGER                                            :: first_fractional_kpoint, &
+                                                            first_fractional_spin, handle, &
+                                                            last_occupied_kpoint, &
+                                                            last_occupied_spin
+      LOGICAL                                            :: first_fractional, has_weight, &
+                                                            last_occupied
+      REAL(KIND=dp)                                      :: first_fractional_measure, &
+                                                            last_occupied_measure
+
+      CALL timeset(routineN, handle)
+
+      CALL kpoint_smearing_edge_status(wocc, wkp, smear, nspin, has_weight, &
+                                       first_fractional, last_occupied, &
+                                       first_fractional_spin=first_fractional_spin, &
+                                       first_fractional_kpoint=first_fractional_kpoint, &
+                                       last_occupied_spin_index=last_occupied_spin, &
+                                       last_occupied_kpoint=last_occupied_kpoint, &
+                                       first_fractional_measure=first_fractional_measure, &
+                                       last_occupied_measure=last_occupied_measure)
+
+      IF (has_weight .AND. first_fractional) THEN
+         WRITE (message, '(A,I0,A,I0,A,ES12.5,A)') &
+            "K-point smearing includes the first band at spin ", first_fractional_spin, &
+            ", k-point ", first_fractional_kpoint, ", weighted deviation ", &
+            first_fractional_measure, "."
+         CALL cp_warn(__LOCATION__, TRIM(message))
+      END IF
+      IF (has_weight .AND. last_occupied) THEN
+         WRITE (message, '(A,I0,A,I0,A,ES12.5,A)') &
+            "K-point smearing includes the last band at spin ", last_occupied_spin, &
+            ", k-point ", last_occupied_kpoint, ", weighted occupation ", last_occupied_measure, &
+            " => Add more MOs for proper smearing."
+         CALL cp_warn(__LOCATION__, TRIM(message))
+      END IF
+
+      CALL timestop(handle)
+
+   END SUBROUTINE kpoint_check_smearing_occupation
 
 ! **************************************************************************************************
 !> \brief Calculate kpoint density matrices (rho(k), owned by kpoint groups)
@@ -1736,8 +1994,10 @@ CONTAINS
 !> \param fmwork  FM work matrices (kpoint group)
 !> \param for_aux_fit ...
 !> \param pmat_ext ...
+!> \param qs_ot_env ...
 ! **************************************************************************************************
-   SUBROUTINE kpoint_density_transform(kpoint, denmat, wtype, tempmat, sab_nl, fmwork, for_aux_fit, pmat_ext)
+   SUBROUTINE kpoint_density_transform(kpoint, denmat, wtype, tempmat, sab_nl, fmwork, for_aux_fit, pmat_ext, &
+                                       qs_ot_env)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(dbcsr_p_type), DIMENSION(:, :)                :: denmat
@@ -1749,6 +2009,8 @@ CONTAINS
       LOGICAL, OPTIONAL                                  :: for_aux_fit
       TYPE(cp_fm_type), DIMENSION(:, :, :), INTENT(IN), &
          OPTIONAL                                        :: pmat_ext
+      TYPE(qs_ot_type), DIMENSION(:), INTENT(IN), &
+         OPTIONAL                                        :: qs_ot_env
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_density_transform'
 
@@ -1756,7 +2018,7 @@ CONTAINS
                                                             ispin, jr, nc, nimg, nkp, nspin
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: aux_fit, do_ext, do_symmetric, my_kpgrp, &
-                                                            real_only, reverse_phase
+                                                            ot_restricted, real_only, reverse_phase
       REAL(KIND=dp)                                      :: wkpx
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
@@ -1819,6 +2081,17 @@ CONTAINS
       nc = SIZE(kp%mos, 1)
       nimg = SIZE(denmat, 2)
       real_only = (nc == 1)
+      IF (PRESENT(qs_ot_env)) THEN
+         ot_restricted = ANY(qs_ot_env(:)%restricted)
+         CALL qs_ot_check_channel_context(qs_ot_env, nspin, &
+                                          nkpoint=nkp, &
+                                          restricted=ot_restricted, &
+                                          require_kpoint=.TRUE., &
+                                          kp_range=kpoint%kp_range, &
+                                          wkp=wkp, &
+                                          require_local_state=.TRUE., &
+                                          require_complex_state=.NOT. real_only)
+      END IF
       ! Gamma-centered even grids store atom-cell shifts in the opposite Bloch-phase convention.
       reverse_phase = kpoint%gamma_centered .AND. ANY(MOD(kpoint%nkp_grid(1:3), 2) == 0)
 

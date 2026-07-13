@@ -85,4 +85,56 @@ class TextPresenceMatcher(Matcher):
         return MatchResult("OK", error=None, value=None)
 
 
+# ======================================================================================
+class TextAbsenceMatcher(Matcher):
+    def __init__(self, text: Optional[str] = None):
+        self.text = text
+
+    def run(self, output: str, **kwargs: Any) -> MatchResult:
+        text = kwargs.get("text", self.text)
+        assert isinstance(text, str) and text
+        count = output.count(text)
+        if count > 0:
+            first_context = ""
+            for line_nr, line in enumerate(output.splitlines(), start=1):
+                if text in line:
+                    first_context = (
+                        f"First occurrence at output line {line_nr}: {line}\n"
+                    )
+                    break
+            return MatchResult(
+                "WRONG RESULT",
+                f"Forbidden text found {count} time(s): '{text}'.\n{first_context}",
+                value=None,
+            )
+        return MatchResult("OK", error=None, value=None)
+
+
+# ======================================================================================
+class IntSequenceMatcher(Matcher):
+    def __init__(self, pattern: str):
+        self.regex = re.compile(pattern)
+
+    def run(self, output: str, **kwargs: Any) -> MatchResult:
+        ref = kwargs["ref"]
+        if isinstance(ref, str):
+            expected = [int(item.strip()) for item in ref.split(",") if item.strip()]
+        elif isinstance(ref, (list, tuple)):
+            expected = [int(item) for item in ref]
+        else:
+            expected = [int(ref)]
+
+        values = [int(match.group(1)) for match in self.regex.finditer(output)]
+        if values != expected:
+            return MatchResult(
+                "WRONG RESULT",
+                f"Sequence mismatch: value {values}, expected {expected}.\n",
+                value=float(values[-1]) if values else None,
+            )
+
+        return MatchResult(
+            "OK", error=None, value=float(values[-1]) if values else None
+        )
+
+
 # EOF

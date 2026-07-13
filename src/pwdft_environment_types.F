@@ -53,7 +53,9 @@ MODULE pwdft_environment_types
 !> \author JHU
 ! **************************************************************************************************
    TYPE pwdft_energy_type
+      ! Total energy without the electronic entropy contribution.
       REAL(KIND=dp)                                    :: etotal = 0.0_dp
+      ! Electronic entropy energy T*S; SIRIUS reports the -T*S term as demet.
       REAL(KIND=dp)                                    :: entropy = 0.0_dp
       REAL(KIND=dp)                                    :: band_gap = -1.0_dp
    END TYPE pwdft_energy_type

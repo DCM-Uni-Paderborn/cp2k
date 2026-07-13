@@ -108,7 +108,10 @@ CONTAINS
       IF (.NOT. mo_set%uniform_occupation) THEN ! not all orbitals 1..homo are equally occupied
          IF (my_use_dbcsr) THEN
             CALL dbcsr_copy(dbcsr_tmp, mo_set%mo_coeff_b)
-            CALL dbcsr_scale_by_vector(dbcsr_tmp, mo_set%occupation_numbers(1:mo_set%homo), &
+            ! mo_coeff_b can contain more columns than the occupied/smeared subspace,
+            ! e.g. OT with ADDED_MOS. DBCSR scaling needs the full column extent,
+            ! while the multiply below is still restricted to the non-zero subspace.
+            CALL dbcsr_scale_by_vector(dbcsr_tmp, mo_set%occupation_numbers, &
                                        side='right')
             CALL dbcsr_multiply("N", "T", 1.0_dp, mo_set%mo_coeff_b, dbcsr_tmp, &
                                 1.0_dp, density_matrix, retain_sparsity=my_retain_sparsity, &

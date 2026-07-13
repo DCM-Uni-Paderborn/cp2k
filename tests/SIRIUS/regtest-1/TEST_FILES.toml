@@ -5,6 +5,9 @@
 #      for details see cp2k/tools/do_regtest
 #
 # Sirius will run in serial and parallel with or without cuda
+# M085 checks the internal FORCE_EVAL energy reported by SIRIUS.  For smearing
+# references also add SIRIUS_Mermin_free_energy when refreshing SIRIUS outputs,
+# so the Mermin free energy is tested independently of the entropy-free total.
 #
 # testing global tree creation using single exact potential, the deterministic random number generator
 #   with the standard move types, check i

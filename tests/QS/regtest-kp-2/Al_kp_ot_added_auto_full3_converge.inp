@@ -1,0 +1,76 @@
+! Slow/manual full-grid companion to the cheap explicit 3-k-point ADDED_MOS
+! AUTO k-point OT smoke test. This input is intentionally not listed in
+! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
+! 1E-6 Mermin path without k-point symmetry reduction against the
+! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
+! Local 2026-07 HIGH reference after the fixed-N response and multiplicity
+! fixes: AUTO grows from 4 to 8 and 16, then converges in 28 OT steps at
+! -8.15998672984139 Ha.  It prints no first/last-band, AUTO-exhausted, or
+! unsupported-content warning.  The endpoint agrees with the symmetry-reduced
+! companion within 3.6E-7 Ha.
+&GLOBAL
+  PRINT_LEVEL HIGH
+  PROJECT Al_kp_ot_added_auto_full3_converge
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID ON
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY OFF
+    &END KPOINTS
+    &MGRID
+      CUTOFF 40
+    &END MGRID
+    &PRINT
+      &KPOINTS ON
+      &END KPOINTS
+    &END PRINT
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 120
+      SCF_GUESS ATOMIC
+      &OT
+        ALGORITHM IRAC
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER CG
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_SINGLE_INVERSE
+        ROTATION
+      &END OT
+      &SMEAR
+        ELECTRONIC_TEMPERATURE 300
+        METHOD FERMI_DIRAC
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 6.0 6.0 6.0
+    &END CELL
+    &COORD
+      Al        -0.4201082476       -0.4201082770       -0.4201082658
+      Al         2.1120503717        0.1540265147        0.1540265525
+      Al         0.1540266214        2.1120506065        0.1540265605
+      Al         0.1540266183        0.1540265196        2.1120505165
+    &END COORD
+    &KIND Al
+      BASIS_SET DZVP-GTH-PADE-CONFINED
+      POTENTIAL GTH-PADE-q3
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

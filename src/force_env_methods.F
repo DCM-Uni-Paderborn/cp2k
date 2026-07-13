@@ -229,8 +229,8 @@ CONTAINS
                                                             print_scine
       LOGICAL :: calculate_forces, calculate_stress_tensor, do_apt_fd, energy_consistency, &
          eval_ef, linres_run, my_skip, print_components
-      REAL(KIND=dp)                                      :: checksum, e_entropy, e_gap, e_pot, &
-                                                            fconv, sum_energy
+      REAL(KIND=dp)                                      :: checksum, e_entropy, e_free, e_gap, &
+                                                            e_pot, fconv, sum_energy
       REAL(KIND=dp), DIMENSION(3)                        :: grand_total_force, total_force
       TYPE(atprop_type), POINTER                         :: atprop_env
       TYPE(cell_type), POINTER                           :: cell
@@ -395,9 +395,16 @@ CONTAINS
                " ) gap ["//TRIM(ADJUSTL(unit_string))//"]", e_gap*fconv
          END IF
          IF (e_entropy > -0.1_dp) THEN
+            e_free = e_pot - e_entropy
             WRITE (UNIT=output_unit, FMT="(/,T2,A,T55,F26.15)") &
                "ENERGY| Total FORCE_EVAL ( "//TRIM(ADJUSTL(use_prog_name(force_env%in_use)))// &
-               " ) free energy ["//TRIM(ADJUSTL(unit_string))//"]", (e_pot - e_entropy)*fconv
+               " ) T*S term ["//TRIM(ADJUSTL(unit_string))//"]", e_entropy*fconv
+            WRITE (UNIT=output_unit, FMT="(/,T2,A,T55,F26.15)") &
+               "ENERGY| Total FORCE_EVAL ( "//TRIM(ADJUSTL(use_prog_name(force_env%in_use)))// &
+               " ) free energy ["//TRIM(ADJUSTL(unit_string))//"]", e_free*fconv
+            WRITE (UNIT=output_unit, FMT="(/,T2,A,T55,F26.15)") &
+               "ENERGY| Mermin FORCE_EVAL ( "//TRIM(ADJUSTL(use_prog_name(force_env%in_use)))// &
+               " ) free energy ["//TRIM(ADJUSTL(unit_string))//"]", e_free*fconv
          END IF
       END IF
       CALL cp_print_key_finished_output(output_unit, logger, force_env%force_env_section, &
