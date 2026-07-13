@@ -44,6 +44,8 @@ MODULE qs_ot_minimizer
    PRIVATE
 
    PUBLIC  :: ot_kpoint_cg_residual_growth_guard, &
+              ot_kpoint_fermi_window_energy_coordinate, &
+              ot_kpoint_fermi_window_direction_scale, &
               ot_kpoint_multiplicity_direction_scale, &
               ot_kpoint_mermin_search_stagnant, &
               ot_kpoint_mermin_restart_step, &
@@ -86,6 +88,7 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_physical_control_eps_factor = 3.0_dp, &
                                         ot_cg_kp_physical_control_quality = 8.0E-1_dp, &
                                         ot_cg_kp_physical_control_gap = 5.0E-2_dp, &
+                                        ot_cg_kp_fermi_line_search_span = 4.0_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
@@ -93,6 +96,68 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief advance the auxiliary-energy coordinate inside an independent symmetric trust interval
+!> \param position current auxiliary-energy line-search position
+!> \param delta requested change of the shared orbital line-search position
+!> \param bound nonnegative auxiliary-energy position bound, or a negative inactive marker
+!> \param next_position bounded auxiliary-energy position
+!> \param actual_delta change applied to the auxiliary energies
+!> \param tangent finite-step fraction retained from the requested coordinate change
+! **************************************************************************************************
+   PURE SUBROUTINE ot_kpoint_fermi_window_energy_coordinate(position, delta, bound, &
+                                                            next_position, actual_delta, tangent)
+      REAL(KIND=dp), INTENT(IN)                          :: position, delta, bound
+      REAL(KIND=dp), INTENT(OUT)                         :: next_position, actual_delta, tangent
+
+      REAL(KIND=dp)                                      :: proposed, tolerance
+
+      proposed = position + delta
+      next_position = proposed
+      tolerance = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(position), ABS(delta), ABS(bound))
+      IF (bound >= 0.0_dp) next_position = SIGN(MIN(ABS(proposed), bound), proposed)
+      actual_delta = next_position - position
+      IF (ABS(delta) > tolerance) THEN
+         tangent = MAX(0.0_dp, MIN(1.0_dp, actual_delta/delta))
+      ELSE
+         tangent = 1.0_dp
+      END IF
+
+   END SUBROUTINE ot_kpoint_fermi_window_energy_coordinate
+
+! **************************************************************************************************
+!> \brief largest affine step fraction that keeps a current Fermi-frontier state in its window
+!> \param distance current auxiliary energy relative to the fixed-N chemical potential
+!> \param step full proposed relative-energy step after removal of the chemical-potential gauge
+!> \param anchor maximum allowed absolute frontier distance
+!> \return scale in [0,1], or -1 when the current state is outside the guarded frontier
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_fermi_window_direction_scale(distance, step, anchor) RESULT(scale)
+      REAL(KIND=dp), INTENT(IN)                          :: distance, step, anchor
+      REAL(KIND=dp)                                      :: scale
+
+      REAL(KIND=dp)                                      :: boundary, tolerance
+
+      scale = -1.0_dp
+      IF (anchor <= 0.0_dp) RETURN
+      tolerance = 64.0_dp*EPSILON(1.0_dp)* &
+                  MAX(anchor, ABS(distance), ABS(step), TINY(1.0_dp))
+      IF (ABS(distance) > anchor + tolerance) RETURN
+
+      boundary = MAX(0.0_dp, anchor - tolerance)
+      IF (ABS(distance + step) <= boundary) THEN
+         scale = 1.0_dp
+      ELSEIF (step > 0.0_dp) THEN
+         scale = (boundary - distance)/step
+      ELSEIF (step < 0.0_dp) THEN
+         scale = (-boundary - distance)/step
+      ELSE
+         scale = 1.0_dp
+      END IF
+      scale = MAX(0.0_dp, MIN(1.0_dp, scale))
+
+   END FUNCTION ot_kpoint_fermi_window_direction_scale
 
 ! **************************************************************************************************
 !> \brief classify accepted Mermin steps that invalidate the nonlinear-CG history
@@ -348,7 +413,8 @@ CONTAINS
                END IF
                IF (do_ener) THEN
                   tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_dx)
-                  qs_ot_env(1)%gradient = qs_ot_env(1)%gradient + tmp
+                  qs_ot_env(1)%gradient = qs_ot_env(1)%gradient + &
+                                          qs_ot_env(ispin)%ener_x_line_search_tangent*tmp
                END IF
             ELSE
                IF (do_ks) THEN
@@ -605,9 +671,13 @@ CONTAINS
             END IF
          END IF
          IF (qs_ot_env(1)%settings%do_ener) THEN
-            vector_valid = vector_valid .AND. ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_g0)
-            IF (vector_valid) &
+            vector_valid = vector_valid .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_g0) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_x0)
+            IF (vector_valid) THEN
                qs_ot_env(ichannel)%ener_mermin_g0(:) = qs_ot_env(ichannel)%ener_gx(:)
+               qs_ot_env(ichannel)%ener_mermin_x0(:) = qs_ot_env(ichannel)%ener_x(:)
+            END IF
          END IF
          qs_ot_env(ichannel)%mermin_ls_vector_start_valid = vector_valid
          qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .TRUE.
@@ -755,6 +825,7 @@ CONTAINS
                CYCLE
             END IF
             current_energy = current_energy + &
+                             qs_ot_env(ichannel)%ener_x_line_search_tangent* &
                              DOT_PRODUCT(qs_ot_env(ichannel)%ener_gx, qs_ot_env(ichannel)%ener_dx)
          END IF
          IF (.NOT. vector_valid) CYCLE
@@ -800,10 +871,12 @@ CONTAINS
             secant_rotation_sty = secant_rotation_sty + 0.5_dp*tmp
          END IF
          IF (qs_ot_env(1)%settings%do_ener) THEN
-            vector_valid = ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s) .AND. &
+            vector_valid = ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_x0) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s) .AND. &
                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_y)
             IF (.NOT. vector_valid) CYCLE
-            qs_ot_env(ichannel)%ener_mermin_s(:) = alpha*qs_ot_env(ichannel)%ener_dx(:)
+            qs_ot_env(ichannel)%ener_mermin_s(:) = qs_ot_env(ichannel)%ener_x(:) - &
+                                                   qs_ot_env(ichannel)%ener_mermin_x0(:)
             qs_ot_env(ichannel)%ener_mermin_y(:) = qs_ot_env(ichannel)%ener_gx(:) - &
                                                    qs_ot_env(ichannel)%ener_mermin_g0(:)
             secant_energy_s2 = secant_energy_s2 + &
@@ -1316,23 +1389,32 @@ CONTAINS
 !> \brief fix the k-point auxiliary-energy gauge and trust scale once per search direction
 !> \param qs_ot_env ...
 !> \param para_env_inter_kp ...
+!> \param fresh_response replace CG energy history by the newly coupled Schur response
 ! **************************************************************************************************
-   SUBROUTINE prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp)
+   SUBROUTINE prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, fresh_response)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+      LOGICAL, INTENT(IN)                                :: fresh_response
 
-      INTEGER                                            :: active_all, group, i, ispin, ngroups
+      INTEGER                                            :: active_all, frontier_spin, group, i, &
+                                                            ispin, ngroups, nspins
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: frontier_group_found
+      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: frontier_found
       LOGICAL                                            :: active, has_rayleigh_target
-      REAL(KIND=dp) :: alignment, combined_probe_max, coupled_probe, coupled_rms, probe_pos, &
-         rayleigh_correction, scale, shift, target_rms, weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coupled_norm2, direction_max, radius, &
-         rayleigh_diag, rayleigh_shift_sum, rayleigh_target_max, response_sum, target_coupled_dot, &
-         target_norm2, weighted_direction
+      REAL(KIND=dp) :: alignment, combined_probe_max, coupled_probe, coupled_rms, &
+         frontier_candidate, probe_pos, rayleigh_correction, scale, shift, target_rms, weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coupled_norm2, direction_max, direction_scale, &
+         frontier_group_scale, frontier_position_max, radius, rayleigh_diag, rayleigh_shift_sum, &
+         rayleigh_target_max, response_sum, target_coupled_dot, target_norm2, weighted_direction
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: frontier_scale
       TYPE(cp_logger_type), POINTER                      :: logger
 
       active = .FALSE.
       DO ispin = 1, SIZE(qs_ot_env)
          qs_ot_env(ispin)%ener_direction_linear = .FALSE.
+         qs_ot_env(ispin)%ener_x_fermi_guard_position_max = -1.0_dp
+         qs_ot_env(ispin)%ener_x_line_search_position = 0.0_dp
+         qs_ot_env(ispin)%ener_x_line_search_tangent = 1.0_dp
          active = active .OR. (qs_ot_env(ispin)%has_complex_kpoint_state .AND. &
                                qs_ot_occupation_preconditioner_active(qs_ot_env(ispin)) .AND. &
                                ASSOCIATED(qs_ot_env(ispin)%ener_dx))
@@ -1343,16 +1425,29 @@ CONTAINS
       IF (.NOT. active) RETURN
 
       ngroups = MAX(1, MAXVAL(qs_ot_env(:)%occupation_group_index))
+      nspins = MAX(1, MAXVAL(qs_ot_env(:)%spin_index))
       IF (PRESENT(para_env_inter_kp)) THEN
-         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%max(ngroups)
+         IF (ASSOCIATED(para_env_inter_kp)) THEN
+            CALL para_env_inter_kp%max(ngroups)
+            CALL para_env_inter_kp%max(nspins)
+         END IF
       END IF
-      ALLOCATE (coupled_norm2(ngroups), direction_max(ngroups), radius(ngroups), &
-                rayleigh_shift_sum(ngroups), rayleigh_target_max(ngroups), &
+      ALLOCATE (coupled_norm2(ngroups), direction_max(ngroups), direction_scale(ngroups), &
+                frontier_group_found(ngroups), frontier_group_scale(ngroups), &
+                frontier_position_max(ngroups), frontier_found(ngroups, nspins), &
+                frontier_scale(ngroups, nspins), &
+                radius(ngroups), rayleigh_shift_sum(ngroups), rayleigh_target_max(ngroups), &
                 response_sum(ngroups), target_coupled_dot(ngroups), target_norm2(ngroups), &
                 weighted_direction(ngroups))
       coupled_norm2(:) = 0.0_dp
       direction_max(:) = 0.0_dp
+      direction_scale(:) = 1.0_dp
       radius(:) = HUGE(1.0_dp)
+      frontier_group_found(:) = 0
+      frontier_group_scale(:) = 1.0_dp
+      frontier_position_max(:) = -1.0_dp
+      frontier_found(:, :) = 0
+      frontier_scale(:, :) = 0.0_dp
       rayleigh_shift_sum(:) = 0.0_dp
       rayleigh_target_max(:) = 0.0_dp
       response_sum(:) = 0.0_dp
@@ -1367,7 +1462,7 @@ CONTAINS
          ! orbital state.  Do not carry its old CG component into a new
          ! rotation direction; ener_gx_old is the current coupled Schur
          ! response and remains the history-safe base direction.
-         IF (ASSOCIATED(qs_ot_env(ispin)%ener_gx_old)) &
+         IF (fresh_response .AND. ASSOCIATED(qs_ot_env(ispin)%ener_gx_old)) &
             qs_ot_env(ispin)%ener_dx(:) = -qs_ot_env(ispin)%ener_gx_old(:)
          IF (qs_ot_env(ispin)%ener_x_trust_radius > 0.0_dp) &
             radius(group) = MIN(radius(group), qs_ot_env(ispin)%ener_x_trust_radius)
@@ -1410,10 +1505,54 @@ CONTAINS
          qs_ot_env(ispin)%ener_dx(:) = qs_ot_env(ispin)%ener_dx(:) - shift
       END DO
 
-      probe_pos = 0.8_dp*ABS(qs_ot_env(1)%ds_min)
-      IF (probe_pos <= EPSILON(probe_pos)) &
-         probe_pos = 0.8_dp*ABS(qs_ot_env(1)%settings%ds_min)
+      ! The 2PNT interpolation may place its final sample up to four times
+      ! beyond the initial one.  Project the auxiliary-energy direction for
+      ! that complete affine interval, while leaving the orbital/rotation
+      ! components at their ordinary line-search scale.
+      probe_pos = ot_cg_kp_fermi_line_search_span* &
+                  MAX(ABS(qs_ot_env(1)%ds_min), ABS(qs_ot_env(1)%settings%ds_min))
       probe_pos = MAX(probe_pos, SQRT(EPSILON(probe_pos)))
+
+      ! Audit how far the current affine direction could retain one thermal
+      ! frontier state per spin.  A single extremal state must not scale the
+      ! complete distributed auxiliary-energy direction: the guarded trial-state
+      ! projection below invalidates and rebuilds minimizer history when needed.
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         IF (.NOT. qs_ot_env(ispin)%ener_x_fermi_guard_active) CYCLE
+         IF (qs_ot_env(ispin)%ener_x_fermi_guard_anchor <= 0.0_dp) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         frontier_spin = MAX(1, MIN(nspins, qs_ot_env(ispin)%spin_index))
+         DO i = 1, SIZE(qs_ot_env(ispin)%ener_dx)
+            frontier_candidate = ot_kpoint_fermi_window_direction_scale( &
+                                 qs_ot_env(ispin)%ener_x(i) - qs_ot_env(ispin)%ener_x_trust_mu, &
+                                 probe_pos*qs_ot_env(ispin)%ener_dx(i), &
+                                 qs_ot_env(ispin)%ener_x_fermi_guard_anchor)
+            IF (frontier_candidate < 0.0_dp) CYCLE
+            frontier_found(group, frontier_spin) = 1
+            frontier_scale(group, frontier_spin) = &
+               MAX(frontier_scale(group, frontier_spin), frontier_candidate)
+         END DO
+      END DO
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) THEN
+            DO frontier_spin = 1, nspins
+               DO group = 1, ngroups
+                  CALL para_env_inter_kp%max(frontier_found(group, frontier_spin))
+                  CALL para_env_inter_kp%max(frontier_scale(group, frontier_spin))
+               END DO
+            END DO
+         END IF
+      END IF
+      DO frontier_spin = 1, nspins
+         DO group = 1, ngroups
+            IF (frontier_found(group, frontier_spin) > 0) &
+               frontier_group_found(group) = 1
+            IF (frontier_found(group, frontier_spin) > 0) &
+               frontier_group_scale(group) = &
+               MIN(frontier_group_scale(group), frontier_scale(group, frontier_spin))
+         END DO
+      END DO
 
       ! Audit the exact fixed-orbital Rayleigh correction against the coupled
       ! Schur response.  The common response-weighted shift is one fixed-N
@@ -1463,14 +1602,24 @@ CONTAINS
          IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%max(direction_max)
       END IF
 
-      DO ispin = 1, SIZE(qs_ot_env)
-         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
-         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+      DO group = 1, ngroups
          scale = 1.0_dp
          IF (radius(group) < HUGE(1.0_dp) .AND. direction_max(group) > radius(group)) &
             scale = radius(group)/direction_max(group)
+         direction_scale(group) = scale
+         IF (frontier_group_found(group) > 0 .AND. scale > EPSILON(scale)) THEN
+            frontier_position_max(group) = probe_pos* &
+                                           MIN(1.0_dp, frontier_group_scale(group)/scale)
+         END IF
+      END DO
+
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         scale = direction_scale(group)
          qs_ot_env(ispin)%ener_dx(:) = scale*qs_ot_env(ispin)%ener_dx(:)
          qs_ot_env(ispin)%ener_x_trust_scale = MIN(qs_ot_env(ispin)%ener_x_trust_scale, scale)
+         qs_ot_env(ispin)%ener_x_fermi_guard_position_max = frontier_position_max(group)
          qs_ot_env(ispin)%ener_direction_linear = .TRUE.
       END DO
 
@@ -1487,15 +1636,18 @@ CONTAINS
                 coupled_norm2(group) > EPSILON(coupled_norm2(group))) &
                alignment = target_coupled_dot(group)/ &
                            SQRT(target_norm2(group)*coupled_norm2(group))
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
-               " OT fixed-N Rayleigh response audit group tmax trms srms align smax radius probe response:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,10(1X,ES16.8))') &
+               " OT fixed-N Rayleigh response audit group tmax trms srms align smax radius probe response fscale pmax:", &
                group, rayleigh_target_max(group), target_rms, coupled_rms, alignment, &
-               combined_probe_max, radius(group), probe_pos, response_sum(group)
+               combined_probe_max, radius(group), probe_pos, response_sum(group), &
+               frontier_group_scale(group), frontier_position_max(group)
          END DO
       END IF
 
-      DEALLOCATE (coupled_norm2, direction_max, radius, rayleigh_shift_sum, rayleigh_target_max, &
-                  response_sum, target_coupled_dot, target_norm2, weighted_direction)
+      DEALLOCATE (coupled_norm2, direction_max, direction_scale, frontier_found, &
+                  frontier_group_found, frontier_group_scale, frontier_position_max, &
+                  frontier_scale, radius, rayleigh_shift_sum, rayleigh_target_max, response_sum, &
+                  target_coupled_dot, target_norm2, weighted_direction)
 
    END SUBROUTINE prepare_linear_kpoint_energy_direction
 
@@ -1589,9 +1741,8 @@ CONTAINS
 
       INTEGER                                            :: i, n
       LOGICAL                                            :: has_response_trust
-      REAL(KIND=dp)                                      :: max_projected_step, raw_step_max, &
-                                                            response_weight, step_scale, &
-                                                            step_shift, trusted_step_max
+      REAL(KIND=dp) :: actual_alpha, max_projected_step, next_position, raw_step_max, &
+         response_weight, step_scale, step_shift, trusted_step_max
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: limited_step, raw_step
 
       n = SIZE(direction)
@@ -1599,9 +1750,17 @@ CONTAINS
 
       IF (qs_ot_env%ener_direction_linear) THEN
          raw_step_max = MAXVAL(ABS(alpha*direction))
-         qs_ot_env%ener_x(:) = qs_ot_env%ener_x(:) + alpha*direction(:)
+         CALL ot_kpoint_fermi_window_energy_coordinate( &
+            qs_ot_env%ener_x_line_search_position, alpha, &
+            qs_ot_env%ener_x_fermi_guard_position_max, next_position, actual_alpha, &
+            qs_ot_env%ener_x_line_search_tangent)
+         qs_ot_env%ener_x(:) = qs_ot_env%ener_x(:) + actual_alpha*direction(:)
+         qs_ot_env%ener_x_line_search_position = next_position
          qs_ot_env%ener_x_step_max = raw_step_max
-         qs_ot_env%ener_x_trusted_step_max = raw_step_max
+         qs_ot_env%ener_x_trusted_step_max = MAXVAL(ABS(actual_alpha*direction))
+         IF (raw_step_max > EPSILON(raw_step_max)) &
+            qs_ot_env%ener_x_trust_scale = MIN(qs_ot_env%ener_x_trust_scale, &
+                                               qs_ot_env%ener_x_trusted_step_max/raw_step_max)
          RETURN
       END IF
 
@@ -3159,8 +3318,9 @@ CONTAINS
          DO ispin = 1, nspin
             qs_ot_env(ispin)%ener_dx = beta_pr*qs_ot_env(ispin)%ener_dx - qs_ot_env(ispin)%ener_gx_old
          END DO
-         IF (kpoint_preconditioned_direction) &
-            CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp)
+         IF (complex_kpoint_history) &
+            CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, &
+                                                        kpoint_preconditioned_direction)
          DO ispin = 1, nspin
             tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_dx)
             test_down = test_down + tmp
@@ -3191,8 +3351,9 @@ CONTAINS
             DO ispin = 1, nspin
                qs_ot_env(ispin)%ener_dx = -qs_ot_env(ispin)%ener_gx_old
             END DO
-            IF (kpoint_preconditioned_direction) &
-               CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp)
+            IF (complex_kpoint_history) &
+               CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, &
+                                                           kpoint_preconditioned_direction)
          END IF
          test_down = 0.0_dp
          IF (do_ks) THEN

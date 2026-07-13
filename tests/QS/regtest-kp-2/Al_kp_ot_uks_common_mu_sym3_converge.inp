@@ -4,12 +4,13 @@
 ! channels share one fixed-N Mermin constraint and can exchange population.
 ! It also covers the complex FULL_ALL preconditioner endpoint.
 !
-! Local 2026-07 OMP_NUM_THREADS=1, MPI-2 reference from a fresh directory:
-! OT converges in 184 steps at EPS_SCF 1E-6, with
-! Mermin F = -8.16155071307069 Ha and kTS = -0.00024435534750 Ha. Matching
-! diagonalization gives -8.16155090938556 Ha, a difference of 2.0E-7 Ha,
-! and both methods give weighted spin populations 6.33333 and 5.66667. The
-! residual-aware per-spin frontier guard is exercised once during startup.
+! Local 2026-07 OMP_NUM_THREADS=1 references from fresh directories: OT
+! converges in 236 MPI-2 and 251 serial steps at EPS_SCF 1E-6. The MPI-2
+! reference has Mermin F = -8.16155083003631 Ha and
+! kTS = -0.00024431801099 Ha. Serial and MPI-2 differ by 2.6E-7 Ha; matching
+! diagonalization gives -8.16155090938556 Ha. Both methods give weighted spin
+! populations 6.33333 and 5.66667. The residual-aware per-spin frontier guard
+! is exercised during startup and again if an accepted trial loses the tail.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_uks_common_mu_sym3_converge
@@ -41,7 +42,7 @@
     &SCF
       ADDED_MOS 12
       EPS_SCF 1.0E-6
-      MAX_SCF 210
+      MAX_SCF 280
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC

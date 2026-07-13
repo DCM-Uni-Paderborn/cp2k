@@ -3921,10 +3921,12 @@ CONTAINS
       IF (qs_ot_env%settings%do_ener) THEN
          ALLOCATE (qs_ot_env%ener_pgx(nmo))
          qs_ot_env%ener_pgx(:) = 0.0_dp
-         ALLOCATE (qs_ot_env%ener_mermin_g0(nmo), qs_ot_env%ener_mermin_s(nmo), &
+         ALLOCATE (qs_ot_env%ener_mermin_g0(nmo), qs_ot_env%ener_mermin_x0(nmo), &
+                   qs_ot_env%ener_mermin_s(nmo), &
                    qs_ot_env%ener_mermin_y(nmo), qs_ot_env%ener_mermin_s_previous(nmo), &
                    qs_ot_env%ener_mermin_y_previous(nmo))
          qs_ot_env%ener_mermin_g0(:) = 0.0_dp
+         qs_ot_env%ener_mermin_x0(:) = 0.0_dp
          qs_ot_env%ener_mermin_s(:) = 0.0_dp
          qs_ot_env%ener_mermin_y(:) = 0.0_dp
          qs_ot_env%ener_mermin_s_previous(:) = 0.0_dp

@@ -46,14 +46,17 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel
    USE qs_ot_minimizer,                 ONLY: ot_kpoint_cg_residual_growth_guard,&
+                                              ot_kpoint_fermi_window_direction_scale,&
+                                              ot_kpoint_fermi_window_energy_coordinate,&
                                               ot_kpoint_mermin_restart_step,&
                                               ot_kpoint_mermin_search_stagnant,&
                                               ot_kpoint_multiplicity_direction_scale,&
                                               ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_fermi_entropy_state, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_control_delta, &
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
@@ -106,6 +109,10 @@ PROGRAM qs_ot_frechet_unittest
                                                           5.0E-14_dp, nfail)
    CALL check_linear_energy_direction_projection("linear fixed-N energy direction", &
                                                  5.0E-15_dp, nfail)
+   CALL check_fermi_window_energy_direction("fixed-N Fermi-window energy direction", &
+                                            5.0E-13_dp, nfail)
+   CALL check_fermi_window_energy_coordinate("independent Fermi-window energy coordinate", &
+                                             5.0E-15_dp, nfail)
    CALL check_complex_canonical_gauge_transport("complex canonical gauge transport", &
                                                 5.0E-13_dp, nfail)
    CALL check_kpoint_mermin_energy_projection("fixed-N Mermin energy projection", 5.0E-11_dp, nfail)
@@ -168,6 +175,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-13_dp, nfail)
    CALL check_kpoint_coupled_multisecant_update("k-point OT coupled multisecant update", &
                                                 5.0E-13_dp, nfail)
+   CALL check_kpoint_coupled_step_model("k-point OT coupled accepted-step model", &
+                                        5.0E-14_dp, nfail)
    CALL check_kpoint_secant_candidate_promotion("k-point OT secant candidate promotion", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
@@ -1764,6 +1773,77 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_linear_energy_direction_projection
+
+! **************************************************************************************************
+!> \brief Check affine frontier preservation before a k-point OT line-search direction is sampled.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_window_energy_direction(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: anchor = 6.0E-3_dp
+
+      REAL(KIND=dp)                                      :: err
+
+      err = ABS(ot_kpoint_fermi_window_direction_scale(1.0E-3_dp, 1.0E-2_dp, anchor) - 0.5_dp)
+      err = MAX(err, ABS(ot_kpoint_fermi_window_direction_scale(-2.0E-3_dp, -8.0E-3_dp, anchor) - &
+                         0.5_dp))
+      err = MAX(err, ABS(ot_kpoint_fermi_window_direction_scale(5.0E-3_dp, -2.0E-2_dp, anchor) - &
+                         0.55_dp))
+      err = MAX(err, ABS(ot_kpoint_fermi_window_direction_scale(-1.0E-3_dp, 2.0E-3_dp, anchor) - &
+                         1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_fermi_window_direction_scale(7.0E-3_dp, -2.0E-3_dp, anchor) + &
+                         1.0_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,1X,ES16.8)') TRIM(label)//" FAILED", err
+      ELSE
+         WRITE (default_output_unit, '(A,1X,ES16.8)') TRIM(label)//" OK with error", err
+      END IF
+
+   END SUBROUTINE check_fermi_window_energy_direction
+
+! **************************************************************************************************
+!> \brief Check saturation and reversible backtracking of the independent auxiliary-energy coordinate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_fermi_window_energy_coordinate(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: actual, err, next, position, tangent
+
+      CALL ot_kpoint_fermi_window_energy_coordinate(0.0_dp, 0.3_dp, 0.5_dp, next, actual, tangent)
+      err = MAX(ABS(next - 0.3_dp), ABS(actual - 0.3_dp), ABS(tangent - 1.0_dp))
+      position = next
+      CALL ot_kpoint_fermi_window_energy_coordinate(position, 0.4_dp, 0.5_dp, next, actual, tangent)
+      err = MAX(err, ABS(next - 0.5_dp), ABS(actual - 0.2_dp), ABS(tangent - 0.5_dp))
+      position = next
+      CALL ot_kpoint_fermi_window_energy_coordinate(position, 0.2_dp, 0.5_dp, next, actual, tangent)
+      err = MAX(err, ABS(next - 0.5_dp), ABS(actual), ABS(tangent))
+      position = next
+      CALL ot_kpoint_fermi_window_energy_coordinate(position, -0.25_dp, 0.5_dp, next, actual, tangent)
+      err = MAX(err, ABS(next - 0.25_dp), ABS(actual + 0.25_dp), ABS(tangent - 1.0_dp))
+      position = next
+      CALL ot_kpoint_fermi_window_energy_coordinate(position, -0.4_dp, -1.0_dp, next, actual, tangent)
+      err = MAX(err, ABS(next + 0.15_dp), ABS(actual + 0.4_dp), ABS(tangent - 1.0_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,1X,ES16.8)') TRIM(label)//" FAILED", err
+      ELSE
+         WRITE (default_output_unit, '(A,1X,ES16.8)') TRIM(label)//" OK with error", err
+      END IF
+
+   END SUBROUTINE check_fermi_window_energy_coordinate
 
 ! **************************************************************************************************
 !> \brief Check the one-time complex canonical gauge transport used before OT history exists.
@@ -4141,12 +4221,17 @@ CONTAINS
       REAL(KIND=dp), PARAMETER                           :: eps_scf = 1.0E-6_dp
 
       LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: residual_delta
 
-      failed = qs_scf_kp_fermi_guard_release_ready(3, 1.0E-8_dp, eps_scf) .OR. &
+      residual_delta = qs_scf_kp_fermi_guard_control_delta(5.70713742E-4_dp, 2.95989181E-2_dp)
+      failed = ABS(residual_delta - 2.95989181E-2_dp) > 5.0E-15_dp .OR. &
+               qs_scf_kp_fermi_guard_release_ready(4, residual_delta, eps_scf) .OR. &
+               qs_scf_kp_fermi_guard_release_ready(3, 1.0E-8_dp, eps_scf) .OR. &
                qs_scf_kp_fermi_guard_release_ready(4, 2.0E-2_dp, eps_scf) .OR. &
                qs_scf_kp_fermi_guard_release_ready(4, 1.1E-3_dp, eps_scf) .OR. &
                .NOT. qs_scf_kp_fermi_guard_release_ready(4, 1.0E-3_dp, eps_scf) .OR. &
-               .NOT. qs_scf_kp_fermi_guard_release_ready(8, 1.0E-6_dp, eps_scf)
+               .NOT. qs_scf_kp_fermi_guard_release_ready(8, &
+                                                         qs_scf_kp_fermi_guard_control_delta(1.0E-6_dp, -1.0_dp), eps_scf)
       IF (failed) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A)') TRIM(label), "failed"
@@ -4800,6 +4885,68 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_coupled_multisecant_update
+
+! **************************************************************************************************
+!> \brief check the fixed-N coupled quadratic model on an accepted rotation/energy step
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_coupled_step_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp) :: error, model_drop, model_quadratic, model_slope, scaled_model_drop, &
+         scaled_model_quadratic, scaled_model_slope
+      REAL(KIND=dp), DIMENSION(2)                        :: energy_gradient, energy_step, &
+                                                            rotation_gradient, rotation_step, &
+                                                            scaled_energy_gradient, &
+                                                            scaled_energy_step
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: energy_cross, energy_hessian, &
+                                                            rotation_hessian, scaled_energy_cross, &
+                                                            scaled_energy_hessian
+
+      rotation_gradient(:) = [1.0_dp, -0.5_dp]
+      energy_gradient(:) = [0.3_dp, -0.1_dp]
+      rotation_step(:) = [0.2_dp, -0.3_dp]
+      energy_step(:) = [0.1_dp, 0.25_dp]
+      rotation_hessian(:, :) = RESHAPE([1.2_dp, 0.15_dp, 0.15_dp, -0.35_dp], [2, 2])
+      energy_hessian(:, :) = RESHAPE([0.8_dp, 0.12_dp, 0.12_dp, 0.45_dp], [2, 2])
+      energy_cross(:, :) = RESHAPE([0.25_dp, -0.08_dp, -0.14_dp, 0.19_dp], [2, 2])
+
+      CALL qs_scf_kp_coupled_step_model( &
+         rotation_gradient, energy_gradient, rotation_hessian, energy_hessian, energy_cross, &
+         rotation_step, energy_step, model_slope, model_quadratic, model_drop, ready)
+
+      scaled_energy_gradient(:) = energy_gradient(:)/energy_coordinate_scale
+      scaled_energy_step(:) = energy_coordinate_scale*energy_step(:)
+      scaled_energy_hessian(:, :) = energy_hessian(:, :)/energy_coordinate_scale**2
+      scaled_energy_cross(:, :) = energy_cross(:, :)/energy_coordinate_scale
+      CALL qs_scf_kp_coupled_step_model( &
+         rotation_gradient, scaled_energy_gradient, rotation_hessian, scaled_energy_hessian, &
+         scaled_energy_cross, rotation_step, scaled_energy_step, scaled_model_slope, &
+         scaled_model_quadratic, scaled_model_drop, scaled_ready)
+
+      error = ABS(model_slope - 0.355_dp) + ABS(model_quadratic - 0.058725_dp) + &
+              ABS(model_drop - 0.3256375_dp) + ABS(scaled_model_slope - model_slope) + &
+              ABS(scaled_model_quadratic - model_quadratic) + &
+              ABS(scaled_model_drop - model_drop)
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),4(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/error/slope/quadratic/drop", &
+            ready, scaled_ready, error, model_slope, model_quadratic, model_drop
+      ELSE
+         WRITE (*, '(A,4(1X,ES16.8))') TRIM(label)// &
+            " OK with error/slope/quadratic/drop", &
+            error, model_slope, model_quadratic, model_drop
+      END IF
+
+   END SUBROUTINE check_kpoint_coupled_step_model
 
 ! **************************************************************************************************
 !> \brief check accepted-drop and residual calibration shared by secant candidates

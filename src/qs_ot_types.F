@@ -279,6 +279,11 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: ener_x_trust_rayleigh_gap = 0.0_dp, ener_x_trust_rayleigh_edge_gap = 0.0_dp
       REAL(KIND=dp) :: ener_x_step_max = 0.0_dp, ener_x_trusted_step_max = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_scale = 1.0_dp
+      LOGICAL       :: ener_x_fermi_guard_active = .FALSE.
+      REAL(KIND=dp) :: ener_x_fermi_guard_anchor = -1.0_dp
+      REAL(KIND=dp) :: ener_x_fermi_guard_position_max = -1.0_dp
+      REAL(KIND=dp) :: ener_x_line_search_position = 0.0_dp
+      REAL(KIND=dp) :: ener_x_line_search_tangent = 1.0_dp
       REAL(KIND=dp) :: canonical_tether_energy = 0.0_dp, canonical_tether_strength = 0.0_dp
       REAL(KIND=dp) :: canonical_tether_weight_sum = 0.0_dp, canonical_tether_shift = 0.0_dp
       REAL(KIND=dp) :: canonical_tether_grad_max = 0.0_dp
@@ -293,6 +298,8 @@ MODULE qs_ot_types
       LOGICAL :: schur_vector_secant_candidate_enabled = .FALSE.
       LOGICAL :: schur_multisecant_pending = .FALSE.
       LOGICAL :: schur_multisecant_candidate_enabled = .FALSE.
+      LOGICAL :: schur_reduced_secant_pending = .FALSE.
+      LOGICAL :: schur_reduced_secant_shadow_validated = .FALSE.
       LOGICAL :: schur_projector_mode_pending = .FALSE.
       LOGICAL :: schur_projector_offdiag_pending = .FALSE.
       LOGICAL :: schur_projector_inactive_offdiag_pending = .FALSE.
@@ -326,6 +333,7 @@ MODULE qs_ot_types
       INTEGER :: schur_split_shadow_quality_samples = 0
       INTEGER :: schur_vector_secant_quality_samples = 0
       INTEGER :: schur_multisecant_quality_samples = 0
+      INTEGER :: schur_reduced_secant_quality_samples = 0
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
       INTEGER :: schur_projector_offdiag_selected_quality_samples = 0
@@ -427,6 +435,13 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_multisecant_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_multisecant_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_multisecant_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_residual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_drop = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -754,6 +769,7 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_pgx => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_gx_old => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_g0 => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_x0 => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_y => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s_previous => NULL()
@@ -1048,6 +1064,8 @@ CONTAINS
       qs_ot_env%schur_vector_secant_candidate_enabled = .FALSE.
       qs_ot_env%schur_multisecant_pending = .FALSE.
       qs_ot_env%schur_multisecant_candidate_enabled = .FALSE.
+      qs_ot_env%schur_reduced_secant_pending = .FALSE.
+      qs_ot_env%schur_reduced_secant_shadow_validated = .FALSE.
       qs_ot_env%schur_projector_mode_pending = .FALSE.
       qs_ot_env%schur_projector_offdiag_pending = .FALSE.
       qs_ot_env%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -1086,6 +1104,7 @@ CONTAINS
       qs_ot_env%schur_split_shadow_quality_samples = 0
       qs_ot_env%schur_vector_secant_quality_samples = 0
       qs_ot_env%schur_multisecant_quality_samples = 0
+      qs_ot_env%schur_reduced_secant_quality_samples = 0
       qs_ot_env%schur_occgap_shadow_quality_samples = 0
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
@@ -1207,6 +1226,13 @@ CONTAINS
       qs_ot_env%schur_multisecant_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_multisecant_drop_sum = 0.0_dp
       qs_ot_env%schur_multisecant_measured_sum = 0.0_dp
+      qs_ot_env%schur_reduced_secant_drop = 0.0_dp
+      qs_ot_env%schur_reduced_secant_quality = 0.0_dp
+      qs_ot_env%schur_reduced_secant_quality_ema = 0.0_dp
+      qs_ot_env%schur_reduced_secant_residual_quality = 0.0_dp
+      qs_ot_env%schur_reduced_secant_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_reduced_secant_drop_sum = 0.0_dp
+      qs_ot_env%schur_reduced_secant_measured_sum = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_drop = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -1582,6 +1608,11 @@ CONTAINS
          qs_ot_env%ener_x_step_max = 0.0_dp
          qs_ot_env%ener_x_trusted_step_max = 0.0_dp
          qs_ot_env%ener_x_trust_scale = 1.0_dp
+         qs_ot_env%ener_x_fermi_guard_active = .FALSE.
+         qs_ot_env%ener_x_fermi_guard_anchor = -1.0_dp
+         qs_ot_env%ener_x_fermi_guard_position_max = -1.0_dp
+         qs_ot_env%ener_x_line_search_position = 0.0_dp
+         qs_ot_env%ener_x_line_search_tangent = 1.0_dp
          qs_ot_env%canonical_tether_energy = 0.0_dp
          qs_ot_env%canonical_tether_strength = 0.0_dp
          qs_ot_env%canonical_tether_weight_sum = 0.0_dp
@@ -2087,6 +2118,7 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%ener_gx)) DEALLOCATE (qs_ot_env%ener_gx)
          IF (ASSOCIATED(qs_ot_env%ener_pgx)) DEALLOCATE (qs_ot_env%ener_pgx)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_g0)) DEALLOCATE (qs_ot_env%ener_mermin_g0)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_x0)) DEALLOCATE (qs_ot_env%ener_mermin_x0)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_s)) DEALLOCATE (qs_ot_env%ener_mermin_s)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_y)) DEALLOCATE (qs_ot_env%ener_mermin_y)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_s_previous)) DEALLOCATE (qs_ot_env%ener_mermin_s_previous)
