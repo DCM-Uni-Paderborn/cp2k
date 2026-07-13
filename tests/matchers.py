@@ -87,6 +87,11 @@ registry["OT_kpoint_ref_gradient_sync"] = TextPresenceMatcher("OT GSync")
 registry["OT_added_mos_auto_grow"] = TextPresenceMatcher(
     "K-point ADDED_MOS AUTO: growing virtual-space buffer"
 )
+registry["GXTB_native_raw"] = TextPresenceMatcher("GXTB-Raw")
+registry["GXTB_native_simple"] = TextPresenceMatcher("GXTB-Simple")
+registry["GXTB_native_fdiis"] = TextPresenceMatcher("GXTB-FDIIS")
+registry["GXTB_cp2k_pmix"] = TextPresenceMatcher("P_Mix/Diag.")
+registry["GXTB_cp2k_fdiis"] = TextPresenceMatcher("DIIS/Diag.")
 registry["Kubo_sigma_iso"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S/cm]", col=3)
 registry["Kubo_sigma_iso_2d"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S]", col=3)
 registry["Kubo_sigma_iso_1d"] = GenericMatcher(r"KUBO_TRANSPORT| sigma_iso[S*m]", col=3)
