@@ -236,6 +236,7 @@ MODULE qs_scf_loop_utils
              qs_scf_density_mixing, qs_scf_check_inner_exit, &
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
              qs_scf_kp_added_mos_auto_post_resize_steps, &
+             qs_scf_kp_coupled_multisecant_update, &
              qs_scf_kp_coupled_secant_model, &
              qs_scf_kp_decouple_inactive_gauge, &
              qs_scf_kp_density_control_delta, &
@@ -480,6 +481,225 @@ CONTAINS
       DEALLOCATE (compatible_targets, correction, model, residual, step_inverse, updated_residual)
 
    END SUBROUTINE qs_scf_kp_symmetric_multisecant_update
+
+! **************************************************************************************************
+!> \brief Update the coupled rotation/cross blocks while preserving analytic H_ee.
+!> \param rotation_hessian rotation block H_RR
+!> \param energy_hessian fixed-N energy block H_ee
+!> \param energy_cross signed cross block C
+!> \param rotation_steps accepted rotation steps
+!> \param energy_steps accepted energy steps
+!> \param rotation_targets observed rotation-gradient differences
+!> \param energy_targets observed energy-gradient differences
+!> \param weight fraction of the least-change correction
+!> \param updated_rotation_hessian corrected rotation block
+!> \param updated_energy_hessian unchanged analytic energy block
+!> \param updated_energy_cross corrected signed cross block
+!> \param ready whether the full update was finite and independent
+!> \param independence normalized determinant of the two-step Gram matrix
+!> \param compatibility_norm relative symmetric-target correction
+!> \param correction_norm scaled Frobenius norm of the full Hessian correction
+!> \param residual_norm scaled full-secant residual before the update
+!> \param updated_residual_norm scaled full-secant residual after the update
+!> \param reference_norm scaled Frobenius norm of the reference Hessian
+!> \param rotation_correction_ratio relative scaled H_RR correction
+!> \param cross_correction_ratio relative scaled C correction
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_multisecant_update(rotation_hessian, energy_hessian, energy_cross, &
+                                                   rotation_steps, energy_steps, rotation_targets, &
+                                                   energy_targets, weight, updated_rotation_hessian, &
+                                                   updated_energy_hessian, updated_energy_cross, ready, &
+                                                   independence, compatibility_norm, correction_norm, &
+                                                   residual_norm, updated_residual_norm, reference_norm, &
+                                                   rotation_correction_ratio, cross_correction_ratio)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
+         energy_cross, rotation_steps, energy_steps, rotation_targets, energy_targets
+      REAL(KIND=dp), INTENT(IN)                          :: weight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_rotation_hessian, &
+                                                            updated_energy_hessian, &
+                                                            updated_energy_cross
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT) :: independence, compatibility_norm, correction_norm, &
+         residual_norm, updated_residual_norm, reference_norm, rotation_correction_ratio, &
+         cross_correction_ratio
+
+      INTEGER                                            :: i, j, nener, nrot
+      REAL(KIND=dp) :: block_floor, block_max, correction_rotation, det, gram_scale, &
+         residual_rotation, update_weight, updated_residual_rotation
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: energy_scale, rotation_scale
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross_scaled, energy_hessian_scaled, &
+         energy_steps_scaled, energy_targets_scaled, model_energy, model_rotation, &
+         rotation_hessian_scaled, rotation_steps_scaled, rotation_targets_scaled, step_inverse, &
+         target_cross_action, target_rotation_action, updated_energy_cross_scaled, &
+         updated_model_energy, updated_model_rotation, updated_rotation_hessian_scaled
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: gram, gram_inverse
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      CPASSERT(SIZE(rotation_hessian, 2) == nrot)
+      CPASSERT(SIZE(energy_hessian, 2) == nener)
+      CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
+      CPASSERT(ALL(SHAPE(rotation_steps) == [nrot, 2]))
+      CPASSERT(ALL(SHAPE(energy_steps) == [nener, 2]))
+      CPASSERT(ALL(SHAPE(rotation_targets) == [nrot, 2]))
+      CPASSERT(ALL(SHAPE(energy_targets) == [nener, 2]))
+      CPASSERT(ALL(SHAPE(updated_rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(updated_energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(updated_energy_cross) == [nener, nrot]))
+
+      updated_rotation_hessian(:, :) = rotation_hessian(:, :)
+      updated_energy_hessian(:, :) = energy_hessian(:, :)
+      updated_energy_cross(:, :) = energy_cross(:, :)
+      ready = .FALSE.
+      independence = 0.0_dp
+      compatibility_norm = 0.0_dp
+      correction_norm = 0.0_dp
+      residual_norm = 0.0_dp
+      updated_residual_norm = 0.0_dp
+      reference_norm = 0.0_dp
+      rotation_correction_ratio = 0.0_dp
+      cross_correction_ratio = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0) RETURN
+      update_weight = MIN(1.0_dp, MAX(0.0_dp, weight))
+      IF (update_weight <= EPSILON(1.0_dp)) RETURN
+      ALLOCATE (rotation_scale(nrot), energy_scale(nener), &
+                rotation_hessian_scaled(nrot, nrot), energy_hessian_scaled(nener, nener), &
+                energy_cross_scaled(nener, nrot), rotation_steps_scaled(nrot, 2), &
+                energy_steps_scaled(nener, 2), rotation_targets_scaled(nrot, 2), &
+                energy_targets_scaled(nener, 2), step_inverse(nrot, 2), &
+                target_cross_action(nener, 2), target_rotation_action(nrot, 2), &
+                updated_rotation_hessian_scaled(nrot, nrot), &
+                updated_energy_cross_scaled(nener, nrot), model_rotation(nrot, 2), &
+                model_energy(nener, 2), updated_model_rotation(nrot, 2), &
+                updated_model_energy(nener, 2))
+
+      ! Rotation coordinates are dimensionless while auxiliary energies carry
+      ! energy units.  Normalize each block with its reference diagonal before
+      ! applying the Euclidean least-change update so that the result is
+      ! invariant under a change of auxiliary-energy units.
+      block_max = MAXVAL(ABS([(rotation_hessian(i, i), i=1, nrot)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nrot
+            rotation_scale(i) = SQRT(MAX(ABS(rotation_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         rotation_scale(:) = 1.0_dp
+      END IF
+      block_max = MAXVAL(ABS([(energy_hessian(i, i), i=1, nener)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nener
+            energy_scale(i) = SQRT(MAX(ABS(energy_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         energy_scale(:) = 1.0_dp
+      END IF
+
+      DO j = 1, nrot
+         DO i = 1, nrot
+            rotation_hessian_scaled(i, j) = rotation_hessian(i, j)/ &
+                                            (rotation_scale(i)*rotation_scale(j))
+         END DO
+      END DO
+      DO j = 1, nener
+         DO i = 1, nener
+            energy_hessian_scaled(i, j) = energy_hessian(i, j)/ &
+                                          (energy_scale(i)*energy_scale(j))
+         END DO
+      END DO
+      DO j = 1, nrot
+         DO i = 1, nener
+            energy_cross_scaled(i, j) = energy_cross(i, j)/ &
+                                        (energy_scale(i)*rotation_scale(j))
+         END DO
+      END DO
+      DO i = 1, nrot
+         rotation_steps_scaled(i, :) = rotation_scale(i)*rotation_steps(i, :)
+         rotation_targets_scaled(i, :) = rotation_targets(i, :)/rotation_scale(i)
+      END DO
+      DO i = 1, nener
+         energy_steps_scaled(i, :) = energy_scale(i)*energy_steps(i, :)
+         energy_targets_scaled(i, :) = energy_targets(i, :)/energy_scale(i)
+      END DO
+
+      reference_norm = SQRT(MAX(0.0_dp, SUM(rotation_hessian_scaled**2) + &
+                                2.0_dp*SUM(energy_cross_scaled**2) + &
+                                SUM(energy_hessian_scaled**2)))
+      gram(:, :) = MATMUL(TRANSPOSE(rotation_steps_scaled), rotation_steps_scaled)
+      gram_scale = gram(1, 1)*gram(2, 2)
+      IF (gram_scale <= EPSILON(1.0_dp)) RETURN
+      det = gram_scale - gram(1, 2)*gram(2, 1)
+      independence = MAX(0.0_dp, det/gram_scale)
+      IF (det <= SQRT(EPSILON(1.0_dp))*gram_scale) RETURN
+      gram_inverse(1, 1) = gram(2, 2)/det
+      gram_inverse(1, 2) = -gram(1, 2)/det
+      gram_inverse(2, 1) = -gram(2, 1)/det
+      gram_inverse(2, 2) = gram(1, 1)/det
+      step_inverse(:, :) = MATMUL(rotation_steps_scaled, gram_inverse)
+
+      ! The fixed-N occupation Hessian is available analytically at every SCF
+      ! point.  Preserve it and use the energy-gradient secants to determine
+      ! only the cross-block action C*S_R.  The remaining rotation targets then
+      ! define the least-change symmetric H_RR update.
+      target_cross_action(:, :) = MATMUL(energy_hessian_scaled, energy_steps_scaled) - &
+                                  energy_targets_scaled
+      updated_energy_cross_scaled(:, :) = energy_cross_scaled + update_weight* &
+                                          MATMUL(target_cross_action - &
+                                                 MATMUL(energy_cross_scaled, rotation_steps_scaled), &
+                                                 TRANSPOSE(step_inverse))
+      target_rotation_action(:, :) = rotation_targets_scaled + &
+                                     MATMUL(TRANSPOSE(updated_energy_cross_scaled), &
+                                            energy_steps_scaled)
+      CALL qs_scf_kp_symmetric_multisecant_update( &
+         rotation_hessian_scaled, rotation_steps_scaled, target_rotation_action, update_weight, &
+         updated_rotation_hessian_scaled, ready, independence, compatibility_norm, &
+         correction_rotation, residual_rotation, updated_residual_rotation)
+
+      model_rotation(:, :) = MATMUL(rotation_hessian_scaled, rotation_steps_scaled) - &
+                             MATMUL(TRANSPOSE(energy_cross_scaled), energy_steps_scaled)
+      model_energy(:, :) = MATMUL(energy_hessian_scaled, energy_steps_scaled) - &
+                           MATMUL(energy_cross_scaled, rotation_steps_scaled)
+      updated_model_rotation(:, :) = MATMUL(updated_rotation_hessian_scaled, rotation_steps_scaled) - &
+                                     MATMUL(TRANSPOSE(updated_energy_cross_scaled), energy_steps_scaled)
+      updated_model_energy(:, :) = MATMUL(energy_hessian_scaled, energy_steps_scaled) - &
+                                   MATMUL(updated_energy_cross_scaled, rotation_steps_scaled)
+      residual_norm = SQRT(MAX(0.0_dp, SUM((rotation_targets_scaled - model_rotation)**2) + &
+                               SUM((energy_targets_scaled - model_energy)**2)))
+      updated_residual_norm = &
+         SQRT(MAX(0.0_dp, SUM((rotation_targets_scaled - updated_model_rotation)**2) + &
+                  SUM((energy_targets_scaled - updated_model_energy)**2)))
+      correction_norm = SQRT(MAX(0.0_dp, &
+                                 SUM((updated_rotation_hessian_scaled - rotation_hessian_scaled)**2) + &
+                                 2.0_dp*SUM((updated_energy_cross_scaled - energy_cross_scaled)**2)))
+      rotation_correction_ratio = &
+         SQRT(MAX(0.0_dp, SUM((updated_rotation_hessian_scaled - rotation_hessian_scaled)**2)))/ &
+         MAX(SQRT(MAX(0.0_dp, SUM(rotation_hessian_scaled**2))), EPSILON(1.0_dp))
+      cross_correction_ratio = &
+         SQRT(MAX(0.0_dp, SUM((updated_energy_cross_scaled - energy_cross_scaled)**2)))/ &
+         MAX(SQRT(MAX(0.0_dp, SUM(energy_cross_scaled**2))), EPSILON(1.0_dp))
+      ready = ready .AND. correction_norm == correction_norm .AND. &
+              updated_residual_norm == updated_residual_norm
+      IF (ready) THEN
+         DO j = 1, nrot
+            DO i = 1, nrot
+               updated_rotation_hessian(i, j) = updated_rotation_hessian_scaled(i, j)* &
+                                                rotation_scale(i)*rotation_scale(j)
+            END DO
+            DO i = 1, nener
+               updated_energy_cross(i, j) = updated_energy_cross_scaled(i, j)* &
+                                            energy_scale(i)*rotation_scale(j)
+            END DO
+         END DO
+      END IF
+      DEALLOCATE (rotation_scale, energy_scale, rotation_hessian_scaled, energy_hessian_scaled, &
+                  energy_cross_scaled, rotation_steps_scaled, energy_steps_scaled, &
+                  rotation_targets_scaled, energy_targets_scaled, step_inverse, target_cross_action, &
+                  target_rotation_action, updated_rotation_hessian_scaled, &
+                  updated_energy_cross_scaled, model_rotation, model_energy, &
+                  updated_model_rotation, updated_model_energy)
+
+   END SUBROUTINE qs_scf_kp_coupled_multisecant_update
 
 ! **************************************************************************************************
 !> \brief Decide whether accepted Mermin drops promote a secant candidate.
@@ -8713,20 +8933,21 @@ CONTAINS
       LOGICAL :: exact_density_response_ready, exact_energy_model_ready, &
          exact_physical_response_ready, failed, inactive_gauge_projection_used, &
          metric_attempt_current_bridge, metric_attempt_response, metric_attempt_selectable, &
-         metric_attempt_tail_bridge, multisecant_update_eligible, multisecant_update_ready, &
-         multisecant_update_used, new_search_point, physical_delta_group_ready, &
-         physical_delta_norm_ready, physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
-         projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready
-      LOGICAL :: projector_inactive_offdiag_tail_refresh_probe, &
+         metric_attempt_tail_bridge, multisecant_response_ready, multisecant_update_eligible, &
+         multisecant_update_ready, multisecant_update_used, new_search_point, &
+         physical_delta_group_ready, physical_delta_norm_ready, physical_delta_plateau_ready, &
+         physical_delta_raw_tail_ready, projector_density_full_audit_enabled, &
+         projector_density_full_history_enabled
+      LOGICAL :: projector_inactive_offdiag_candidate_ready, &
+         projector_inactive_offdiag_tail_refresh_probe, &
          projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
          projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
          projector_physical_candidate_ready, projector_physical_candidate_selected, &
          projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
          projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
-         projector_physical_direct_density_candidate_ready, &
-         projector_physical_direct_density_candidate_selected
-      LOGICAL :: projector_physical_direct_density_fshadow_ready, &
+         projector_physical_direct_density_candidate_ready
+      LOGICAL :: projector_physical_direct_density_candidate_selected, &
+         projector_physical_direct_density_fshadow_ready, &
          projector_physical_direct_density_quality_ready, &
          projector_physical_direct_density_residual_bad, &
          projector_physical_direct_density_selected_probe_ready, &
@@ -8734,9 +8955,9 @@ CONTAINS
          projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_effective_response_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
-         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
-         projector_physical_direct_shadow_enabled
-      LOGICAL :: projector_physical_direct_spectral_candidate_ready, &
+         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted
+      LOGICAL :: projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_quality_ready, &
@@ -8744,12 +8965,12 @@ CONTAINS
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
-         projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
-         projector_response_candidate_selected
-      LOGICAL :: response_model_available, schur_active_subspace, solved, &
-         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected, &
-         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
+         projector_plateau_gap_model_enabled
+      LOGICAL :: projector_response_candidate_ready, projector_response_candidate_selected, &
+         response_model_available, schur_active_subspace, solved, split_candidate_diagnostic, &
+         split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
+         split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
+         vector_secant_update_ready, vector_secant_update_used
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
          accepted_model_drop, accepted_model_gap_ratio, accepted_occgap_shadow_drop, &
          accepted_occgap_shadow_gap_ratio, accepted_projector_coupled_weight, &
@@ -9473,39 +9694,41 @@ CONTAINS
          z_density_full_audit_trial, z_density_full_global_trial, z_density_full_trial, &
          z_density_plateau_trial, z_density_trial, z_e
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_exact_physical_trial, z_exact_raw_trial, &
-         z_exact_trial, z_trial
+         z_exact_trial, z_multisecant, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross, energy_cross_density, &
          energy_cross_density_basis_audit, energy_cross_density_basis_curvfloor_audit, &
          energy_cross_density_basis_damped_audit, energy_cross_density_basis_filtered_audit, &
          energy_cross_density_basis_selective_audit, energy_cross_density_direct, &
          energy_cross_density_floor_audit, energy_cross_density_floor_safe_audit, &
          energy_cross_density_full, energy_cross_density_full_audit, &
-         energy_cross_density_full_global, energy_cross_density_plateau, energy_cross_physical, &
-         energy_cross_raw, energy_hessian, energy_hessian_reference
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: grad_im, grad_re, h_im, h_re, &
+         energy_cross_density_full_global, energy_cross_density_plateau, energy_cross_multisecant, &
+         energy_cross_physical, energy_cross_raw, energy_hessian
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_hessian_multisecant, &
+         energy_hessian_reference, grad_im, grad_re, h_im, h_re, &
          projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
          projector_physical_direct_curv_vec, projector_physical_direct_delta, &
          projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
          projector_physical_direct_schur_vec, response, response_coupled, &
          response_density_basis_audit, response_density_basis_audit_exact, &
-         response_density_basis_curvfloor_audit_exact, response_density_basis_damped_audit, &
-         response_density_basis_damped_audit_exact, response_density_basis_filtered_audit
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_basis_filtered_audit_exact, &
+         response_density_basis_curvfloor_audit_exact, response_density_basis_damped_audit
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_basis_damped_audit_exact, &
+         response_density_basis_filtered_audit, response_density_basis_filtered_audit_exact, &
          response_density_basis_selective_audit_exact, response_density_direct_exact, &
          response_density_exact, response_density_floor_audit, response_density_floor_audit_exact, &
          response_density_floor_safe_audit, response_density_floor_safe_audit_exact, &
          response_density_full, response_density_full_audit, response_density_full_audit_exact, &
-         response_density_full_exact, response_density_full_global, &
-         response_density_full_global_exact, response_density_physical, response_density_plateau
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_plateau_exact, &
-         response_exact, response_exact_physical, response_exact_raw, response_occ, &
-         response_occ_physical, response_physical_model, response_split, rot_hessian, &
-         rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_orbital_schur, &
+         response_density_full_exact, response_density_full_global
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_full_global_exact, &
+         response_density_physical, response_density_plateau, response_density_plateau_exact, &
+         response_exact, response_exact_physical, response_exact_raw, response_multisecant, &
+         response_occ, response_occ_physical, response_physical_model, response_split, &
+         rot_hessian, rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_orbital_schur, &
          rot_hessian_projector, rot_hessian_projector_physical, &
          rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
-         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_active, &
-         rot_hessian_projector_physical_offdiag_plateau
+         rot_hessian_projector_physical_offdiag
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
+         rot_hessian_projector_physical_offdiag_active, &
+         rot_hessian_projector_physical_offdiag_plateau, &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_secant, schur, &
          schur_metric
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -9718,7 +9941,8 @@ CONTAINS
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), accepted_z_e(ne), &
                    density_basis_selective_floor_weight(ne), energy_grad_metric_weight(ne), &
                    energy_step_weight(ne), z_exact_raw_trial(ne), &
-                   z_exact_physical_trial(ne), z_exact_trial(ne), z_trial(ne), rx_e(ne), rx_model(ne), &
+                   z_exact_physical_trial(ne), z_exact_trial(ne), z_multisecant(ne), z_trial(ne), &
+                   rx_e(ne), rx_model(ne), &
                    constrained_z_e(ne), projector_physical_direct_curv_eval(nrot), &
                    projector_physical_direct_model_e(ne), &
                    direct_pg_base_e(ne), direct_pg_rx_e(ne), &
@@ -9782,8 +10006,9 @@ CONTAINS
                    energy_cross_density_full(ne, nrot), &
                    energy_cross_density_full_audit(ne, nrot), &
                    energy_cross_density_full_global(ne, nrot), energy_cross_density_plateau(ne, nrot), &
-                   energy_cross_physical(ne, nrot), energy_cross_raw(ne, nrot), &
-                   energy_hessian(ne, ne), energy_hessian_reference(ne, ne), &
+                   energy_cross_multisecant(ne, nrot), energy_cross_physical(ne, nrot), &
+                   energy_cross_raw(ne, nrot), energy_hessian(ne, ne), &
+                   energy_hessian_multisecant(ne, ne), energy_hessian_reference(ne, ne), &
                    response(ne, nrot), response_coupled(ne, nrot), &
                    response_density_direct_exact(ne, nrot), &
                    response_density_exact(ne, nrot), response_density_physical(ne, nrot), &
@@ -9804,7 +10029,8 @@ CONTAINS
                    response_density_full_global(ne, nrot), response_density_full_global_exact(ne, nrot), &
                    response_density_plateau_exact(ne, nrot), &
                    response_exact(ne, nrot), response_exact_physical(ne, nrot), &
-                   response_exact_raw(ne, nrot), response_occ(ne, nrot), response_occ_physical(ne, nrot), &
+                   response_exact_raw(ne, nrot), response_multisecant(ne, nrot), &
+                   response_occ(ne, nrot), response_occ_physical(ne, nrot), &
                    response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
@@ -9837,6 +10063,7 @@ CONTAINS
          z_exact_physical_trial(:) = 0.0_dp
          z_exact_raw_trial(:) = 0.0_dp
          z_exact_trial(:) = 0.0_dp
+         z_multisecant(:) = 0.0_dp
          rx_e(:) = 0.0_dp
          rx_model(:) = 0.0_dp
          direct_pg_base_e(:) = 0.0_dp
@@ -9915,6 +10142,7 @@ CONTAINS
          projector_inactive_offdiag_sol(:) = 0.0_dp
          projector_response_sol(:) = 0.0_dp
          energy_cross(:, :) = 0.0_dp
+         energy_cross_multisecant(:, :) = 0.0_dp
          energy_cross_density(:, :) = 0.0_dp
          energy_cross_density_direct(:, :) = 0.0_dp
          energy_cross_density_basis_audit(:, :) = 0.0_dp
@@ -9931,6 +10159,7 @@ CONTAINS
          energy_cross_physical(:, :) = 0.0_dp
          energy_cross_raw(:, :) = 0.0_dp
          energy_hessian(:, :) = 0.0_dp
+         energy_hessian_multisecant(:, :) = 0.0_dp
          response(:, :) = 0.0_dp
          response_coupled(:, :) = 0.0_dp
          response_density_direct_exact(:, :) = 0.0_dp
@@ -9959,6 +10188,7 @@ CONTAINS
          response_exact(:, :) = 0.0_dp
          response_exact_physical(:, :) = 0.0_dp
          response_exact_raw(:, :) = 0.0_dp
+         response_multisecant(:, :) = 0.0_dp
          response_occ(:, :) = 0.0_dp
          response_occ_physical(:, :) = 0.0_dp
          response_physical_model(:, :) = 0.0_dp
@@ -10384,6 +10614,7 @@ CONTAINS
          multisecant_update_eligible = .FALSE.
          multisecant_update_ready = .FALSE.
          multisecant_update_used = .FALSE.
+         multisecant_response_ready = .FALSE.
          vector_secant_update_eligible = .FALSE.
          vector_secant_update_ready = .FALSE.
          vector_secant_update_used = .FALSE.
@@ -11316,7 +11547,7 @@ CONTAINS
                         z_density_full_global_trial, &
                         z_density_full_trial, z_density_trial, &
                         z_exact_physical_trial, z_exact_raw_trial, &
-                        z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
+                        z_exact_trial, z_multisecant, z_trial, rx_e, rx_model, constrained_z_e, &
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_response_rx_e, &
                         projector_physical_direct_diagref_rx_e, &
@@ -11356,8 +11587,9 @@ CONTAINS
                         energy_cross_density_full, &
                         energy_cross_density_full_audit, energy_cross_density_full_global, &
                         energy_cross_density_plateau, &
-                        energy_cross_physical, energy_cross_raw, &
-                        energy_hessian, energy_hessian_reference, response, response_coupled, &
+                        energy_cross_multisecant, energy_cross_physical, energy_cross_raw, &
+                        energy_hessian, energy_hessian_multisecant, energy_hessian_reference, &
+                        response, response_coupled, response_multisecant, &
                         response_density_exact, &
                         response_density_floor_audit, response_density_floor_audit_exact, &
                         response_density_floor_safe_audit, response_density_floor_safe_audit_exact, &
@@ -13007,8 +13239,16 @@ CONTAINS
                                                      energy_hessian_reference, energy_cross, &
                                                      residual_delta, schur_active_subspace, &
                                                      rot_hessian_secant, rot_hessian_multisecant, &
+                                                     energy_hessian_multisecant, &
+                                                     energy_cross_multisecant, &
                                                      vector_secant_update_eligible, &
                                                      multisecant_update_eligible)
+         IF (multisecant_update_eligible) &
+            CALL solve_kpoint_ot_secant_energy_response( &
+            energy_hessian_multisecant, energy_cross_multisecant, grad_e, occ_curv, tether_curv, &
+            channel_nmo, e_offset, response_multisecant, z_multisecant, ipiv_energy, &
+            multisecant_response_ready)
+         multisecant_update_eligible = multisecant_update_eligible .AND. multisecant_response_ready
          vector_secant_update_ready = vector_secant_update_eligible .AND. &
                                       (local_ot_env(1)%schur_vector_secant_candidate_enabled .OR. &
                                        local_ot_env(1)%schur_vector_secant_quality_samples < &
@@ -13027,9 +13267,10 @@ CONTAINS
             local_ot_env(1)%schur_vector_secant_candidate_enabled, &
             local_ot_env(1)%schur_vector_secant_quality_samples
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
-            " OT Schur multisecant candidate group eligible apply promoted samples:", &
-            target_group, multisecant_update_eligible, multisecant_update_ready, &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),1X,I6)') &
+            " OT Schur multisecant candidate group eligible response apply promoted samples:", &
+            target_group, multisecant_update_eligible, multisecant_response_ready, &
+            multisecant_update_ready, &
             local_ot_env(1)%schur_multisecant_candidate_enabled, &
             local_ot_env(1)%schur_multisecant_quality_samples
 
@@ -14257,6 +14498,8 @@ CONTAINS
             ELSE
                z_e(:) = z_trial(:)
             END IF
+            IF (schur_attempt == 3 .AND. multisecant_update_ready) &
+               z_e(:) = z_multisecant(:)
             IF (schur_attempt == 1 .AND. logger%iter_info%print_level < high_print_level .AND. &
                 .NOT. split_candidate_enabled .AND. .NOT. constrained_candidate_enabled) THEN
                constrained_reject_reason = reject_quality_gate
@@ -14364,7 +14607,9 @@ CONTAINS
                      rhs(r) = grad_rot(r) + DOT_PRODUCT(response_split(:, r), grad_e)
                   END IF
                ELSE IF (schur_attempt == 3) THEN
-                  IF (exact_attempt_response) THEN
+                  IF (multisecant_update_ready) THEN
+                     rhs(r) = grad_rot(r) + DOT_PRODUCT(response_multisecant(:, r), grad_e)
+                  ELSE IF (exact_attempt_response) THEN
                      rhs(r) = grad_rot(r) + DOT_PRODUCT(response_exact(:, r), grad_e)
                   ELSE
                      rtd(r) = DOT_PRODUCT(curv, response_coupled(:, r))
@@ -14428,7 +14673,13 @@ CONTAINS
                         response_penalty_diag_sum = response_penalty_diag_sum + response_penalty_term
                      END IF
                   ELSE IF (schur_attempt == 3) THEN
-                     IF (exact_attempt_response) THEN
+                     IF (multisecant_update_ready) THEN
+                        projected_term = 0.5_dp* &
+                                         (DOT_PRODUCT(energy_cross_multisecant(:, r), &
+                                                      response_multisecant(:, s)) + &
+                                          DOT_PRODUCT(energy_cross_multisecant(:, s), &
+                                                      response_multisecant(:, r)))
+                     ELSE IF (exact_attempt_response) THEN
                         projected_term = 0.5_dp*(DOT_PRODUCT(energy_cross(:, r), response_exact_raw(:, s)) + &
                                                  DOT_PRODUCT(energy_cross_raw(:, r), response_exact(:, s)))
                      ELSE
@@ -14574,7 +14825,10 @@ CONTAINS
                      rx_model(:) = MATMUL(response_coupled, sol)
                   END IF
                ELSE IF (schur_attempt == 3) THEN
-                  IF (exact_attempt_response) THEN
+                  IF (multisecant_update_ready) THEN
+                     rx_e(:) = MATMUL(response_multisecant, sol)
+                     rx_model(:) = rx_e(:)
+                  ELSE IF (exact_attempt_response) THEN
                      rx_e(:) = MATMUL(response_exact_raw, sol)
                      rx_model(:) = MATMUL(response_exact, sol)
                   ELSE
@@ -22758,7 +23012,7 @@ CONTAINS
                      z_density_full_global_trial, &
                      z_density_full_trial, z_density_trial, &
                      z_exact_physical_trial, z_exact_raw_trial, &
-                     z_exact_trial, z_trial, rx_e, rx_model, constrained_z_e, &
+                     z_exact_trial, z_multisecant, z_trial, rx_e, rx_model, constrained_z_e, &
                      direct_pg_base_e, direct_pg_rx_e, &
                      projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                      projector_physical_direct_response_rx_e, &
@@ -22807,12 +23061,13 @@ CONTAINS
                      energy_cross_density_basis_audit, energy_cross_density_basis_curvfloor_audit, &
                      energy_cross_density_basis_damped_audit, energy_cross_density_basis_filtered_audit, &
                      energy_cross_density_basis_selective_audit, &
-                     energy_cross_density_direct, energy_cross_physical, &
+                     energy_cross_density_direct, energy_cross_multisecant, energy_cross_physical, &
                      energy_cross_raw, &
                      energy_cross_density_floor_audit, energy_cross_density_floor_safe_audit, &
                      energy_cross_density_full, energy_cross_density_full_audit, &
                      energy_cross_density_full_global, energy_cross_density_plateau, &
-                     energy_hessian, energy_hessian_reference, response, response_coupled, &
+                     energy_hessian, energy_hessian_multisecant, energy_hessian_reference, &
+                     response, response_coupled, response_multisecant, &
                      response_density_direct_exact, &
                      response_density_exact, &
                      response_density_basis_audit, response_density_basis_audit_exact, &
@@ -22864,6 +23119,8 @@ CONTAINS
 !> \param active_subspace rotations were restricted to the thermal Fermi subspace
 !> \param rotation_hessian_secant accepted-secant rotation candidate
 !> \param rotation_hessian_multisecant compatible two-secant rotation candidate
+!> \param energy_hessian_multisecant analytic energy block carried by the active candidate
+!> \param energy_cross_multisecant analytic signed cross block carried by the active candidate
 !> \param update_ready whether the candidate passed the physical trust gate
 !> \param multisecant_update_ready whether the two-secant candidate passed its geometry gate
 ! **************************************************************************************************
@@ -22872,7 +23129,9 @@ CONTAINS
                                                      occ_curv, tether_curv, rotation_hessian, &
                                                      energy_hessian, energy_cross, residual_delta, &
                                                      active_subspace, rotation_hessian_secant, &
-                                                     rotation_hessian_multisecant, update_ready, &
+                                                     rotation_hessian_multisecant, &
+                                                     energy_hessian_multisecant, &
+                                                     energy_cross_multisecant, update_ready, &
                                                      multisecant_update_ready)
       INTEGER, INTENT(IN)                                :: target_group
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset, var_channel, &
@@ -22882,37 +23141,49 @@ CONTAINS
                                                             energy_cross
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       LOGICAL, INTENT(IN)                                :: active_subspace
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_hessian_secant, &
-                                                            rotation_hessian_multisecant
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT) :: rotation_hessian_secant, &
+         rotation_hessian_multisecant, energy_hessian_multisecant, energy_cross_multisecant
       LOGICAL, INTENT(OUT)                               :: update_ready, multisecant_update_ready
 
       INTEGER                                            :: active_energy_count, global_channel, &
                                                             global_spin, group, ie, imo, &
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
-      LOGICAL                                            :: multisecant_finite, previous_valid, &
-                                                            update_finite, valid
+      LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, multisecant_finite, &
+         previous_valid, update_finite, valid
       REAL(KIND=dp) :: alignment, base_hessian_norm, correction_norm, correction_ratio, &
-         curvature_ratio, energy_mean, model_alignment, model_norm, multisecant_compatibility, &
-         multisecant_correction_norm, multisecant_correction_ratio, multisecant_independence, &
-         multisecant_residual_norm, multisecant_updated_residual_norm, orthogonal_fraction, &
-         residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
+         coupled_multisecant_compatibility, coupled_multisecant_correction_norm, &
+         coupled_multisecant_correction_ratio, coupled_multisecant_cross_correction_ratio, &
+         coupled_multisecant_hessian_norm, coupled_multisecant_independence, &
+         coupled_multisecant_residual_norm, coupled_multisecant_rotation_correction_ratio, &
+         coupled_multisecant_updated_residual_norm, curvature_ratio, energy_mean, model_alignment, &
+         model_norm, multisecant_compatibility, multisecant_correction_norm, &
+         multisecant_correction_ratio
+      REAL(KIND=dp) :: multisecant_independence, multisecant_residual_norm, &
+         multisecant_updated_residual_norm, orthogonal_fraction, residual_energy_norm, &
+         residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
          rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
-         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty
-      REAL(KIND=dp) :: updated_rotation_residual_norm, y_norm, ynorm
+         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
+         updated_rotation_residual_norm, y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: model_energy, model_rotation, &
          previous_secant_energy, previous_secant_rotation, previous_step_energy, &
          previous_step_rotation, secant_energy, secant_rotation, step_energy, step_rotation, &
          target_rotation
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: dense_im, dense_re, multisecant_steps, &
-         multisecant_targets, updated_multisecant_hessian, updated_rotation_hessian
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: coupled_energy_cross, coupled_energy_hessian, &
+         coupled_rotation_hessian, coupled_rotation_targets, dense_im, dense_re, &
+         multisecant_energy_steps, multisecant_energy_targets, multisecant_rotation_steps, &
+         multisecant_rotation_targets, updated_rotation_hessian
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
          CPASSERT(ALL(SHAPE(rotation_hessian_secant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(rotation_hessian_multisecant) == SHAPE(rotation_hessian)))
+         CPASSERT(ALL(SHAPE(energy_hessian_multisecant) == SHAPE(energy_hessian)))
+         CPASSERT(ALL(SHAPE(energy_cross_multisecant) == SHAPE(energy_cross)))
          rotation_hessian_secant(:, :) = rotation_hessian(:, :)
          rotation_hessian_multisecant(:, :) = rotation_hessian(:, :)
+         energy_hessian_multisecant(:, :) = energy_hessian(:, :)
+         energy_cross_multisecant(:, :) = energy_cross(:, :)
          update_ready = .FALSE.
          multisecant_update_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
@@ -23141,17 +23412,40 @@ CONTAINS
          multisecant_residual_norm = 0.0_dp
          multisecant_updated_residual_norm = 0.0_dp
          multisecant_correction_ratio = 0.0_dp
+         coupled_multisecant_finite = .FALSE.
+         coupled_multisecant_ready = .FALSE.
+         coupled_multisecant_independence = 0.0_dp
+         coupled_multisecant_compatibility = 0.0_dp
+         coupled_multisecant_correction_norm = 0.0_dp
+         coupled_multisecant_residual_norm = 0.0_dp
+         coupled_multisecant_updated_residual_norm = 0.0_dp
+         coupled_multisecant_hessian_norm = 0.0_dp
+         coupled_multisecant_correction_ratio = 0.0_dp
+         coupled_multisecant_rotation_correction_ratio = 0.0_dp
+         coupled_multisecant_cross_correction_ratio = 0.0_dp
          IF (previous_valid) THEN
-            ALLOCATE (multisecant_steps(nrot, 2), multisecant_targets(nrot, 2), &
-                      updated_multisecant_hessian(nrot, nrot))
-            multisecant_steps(:, 1) = previous_step_rotation
-            multisecant_steps(:, 2) = step_rotation
-            multisecant_targets(:, 1) = previous_secant_rotation + &
-                                        MATMUL(TRANSPOSE(energy_cross), previous_step_energy)
-            multisecant_targets(:, 2) = target_rotation
+            ALLOCATE (multisecant_rotation_steps(nrot, 2), multisecant_energy_steps(nener, 2), &
+                      multisecant_rotation_targets(nrot, 2), multisecant_energy_targets(nener, 2), &
+                      coupled_rotation_targets(nrot, 2), coupled_rotation_hessian(nrot, nrot), &
+                      coupled_energy_hessian(nener, nener), coupled_energy_cross(nener, nrot))
+            multisecant_rotation_steps(:, 1) = previous_step_rotation(:)
+            multisecant_rotation_steps(:, 2) = step_rotation(:)
+            multisecant_energy_steps(:, 1) = previous_step_energy(:)
+            multisecant_energy_steps(:, 2) = step_energy(:)
+            coupled_rotation_targets(:, 1) = previous_secant_rotation(:)
+            coupled_rotation_targets(:, 2) = secant_rotation(:)
+            multisecant_rotation_targets(:, :) = coupled_rotation_targets(:, :) + &
+                                                 MATMUL(TRANSPOSE(energy_cross), &
+                                                        multisecant_energy_steps)
+            multisecant_energy_targets(:, 1) = previous_secant_energy(:)
+            multisecant_energy_targets(:, 2) = secant_energy(:)
+
+            ! Retain the previously calibrated rotation-only candidate as the
+            ! active fallback.  The coupled block below remains a separate
+            ! shadow until it has its own accepted-step history.
             CALL qs_scf_kp_symmetric_multisecant_update( &
-               rotation_hessian, multisecant_steps, multisecant_targets, 1.0_dp, &
-               updated_multisecant_hessian, multisecant_finite, multisecant_independence, &
+               rotation_hessian, multisecant_rotation_steps, multisecant_rotation_targets, 1.0_dp, &
+               rotation_hessian_multisecant, multisecant_finite, multisecant_independence, &
                multisecant_compatibility, multisecant_correction_norm, multisecant_residual_norm, &
                multisecant_updated_residual_norm)
             multisecant_correction_ratio = &
@@ -23164,8 +23458,30 @@ CONTAINS
                                        local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
                                        ot_kp_schur_calibration_min_samples .AND. &
                                        local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
-            IF (multisecant_update_ready) &
-               rotation_hessian_multisecant(:, :) = updated_multisecant_hessian(:, :)
+            IF (.NOT. multisecant_update_ready) &
+               rotation_hessian_multisecant(:, :) = rotation_hessian(:, :)
+
+            CALL qs_scf_kp_coupled_multisecant_update( &
+               rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+               multisecant_energy_steps, coupled_rotation_targets, multisecant_energy_targets, &
+               1.0_dp, coupled_rotation_hessian, coupled_energy_hessian, &
+               coupled_energy_cross, coupled_multisecant_finite, coupled_multisecant_independence, &
+               coupled_multisecant_compatibility, coupled_multisecant_correction_norm, &
+               coupled_multisecant_residual_norm, coupled_multisecant_updated_residual_norm, &
+               coupled_multisecant_hessian_norm, coupled_multisecant_rotation_correction_ratio, &
+               coupled_multisecant_cross_correction_ratio)
+            coupled_multisecant_correction_ratio = coupled_multisecant_correction_norm/ &
+                                                   MAX(coupled_multisecant_hessian_norm, EPSILON(1.0_dp))
+            coupled_multisecant_ready = coupled_multisecant_finite .AND. active_subspace .AND. &
+                                        residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                        coupled_multisecant_independence >= 5.0E-2_dp .AND. &
+                                        coupled_multisecant_compatibility <= 1.0E-1_dp .AND. &
+                                        coupled_multisecant_correction_ratio <= 0.35_dp .AND. &
+                                        coupled_multisecant_rotation_correction_ratio <= 0.35_dp .AND. &
+                                        coupled_multisecant_cross_correction_ratio <= 0.35_dp .AND. &
+                                        local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                        ot_kp_schur_calibration_min_samples .AND. &
+                                        local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
          END IF
 
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
@@ -23191,15 +23507,95 @@ CONTAINS
             target_group, previous_valid, multisecant_finite, multisecant_update_ready, &
             multisecant_independence, multisecant_compatibility, multisecant_residual_norm, &
             multisecant_updated_residual_norm, multisecant_correction_norm, multisecant_correction_ratio
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),8(1X,ES16.8))') &
+            " OT Schur coupled multisecant shadow group hist finite eligible indep compat "// &
+            "rnorm unorm corr cratio rcratio ccratio:", &
+            target_group, previous_valid, coupled_multisecant_finite, coupled_multisecant_ready, &
+            coupled_multisecant_independence, coupled_multisecant_compatibility, &
+            coupled_multisecant_residual_norm, coupled_multisecant_updated_residual_norm, &
+            coupled_multisecant_correction_norm, coupled_multisecant_correction_ratio, &
+            coupled_multisecant_rotation_correction_ratio, coupled_multisecant_cross_correction_ratio
 
          DEALLOCATE (step_rotation, secant_rotation, model_rotation, &
                      step_energy, secant_energy, model_energy, previous_step_rotation, &
                      previous_secant_rotation, previous_step_energy, previous_secant_energy, &
                      target_rotation, updated_rotation_hessian)
-         IF (ALLOCATED(multisecant_steps)) &
-            DEALLOCATE (multisecant_steps, multisecant_targets, updated_multisecant_hessian)
+         IF (ALLOCATED(multisecant_rotation_steps)) &
+            DEALLOCATE (multisecant_rotation_steps, multisecant_energy_steps, &
+                        multisecant_rotation_targets, multisecant_energy_targets, &
+                        coupled_rotation_targets, coupled_rotation_hessian, &
+                        coupled_energy_hessian, coupled_energy_cross)
 
       END SUBROUTINE audit_kpoint_ot_vector_secant_model
+
+! **************************************************************************************************
+!> \brief Solve the energy response of a coupled secant Hessian candidate.
+!> \param energy_hessian candidate fixed-N energy block
+!> \param energy_cross candidate signed rotation/energy cross block
+!> \param grad_e current energy gradient
+!> \param occ_curv occupation curvature defining the global fixed-N gauge
+!> \param tether_curv channel tether curvature
+!> \param channel_nmo number of energy variables per channel
+!> \param e_offset first energy variable per channel
+!> \param response candidate E^-1 C response
+!> \param z_e candidate E^-1 g_e direction
+!> \param ipiv LAPACK pivot workspace
+!> \param ready whether the candidate block was nonsingular and finite
+! **************************************************************************************************
+      SUBROUTINE solve_kpoint_ot_secant_energy_response(energy_hessian, energy_cross, grad_e, &
+                                                        occ_curv, tether_curv, channel_nmo, e_offset, &
+                                                        response, z_e, ipiv, ready)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: energy_hessian, energy_cross
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: grad_e, occ_curv, tether_curv
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: response
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: z_e
+      INTEGER, DIMENSION(:), INTENT(INOUT)               :: ipiv
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      INTEGER                                            :: ie, info, ne_local, nrhs, nrot_local, r
+      REAL(KIND=dp)                                      :: curv_max, occ_sum
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: hessian_work, rhs
+
+         ready = .FALSE.
+         response(:, :) = 0.0_dp
+         z_e(:) = 0.0_dp
+         ne_local = SIZE(grad_e)
+         nrot_local = SIZE(energy_cross, 2)
+         CPASSERT(ALL(SHAPE(energy_hessian) == [ne_local, ne_local]))
+         CPASSERT(SIZE(energy_cross, 1) == ne_local)
+         CPASSERT(ALL(SHAPE(response) == [ne_local, nrot_local]))
+         CPASSERT(SIZE(z_e) == ne_local)
+         CPASSERT(SIZE(ipiv) >= ne_local)
+         IF (ne_local <= 0 .OR. nrot_local <= 0) RETURN
+
+         nrhs = nrot_local + 1
+         ALLOCATE (hessian_work(ne_local, ne_local), rhs(ne_local, nrhs))
+         hessian_work(:, :) = 0.5_dp*(energy_hessian(:, :) + TRANSPOSE(energy_hessian(:, :)))
+         rhs(:, 1:nrot_local) = energy_cross(:, :)
+         rhs(:, nrhs) = grad_e(:)
+         curv_max = MAXVAL(occ_curv(:) + tether_curv(:))
+         DO ie = 1, ne_local
+            IF (occ_curv(ie) + tether_curv(ie) <= EPSILON(curv_max)) rhs(ie, nrhs) = 0.0_dp
+         END DO
+         CALL dgesv(ne_local, nrhs, hessian_work, ne_local, ipiv, rhs, ne_local, info)
+         IF (info == 0) THEN
+            response(:, :) = rhs(:, 1:nrot_local)
+            z_e(:) = rhs(:, nrhs)
+            occ_sum = SUM(occ_curv)
+            IF (.NOT. global_schur_replicated) CALL para_env_inter_kp%sum(occ_sum)
+            DO r = 1, nrot_local
+               CALL project_kpoint_ot_schur_response(response(:, r), occ_curv, tether_curv, &
+                                                     occ_sum, channel_nmo, e_offset)
+            END DO
+            CALL project_kpoint_ot_schur_response(z_e, occ_curv, tether_curv, &
+                                                  occ_sum, channel_nmo, e_offset)
+            ready = ALL(response == response) .AND. ALL(z_e == z_e)
+         END IF
+         DEALLOCATE (hessian_work, rhs)
+
+      END SUBROUTINE solve_kpoint_ot_secant_energy_response
 
 ! **************************************************************************************************
 !> \brief ...

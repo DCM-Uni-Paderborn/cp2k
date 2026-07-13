@@ -51,14 +51,14 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_multiplicity_direction_scale,&
                                               ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_fermi_entropy_state, &
-        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_release_ready, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -165,6 +165,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
    CALL check_kpoint_symmetric_multisecant_update("k-point OT symmetric multisecant update", &
                                                   5.0E-13_dp, nfail)
+   CALL check_kpoint_coupled_multisecant_update("k-point OT coupled multisecant update", &
+                                                5.0E-13_dp, nfail)
    CALL check_kpoint_secant_candidate_promotion("k-point OT secant candidate promotion", nfail)
    CALL check_complex_projector_rotation_gradient("complex projector rotation gradient", &
                                                   5.0E-8_dp, nfail)
@@ -4669,6 +4671,104 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_symmetric_multisecant_update
+
+! **************************************************************************************************
+!> \brief check the full rotation/energy two-secant Hessian update
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_coupled_multisecant_update(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp) :: compatibility, correction_norm, cross_correction_ratio, error, &
+         independence, reference_norm, residual_norm, rotation_correction_ratio, &
+         scaled_compatibility, scaled_correction_norm, scaled_cross_correction_ratio, &
+         scaled_independence, scaled_reference_norm, scaled_residual_norm, &
+         scaled_rotation_correction_ratio, scaled_updated_residual_norm, updated_residual_norm
+      REAL(KIND=dp), DIMENSION(2, 2) :: energy_cross, energy_hessian, energy_steps, &
+         energy_targets, rotation_hessian, rotation_steps, rotation_targets, scaled_energy_cross, &
+         scaled_energy_hessian, scaled_energy_steps, scaled_energy_targets, &
+         scaled_updated_energy_cross, scaled_updated_energy_hessian, &
+         scaled_updated_rotation_hessian, true_energy_cross, true_energy_hessian, &
+         true_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
+         updated_rotation_hessian
+
+      rotation_hessian(:, :) = RESHAPE([0.9_dp, 0.05_dp, 0.05_dp, -0.2_dp], [2, 2])
+      energy_hessian(:, :) = RESHAPE([0.65_dp, 0.02_dp, 0.02_dp, 0.55_dp], [2, 2])
+      energy_cross(:, :) = RESHAPE([0.15_dp, -0.03_dp, -0.05_dp, 0.11_dp], [2, 2])
+      true_rotation_hessian(:, :) = RESHAPE([1.2_dp, 0.15_dp, 0.15_dp, -0.35_dp], [2, 2])
+      true_energy_hessian(:, :) = RESHAPE([0.8_dp, 0.12_dp, 0.12_dp, 0.45_dp], [2, 2])
+      true_energy_cross(:, :) = RESHAPE([0.25_dp, -0.08_dp, -0.14_dp, 0.19_dp], [2, 2])
+      rotation_steps(:, 1) = [0.4_dp, -0.15_dp]
+      rotation_steps(:, 2) = [-0.2_dp, 0.35_dp]
+      energy_steps(:, 1) = [0.2_dp, -0.1_dp]
+      energy_steps(:, 2) = [0.1_dp, 0.25_dp]
+      rotation_targets(:, :) = MATMUL(true_rotation_hessian, rotation_steps) - &
+                               MATMUL(TRANSPOSE(true_energy_cross), energy_steps)
+      energy_targets(:, :) = MATMUL(true_energy_hessian, energy_steps) - &
+                             MATMUL(true_energy_cross, rotation_steps)
+
+      CALL qs_scf_kp_coupled_multisecant_update( &
+         rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
+         rotation_targets, energy_targets, 1.0_dp, updated_rotation_hessian, &
+         updated_energy_hessian, updated_energy_cross, ready, independence, compatibility, &
+         correction_norm, residual_norm, updated_residual_norm, reference_norm, &
+         rotation_correction_ratio, cross_correction_ratio)
+      error = MAXVAL(ABS(MATMUL(updated_rotation_hessian, rotation_steps) - &
+                         MATMUL(TRANSPOSE(updated_energy_cross), energy_steps) - rotation_targets)) + &
+              MAXVAL(ABS(MATMUL(updated_energy_hessian, energy_steps) - &
+                         MATMUL(updated_energy_cross, rotation_steps) - energy_targets)) + &
+              MAXVAL(ABS(updated_rotation_hessian - TRANSPOSE(updated_rotation_hessian))) + &
+              MAXVAL(ABS(updated_energy_hessian - TRANSPOSE(updated_energy_hessian))) + &
+              MAXVAL(ABS(updated_energy_hessian - energy_hessian)) + &
+              compatibility + updated_residual_norm
+
+      scaled_energy_hessian(:, :) = energy_hessian(:, :)/energy_coordinate_scale**2
+      scaled_energy_cross(:, :) = energy_cross(:, :)/energy_coordinate_scale
+      scaled_energy_steps(:, :) = energy_coordinate_scale*energy_steps(:, :)
+      scaled_energy_targets(:, :) = energy_targets(:, :)/energy_coordinate_scale
+      CALL qs_scf_kp_coupled_multisecant_update( &
+         rotation_hessian, scaled_energy_hessian, scaled_energy_cross, rotation_steps, &
+         scaled_energy_steps, rotation_targets, scaled_energy_targets, 1.0_dp, &
+         scaled_updated_rotation_hessian, scaled_updated_energy_hessian, &
+         scaled_updated_energy_cross, scaled_ready, scaled_independence, scaled_compatibility, &
+         scaled_correction_norm, scaled_residual_norm, scaled_updated_residual_norm, &
+         scaled_reference_norm, scaled_rotation_correction_ratio, scaled_cross_correction_ratio)
+      error = error + MAXVAL(ABS(scaled_updated_rotation_hessian - updated_rotation_hessian)) + &
+              MAXVAL(ABS(energy_coordinate_scale*scaled_updated_energy_cross - updated_energy_cross)) + &
+              MAXVAL(ABS(energy_coordinate_scale**2*scaled_updated_energy_hessian - &
+                         updated_energy_hessian)) + &
+              ABS(scaled_independence - independence) + &
+              ABS(scaled_compatibility - compatibility) + &
+              ABS(scaled_correction_norm - correction_norm) + &
+              ABS(scaled_residual_norm - residual_norm) + &
+              ABS(scaled_updated_residual_norm - updated_residual_norm) + &
+              ABS(scaled_reference_norm - reference_norm) + &
+              ABS(scaled_rotation_correction_ratio - rotation_correction_ratio) + &
+              ABS(scaled_cross_correction_ratio - cross_correction_ratio)
+
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. independence <= 0.0_dp .OR. reference_norm <= 0.0_dp .OR. &
+          correction_norm <= 0.0_dp .OR. &
+          residual_norm <= updated_residual_norm .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,L1,7(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/error/independence/compatibility/correction/residual/updated/reference", &
+            ready, error, independence, compatibility, correction_norm, residual_norm, &
+            updated_residual_norm, reference_norm
+      ELSE
+         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
+            " OK with error/independence/compatibility/correction/residual/updated/reference", &
+            error, independence, compatibility, correction_norm, residual_norm, &
+            updated_residual_norm, reference_norm
+      END IF
+
+   END SUBROUTINE check_kpoint_coupled_multisecant_update
 
 ! **************************************************************************************************
 !> \brief check accepted-drop and residual calibration shared by secant candidates
