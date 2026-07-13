@@ -2921,10 +2921,12 @@ CONTAINS
 
       INTEGER :: adjusted, calibration_samples, current_nmo, group, ikpoint, imo, ispin, &
          local_channel, local_kpoint, ncopy, ngroups, nkpoint, trial_nmo
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: frontier_armed
       LOGICAL                                            :: fractional_support_lost, guard_group, &
                                                             lower_frontier, upper_frontier
-      REAL(KIND=dp) :: anchor_window, distance_tol, eps, frontier_dist, maxocc, occ_tail, &
-         release_weight, residual_delta, sigma, trial_release
+      REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
+                                                            frontier_dist, maxocc, occ_tail, &
+                                                            residual_delta, sigma
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: current_max_partial, frac_weight, lower_dist, &
          max_partial, maxocc_group, min_abs_eps_mu, release_current, release_trial, upper_dist
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
@@ -2960,9 +2962,11 @@ CONTAINS
       ! spin channel still needs finite local support for inter-spin charge
       ! transfer.  Do not let one fractional spin hide collapse of the other.
       ngroups = nspin_ot
-      ALLOCATE (current_max_partial(ngroups), frac_weight(ngroups), lower_dist(ngroups), &
+      ALLOCATE (frontier_armed(ngroups), current_max_partial(ngroups), frac_weight(ngroups), &
+                lower_dist(ngroups), &
                 max_partial(ngroups), maxocc_group(ngroups), min_abs_eps_mu(ngroups), &
                 release_current(ngroups), release_trial(ngroups), upper_dist(ngroups))
+      frontier_armed(:) = 0
       current_max_partial(:) = 0.0_dp
       frac_weight(:) = 0.0_dp
       lower_dist(:) = HUGE(1.0_dp)
@@ -2980,6 +2984,9 @@ CONTAINS
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
+            local_channel = qs_ot_channel_index(ispin, kp%nkpoint, nspin_ot) - first_channel + 1
+            IF (local_ot_env(local_channel)%ener_x_fermi_frontier_armed) &
+               frontier_armed(group) = 1
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=current_nmo, &
                             occupation_numbers=occupation_numbers)
             maxocc_group(group) = MAX(maxocc_group(group), maxocc)
@@ -2993,6 +3000,13 @@ CONTAINS
       DO group = 1, ngroups
          CALL para_env_inter_kp%max(current_max_partial(group))
          CALL para_env_inter_kp%max(maxocc_group(group))
+         CALL para_env_inter_kp%max(frontier_armed(group))
+         IF (current_max_partial(group) >= &
+             maxocc_group(group)*ot_kp_fermi_window_min_frac) frontier_armed(group) = 1
+      END DO
+      DO local_channel = 1, SIZE(local_ot_env)
+         group = MAX(1, MIN(ngroups, local_ot_env(local_channel)%spin_index))
+         local_ot_env(local_channel)%ener_x_fermi_frontier_armed = frontier_armed(group) > 0
       END DO
 
       DO ikpoint = 1, nkpoint
@@ -3030,15 +3044,13 @@ CONTAINS
       DO ikpoint = 1, nkpoint
          DO ispin = 1, nspin_ot
             group = MERGE(ispin, 1, ngroups == nspin_ot)
-            trial_release = release_trial(group)
             fractional_support_lost = qs_scf_kp_fermi_guard_transition( &
-                                      current_max_partial(group), max_partial(group), maxocc_group(group))
-            release_weight = trial_release
+                                      current_max_partial(group), max_partial(group), &
+                                      maxocc_group(group), frontier_armed(group) > 0)
             guard_group = lower_dist(group) < HUGE(1.0_dp) .AND. &
                           upper_dist(group) < HUGE(1.0_dp) .AND. &
                           min_abs_eps_mu(group) > anchor_window .AND. &
-                          fractional_support_lost .AND. &
-                          release_weight < 1.0_dp - EPSILON(1.0_dp)
+                          fractional_support_lost
             IF (.NOT. guard_group) CYCLE
 
             distance_tol = MAX(1.0E-10_dp, 1.0E-8_dp*MAX(lower_dist(group), upper_dist(group)))
@@ -3088,7 +3100,8 @@ CONTAINS
             MINVAL(release_current), MINVAL(release_trial), MINVAL(release_trial), adjusted
       END IF
 
-      DEALLOCATE (current_max_partial, frac_weight, lower_dist, max_partial, maxocc_group, &
+      DEALLOCATE (frontier_armed, current_max_partial, frac_weight, lower_dist, max_partial, &
+                  maxocc_group, &
                   min_abs_eps_mu, release_current, release_trial, upper_dist)
 
    END SUBROUTINE qs_scf_loop_guard_ot_kp_trial_fermi_window
@@ -3153,19 +3166,31 @@ CONTAINS
 !> \param current_max_partial largest min(f,maxocc-f) in the accepted state
 !> \param trial_max_partial largest min(f,maxocc-f) in the trial state
 !> \param maxocc maximum orbital occupation
+!> \param frontier_armed whether this spin previously resolved a physical thermal frontier
 !> \return true only for loss of physical fractional support
 ! **************************************************************************************************
-   FUNCTION qs_scf_kp_fermi_guard_transition(current_max_partial, trial_max_partial, maxocc) &
+   FUNCTION qs_scf_kp_fermi_guard_transition(current_max_partial, trial_max_partial, maxocc, &
+                                             frontier_armed) &
       RESULT(guard)
       REAL(KIND=dp), INTENT(IN)                          :: current_max_partial, trial_max_partial, &
                                                             maxocc
+      LOGICAL, INTENT(IN), OPTIONAL                      :: frontier_armed
       LOGICAL                                            :: guard
 
-      REAL(KIND=dp)                                      :: current_release, trial_release
+      LOGICAL                                            :: armed
+      REAL(KIND=dp)                                      :: current_release, support_threshold, &
+                                                            trial_release
 
       guard = .FALSE.
       IF (maxocc <= EPSILON(1.0_dp)) RETURN
-      IF (current_max_partial < maxocc*ot_kp_fermi_window_min_frac) RETURN
+      armed = .FALSE.
+      IF (PRESENT(frontier_armed)) armed = frontier_armed
+      support_threshold = maxocc*ot_kp_fermi_window_min_frac
+      IF (armed .AND. trial_max_partial < support_threshold) THEN
+         guard = .TRUE.
+         RETURN
+      END IF
+      IF (current_max_partial < support_threshold) RETURN
 
       current_release = kpoint_ot_fermi_window_release_weight(current_max_partial, maxocc)
       trial_release = kpoint_ot_fermi_window_release_weight(trial_max_partial, maxocc)
@@ -5034,6 +5059,8 @@ CONTAINS
       DO local_channel = 1, SIZE(local_ot_env)
          local_ot_env(local_channel)%ener_x_fermi_guard_active = fermi_guard_active
          local_ot_env(local_channel)%ener_x_fermi_guard_anchor = fermi_guard_anchor
+         IF (.NOT. fermi_guard_active) &
+            local_ot_env(local_channel)%ener_x_fermi_frontier_armed = .FALSE.
       END DO
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)

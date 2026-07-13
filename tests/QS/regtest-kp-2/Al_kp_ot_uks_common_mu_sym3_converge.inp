@@ -5,12 +5,13 @@
 ! It also covers the complex FULL_ALL preconditioner endpoint.
 !
 ! Local 2026-07 OMP_NUM_THREADS=1 references from fresh directories: OT
-! converges in 236 MPI-2 and 251 serial steps at EPS_SCF 1E-6. The MPI-2
-! reference has Mermin F = -8.16155083003631 Ha and
-! kTS = -0.00024431801099 Ha. Serial and MPI-2 differ by 2.6E-7 Ha; matching
-! diagonalization gives -8.16155090938556 Ha. Both methods give weighted spin
-! populations 6.33333 and 5.66667. The residual-aware per-spin frontier guard
-! is exercised during startup and again if an accepted trial loses the tail.
+! converges in 148 MPI-2 and 154 serial steps at EPS_SCF 1E-6. The MPI-2
+! reference has Mermin F = -8.16155026103227 Ha; serial and MPI-2 differ by
+! 5.1E-8 Ha. Matching diagonalization gives -8.16155090938556 Ha. Both
+! methods give weighted spin populations 6.33333 and 5.66667. The
+! residual-aware per-spin frontier guard is exercised during startup and
+! preserves an established thermal frontier across gradual accepted-step
+! erosion until the residual-calibrated release condition is reached.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_uks_common_mu_sym3_converge

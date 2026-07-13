@@ -4199,6 +4199,9 @@ CONTAINS
                qs_scf_kp_fermi_guard_transition(1.0E-3_dp, 0.0_dp, maxocc) .OR. &
                .NOT. qs_scf_kp_fermi_guard_transition(2.0E-3_dp, 0.0_dp, maxocc) .OR. &
                qs_scf_kp_fermi_guard_transition(2.0E-3_dp, 2.0E-3_dp, maxocc) .OR. &
+               .NOT. qs_scf_kp_fermi_guard_transition(1.0E-3_dp, 1.5E-3_dp, maxocc, .TRUE.) .OR. &
+               qs_scf_kp_fermi_guard_transition(1.0E-3_dp, 2.5E-3_dp, maxocc, .TRUE.) .OR. &
+               qs_scf_kp_fermi_guard_transition(1.0E-3_dp, 1.5E-3_dp, maxocc, .FALSE.) .OR. &
                qs_scf_kp_fermi_guard_transition(2.0E-3_dp, 0.0_dp, 0.0_dp)
       IF (failed) THEN
          nfail = nfail + 1

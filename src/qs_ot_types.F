@@ -280,6 +280,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: ener_x_step_max = 0.0_dp, ener_x_trusted_step_max = 0.0_dp
       REAL(KIND=dp) :: ener_x_trust_scale = 1.0_dp
       LOGICAL       :: ener_x_fermi_guard_active = .FALSE.
+      LOGICAL       :: ener_x_fermi_frontier_armed = .FALSE.
       REAL(KIND=dp) :: ener_x_fermi_guard_anchor = -1.0_dp
       REAL(KIND=dp) :: ener_x_fermi_guard_position_max = -1.0_dp
       REAL(KIND=dp) :: ener_x_line_search_position = 0.0_dp
@@ -1609,6 +1610,7 @@ CONTAINS
          qs_ot_env%ener_x_trusted_step_max = 0.0_dp
          qs_ot_env%ener_x_trust_scale = 1.0_dp
          qs_ot_env%ener_x_fermi_guard_active = .FALSE.
+         qs_ot_env%ener_x_fermi_frontier_armed = .FALSE.
          qs_ot_env%ener_x_fermi_guard_anchor = -1.0_dp
          qs_ot_env%ener_x_fermi_guard_position_max = -1.0_dp
          qs_ot_env%ener_x_line_search_position = 0.0_dp

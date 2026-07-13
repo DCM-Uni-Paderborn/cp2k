@@ -4,7 +4,7 @@
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-07 HIGH reference after normalizing each irreducible-channel
 ! search direction by its star multiplicity: AUTO grows from 4 to 8 and 16,
-! then converges in 40 OT steps at -8.15998708351193 Ha.  It prints no
+! then converges in 53 MPI-2 OT steps at -8.15997715866557 Ha. It prints no
 ! first/last-band, AUTO-exhausted, or unsupported-content warning.  Together
 ! with the full-grid companion this guards the weighted symmetry reduction.
 &GLOBAL
