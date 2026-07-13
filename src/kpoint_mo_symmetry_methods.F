@@ -16,6 +16,8 @@ MODULE kpoint_mo_symmetry_methods
                                               cp_fm_type
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kind_rotmat_type,&
+                                              kpoint_phase_gauge_input,&
+                                              kpoint_phase_gauge_pbc,&
                                               kpoint_sym_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: twopi
@@ -74,11 +76,13 @@ CONTAINS
       INTEGER :: iao, iatom, ikind, imo, irow, irow_source, irow_target, irow_work, nao, natom, &
          nmo, rot_slot, source_atom, source_dim, target_atom, target_dim
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ao_size, ao_start
+      INTEGER, DIMENSION(:, :), POINTER                  :: phase_fcell
       LOGICAL                                            :: reverse_phase, time_reversal
       REAL(KIND=dp)                                      :: arg, coeff_imag, coeff_real, coskl, &
                                                             phase_imag, phase_real, sinkl
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dst_i, dst_r, src_i, src_r
       REAL(KIND=dp), DIMENSION(3)                        :: xkp_phase
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: phase_kg
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rotmat
       TYPE(kind_rotmat_type), DIMENSION(:), POINTER      :: kind_rot
       TYPE(kpoint_sym_type), POINTER                     :: kpsym
@@ -163,6 +167,33 @@ CONTAINS
       IF (ASSOCIATED(kpsym%phase_mode)) THEN
          IF (kpsym%phase_mode(isym) > 0) reverse_phase = kpsym%phase_mode(isym) == 2
       END IF
+      IF (.NOT. ASSOCIATED(kpsym%phase_gauge)) THEN
+         reason = "SCF atom-cell phase gauge has not been calibrated"
+         DEALLOCATE (src_r, src_i, dst_r, dst_i, ao_start, ao_size)
+         RETURN
+      END IF
+      SELECT CASE (kpsym%phase_gauge(isym))
+      CASE (kpoint_phase_gauge_pbc)
+         IF (.NOT. ASSOCIATED(kpsym%fcell_gauge) .OR. .NOT. ASSOCIATED(kpsym%kgphase)) THEN
+            reason = "SCF PBC-gauge phase data are not available"
+            DEALLOCATE (src_r, src_i, dst_r, dst_i, ao_start, ao_size)
+            RETURN
+         END IF
+         phase_fcell => kpsym%fcell_gauge(:, :, isym)
+         phase_kg => kpsym%kgphase(:, isym)
+      CASE (kpoint_phase_gauge_input)
+         IF (.NOT. ASSOCIATED(kpsym%fcell) .OR. .NOT. ASSOCIATED(kpsym%kgphase_input)) THEN
+            reason = "SCF input-coordinate phase data are not available"
+            DEALLOCATE (src_r, src_i, dst_r, dst_i, ao_start, ao_size)
+            RETURN
+         END IF
+         phase_fcell => kpsym%fcell(:, :, isym)
+         phase_kg => kpsym%kgphase_input(:, isym)
+      CASE DEFAULT
+         reason = "SCF atom-cell phase gauge has not been calibrated"
+         DEALLOCATE (src_r, src_i, dst_r, dst_i, ao_start, ao_size)
+         RETURN
+      END SELECT
       xkp_phase(1:3) = kpsym%xkp(1:3, isym)
       DO iatom = 1, natom
          source_atom = iatom
@@ -176,12 +207,10 @@ CONTAINS
             DEALLOCATE (src_r, src_i, dst_r, dst_i, ao_start, ao_size)
             RETURN
          END IF
-         arg = REAL(kpsym%fcell_gauge(1, source_atom, isym), KIND=dp)*xkp_phase(1) + &
-               REAL(kpsym%fcell_gauge(2, source_atom, isym), KIND=dp)*xkp_phase(2) + &
-               REAL(kpsym%fcell_gauge(3, source_atom, isym), KIND=dp)*xkp_phase(3)
-         IF (ASSOCIATED(kpsym%kgphase)) THEN
-            arg = arg + kpsym%kgphase(source_atom, isym)
-         END IF
+         arg = REAL(phase_fcell(1, source_atom), KIND=dp)*xkp_phase(1) + &
+               REAL(phase_fcell(2, source_atom), KIND=dp)*xkp_phase(2) + &
+               REAL(phase_fcell(3, source_atom), KIND=dp)*xkp_phase(3) + &
+               phase_kg(source_atom)
          IF (reverse_phase) arg = -arg
          coskl = COS(twopi*arg)
          sinkl = SIN(twopi*arg)
