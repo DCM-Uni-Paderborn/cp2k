@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
 tblite_ver="0.7.0"
 tblite_sha256="3a7cb4602101e828caf41c38ca5e30f82de82d0d26d5db40168acdcad3462b92"
-save_tblite_rev="1b5d50163edb14bd4f381c67492f3f486461547f"
+save_tblite_rev="1449febde312874cd0fac4227919f5ba4e4b69b8"
 save_tblite_repo="${SAVE_TBLITE_REPOSITORY:-https://github.com/DCM-Uni-Paderborn/save_tblite.git}"
 save_tblite_src_dir="save_tblite-${save_tblite_rev}"
 
@@ -48,6 +48,7 @@ case "$with_tblite" in
           -DCMAKE_VERBOSE_MAKEFILE=ON \
           -DBUILD_TESTING=OFF \
           -DWITH_TESTS=OFF \
+          -DWITH_OpenMP=ON \
           -DWITH_DDX=OFF \
           -Dtblite-dependency-method=fetch \
           .. \
