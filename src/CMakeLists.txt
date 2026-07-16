@@ -331,6 +331,7 @@ list(
   kpoint_k_r_trafo_simple.F
   kpoint_lattice_fft.F
   kpoint_methods.F
+  kpoint_restart_transfer.F
   kpoint_mo_dump.F
   kpoint_mo_symmetry_methods.F
   kpoint_transitional.F

@@ -32,7 +32,8 @@ MODULE input_cp2k_scf
         diag_filter_matrix, diag_ot, diag_standard, diag_update_method_adiis, &
         diag_update_method_mixing, eht_guess, external_density_guess, gaussian, general_roks, &
         high_spin_roks, history_guess, jacobian_fd1, jacobian_fd1_backward, jacobian_fd1_central, &
-        jacobian_fd2, jacobian_fd2_backward, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, &
+        jacobian_fd2, jacobian_fd2_backward, kpoint_restart_exact, &
+        kpoint_restart_legacy_compatible, kpoint_restart_validated_bvk_transfer, ls_2pnt, ls_3pnt, ls_adapt, ls_gold, ls_none, &
         mopac_guess, no_guess, numerical, ot_algo_irac, ot_algo_taylor_or_diag, ot_chol_irac, &
         ot_low_rank_base_lattice_fft, ot_low_rank_base_overlap, ot_lwdn_irac, ot_mini_broyden, &
         ot_mini_cg, ot_mini_diis, ot_mini_lbfgs, ot_mini_sd, ot_poly_irac, &
@@ -92,7 +93,7 @@ CONTAINS
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="scf", &
                           description="Parameters needed to perform an SCF run.", &
-                          n_keywords=21, n_subsections=8, repeats=.FALSE.)
+                          n_keywords=22, n_subsections=8, repeats=.FALSE.)
 
       NULLIFY (subsection)
 
@@ -239,6 +240,28 @@ CONTAINS
                           "has to coincide with the finest CP2K real-space grid.", &
                           usage="EXTERNAL_DENSITY_FILE_NAME <FILENAME>", &
                           type_of_var=char_t, default_c_val="", n_var=1)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create( &
+         keyword, __LOCATION__, name="KPOINT_RESTART_MODE", &
+         description="Selects how a k-point density-matrix restart is interpreted. "// &
+         "COMPATIBLE preserves the historical legacy-file reader and requires a same-mesh "// &
+         "transfer for self-describing files. EXACT accepts only a self-describing restart "// &
+         "from the same mesh. "// &
+         "VALIDATED_BVK_TRANSFER may reuse a version-2 restart on a finer regular mesh "// &
+         "after validating its basis, geometry, spin/electron counts, smearing metadata, "// &
+         "Fourier representation, Hermiticity, and electron trace. This does not constitute "// &
+         "an N-representability guarantee for an accepted transfer. Any failed validation "// &
+         "falls back to the method's safe initial guess.", &
+         usage="KPOINT_RESTART_MODE VALIDATED_BVK_TRANSFER", &
+         default_i_val=kpoint_restart_legacy_compatible, &
+         enum_c_vals=s2a("COMPATIBLE", "EXACT", "VALIDATED_BVK_TRANSFER"), &
+         enum_desc=s2a("Preserve legacy same-mesh restart compatibility.", &
+                       "Require a self-describing restart and an identical k-point mesh.", &
+                       "Permit a validated regular-mesh BvK Fourier refinement."), &
+         enum_i_vals=[kpoint_restart_legacy_compatible, kpoint_restart_exact, &
+                      kpoint_restart_validated_bvk_transfer])
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 

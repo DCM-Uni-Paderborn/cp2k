@@ -87,6 +87,9 @@ registry["OT_kpoint_ref_refresh"] = TextPresenceMatcher(
 registry["OT_added_mos_auto_grow"] = TextPresenceMatcher(
     "K-point ADDED_MOS AUTO: growing virtual-space buffer"
 )
+registry["KPOINT_RESTART_VALIDATED_TRANSFER"] = TextPresenceMatcher(
+    "KPOINT_RESTART| Validated BvK mesh transfer accepted"
+)
 registry["GXTB_native_raw"] = TextPresenceMatcher("GXTB-Raw")
 registry["GXTB_native_simple"] = TextPresenceMatcher("GXTB-Simple")
 registry["GXTB_native_fdiis"] = TextPresenceMatcher("GXTB-FDIIS")

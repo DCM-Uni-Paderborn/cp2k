@@ -233,8 +233,9 @@ MODULE qs_scf
                                               tb_native_scc_mixer_active,&
                                               tb_scf_mixer_error,&
                                               tb_update_charges
+   USE cell_types, ONLY: cell_type
 #if defined(__TBLITE_GXTB)
-   USE tblite_interface,                ONLY: tb_sync_gxtb_kpoint_density
+   USE tblite_interface, ONLY: tb_sync_gxtb_kpoint_density
 #endif
 #include "./base/base_uses.f90"
 
@@ -435,8 +436,10 @@ CONTAINS
          tblite_native_mixer
       REAL(KIND=dp)                                      :: adiis_raw_delta, adiis_step_delta, &
                                                             oda_predictor_lambda, t1, t2
+      INTEGER, DIMENSION(2)                              :: nelectron_spin
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(cp_result_type), POINTER                      :: results
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks
@@ -462,7 +465,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (dft_control, rho, energy, &
+      NULLIFY (dft_control, rho, energy, cell, &
                logger, qs_charges, ks_env, mos, atomic_kind_set, qs_kind_set, &
                particle_set, ace_section, dft_section, hfx_sections, input, &
                scf_section, para_env, results, kpoints, pw_env, matrix_ks, &
@@ -486,6 +489,8 @@ CONTAINS
                       matrix_ks_kp=matrix_ks_kp, &
                       input=input, &
                       dft_control=dft_control, &
+                      cell=cell, &
+                      nelectron_spin=nelectron_spin, &
                       do_kpoints=do_kpoints, &
                       kpoints=kpoints, &
                       results=results, &
@@ -999,7 +1004,8 @@ CONTAINS
             END IF
 
             IF (do_kpoints) THEN
-               CALL write_kpoints_restart(rho_ao_kp, kpoints, scf_env, dft_section, particle_set, qs_kind_set)
+               CALL write_kpoints_restart(rho_ao_kp, kpoints, scf_env, dft_section, particle_set, &
+                                          qs_kind_set, cell, dft_control, scf_control, nelectron_spin)
             ELSE
                ! A damped ODA density is generally non-idempotent and cannot be represented by
                ! the raw-endpoint MOs. Defer the WFN restart until a later idempotent step.

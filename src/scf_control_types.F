@@ -23,6 +23,7 @@ MODULE scf_control_types
    USE cp_parser_methods,               ONLY: read_integer_object
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE input_constants,                 ONLY: &
+        kpoint_restart_legacy_compatible, &
         atomic_guess, diag_ot, diag_update_method_adiis, diag_update_method_mixing, direct_p_mix, &
         external_density_guess, general_roks, high_spin_roks, no_guess, no_mix, &
         ot_algo_taylor_or_diag, outer_scf_basis_center_opt, outer_scf_cdft_constraint, &
@@ -136,6 +137,7 @@ MODULE scf_control_types
       TYPE(gce_type), POINTER               :: gce => NULL()
       INTEGER                               :: density_guess = -1, mixing_method = -1
       CHARACTER(LEN=default_path_length)     :: external_density_file_name = ""
+      INTEGER                               :: kpoint_restart_mode = kpoint_restart_legacy_compatible
       REAL(KIND=dp)                         :: eps_eigval = -1.0_dp, eps_scf = -1.0_dp, eps_scf_hist = -1.0_dp, &
                                                level_shift = -1.0_dp, &
                                                eps_lumos = -1.0_dp, eps_diis = -1.0_dp
@@ -213,6 +215,7 @@ CONTAINS
       scf_control%added_mos(:) = 0
       scf_control%added_mos_auto(:) = .FALSE.
       scf_control%max_scf_hist = 0
+      scf_control%kpoint_restart_mode = kpoint_restart_legacy_compatible
 
       !Mixing
       IF (scf_control%non_selfconsistent) THEN
@@ -383,6 +386,8 @@ CONTAINS
           LEN_TRIM(scf_control%external_density_file_name) == 0) THEN
          CPABORT("SCF_GUESS EXTERNAL_DENSITY requires EXTERNAL_DENSITY_FILE_NAME")
       END IF
+      CALL section_vals_val_get(scf_section, "KPOINT_RESTART_MODE", &
+                                i_val=scf_control%kpoint_restart_mode)
       CALL section_vals_val_get(scf_section, "eps_eigval", r_val=scf_control%eps_eigval)
       CALL section_vals_val_get(scf_section, "cholesky", i_val=cholesky_flag)
       IF (scf_control%use_ot) THEN
