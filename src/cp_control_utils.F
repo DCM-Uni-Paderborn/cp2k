@@ -66,7 +66,9 @@ MODULE cp_control_utils
         tblite_cli_solvation_gbsa, tblite_guess_ceh, tblite_mixer_memory_inherit, &
         tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, tblite_scc_mixer_none, &
         tblite_scc_mixer_tblite, tblite_solver_gvd, tblite_solver_gvr, tddfpt_dipole_length, &
-        tddfpt_kernel_stda, use_mom_ref_user, xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none
+        tddfpt_kernel_stda, use_mom_ref_user, xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none, &
+        gxtb, tblite_gxtb_exchange_complete_array, tblite_gxtb_gradient_dense, &
+        tblite_gxtb_transform_dense
    USE input_cp2k_check,                ONLY: xc_functionals_expand
    USE input_cp2k_dft,                  ONLY: create_dft_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
@@ -1009,14 +1011,16 @@ CONTAINS
                                                             ngauss, ngp, nrep, znum
       INTEGER, DIMENSION(:), POINTER                     :: tmplist
       LOGICAL :: dftb_scc_mixer_explicit, dftb_tblite_mixer_explicit, explicit, &
-         tblite_reference_cli, tblite_reference_cli_section, tblite_section_active, was_present, &
-         xtb_scc_mixer_explicit, xtb_tblite_mixer_explicit
+         gxtb_acceleration_explicit, gxtb_image_batch_explicit, tblite_reference_cli, &
+         tblite_reference_cli_section, tblite_section_active, was_present, xtb_scc_mixer_explicit, &
+         xtb_tblite_mixer_explicit
       REAL(dp)                                           :: tmp, tmpsqrt, value
       REAL(dp), POINTER                                  :: scal(:)
       TYPE(section_vals_type), POINTER :: cdft_control_section, ddapc_restraint_section, &
          dftb_parameter, dftb_section, dftb_tblite_mixer, eeq_section, genpot_section, &
          lri_optbas_section, mull_section, nonbonded_section, s2_restraint_section, se_section, &
-         xtb_parameter, xtb_section, xtb_tblite, xtb_tblite_mixer, xtb_tblite_ref_cli
+         xtb_parameter, xtb_section, xtb_tblite, xtb_tblite_gxtb_acceleration, xtb_tblite_mixer, &
+         xtb_tblite_ref_cli
 
       CALL timeset(routineN, handle)
 
@@ -1024,7 +1028,7 @@ CONTAINS
       NULLIFY (mull_section, ddapc_restraint_section, s2_restraint_section, &
                se_section, dftb_section, xtb_section, dftb_parameter, xtb_parameter, lri_optbas_section, &
                cdft_control_section, genpot_section, eeq_section, dftb_tblite_mixer, &
-               xtb_tblite_mixer, xtb_tblite_ref_cli)
+               xtb_tblite_gxtb_acceleration, xtb_tblite_mixer, xtb_tblite_ref_cli)
 
       mull_section => section_vals_get_subs_vals(qs_section, "MULLIKEN_RESTRAINT")
       ddapc_restraint_section => section_vals_get_subs_vals(qs_section, "DDAPC_RESTRAINT")
@@ -1042,6 +1046,7 @@ CONTAINS
       genpot_section => section_vals_get_subs_vals(nonbonded_section, "GENPOT")
       xtb_tblite_mixer => section_vals_get_subs_vals(xtb_section, "TBLITE_MIXER")
       xtb_tblite => section_vals_get_subs_vals(xtb_section, "TBLITE")
+      xtb_tblite_gxtb_acceleration => section_vals_get_subs_vals(xtb_tblite, "GXTB_ACCELERATION")
       xtb_tblite_ref_cli => section_vals_get_subs_vals(xtb_tblite, "REFERENCE_CLI")
 
       ! Setup all defaults values and overwrite input parameters
@@ -1937,6 +1942,36 @@ CONTAINS
       IF (qs_control%xtb_control%do_tblite) THEN
          CALL section_vals_val_get(xtb_tblite, "METHOD", &
                                    i_val=qs_control%xtb_control%tblite_method)
+         CALL section_vals_get(xtb_tblite_gxtb_acceleration, explicit=gxtb_acceleration_explicit)
+         IF (gxtb_acceleration_explicit .AND. &
+             qs_control%xtb_control%tblite_method /= gxtb) THEN
+            CPABORT("XTB/TBLITE/GXTB_ACCELERATION requires XTB/TBLITE/METHOD GXTB")
+         END IF
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "EXCHANGE_STREAM_BACKEND", &
+                                   i_val=qs_control%xtb_control%gxtb_exchange_stream_backend)
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "FORWARD_FOCK_QUALIFICATION", &
+                                   i_val=qs_control%xtb_control%gxtb_forward_fock_qualification)
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "GRADIENT_CONTRACTION", &
+                                   i_val=qs_control%xtb_control%gxtb_gradient_contraction)
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "FOURIER_TRANSFORM_BACKEND", &
+                                   i_val=qs_control%xtb_control%gxtb_fourier_transform_backend)
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "SYMMETRY_STAR_CONTRACTION", &
+                                   i_val=qs_control%xtb_control%gxtb_symmetry_star_contraction)
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "IMAGE_BATCH_SIZE", &
+                                   explicit=gxtb_image_batch_explicit, &
+                                   i_val=qs_control%xtb_control%gxtb_image_batch_size)
+         qs_control%xtb_control%gxtb_image_batch_explicit = gxtb_image_batch_explicit
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "ACP_PROJECTOR_CACHE", &
+                                   i_val=qs_control%xtb_control%gxtb_acp_projector_cache)
+         IF (qs_control%xtb_control%gxtb_image_batch_size < 1) THEN
+            CPABORT("XTB/TBLITE/GXTB_ACCELERATION/IMAGE_BATCH_SIZE must be positive")
+         END IF
+         IF (qs_control%xtb_control%gxtb_fourier_transform_backend /= tblite_gxtb_transform_dense .AND. &
+             (qs_control%xtb_control%gxtb_exchange_stream_backend /= &
+              tblite_gxtb_exchange_complete_array .OR. &
+              qs_control%xtb_control%gxtb_gradient_contraction /= tblite_gxtb_gradient_dense)) THEN
+            CPABORT("Non-dense g-XTB transform requires dense complete-array paths")
+         END IF
          CALL section_vals_val_get(xtb_tblite, "PARAM", &
                                    c_val=qs_control%xtb_control%tblite_param_file)
          CALL section_vals_val_get(xtb_tblite, "ACCURACY", &
