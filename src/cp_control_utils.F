@@ -62,11 +62,12 @@ MODULE cp_control_utils
         sic_mauri_spz, sic_mauri_us, sic_none, slater, tblite_cli_born_kernel_auto, &
         tblite_cli_solution_state_gsolv, tblite_cli_solvation_alpb, tblite_cli_solvation_cpcm, &
         tblite_cli_solvation_gb, tblite_cli_solvation_gbe, tblite_cli_solvation_gbsa, &
-        tblite_guess_ceh, tblite_gxtb_exchange_complete_array, tblite_gxtb_gradient_dense, &
-        tblite_gxtb_transform_dense, tblite_mixer_memory_inherit, tblite_scc_mixer_auto, &
-        tblite_scc_mixer_cp2k, tblite_scc_mixer_none, tblite_scc_mixer_tblite, tblite_solver_gvd, &
-        tblite_solver_gvr, tddfpt_dipole_length, tddfpt_kernel_stda, use_mom_ref_user, &
-        xtb_vdw_type_d3, xtb_vdw_type_d4, xtb_vdw_type_none
+        tblite_guess_ceh, tblite_gxtb_exchange_batched, tblite_gxtb_exchange_complete_array, &
+        tblite_gxtb_exchange_distributed, tblite_gxtb_transform_dense, &
+        tblite_mixer_memory_inherit, tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, &
+        tblite_scc_mixer_none, tblite_scc_mixer_tblite, tblite_solver_gvd, tblite_solver_gvr, &
+        tddfpt_dipole_length, tddfpt_kernel_stda, use_mom_ref_user, xtb_vdw_type_d3, &
+        xtb_vdw_type_d4, xtb_vdw_type_none
    USE input_cp2k_check,                ONLY: xc_functionals_expand
    USE input_cp2k_dft,                  ONLY: create_dft_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
@@ -1916,10 +1917,10 @@ CONTAINS
             CPABORT("XTB/TBLITE/GXTB_ACCELERATION/IMAGE_BATCH_SIZE must be positive")
          END IF
          IF (qs_control%xtb_control%gxtb_fourier_transform_backend /= tblite_gxtb_transform_dense .AND. &
-             (qs_control%xtb_control%gxtb_exchange_stream_backend /= &
-              tblite_gxtb_exchange_complete_array .OR. &
-              qs_control%xtb_control%gxtb_gradient_contraction /= tblite_gxtb_gradient_dense)) THEN
-            CPABORT("Non-dense g-XTB transform requires dense complete-array paths")
+             .NOT. ANY(qs_control%xtb_control%gxtb_exchange_stream_backend == &
+                       [tblite_gxtb_exchange_complete_array, tblite_gxtb_exchange_batched, &
+                        tblite_gxtb_exchange_distributed])) THEN
+            CPABORT("Compact transform needs array, batch, or image mode")
          END IF
          CALL section_vals_val_get(xtb_tblite, "PARAM", &
                                    c_val=qs_control%xtb_control%tblite_param_file)

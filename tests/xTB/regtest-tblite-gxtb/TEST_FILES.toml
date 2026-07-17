@@ -87,4 +87,20 @@
   {matcher="GXTB_mixed_radix_transform"},
   {matcher="GXTB_mixed_radix_transform_forward"},
 ]
+"CH4_gxtb_kp_streamed_separable.inp" = [
+  {matcher="E_total", tol=1.0E-10, ref=-40.473758159181230},
+  {matcher="GXTB_streamed_separable_forward"},
+  {matcher="GXTB_streamed_separable_reverse"},
+  {matcher="GXTB_streamed_bounded_no_fallback"},
+  {matcher="GXTB_stream_oracle_qualification"},
+  {matcher="GXTB_streamed_reverse_qualification"},
+]
+"CH4_gxtb_kp_streamed_mixed_radix.inp" = [
+  {matcher="E_total", tol=1.0E-10, ref=-40.473758159181230},
+  {matcher="GXTB_streamed_mixed_radix_forward"},
+  {matcher="GXTB_streamed_mixed_radix_reverse"},
+  {matcher="GXTB_streamed_bounded_no_fallback"},
+  {matcher="GXTB_stream_oracle_qualification"},
+  {matcher="GXTB_streamed_reverse_qualification"},
+]
 #EOF

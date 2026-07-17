@@ -61,6 +61,12 @@ registry["GXTB_forward_fock_qualification"] = TextPresenceMatcher(
 registry["GXTB_forward_fullmesh_qualification"] = TextPresenceMatcher(
     "GXTB-QUALIFICATION_ONLY FULLMESH-ORACLE iter="
 )
+registry["GXTB_stream_oracle_qualification"] = TextPresenceMatcher(
+    "GXTB-QUALIFICATION_ONLY STREAM-ORACLE iter="
+)
+registry["GXTB_streamed_reverse_qualification"] = TextPresenceMatcher(
+    "GXTB-QUALIFICATION_ONLY STREAMED-REVERSE"
+)
 registry["GXTB_mixer_star_qualification"] = TextPresenceMatcher(
     "GXTB-QUALIFICATION_ONLY MIXER-STAR iter="
 )
@@ -72,6 +78,21 @@ registry["GXTB_mixed_radix_transform"] = TextPresenceMatcher(
 )
 registry["GXTB_mixed_radix_transform_forward"] = TextPresenceMatcher(
     "GXTB-EXCHANGE-TRANSFORM stage=FORWARD backend=MIXED_RADIX_FFT fallback=0"
+)
+registry["GXTB_streamed_mixed_radix_forward"] = TextPresenceMatcher(
+    "GXTB-STREAMED-FOURIER stage=FORWARD backend=MIXED_RADIX_FFT"
+)
+registry["GXTB_streamed_mixed_radix_reverse"] = TextPresenceMatcher(
+    "GXTB-STREAMED-FOURIER stage=REVERSE backend=MIXED_RADIX_FFT"
+)
+registry["GXTB_streamed_separable_forward"] = TextPresenceMatcher(
+    "GXTB-STREAMED-FOURIER stage=FORWARD backend=SEPARABLE_DFT"
+)
+registry["GXTB_streamed_separable_reverse"] = TextPresenceMatcher(
+    "GXTB-STREAMED-FOURIER stage=REVERSE backend=SEPARABLE_DFT"
+)
+registry["GXTB_streamed_bounded_no_fallback"] = TextPresenceMatcher(
+    "fullMesh=0 fallback=0"
 )
 registry["GXTB_distributed_images_production"] = TextPresenceMatcher(
     "GXTB-KGROUP-PARTIAL-DISTRIBUTED-IMAGES importers="
