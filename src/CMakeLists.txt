@@ -1572,6 +1572,7 @@ set(CP2K_PROGS_F
     qs_charge_mixing_unittest.F
     qs_ot_complex_ref_unittest.F
     subsys/cell_types_unittest.F
+    kpoint_restart_transfer_unittest.F
     pw/realspace_grid_cube_unittest.F
     metadyn_tools/graph.F
     motion/dumpdcd.F
@@ -1990,6 +1991,7 @@ list(
   "qs_charge_mixing_unittest"
   "qs_ot_complex_ref_unittest"
   "cell_types_unittest"
+  "kpoint_restart_transfer_unittest"
   "realspace_grid_cube_unittest"
   "graph"
   "dumpdcd"
@@ -2023,6 +2025,8 @@ add_executable(low_rank_preconditioner_unittest
 add_executable(qs_charge_mixing_unittest qs_charge_mixing_unittest.F)
 add_executable(qs_ot_complex_ref_unittest qs_ot_complex_ref_unittest.F)
 add_executable(cell_types_unittest subsys/cell_types_unittest.F)
+add_executable(kpoint_restart_transfer_unittest
+               kpoint_restart_transfer_unittest.F)
 add_executable(realspace_grid_cube_unittest pw/realspace_grid_cube_unittest.F)
 add_executable(graph metadyn_tools/graph.F)
 add_executable(dumpdcd motion/dumpdcd.F)
