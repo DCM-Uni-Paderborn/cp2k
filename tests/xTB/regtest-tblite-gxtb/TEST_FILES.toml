@@ -62,20 +62,20 @@
 "Si_prim_gxtb_kp_general.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.001230548395938}]
 "Si_prim_gxtb_kp_shifted_full.inp" = [{matcher="E_total", tol=1.0E-10, ref=-579.001230548395938}]
 "CH4_gxtb_kp_acceleration_qualify.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.473758159181230},
+  {matcher="E_total", tol=1.0E-10, ref=-40.473748967057020},
   {matcher="GXTB_exchange_qualification"},
   {matcher="GXTB_forward_fock_qualification"},
   {matcher="GXTB_mixer_star_qualification"},
   {matcher="GXTB_acp_cache_qualification"},
 ]
 "CH4_gxtb_kp_acceleration_production.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.473758159181230},
+  {matcher="E_total", tol=1.0E-10, ref=-40.473748967057020},
   {matcher="GXTB_distributed_images_production"},
   {matcher="GXTB_streamed_star_production"},
   {matcher="GXTB_distributed_images_reverse_production"},
 ]
 "CH4_gxtb_kp_symmetry_fused_qualify.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.468870021692382},
+  {matcher="E_total", tol=1.0E-10, ref=-40.468866070692428},
   {matcher="GXTB_symmetry_fused_forward"},
   {matcher="GXTB_symmetry_fused_reverse"},
   {matcher="GXTB_symmetry_fused_overlap_covariance"},
@@ -83,23 +83,27 @@
   {matcher="GXTB_streamed_reverse_qualification"},
 ]
 "CH4_gxtb_kp_symmetry_fused_large_batch.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.468870021692382},
+  {matcher="E_total", tol=1.0E-10, ref=-40.468866070692428},
   {matcher="GXTB_symmetry_fused_forward"},
   {matcher="GXTB_symmetry_fused_reverse"},
   {matcher="GXTB_symmetry_fused_overlap_covariance"},
   {matcher="GXTB_symmetry_fused_large_batch_clamp"},
 ]
 "CH4_gxtb_kp_restart_3.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.468870021692382},
+  {matcher="E_total", tol=1.0E-10, ref=-40.468866070692428},
 ]
 "CH4_gxtb_kp_restart_4.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-40.468555915668887},
+  {matcher="E_total", tol=1.0E-10, ref=-40.468551982577388},
   {matcher="KPOINT_RESTART_VALIDATED_TRANSFER"},
 ]
 "Si_prim_gxtb_kp_mixed_radix.inp" = [
-  {matcher="E_total", tol=1.0E-10, ref=-579.050838553817130},
+  {matcher="E_total", tol=1.0E-10, ref=-579.050928767344203},
   {matcher="GXTB_forward_fullmesh_qualification"},
   {matcher="GXTB_mixed_radix_transform"},
   {matcher="GXTB_mixed_radix_transform_forward"},
+]
+"H2O_gxtb_kp_cp2k_density_mixer_restart.inp" = [
+  {matcher="E_total", tol=1.0E-10, ref=-76.450817418357133},
+  {matcher="GXTB_cp2k_pmix"},
 ]
 #EOF
