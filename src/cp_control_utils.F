@@ -63,6 +63,7 @@ MODULE cp_control_utils
         tblite_cli_solution_state_gsolv, tblite_cli_solvation_alpb, tblite_cli_solvation_cpcm, &
         tblite_cli_solvation_gb, tblite_cli_solvation_gbe, tblite_cli_solvation_gbsa, &
         tblite_guess_ceh, tblite_gxtb_exchange_complete_array, &
+        tblite_gxtb_exchange_kgroup_partial_images, &
         tblite_gxtb_exchange_symmetry_fused, tblite_gxtb_gradient_dense, &
         tblite_gxtb_transform_dense, tblite_mixer_memory_inherit, tblite_scc_mixer_auto, &
         tblite_scc_mixer_cp2k, tblite_scc_mixer_none, tblite_scc_mixer_tblite, tblite_solver_gvd, &
@@ -1921,6 +1922,8 @@ CONTAINS
          IF (qs_control%xtb_control%gxtb_fourier_transform_backend /= tblite_gxtb_transform_dense .AND. &
              .NOT. (qs_control%xtb_control%gxtb_exchange_stream_backend == &
                     tblite_gxtb_exchange_symmetry_fused .OR. &
+                    qs_control%xtb_control%gxtb_exchange_stream_backend == &
+                    tblite_gxtb_exchange_kgroup_partial_images .OR. &
                     (qs_control%xtb_control%gxtb_exchange_stream_backend == &
                      tblite_gxtb_exchange_complete_array .AND. &
                      qs_control%xtb_control%gxtb_gradient_contraction == &
