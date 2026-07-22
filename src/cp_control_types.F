@@ -19,7 +19,7 @@ MODULE cp_control_types
         tblite_guess_auto, tblite_guess_sad, tblite_mixer_damping_default, &
         tblite_mixer_iterations_default, &
         tblite_gxtb_acceleration_auto, tblite_gxtb_acp_cache_enabled, tblite_gxtb_exchange_complete_array, &
-        tblite_gxtb_forward_qualification_off, tblite_gxtb_gradient_dense, &
+        tblite_gxtb_acp_mesh_dense, tblite_gxtb_forward_qualification_off, tblite_gxtb_gradient_dense, &
         tblite_gxtb_image_batch_default, tblite_gxtb_star_dense, tblite_gxtb_transform_dense, &
         tblite_mixer_max_weight_default, tblite_mixer_min_weight_default, &
         tblite_mixer_omega0_default, tblite_mixer_weight_factor_default, tblite_scc_mixer_auto, &
@@ -282,6 +282,7 @@ MODULE cp_control_types
       INTEGER                              :: gxtb_symmetry_star_contraction = tblite_gxtb_star_dense
       INTEGER                              :: gxtb_image_batch_size = tblite_gxtb_image_batch_default
       INTEGER                              :: gxtb_acp_projector_cache = tblite_gxtb_acp_cache_enabled
+      INTEGER                              :: gxtb_acp_mesh_contraction = tblite_gxtb_acp_mesh_dense
       REAL(KIND=dp)                        :: tblite_accuracy = 1.0_dp
       REAL(KIND=dp)                        :: tblite_mixer_damping = tblite_mixer_damping_default
       REAL(KIND=dp)                        :: tblite_mixer_max_weight = tblite_mixer_max_weight_default
