@@ -70,7 +70,7 @@ MODULE cp_control_utils
         gxtb, tblite_gxtb_exchange_complete_array, tblite_gxtb_gradient_dense, &
         tblite_gxtb_transform_dense, &
         tblite_gxtb_exchange_symmetry_fused, tblite_gxtb_acceleration_auto, &
-        tblite_gxtb_acceleration_manual
+        tblite_gxtb_acceleration_manual, tblite_gxtb_exchange_kgroup_partial_images
    USE input_cp2k_check,                ONLY: xc_functionals_expand
    USE input_cp2k_dft,                  ONLY: create_dft_section
    USE input_enumeration_types,         ONLY: enum_i2c,&
@@ -1995,6 +1995,8 @@ CONTAINS
          IF (qs_control%xtb_control%gxtb_fourier_transform_backend /= tblite_gxtb_transform_dense .AND. &
              .NOT. (qs_control%xtb_control%gxtb_exchange_stream_backend == &
                     tblite_gxtb_exchange_symmetry_fused .OR. &
+                    qs_control%xtb_control%gxtb_exchange_stream_backend == &
+                    tblite_gxtb_exchange_kgroup_partial_images .OR. &
                     (qs_control%xtb_control%gxtb_exchange_stream_backend == &
                      tblite_gxtb_exchange_complete_array .AND. &
                      qs_control%xtb_control%gxtb_gradient_contraction == &
