@@ -160,6 +160,7 @@ MODULE tblite_interface
                               tblite_cli_solvation_gb, tblite_cli_solvation_gbe, &
                               tblite_cli_solvation_gbsa, &
                               tblite_guess_auto, tblite_guess_ceh, tblite_guess_eeq, tblite_guess_sad, &
+                              tblite_gxtb_acceleration_auto, &
                               tblite_gxtb_acp_cache_direct, tblite_gxtb_acp_cache_enabled, &
                               tblite_gxtb_acp_cache_qualify, tblite_gxtb_exchange_batched, &
                               tblite_gxtb_exchange_complete_array, tblite_gxtb_exchange_distributed, &
@@ -2512,8 +2513,64 @@ CONTAINS
          CALL calibrate_symmetry_phases(kpoints, matrix_s, matrix_s(1, 1)%matrix, &
                                         sab_nl, cell_to_index, include_inactive=.TRUE.)
       CALL tb_prepare_gxtb_symmetry_phase_cache(kpoints, tb%gxtb_kmesh_map)
+      CALL tb_resolve_gxtb_acceleration(tb, kpoints, tb%gxtb_kmesh_map)
 
    END SUBROUTINE tb_prepare_gxtb_kmesh_map
+
+! **************************************************************************************************
+!> \brief Resolve the production AUTO policy after the complete mesh is known.
+!> \param tb ...
+!> \param kpoints ...
+!> \param kmap ...
+!>
+!> AUTO keeps molecular and explicit one-point calculations on the compact legacy path.  A
+!> genuinely reduced mesh uses the exact symmetry-fused path and provider FFT.  An unreduced mesh
+!> uses distributed partial-image exchange when MPI can contribute and bounded batching otherwise.
+!> Qualification is never enabled implicitly.
+! **************************************************************************************************
+   SUBROUTINE tb_resolve_gxtb_acceleration(tb, kpoints, kmap)
+
+      TYPE(tblite_type), POINTER                         :: tb
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(tb_gxtb_kmesh_map_type), INTENT(IN)           :: kmap
+
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      IF (tb%gxtb_acceleration_mode /= tblite_gxtb_acceleration_auto) RETURN
+
+      para_env => kpoints%blacs_env_all%para_env
+      IF (.NOT. ASSOCIATED(para_env)) THEN
+         CPABORT("Missing parallel environment while resolving automatic g-XTB acceleration")
+      END IF
+
+      tb%gxtb_forward_fock_qualification = tblite_gxtb_forward_qualification_off
+      tb%gxtb_acp_projector_cache = tblite_gxtb_acp_cache_enabled
+      IF (kmap%nfull <= 1) THEN
+         tb%gxtb_exchange_stream_backend = tblite_gxtb_exchange_complete_array
+         tb%gxtb_gradient_contraction = tblite_gxtb_gradient_dense
+         tb%gxtb_fourier_transform_backend = tblite_gxtb_transform_dense
+         tb%gxtb_symmetry_star_contraction = tblite_gxtb_star_dense
+      ELSE IF (kmap%nred < kmap%nfull) THEN
+         tb%gxtb_exchange_stream_backend = tblite_gxtb_exchange_symmetry_fused
+         tb%gxtb_gradient_contraction = tblite_gxtb_gradient_streamed
+         tb%gxtb_fourier_transform_backend = tblite_gxtb_transform_mixed_radix
+         IF (tb%gxtb_auto_native_mixer) THEN
+            tb%gxtb_symmetry_star_contraction = tblite_gxtb_star_streamed
+         ELSE
+            tb%gxtb_symmetry_star_contraction = tblite_gxtb_star_dense
+         END IF
+      ELSE
+         IF (para_env%num_pe > 1) THEN
+            tb%gxtb_exchange_stream_backend = tblite_gxtb_exchange_kgroup_partial_images
+         ELSE
+            tb%gxtb_exchange_stream_backend = tblite_gxtb_exchange_batched
+         END IF
+         tb%gxtb_gradient_contraction = tblite_gxtb_gradient_streamed
+         tb%gxtb_fourier_transform_backend = tblite_gxtb_transform_dense
+         tb%gxtb_symmetry_star_contraction = tblite_gxtb_star_dense
+      END IF
+
+   END SUBROUTINE tb_resolve_gxtb_acceleration
 
 ! **************************************************************************************************
 !> \brief Return the dense tblite AO layout for all primitive-cell atoms.
@@ -3677,6 +3734,7 @@ CONTAINS
          streamed_roundtrip_residual
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: mixed_vector, raw_vector
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: fock_imag, fock_real
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s
       TYPE(dbcsr_type), POINTER                          :: cmatrix, rmatrix
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -3685,20 +3743,23 @@ CONTAINS
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
       TYPE(tblite_type), POINTER                         :: tb
 
-      NULLIFY (cell_to_index, cmatrix, dft_control, kmap, para_env, rmatrix, sab_nl, tb)
+      NULLIFY (cell_to_index, cmatrix, dft_control, kmap, matrix_s, para_env, rmatrix, sab_nl, tb)
       IF (.NOT. ASSOCIATED(qs_env) .OR. .NOT. ASSOCIATED(kpoints) .OR. &
           .NOT. ASSOCIATED(scf_env)) RETURN
-      CALL get_qs_env(qs_env, dft_control=dft_control)
+      CALL get_qs_env(qs_env, dft_control=dft_control, matrix_s_kp=matrix_s)
       tb => qs_env%tb_tblite
       IF (.NOT. ASSOCIATED(tb) .OR. .NOT. ASSOCIATED(dft_control)) RETURN
       tb%mixed_fock_kp_valid = .FALSE.
       tb%previous_density_kp_valid = .FALSE.
       IF (dft_control%qs_control%xtb_control%tblite_method /= gxtb) RETURN
-      symmetry_star_mode = tb_gxtb_symmetry_star_mode(tb)
 
       CALL get_kpoint_info(kpoints, nkp=nkp, use_real_wfn=use_real_wfn, &
                            cell_to_index=cell_to_index, sab_nl=sab_nl)
       CPASSERT(ASSOCIATED(sab_nl))
+      CPASSERT(ASSOCIATED(matrix_s))
+      CPASSERT(ASSOCIATED(cell_to_index))
+      CALL tb_prepare_gxtb_kmesh_map(tb, kpoints, matrix_s, sab_nl, cell_to_index)
+      symmetry_star_mode = tb_gxtb_symmetry_star_mode(tb)
       IF (ABS(SUM(kpoints%wkp(1:nkp)) - 1.0_dp) > 1.0E-10_dp) &
          CPABORT("g-xTB k-point weights do not sum to one")
       IF (ANY(kpoints%wkp(1:nkp) <= 0.0_dp)) &
@@ -4382,6 +4443,128 @@ CONTAINS
       END SELECT
 
    END FUNCTION tb_gxtb_acp_projector_cache_mode
+
+! **************************************************************************************************
+!> \brief Report the effective automatic or manual production configuration once.
+!> \param tb ...
+!> \param kmap ...
+!> \param para_env ...
+!> \param stream_mode ...
+!> \param transform_backend ...
+! **************************************************************************************************
+   SUBROUTINE tb_report_gxtb_acceleration( &
+      tb, kmap, para_env, stream_mode, transform_backend)
+
+      TYPE(tblite_type), POINTER                         :: tb
+      TYPE(tb_gxtb_kmesh_map_type), INTENT(IN)           :: kmap
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: stream_mode, transform_backend
+
+      CHARACTER(LEN=40)                                  :: acp_name, exchange_name, gradient_name, &
+                                                            mode_name, qualification_name, &
+                                                            star_name, transform_name
+      INTEGER                                            :: acp_mode, batch_size, gradient_mode, &
+                                                            star_mode
+      LOGICAL                                            :: qualification
+
+      IF (tb%gxtb_acceleration_reported) RETURN
+      IF (.NOT. ASSOCIATED(para_env)) THEN
+         CPABORT("Missing parallel environment while reporting automatic g-XTB acceleration")
+      END IF
+
+      gradient_mode = tb_gxtb_exchange_gradient_mode(tb)
+      star_mode = tb_gxtb_symmetry_star_mode(tb)
+      batch_size = tb_gxtb_exchange_stream_batch_size(tb)
+      acp_mode = tb_gxtb_acp_projector_cache_mode(tb)
+      qualification = tb_gxtb_forward_qualification_enabled(tb)
+
+      IF (tb%gxtb_acceleration_mode == tblite_gxtb_acceleration_auto) THEN
+         mode_name = "AUTO"
+      ELSE
+         mode_name = "MANUAL"
+      END IF
+      SELECT CASE (stream_mode)
+      CASE (0)
+         exchange_name = "COMPLETE_ARRAY"
+      CASE (cp2k_exchange_stream_reduced)
+         exchange_name = "REDUCED"
+      CASE (cp2k_exchange_stream_oracle)
+         exchange_name = "ORACLE"
+      CASE (cp2k_exchange_stream_batched)
+         exchange_name = "BATCHED"
+      CASE (tb_gxtb_exchange_stream_distributed)
+         exchange_name = "DISTRIBUTED"
+      CASE (tb_gxtb_exchange_stream_kgroup_owner)
+         exchange_name = "K_GROUP_OWNER"
+      CASE (tb_gxtb_exchange_stream_kgroup_partial_root)
+         exchange_name = "K_GROUP_PARTIAL_ROOT"
+      CASE (tb_gxtb_exchange_stream_kgroup_partial_replicated)
+         exchange_name = "K_GROUP_PARTIAL_REPLICATED"
+      CASE (tb_gxtb_exchange_stream_kgroup_partial_images)
+         exchange_name = "K_GROUP_PARTIAL_DISTRIBUTED_IMAGES"
+      CASE (tb_gxtb_exchange_stream_symmetry_fused)
+         exchange_name = "SYMMETRY_FUSED"
+      CASE DEFAULT
+         CPABORT("Unknown effective g-XTB exchange backend")
+      END SELECT
+      SELECT CASE (gradient_mode)
+      CASE (tb_gxtb_exchange_gradient_dense)
+         gradient_name = "DENSE"
+      CASE (tb_gxtb_exchange_gradient_streamed)
+         gradient_name = "STREAMED"
+      CASE (tb_gxtb_exchange_gradient_qualify)
+         gradient_name = "QUALIFY"
+      CASE DEFAULT
+         CPABORT("Unknown effective g-XTB gradient contraction")
+      END SELECT
+      SELECT CASE (transform_backend)
+      CASE (cp2k_exchange_transform_dense)
+         transform_name = "DENSE"
+      CASE (cp2k_exchange_transform_separable_dft)
+         transform_name = "SEPARABLE_DFT"
+      CASE (cp2k_exchange_transform_mixed_radix_fft)
+         transform_name = "MIXED_RADIX_FFT"
+      CASE DEFAULT
+         CPABORT("Unknown effective g-XTB Fourier backend")
+      END SELECT
+      SELECT CASE (star_mode)
+      CASE (tb_gxtb_symmetry_star_dense)
+         star_name = "DENSE"
+      CASE (tb_gxtb_symmetry_star_streamed)
+         star_name = "STREAMED"
+      CASE (tb_gxtb_symmetry_star_qualify)
+         star_name = "QUALIFY"
+      CASE DEFAULT
+         CPABORT("Unknown effective g-XTB symmetry-star contraction")
+      END SELECT
+      SELECT CASE (acp_mode)
+      CASE (tblite_gxtb_acp_cache_enabled)
+         acp_name = "ENABLED"
+      CASE (tblite_gxtb_acp_cache_direct)
+         acp_name = "DIRECT"
+      CASE (tblite_gxtb_acp_cache_qualify)
+         acp_name = "QUALIFY"
+      CASE DEFAULT
+         CPABORT("Unknown effective g-XTB ACP cache policy")
+      END SELECT
+      qualification_name = MERGE("QUALIFY", "OFF    ", qualification)
+
+      IF (para_env%is_source()) THEN
+         WRITE (*, '(A,A,A,A,A,A,A,A)') &
+            " GXTB-ACCELERATION mode=", TRIM(mode_name), &
+            " exchange=", TRIM(exchange_name), &
+            " gradient=", TRIM(gradient_name), &
+            " transform=", TRIM(transform_name)
+         WRITE (*, '(A,A,A,A,A,A,A,I0,A,I0,A,I0,A,I0)') &
+            " GXTB-ACCELERATION star=", TRIM(star_name), &
+            " acpCache=", TRIM(acp_name), &
+            " qualification=", TRIM(qualification_name), &
+            " batch=", batch_size, " nred=", kmap%nred, " nfull=", kmap%nfull, &
+            " mpiRanks=", para_env%num_pe
+      END IF
+      tb%gxtb_acceleration_reported = .TRUE.
+
+   END SUBROUTINE tb_report_gxtb_acceleration
 
 ! **************************************************************************************************
 !> \brief Build compact ACP projector images according to the public cache policy.
@@ -7094,6 +7277,7 @@ CONTAINS
       run_qualification_oracle = tb_gxtb_forward_qualification_enabled(tb, iter_count)
       stream_mode = tb_gxtb_exchange_stream_mode(tb)
       transform_backend = tb_gxtb_exchange_transform_backend(tb)
+      CALL tb_report_gxtb_acceleration(tb, kmap, para_env, stream_mode, transform_backend)
       IF (run_qualification_oracle .AND. kmap%identity .AND. &
           stream_mode /= cp2k_exchange_stream_batched .AND. &
           stream_mode /= tb_gxtb_exchange_stream_distributed .AND. &
@@ -9644,6 +9828,8 @@ CONTAINS
                       rho=rho, tb_tblite=tb, cell=cell_obj)
       h0 => tb%calc%h0
 #if defined(__TBLITE_GXTB)
+      tb%gxtb_acceleration_mode = dft_control%qs_control%xtb_control%gxtb_acceleration_mode
+      tb%gxtb_auto_native_mixer = tb_native_scc_mixer_active(dft_control)
       tb%gxtb_exchange_stream_backend = &
          dft_control%qs_control%xtb_control%gxtb_exchange_stream_backend
       tb%gxtb_forward_fock_qualification = &
@@ -9727,7 +9913,9 @@ CONTAINS
               acceleration_forward_qualification .OR. &
               acp_projector_cache_mode /= tblite_gxtb_acp_cache_enabled .OR. &
               acceleration_batch_size /= tblite_gxtb_image_batch_default)) THEN
-            CPABORT("Non-default GXTB_ACCELERATION settings require an explicit periodic k-point path")
+            CALL cp_abort(__LOCATION__, &
+                          "Non-default GXTB_ACCELERATION settings require an explicit "// &
+                          "periodic k-point path")
          END IF
          IF (acp_projector_cache_mode /= tblite_gxtb_acp_cache_enabled) THEN
             IF (.NOT. ALLOCATED(tb%calc%acp)) THEN

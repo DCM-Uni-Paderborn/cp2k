@@ -30,7 +30,8 @@ MODULE tblite_types
 
    USE cp_dbcsr_api, ONLY: dbcsr_p_type
    USE cp_dbcsr_operations, ONLY: dbcsr_deallocate_matrix_set
-   USE input_constants, ONLY: tblite_gxtb_acp_cache_enabled, &
+   USE input_constants, ONLY: tblite_gxtb_acceleration_auto, &
+                              tblite_gxtb_acp_cache_enabled, &
                               tblite_gxtb_exchange_complete_array, &
                               tblite_gxtb_forward_qualification_off, &
                               tblite_gxtb_gradient_dense, &
@@ -129,9 +130,13 @@ MODULE tblite_types
       LOGICAL                                            :: acp_fock_kp_valid = .FALSE.
       LOGICAL                                            :: exchange_fock_kp_valid = .FALSE.
       LOGICAL                                            :: gxtb_image_batch_explicit = .FALSE.
+      LOGICAL                                            :: gxtb_acceleration_reported = .FALSE.
+      LOGICAL                                            :: gxtb_auto_native_mixer = .FALSE.
       LOGICAL                                            :: mixed_fock_kp_valid = .FALSE.
       LOGICAL                                            :: previous_density_kp_valid = .FALSE.
       REAL(KIND=dp)                                      :: e_acp_kp = 0.0_dp
+      INTEGER                                            :: gxtb_acceleration_mode = &
+                                                            tblite_gxtb_acceleration_auto
       INTEGER                                            :: gxtb_exchange_stream_backend = &
                                                             tblite_gxtb_exchange_complete_array
       INTEGER                                            :: gxtb_forward_fock_qualification = &
