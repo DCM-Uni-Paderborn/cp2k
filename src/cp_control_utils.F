@@ -1913,6 +1913,8 @@ CONTAINS
          qs_control%xtb_control%gxtb_image_batch_explicit = gxtb_image_batch_explicit
          CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "ACP_PROJECTOR_CACHE", &
                                    i_val=qs_control%xtb_control%gxtb_acp_projector_cache)
+         CALL section_vals_val_get(xtb_tblite_gxtb_acceleration, "ACP_MESH_CONTRACTION", &
+                                   i_val=qs_control%xtb_control%gxtb_acp_mesh_contraction)
          IF (qs_control%xtb_control%gxtb_image_batch_size < 1) THEN
             CPABORT("XTB/TBLITE/GXTB_ACCELERATION/IMAGE_BATCH_SIZE must be positive")
          END IF
