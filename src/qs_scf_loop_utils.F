@@ -217,8 +217,8 @@ MODULE qs_scf_loop_utils
                                         ot_kp_schur_projector_density_fdir_probe_ratio = 8.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_refresh_ratio = 2.0E-1_dp, &
                                         ot_kp_schur_projector_density_fdir_probe_residual_ratio = 8.0E-1_dp, &
-                                        ot_kp_schur_physical_exit_raw_floor_ratio = 1.0E-1_dp, &
-                                        ot_kp_schur_physical_exit_raw_floor_min_ratio = 2.0E-2_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_ratio = 5.0E-1_dp, &
+                                        ot_kp_schur_physical_exit_raw_floor_min_ratio = 2.5E-1_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_quality = 9.9E-1_dp, &
                                         ot_kp_schur_physical_exit_raw_floor_gap = 1.0E-2_dp, &
                                         ot_kp_schur_gauge_floor_plateau_eps_factor = 1.0E1_dp, &
@@ -251,6 +251,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
              qs_scf_kp_symmetric_multisecant_update, &
              qs_scf_kp_symmetric_secant_update, &
@@ -1425,6 +1426,7 @@ CONTAINS
 
       INTEGER :: first_channel, handle, ikpoint, imo, ispin, local_channel, local_kpoint, &
          max_ener_nmo, nkpoint, nlocal_channels, nmo, nspin_ot, ref_guard_attempt
+      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: unweighted_residual_mult
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL :: fermi_window_guarded, initial_density_rebase, initial_density_reference, &
          minimizer_step_taken, post_fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, &
@@ -1432,11 +1434,12 @@ CONTAINS
          use_real_wfn
       REAL(KIND=dp) :: ener_nondiag, full_all_spin_scale, maxocc, occupation_floor, &
          occupation_floor_fraction, occupation_scale_full, ref_guard_max, ref_guard_min, &
-         ref_guard_scale, trial_kTS
+         ref_guard_scale, trial_kTS, unweighted_residual_im2, unweighted_residual_re2
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: orbital_response_scale, &
                                                             orbital_scaling_factor, trial_mu
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: ener_x_old
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: trial_eigenvalues, trial_occupation
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: trial_eigenvalues, trial_occupation, &
+                                                            unweighted_residual_sq
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, wkp
       TYPE(cp_fm_type)                                   :: hc_im, hc_re
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
@@ -1507,6 +1510,23 @@ CONTAINS
       nlocal_channels = SIZE(kpoints%kp_env)*nspin_ot
       local_ot_env => scf_env%qs_ot_env(first_channel:first_channel + nlocal_channels - 1)
       ener_nondiag = 0.0_dp
+      initial_density_reference = scf_env%iter_count <= 1 .AND. &
+                                  .NOT. scf_env%qs_ot_restart%valid .AND. &
+                                  local_ot_env(1)%OT_count <= 0
+      initial_density_rebase = initial_density_reference .AND. nkpoint > 1
+      IF (initial_density_reference .AND. .NOT. settle_ot_kp_subspace .AND. &
+          allow_ot_kp_subspace_refresh) THEN
+         ! Initial SCF-loop setup precedes the first real KS build.  Re-enter
+         ! initialization once H(k) exists so the REF virtual subspace and its
+         ! preconditioner come from the physical Hamiltonian rather than the
+         ! zero/placeholder matrices.
+         ot_kp_subspace_refresh = .TRUE.
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A)') &
+            " OT k-point initial physical-subspace rebuild requested."
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       ALLOCATE (matrix_hc(nlocal_channels))
       ALLOCATE (matrix_hc_im(nlocal_channels))
@@ -1643,6 +1663,24 @@ CONTAINS
             CALL cp_fm_release(hc_im)
          END DO
       END DO
+      IF (initial_density_reference) THEN
+         CALL qs_scf_loop_reset_ot_kp_guard_state(local_ot_env)
+         DO local_channel = 1, nlocal_channels
+            CALL dbcsr_copy(matrix_x_old(local_channel)%matrix, &
+                            local_ot_env(local_channel)%matrix_x)
+            CALL dbcsr_copy(matrix_x_old_im(local_channel)%matrix, &
+                            local_ot_env(local_channel)%matrix_x_im)
+            IF (ASSOCIATED(rot_mat_x_old(local_channel)%matrix)) &
+               CALL dbcsr_copy(rot_mat_x_old(local_channel)%matrix, &
+                               local_ot_env(local_channel)%rot_mat_x)
+            IF (ASSOCIATED(rot_mat_x_old_im(local_channel)%matrix)) &
+               CALL dbcsr_copy(rot_mat_x_old_im(local_channel)%matrix, &
+                               local_ot_env(local_channel)%rot_mat_x_im)
+            IF (ASSOCIATED(local_ot_env(local_channel)%ener_x)) &
+               ener_x_old(1:SIZE(local_ot_env(local_channel)%ener_x), local_channel) = &
+               local_ot_env(local_channel)%ener_x(:)
+         END DO
+      END IF
       CALL qs_scf_loop_collect_ot_kp_trial_smearing(kpoints, local_ot_env, first_channel, nspin_ot, &
                                                     kp_range, wkp, para_env_inter_kp, scf_control%smear, &
                                                     trial_eigenvalues, trial_occupation, trial_mu, trial_kTS)
@@ -1665,6 +1703,12 @@ CONTAINS
                                allow_ot_kp_subspace_refresh)
       IF (ot_kp_subspace_refresh) GOTO 900
       CALL qs_scf_loop_update_ot_kp_occ_preconditioner(local_ot_env)
+      IF (logger%iter_info%print_level >= high_print_level) THEN
+         ALLOCATE (unweighted_residual_sq(2, nkpoint, nspin_ot), &
+                   unweighted_residual_mult(nkpoint, nspin_ot))
+         unweighted_residual_sq(:, :, :) = 0.0_dp
+         unweighted_residual_mult(:, :) = 0
+      END IF
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -1700,6 +1744,20 @@ CONTAINS
                      local_ot_env(1)%mermin_ls_accepted_quality_ema, &
                      local_ot_env(1)%kpoint_occ_metric_residual_quality_ema)
                END DO
+            END IF
+
+            IF (logger%iter_info%print_level >= high_print_level) THEN
+               CALL qs_ot_get_derivative_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                     matrix_hc_im(local_channel)%matrix, &
+                                                     local_ot_env(local_channel))
+               CALL dbcsr_dot(local_ot_env(local_channel)%matrix_gx, &
+                              local_ot_env(local_channel)%matrix_gx, unweighted_residual_re2)
+               CALL dbcsr_dot(local_ot_env(local_channel)%matrix_gx_im, &
+                              local_ot_env(local_channel)%matrix_gx_im, unweighted_residual_im2)
+               unweighted_residual_sq(1, ikpoint, ispin) = unweighted_residual_re2
+               unweighted_residual_sq(2, ikpoint, ispin) = unweighted_residual_im2
+               unweighted_residual_mult(ikpoint, ispin) = &
+                  local_ot_env(local_channel)%kpoint_multiplicity
             END IF
 
             CALL qs_scf_loop_prepare_ot_kp_channel_gradient(local_ot_env(local_channel), &
@@ -1747,12 +1805,25 @@ CONTAINS
             DEALLOCATE (orbital_scaling_factor)
          END DO
       END DO
+      IF (logger%iter_info%print_level >= high_print_level) THEN
+         CALL para_env_inter_kp%sum(unweighted_residual_sq)
+         CALL para_env_inter_kp%sum(unweighted_residual_mult)
+         IF (logger%para_env%is_source()) THEN
+            DO ispin = 1, nspin_ot
+               DO ikpoint = 1, nkpoint
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,I4),3(1X,ES16.8))') &
+                     " OT k-point unweighted REF residual spin k mult re im total:", &
+                     ispin, ikpoint, unweighted_residual_mult(ikpoint, ispin), &
+                     SQRT(MAX(0.0_dp, unweighted_residual_sq(1, ikpoint, ispin))), &
+                     SQRT(MAX(0.0_dp, unweighted_residual_sq(2, ikpoint, ispin))), &
+                     SQRT(MAX(0.0_dp, SUM(unweighted_residual_sq(:, ikpoint, ispin))))
+               END DO
+            END DO
+         END IF
+         DEALLOCATE (unweighted_residual_sq, unweighted_residual_mult)
+      END IF
 
       CALL para_env_inter_kp%sum(ener_nondiag)
-      initial_density_reference = scf_env%iter_count <= 1 .AND. &
-                                  .NOT. scf_env%qs_ot_restart%valid .AND. &
-                                  local_ot_env(1)%OT_count <= 0
-      initial_density_rebase = initial_density_reference .AND. nkpoint > 1
       IF (initial_density_reference) THEN
          ! The first energy belongs to the supplied atomic/restart density, not
          ! yet to the orbitals just diagonalized in that Hamiltonian.  Replacing
@@ -2038,6 +2109,40 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_residual_split
 
 ! **************************************************************************************************
+!> \brief Keep the raw residual as an independent, history-calibrated SCF exit guard.
+!> \param accepted_samples accepted Mermin model-quality samples
+!> \param accepted_quality_ema accepted/predicted Mermin-drop quality
+!> \param accepted_gap_ema accepted Mermin model-gap quality
+!> \return fraction of the raw residual used by the outer SCF convergence test
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_raw_exit_floor_ratio(accepted_samples, accepted_quality_ema, &
+                                                accepted_gap_ema) RESULT(ratio)
+
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      REAL(KIND=dp), INTENT(IN)                          :: accepted_quality_ema, accepted_gap_ema
+      REAL(KIND=dp)                                      :: ratio
+
+      REAL(KIND=dp)                                      :: gap_weight, quality_weight, tail_weight
+
+      ratio = ot_kp_schur_physical_exit_raw_floor_ratio
+      IF (accepted_samples >= ot_kp_schur_calibration_min_samples .AND. &
+          accepted_quality_ema >= ot_kp_schur_physical_exit_raw_floor_quality .AND. &
+          accepted_gap_ema <= ot_kp_schur_physical_exit_raw_floor_gap) THEN
+         quality_weight = (accepted_quality_ema - ot_kp_schur_physical_exit_raw_floor_quality)/ &
+                          MAX(EPSILON(1.0_dp), &
+                              1.0_dp - ot_kp_schur_physical_exit_raw_floor_quality)
+         quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
+         gap_weight = 1.0_dp - accepted_gap_ema/ &
+                      MAX(EPSILON(1.0_dp), ot_kp_schur_physical_exit_raw_floor_gap)
+         gap_weight = MIN(1.0_dp, MAX(0.0_dp, gap_weight))
+         tail_weight = SQRT(quality_weight*gap_weight)
+         ratio = (1.0_dp - tail_weight)*ot_kp_schur_physical_exit_raw_floor_ratio + &
+                 tail_weight*ot_kp_schur_physical_exit_raw_floor_min_ratio
+      END IF
+
+   END FUNCTION qs_scf_kp_raw_exit_floor_ratio
+
+! **************************************************************************************************
 !> \brief synchronize k-point OT residual over distributed k-point groups
 !> \param local_ot_env ...
 !> \param para_env_inter_kp ...
@@ -2053,9 +2158,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
 
       INTEGER                                            :: local_channel
-      REAL(KIND=dp) :: exit_floor_delta, gap_weight, model_delta, ot_delta, physical_delta, &
-         physical_exit_floor_delta, physical_model_delta, projected_delta, projected_raw_ratio, &
-         quality_weight, raw_delta, raw_floor_ratio, tail_weight
+      REAL(KIND=dp) :: exit_floor_delta, model_delta, ot_delta, physical_delta, &
+         physical_exit_floor_delta, physical_model_delta, raw_delta, raw_floor_ratio
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -2068,16 +2172,11 @@ CONTAINS
       exit_floor_delta = 0.0_dp
       raw_delta = 0.0_dp
       physical_delta = 0.0_dp
-      projected_delta = 0.0_dp
       IF (local_ot_env(1)%kpoint_raw_delta > 0.0_dp) raw_delta = local_ot_env(1)%kpoint_raw_delta
       IF (local_ot_env(1)%kpoint_physical_delta > 0.0_dp) &
          physical_delta = local_ot_env(1)%kpoint_physical_delta
-      IF (local_ot_env(1)%kpoint_projected_delta > 0.0_dp) &
-         projected_delta = local_ot_env(1)%kpoint_projected_delta
-      IF (projected_delta <= 0.0_dp) projected_delta = physical_delta
       CALL para_env_inter_kp%max(raw_delta)
       CALL para_env_inter_kp%max(physical_delta)
-      CALL para_env_inter_kp%max(projected_delta)
       IF (PRESENT(eps_scf)) THEN
          CALL ot_kpoint_physical_residual_split( &
             raw_delta, physical_delta, local_ot_env(1)%kpoint_physical_delta_ready, &
@@ -2088,32 +2187,14 @@ CONTAINS
          exit_floor_delta = MAX(exit_floor_delta, physical_exit_floor_delta)
          IF (eps_scf > 0.0_dp .AND. raw_delta > ot_delta .AND. &
              local_ot_env(1)%kpoint_physical_delta_ready) THEN
-            raw_floor_ratio = ot_kp_schur_physical_exit_raw_floor_ratio
-            IF (physical_delta > 0.0_dp .AND. physical_delta <= eps_scf .AND. &
-                local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
-                ot_kp_schur_calibration_min_samples .AND. &
-                local_ot_env(1)%mermin_ls_accepted_quality_ema >= &
-                ot_kp_schur_physical_exit_raw_floor_quality .AND. &
-                local_ot_env(1)%mermin_ls_accepted_gap_ema <= &
-                ot_kp_schur_physical_exit_raw_floor_gap) THEN
-               quality_weight = (local_ot_env(1)%mermin_ls_accepted_quality_ema - &
-                                 ot_kp_schur_physical_exit_raw_floor_quality)/ &
-                                MAX(EPSILON(1.0_dp), &
-                                    1.0_dp - ot_kp_schur_physical_exit_raw_floor_quality)
-               quality_weight = MIN(1.0_dp, MAX(0.0_dp, quality_weight))
-               gap_weight = 1.0_dp - local_ot_env(1)%mermin_ls_accepted_gap_ema/ &
-                            MAX(EPSILON(1.0_dp), ot_kp_schur_physical_exit_raw_floor_gap)
-               gap_weight = MIN(1.0_dp, MAX(0.0_dp, gap_weight))
-               tail_weight = SQRT(quality_weight*gap_weight)
-               raw_floor_ratio = (1.0_dp - tail_weight)*ot_kp_schur_physical_exit_raw_floor_ratio + &
-                                 tail_weight*ot_kp_schur_physical_exit_raw_floor_min_ratio
-               ! In the calibrated residual tail the raw preconditioned metric may
-               ! overestimate the fixed-N physical residual.  Keep it as a guard,
-               ! but do not let it dominate the projected Mermin residual that is
-               ! already below the requested SCF threshold.
-               projected_raw_ratio = projected_delta/MAX(raw_delta, EPSILON(1.0_dp))
-               raw_floor_ratio = MIN(raw_floor_ratio, projected_raw_ratio)
-            END IF
+            raw_floor_ratio = qs_scf_kp_raw_exit_floor_ratio( &
+                              local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+                              local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                              local_ot_env(1)%mermin_ls_accepted_gap_ema)
+            ! The preconditioned metric can overestimate the fixed-N physical
+            ! residual, but it remains an independent exit guard.  Capping its
+            ! ratio by projected_delta/raw_delta would reduce the guard exactly
+            ! to the already-small projected residual and permit false exits.
             CALL para_env_inter_kp%max(raw_floor_ratio)
             exit_floor_delta = MAX(exit_floor_delta, raw_floor_ratio*raw_delta)
          END IF
@@ -30306,7 +30387,8 @@ CONTAINS
             END DO
          END DO
          CALL dbcsr_iterator_stop(iter)
-         IF (ASSOCIATED(local_ot_env(1)%para_env)) CALL local_ot_env(1)%para_env%sum(dense)
+         ! Keep collection local.  Each caller reduces through the communicator
+         ! of the channel that owns the matrix.
       END SUBROUTINE dbcsr_square_to_dense
 
 ! **************************************************************************************************

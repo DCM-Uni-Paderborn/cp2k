@@ -3,11 +3,11 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-07 HIGH reference after the fixed-N response and multiplicity
-! fixes: AUTO grows from 4 to 8 and 16, then converges in 28 OT steps at
-! -8.15998672984139 Ha.  It prints no first/last-band, AUTO-exhausted, or
-! unsupported-content warning.  The endpoint agrees with the symmetry-reduced
-! companion within 3.6E-7 Ha.
+! Local 2026-07 reference after the physical-subspace and complex-preconditioner
+! fixes: AUTO grows from 4 to 8 and 16.  It converges at -8.15998707987167 Ha
+! with MPI-2 and -8.15998694484553 Ha serially.  It prints no first/last-band,
+! AUTO-exhausted, or unsupported-content warning.  For a fixed process layout
+! the endpoint agrees with the symmetry-reduced companion within 2.1E-8 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge

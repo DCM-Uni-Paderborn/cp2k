@@ -390,7 +390,7 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: total_scf_steps
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'scf_env_do_scf'
-      INTEGER, PARAMETER :: max_ot_kp_subspace_refreshes = 2
+      INTEGER, PARAMETER :: max_ot_kp_subspace_refreshes = 3
 
       CHARACTER(LEN=default_string_length)               :: description, name
       INTEGER :: ext_master_id, handle, handle2, i_tmp, ic, ispin, iter_count, &
@@ -422,6 +422,9 @@ CONTAINS
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(section_vals_type), POINTER                   :: dft_section, input, scf_section
+
+! One rebuild seeds k-point OT from the first physical Hamiltonian; retain
+! two later adaptive rebuilds for genuinely collapsed metallic subspaces.
 
       CALL timeset(routineN, handle)
 
@@ -1065,7 +1068,7 @@ CONTAINS
 
       IF (output_unit > 0) &
          WRITE (UNIT=output_unit, FMT="(T2,A)") &
-         "K-point OT: refreshing collapsed virtual subspace by full KS diagonalization."
+         "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."
 
       ! The next outer-loop initialization performs do_general_diag_kp on the
       ! current Hamiltonian before allocating new channel-local OT state.  Old
@@ -2744,9 +2747,9 @@ CONTAINS
          CALL timestop(handle)
          RETURN
       CASE (ot_precond_full_single_inverse)
-         ! Supported as a channel-local real-part approximation to the complex
-         ! Hermitian k-point preconditioner.  The same inverse is applied to the
-         ! real and imaginary orbital-gradient channels in the OT minimizer.
+         ! Complex k-point channels are promoted below to the exact Hermitian
+         ! FULL_ALL construction.  Applying a real-part inverse separately to
+         ! the real and imaginary gradients is not rank invariant.
       CASE (ot_precond_full_all)
          ! Built directly from complex H(k), S(k), and C(k), without rotating
          ! the OT reference gauge.
@@ -2817,7 +2820,8 @@ CONTAINS
                CALL dbcsr_init_p(matrix_k_im)
                CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(2, ispin), matrix_k_im)
             END IF
-            IF (prec_type == ot_precond_full_all .AND. .NOT. use_real_wfn) THEN
+            IF ((prec_type == ot_precond_full_all .OR. &
+                 prec_type == ot_precond_full_single_inverse) .AND. .NOT. use_real_wfn) THEN
                CALL make_preconditioner_complex_full_all( &
                   scf_env%ot_preconditioner(ot_channel)%preconditioner, &
                   matrix_k_re, matrix_k_im, matrix_s_re, matrix_s_im, &

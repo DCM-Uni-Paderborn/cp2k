@@ -61,9 +61,10 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_residual_split, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -163,6 +164,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_control_delta("k-point OT accepted density-projector tail", &
                                            5.0E-15_dp, nfail)
    CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
+   CALL check_kpoint_raw_exit_floor_ratio("k-point OT independent raw exit floor", 5.0E-15_dp, nfail)
    CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_occ_metric_continuation("k-point OT occupation-metric continuation", &
@@ -4479,6 +4481,37 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_residual_split
+
+! **************************************************************************************************
+!> \brief Check that Mermin-tail calibration cannot eliminate the independent raw exit guard.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_raw_exit_floor_ratio(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: bootstrap, calibrated, partial
+
+      bootstrap = qs_scf_kp_raw_exit_floor_ratio(3, 1.0_dp, 0.0_dp)
+      partial = qs_scf_kp_raw_exit_floor_ratio(4, 9.95E-1_dp, 5.0E-3_dp)
+      calibrated = qs_scf_kp_raw_exit_floor_ratio(4, 1.0_dp, 0.0_dp)
+      failed = ABS(bootstrap - 5.0E-1_dp) > tol .OR. &
+               ABS(partial - 3.75E-1_dp) > tol .OR. &
+               ABS(calibrated - 2.5E-1_dp) > tol .OR. &
+               MIN(bootstrap, partial, calibrated) < 2.5E-1_dp - tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), "failed", bootstrap, partial, calibrated
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_raw_exit_floor_ratio
 
 ! **************************************************************************************************
 !> \brief Check calibrated physical residual control without contaminating the response model.

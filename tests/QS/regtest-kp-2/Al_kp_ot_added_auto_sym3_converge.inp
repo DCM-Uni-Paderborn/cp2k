@@ -2,11 +2,12 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 HIGH reference after normalizing each irreducible-channel
-! search direction by its star multiplicity: AUTO grows from 4 to 8 and 16,
-! then converges in 53 MPI-2 OT steps at -8.15997715866557 Ha. It prints no
-! first/last-band, AUTO-exhausted, or unsupported-content warning.  Together
-! with the full-grid companion this guards the weighted symmetry reduction.
+! Local 2026-07 reference after rebuilding the initial virtual subspace from
+! the first physical Hamiltonian: AUTO grows from 4 to 8 and 16.  It converges
+! in 21 final-stage MPI-2 OT steps at -8.15998707914759 Ha and in 172 total
+! serial steps at -8.15998696519346 Ha.  It prints no first/last-band,
+! AUTO-exhausted, or unsupported-content warning.  Together with the full-grid
+! companion this guards the weighted symmetry reduction.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
@@ -36,7 +37,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 120
+      MAX_SCF 220
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC
