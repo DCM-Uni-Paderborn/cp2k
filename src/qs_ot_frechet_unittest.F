@@ -2993,16 +2993,18 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 3
-      REAL(KIND=dp), PARAMETER                           :: active_tol = 1.0E-4_dp, &
-                                                            gauge_gap = 5.0E-5_dp, &
-                                                            projector_weight = 1.0_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, fd_step = 1.0E-4_dp, &
+         gauge_gap = 5.0E-5_dp, projector_weight = 1.0_dp, stale_tol = 1.0E-8_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_rot, dchc, dchc_rot, docc_rot, &
-                                                            docc_safe, evec, evec_rot, occ_basis, q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_rot, chc_trial, dchc, dchc_rot, &
+                                                            docc_rot, docc_safe, evec, evec_rot, &
+                                                            evec_trial, occ_basis, q
       INTEGER                                            :: band, i, j
-      REAL(KIND=dp)                                      :: active, basis_gap, err, old_cov_gap
+      REAL(KIND=dp)                                      :: active, basis_gap, err, old_cov_gap, &
+                                                            stale_gap
       REAL(KIND=dp), DIMENSION(n)                        :: density_ref, density_rot, evals, &
-                                                            occ_curv, occ_scale, old_ref, old_rot
+                                                            occ_curv, occ_scale, old_ref, old_rot, &
+                                                            stale_ref
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
 
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -3031,6 +3033,8 @@ CONTAINS
       occ_curv(:) = [0.052_dp, 0.031_dp, 0.014_dp]
 
       CALL diag_complex(chc, evec, evals)
+      chc_trial(:, :) = chc(:, :) - fd_step*dchc(:, :)
+      CALL diag_complex(chc_trial, evec_trial, evals)
       CALL dense_history_safe_occ_projector_derivative_chc(chc, dchc, occ_scale, projector_weight, &
                                                            docc_safe, occ_curv, gauge_gap)
 
@@ -3062,6 +3066,7 @@ CONTAINS
       density_rot(:) = 0.0_dp
       old_ref(:) = 0.0_dp
       old_rot(:) = 0.0_dp
+      stale_ref(:) = 0.0_dp
       DO band = 1, n
          occ_basis(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
@@ -3077,6 +3082,16 @@ CONTAINS
          occ_basis(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
          DO j = 1, n
             DO i = 1, n
+               occ_basis(i, j) = projector_weight*evec_trial(i, band)*CONJG(evec_trial(j, band))
+            END DO
+         END DO
+         occ_basis(band, band) = occ_basis(band, band) + &
+                                 CMPLX(1.0_dp - projector_weight, 0.0_dp, KIND=dp)
+         stale_ref(band) = 0.5_dp*REAL(SUM(CONJG(occ_basis(:, :))*docc_safe(:, :)), KIND=dp)/ &
+                           occ_curv(band)
+         occ_basis(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         DO j = 1, n
+            DO i = 1, n
                occ_basis(i, j) = projector_weight*evec_rot(i, band)*CONJG(evec_rot(j, band))
             END DO
          END DO
@@ -3089,16 +3104,17 @@ CONTAINS
       err = MAXVAL(ABS(density_ref(:) - density_rot(:)))
       basis_gap = MAXVAL(ABS(density_ref(:) - old_ref(:)))
       old_cov_gap = MAXVAL(ABS(old_ref(:) - old_rot(:)))
+      stale_gap = MAXVAL(ABS(density_ref(:) - stale_ref(:)))
       active = MAXVAL(ABS(density_ref(:)))
 
       IF (err > tol .OR. basis_gap < active_tol .OR. old_cov_gap < active_tol .OR. &
-          active < active_tol) THEN
+          stale_gap < stale_tol .OR. active < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with error/gap/oldcov/active", err, basis_gap, old_cov_gap, active
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with error/gap/oldcov/stale/active", err, basis_gap, old_cov_gap, stale_gap, active
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with error/gap/oldcov/active", err, basis_gap, old_cov_gap, active
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with error/gap/oldcov/stale/active", err, basis_gap, old_cov_gap, stale_gap, active
       END IF
 
    END SUBROUTINE check_complex_projector_density_basis_projection

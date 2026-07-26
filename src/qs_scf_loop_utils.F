@@ -28688,7 +28688,7 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: base, chc, chc_m, chc_p, dchc, docc_mat, &
          docc_plateau, occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, orbital_occ_m, &
-         orbital_occ_p, projector_evec, u
+         orbital_occ_p, projector_evec_base, projector_evec_trial, u
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: orbital_occ_response
       INTEGER                                            :: ie, imo, jmo, kernel_cluster_groups, r, s
       LOGICAL                                            :: compute_orbital_schur, fd_cluster_used
@@ -28730,7 +28730,8 @@ CONTAINS
                    chc_p(nmo, nmo), chc_m(nmo, nmo), dchc(nmo, nmo), docc_mat(nmo, nmo), &
                    docc_plateau(nmo, nmo), &
                    occ_mat(nmo, nmo), occ_mat_p(nmo, nmo), occ_mat_m(nmo, nmo), &
-                   occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), projector_evec(nmo, nmo))
+                   occ_mat_coupled(nmo, nmo), occ_basis(nmo, nmo), &
+                   projector_evec_base(nmo, nmo), projector_evec_trial(nmo, nmo))
          ALLOCATE (density_floor_audit_column(nmo), density_floor_safe_audit_column(nmo), &
                    density_full_centered_column(nmo), density_basis_column(nmo), &
                    density_full_column(nmo), density_mixed_column(nmo), &
@@ -28759,7 +28760,7 @@ CONTAINS
          END IF
          IF (projector_weight > 0.0_dp) THEN
             ALLOCATE (projector_evals(nmo))
-            CALL diag_complex(chc, projector_evec, projector_evals)
+            CALL diag_complex(chc, projector_evec_base, projector_evals)
             DEALLOCATE (projector_evals)
          END IF
 
@@ -28772,7 +28773,7 @@ CONTAINS
          END IF
 
          DO ie = 1, nmo
-            CALL dense_history_safe_occ_projector_basis(projector_evec, projector_weight, ie, occ_basis)
+            CALL dense_history_safe_occ_projector_basis(projector_evec_base, projector_weight, ie, occ_basis)
             CALL dense_ref_rotation_gradient(x_re, x_im, base, occ_basis, grad_p_re, grad_p_im, eps_p)
             DO r = first_var, last_var
                imo = var_i(r)
@@ -28832,8 +28833,8 @@ CONTAINS
             CALL dense_rotated_chc(x_p_re, x_p_im, base, chc_p)
             CALL dense_rotated_chc(x_m_re, x_m_im, base, chc_m)
             IF (compute_projector_shadow .AND. projector_weight > 0.0_dp) THEN
-               CALL diag_complex(chc_p, projector_evec, projector_evals_p)
-               CALL diag_complex(chc_m, projector_evec, projector_evals_m)
+               CALL diag_complex(chc_p, projector_evec_trial, projector_evals_p)
+               CALL diag_complex(chc_m, projector_evec_trial, projector_evals_m)
             END IF
             density_projector_column(:) = 0.0_dp
             DO ie = 1, nmo
@@ -28908,7 +28909,7 @@ CONTAINS
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
                      IF (compute_density_full_audit) THEN
-                        CALL dense_history_safe_occ_projector_basis(projector_evec, projector_weight, ie, &
+                        CALL dense_history_safe_occ_projector_basis(projector_evec_base, projector_weight, ie, &
                                                                     occ_basis)
                         density_basis_response = &
                            0.5_dp*REAL(SUM(CONJG(occ_basis(:, :))*docc_plateau(:, :)), KIND=dp)/ &
@@ -29116,7 +29117,8 @@ CONTAINS
          END IF
 
          DEALLOCATE (x_re, x_im, u_re, u_im, chc, u, base, chc_p, chc_m, dchc, docc_mat, docc_plateau, &
-                     occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, projector_evec)
+                     occ_basis, occ_mat, occ_mat_p, occ_mat_m, occ_mat_coupled, &
+                     projector_evec_base, projector_evec_trial)
          DEALLOCATE (density_floor_audit_column, density_floor_safe_audit_column, &
                      density_full_centered_column, density_full_column, density_basis_column, &
                      density_mixed_column, density_plateau_centered_column, density_plateau_column, &
