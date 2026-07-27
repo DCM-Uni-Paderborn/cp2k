@@ -59,7 +59,7 @@ MODULE qs_scf_types
 
    INTEGER, PARAMETER, PUBLIC :: qs_ot_restart_adaptive_nint = 15, &
                                  qs_ot_restart_adaptive_nlog = 13, &
-                                 qs_ot_restart_adaptive_nreal = 89
+                                 qs_ot_restart_adaptive_nreal = 96
 
    PUBLIC :: qs_scf_env_type
    PUBLIC :: qs_ot_restart_dense_matrix_type
@@ -339,6 +339,8 @@ MODULE qs_scf_types
       INTEGER :: physical_direct_density_sel_quality_samples = 0
       INTEGER :: mixed_direct_quality_samples = 0
       INTEGER :: density_full_selected_quality_samples = 0
+      INTEGER :: density_stationarity_quality_samples = 0
+      INTEGER :: density_full_selected_stationarity_samples = 0
       INTEGER :: density_full_direct_quality_samples = 0
       INTEGER :: density_fdir_sel_quality_samples = 0
       INTEGER :: density_full_global_quality_samples = 0
@@ -361,6 +363,10 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: density_full_selected_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_residual_quality = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_residual_quality_ema = 1.0_dp
+      REAL(KIND=dp) :: density_stationarity_quality = 0.0_dp
+      REAL(KIND=dp) :: density_stationarity_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_stationarity_quality = 0.0_dp
+      REAL(KIND=dp) :: density_full_selected_stationarity_quality_ema = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: density_full_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: density_full_direct_quality = 0.0_dp

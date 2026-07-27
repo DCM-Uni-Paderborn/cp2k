@@ -373,7 +373,11 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_model_calibrated_quality = 0.0_dp, schur_model_calibrated_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_gap_ratio = 0.0_dp
       REAL(KIND=dp) :: schur_model_delta = 0.0_dp, schur_model_control_delta = 0.0_dp
+      REAL(KIND=dp) :: schur_model_density_stationarity_delta = -1.0_dp
       REAL(KIND=dp) :: schur_model_residual_drop = 0.0_dp
+      INTEGER :: schur_density_stationarity_quality_samples = 0
+      REAL(KIND=dp) :: schur_density_stationarity_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_density_stationarity_quality_ema = 0.0_dp
       LOGICAL :: schur_residual_history_reset_pending = .FALSE.
       REAL(KIND=dp) :: schur_residual_history_quality = 1.0_dp
       INTEGER :: schur_step_gauge_quality_samples = 0
@@ -595,6 +599,9 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_projector_density_full_selected_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_full_selected_residual_quality = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_full_selected_residual_quality_ema = 1.0_dp
+      INTEGER :: schur_projector_density_full_selected_stationarity_samples = 0
+      REAL(KIND=dp) :: schur_projector_density_full_selected_stationarity_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_projector_density_full_selected_stationarity_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_full_selected_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_full_selected_measured_sum = 0.0_dp
       REAL(KIND=dp) :: schur_projector_density_full_direct_drop = 0.0_dp
@@ -1152,7 +1159,11 @@ CONTAINS
       qs_ot_env%schur_model_gap_ratio = 0.0_dp
       qs_ot_env%schur_model_delta = 0.0_dp
       qs_ot_env%schur_model_control_delta = 0.0_dp
+      qs_ot_env%schur_model_density_stationarity_delta = -1.0_dp
       qs_ot_env%schur_model_residual_drop = 0.0_dp
+      qs_ot_env%schur_density_stationarity_quality_samples = 0
+      qs_ot_env%schur_density_stationarity_quality = 0.0_dp
+      qs_ot_env%schur_density_stationarity_quality_ema = 0.0_dp
       qs_ot_env%schur_residual_history_reset_pending = .FALSE.
       qs_ot_env%schur_residual_history_quality = 1.0_dp
       qs_ot_env%schur_step_gauge_quality_samples = 0
@@ -1389,6 +1400,9 @@ CONTAINS
       qs_ot_env%schur_projector_density_full_selected_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_density_full_selected_residual_quality = 0.0_dp
       qs_ot_env%schur_projector_density_full_selected_residual_quality_ema = 1.0_dp
+      qs_ot_env%schur_projector_density_full_selected_stationarity_samples = 0
+      qs_ot_env%schur_projector_density_full_selected_stationarity_quality = 0.0_dp
+      qs_ot_env%schur_projector_density_full_selected_stationarity_quality_ema = 0.0_dp
       qs_ot_env%schur_projector_density_full_selected_drop_sum = 0.0_dp
       qs_ot_env%schur_projector_density_full_selected_measured_sum = 0.0_dp
       qs_ot_env%schur_projector_density_full_direct_drop = 0.0_dp

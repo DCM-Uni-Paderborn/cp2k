@@ -1480,6 +1480,8 @@ CONTAINS
                            ot_env%schur_projector_density_fdir_sel_quality_samples > 0 .OR. &
                            ot_env%schur_projector_density_full_global_quality_samples > 0 .OR. &
                            ot_env%schur_projector_density_full_global_sel_quality_samples > 0 .OR. &
+                           ot_env%schur_density_stationarity_quality_samples > 0 .OR. &
+                           ot_env%schur_projector_density_full_selected_stationarity_samples > 0 .OR. &
                            ot_env%mermin_ls_accepted_quality_samples > 0 .OR. &
                            ot_env%schur_projector_mixed_direct_quality_samples > 0)
             IF (.NOT. cache%valid) CYCLE
@@ -1502,6 +1504,10 @@ CONTAINS
                ot_env%schur_projector_mixed_direct_quality_samples
             cache%density_full_selected_quality_samples = &
                ot_env%schur_projector_density_full_selected_quality_samples
+            cache%density_stationarity_quality_samples = &
+               ot_env%schur_density_stationarity_quality_samples
+            cache%density_full_selected_stationarity_samples = &
+               ot_env%schur_projector_density_full_selected_stationarity_samples
             cache%density_full_direct_quality_samples = &
                ot_env%schur_projector_density_full_direct_quality_samples
             cache%density_fdir_sel_quality_samples = &
@@ -1549,6 +1555,14 @@ CONTAINS
                ot_env%schur_projector_density_full_selected_residual_quality
             cache%density_full_selected_residual_quality_ema = &
                ot_env%schur_projector_density_full_selected_residual_quality_ema
+            cache%density_stationarity_quality = &
+               ot_env%schur_density_stationarity_quality
+            cache%density_stationarity_quality_ema = &
+               ot_env%schur_density_stationarity_quality_ema
+            cache%density_full_selected_stationarity_quality = &
+               ot_env%schur_projector_density_full_selected_stationarity_quality
+            cache%density_full_selected_stationarity_quality_ema = &
+               ot_env%schur_projector_density_full_selected_stationarity_quality_ema
             cache%density_full_selected_drop_sum = &
                ot_env%schur_projector_density_full_selected_drop_sum
             cache%density_full_selected_measured_sum = &
@@ -1799,6 +1813,10 @@ CONTAINS
                cache%mixed_direct_quality_samples
             qs_ot_env%schur_projector_density_full_selected_quality_samples = &
                cache%density_full_selected_quality_samples
+            qs_ot_env%schur_density_stationarity_quality_samples = &
+               cache%density_stationarity_quality_samples
+            qs_ot_env%schur_projector_density_full_selected_stationarity_samples = &
+               cache%density_full_selected_stationarity_samples
             qs_ot_env%schur_projector_density_full_direct_quality_samples = &
                cache%density_full_direct_quality_samples
             qs_ot_env%schur_projector_density_fdir_sel_quality_samples = &
@@ -1844,6 +1862,14 @@ CONTAINS
                cache%density_full_selected_residual_quality
             qs_ot_env%schur_projector_density_full_selected_residual_quality_ema = &
                cache%density_full_selected_residual_quality_ema
+            qs_ot_env%schur_density_stationarity_quality = &
+               cache%density_stationarity_quality
+            qs_ot_env%schur_density_stationarity_quality_ema = &
+               cache%density_stationarity_quality_ema
+            qs_ot_env%schur_projector_density_full_selected_stationarity_quality = &
+               cache%density_full_selected_stationarity_quality
+            qs_ot_env%schur_projector_density_full_selected_stationarity_quality_ema = &
+               cache%density_full_selected_stationarity_quality_ema
             qs_ot_env%schur_projector_density_full_selected_drop_sum = &
                cache%density_full_selected_drop_sum
             qs_ot_env%schur_projector_density_full_selected_measured_sum = &
@@ -3716,6 +3742,22 @@ CONTAINS
             qs_ot_env%kpoint_occ_preconditioner_active = .TRUE.
             qs_ot_env%kpoint_occ_preconditioner_ready_samples = 2
             qs_ot_env%kpoint_occ_metric_residual_quality_ema = 0.0_dp
+         END IF
+         IF (scf_env%qs_ot_restart%format_version >= 24) THEN
+            qs_ot_env%schur_model_density_stationarity_delta = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(90)
+            qs_ot_env%schur_density_stationarity_quality = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(91)
+            qs_ot_env%schur_density_stationarity_quality_ema = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(92)
+            qs_ot_env%schur_density_stationarity_quality_samples = &
+               MAX(0, NINT(scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(93)))
+            qs_ot_env%schur_projector_density_full_selected_stationarity_quality = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(94)
+            qs_ot_env%schur_projector_density_full_selected_stationarity_quality_ema = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(95)
+            qs_ot_env%schur_projector_density_full_selected_stationarity_samples = &
+               MAX(0, NINT(scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(96)))
          END IF
          IF (scf_env%qs_ot_restart%format_version < 20) THEN
             ! Version 20 keeps the structural CG direction flags invariant.

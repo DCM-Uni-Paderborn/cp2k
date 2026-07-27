@@ -70,7 +70,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 23
+   INTEGER, PARAMETER                   :: ot_restart_version = 24
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -930,7 +930,15 @@ CONTAINS
                                   qs_ot_env(ichannel)%schur_projector_mode_step_negative_ema, &
                                   qs_ot_env(ichannel)%schur_projector_mode_response_negative_ema, &
                                   qs_ot_env(ichannel)%schur_projector_mode_trust_ema, &
-                                  qs_ot_env(ichannel)%kpoint_occ_metric_residual_quality_ema]
+                                  qs_ot_env(ichannel)%kpoint_occ_metric_residual_quality_ema, &
+                                  qs_ot_env(ichannel)%schur_model_density_stationarity_delta, &
+                                  qs_ot_env(ichannel)%schur_density_stationarity_quality, &
+                                  qs_ot_env(ichannel)%schur_density_stationarity_quality_ema, &
+                                  REAL(qs_ot_env(ichannel)%schur_density_stationarity_quality_samples, KIND=dp), &
+                                  qs_ot_env(ichannel)%schur_projector_density_full_selected_stationarity_quality, &
+                                  qs_ot_env(ichannel)%schur_projector_density_full_selected_stationarity_quality_ema, &
+                                  REAL(qs_ot_env(ichannel)%schur_projector_density_full_selected_stationarity_samples, &
+                                       KIND=dp)]
 
          channel_source = qs_ot_env(ichannel)%state_allocated
          IF (channel_source) THEN
@@ -1332,7 +1340,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(8)                        :: real_payload_v10
       REAL(KIND=dp), DIMENSION(87)                       :: schur_real_payload_v7
       REAL(KIND=dp), DIMENSION(88)                       :: adaptive_real_payload_v21
-      REAL(KIND=dp), DIMENSION(89)                       :: schur_real_payload_v8
+      REAL(KIND=dp), DIMENSION(89)                       :: adaptive_real_payload_v23, &
+                                                            schur_real_payload_v8
       REAL(KIND=dp), &
          DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
 
@@ -1474,10 +1483,15 @@ CONTAINS
                schur_int_payload(6:12) = schur_int_payload_v4(5:11)
                schur_real_payload(1:51) = schur_real_payload_v4
             END IF
-            IF (version_read >= 22) THEN
+            IF (version_read >= 24) THEN
                READ (rst_unit) adaptive_int_payload
                READ (rst_unit) adaptive_log_payload
                READ (rst_unit) adaptive_real_payload
+            ELSE IF (version_read >= 22) THEN
+               READ (rst_unit) adaptive_int_payload
+               READ (rst_unit) adaptive_log_payload
+               READ (rst_unit) adaptive_real_payload_v23
+               adaptive_real_payload(1:89) = adaptive_real_payload_v23
             ELSE IF (version_read == 21) THEN
                READ (rst_unit) adaptive_int_payload_v21
                READ (rst_unit) adaptive_log_payload_v21

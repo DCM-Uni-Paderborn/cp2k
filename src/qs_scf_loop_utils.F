@@ -242,6 +242,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_coupled_secant_model, &
              qs_scf_kp_coupled_step_model, &
              qs_scf_kp_decouple_inactive_gauge, &
+             qs_scf_kp_density_stationarity_quality, &
              qs_scf_kp_density_control_delta, &
              qs_scf_kp_fermi_entropy_state, &
              qs_scf_kp_fermi_guard_control_delta, &
@@ -336,6 +337,23 @@ CONTAINS
       DEALLOCATE (projector)
 
    END SUBROUTINE qs_scf_kp_canonical_density_residual
+
+! **************************************************************************************************
+!> \brief Fractional reduction of the exact fixed-N canonical density residual.
+!> \param model_delta residual at the accepted line-search model point
+!> \param current_delta residual after the accepted line-search step
+!> \return bounded signed reduction fraction
+! **************************************************************************************************
+   FUNCTION qs_scf_kp_density_stationarity_quality(model_delta, current_delta) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: model_delta, current_delta
+      REAL(KIND=dp)                                      :: quality
+
+      quality = 0.0_dp
+      IF (model_delta <= EPSILON(model_delta) .OR. current_delta < 0.0_dp) RETURN
+      quality = (model_delta - current_delta)/model_delta
+      quality = MAX(-1.0_dp, MIN(1.0_dp, quality))
+
+   END FUNCTION qs_scf_kp_density_stationarity_quality
 
 ! **************************************************************************************************
 !> \brief Contract the FULL_ALL complement metric with finite complex occupation-matrix responses.
@@ -6070,15 +6088,15 @@ CONTAINS
       SUBROUTINE update_kpoint_ot_schur_line_search_quality()
 
       INTEGER                                            :: local_channel, samples
-      LOGICAL :: mermin_search, spectral_selected_ema_ok, spectral_selected_recent_ok, &
-         spectral_shadow_probe_quality_ready
+      LOGICAL :: density_stationarity_quality_ready, mermin_search, spectral_selected_ema_ok, &
+         spectral_selected_recent_ok, spectral_shadow_probe_quality_ready
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          constrained_calibrated_predicted_drop, constrained_calibrated_quality_ratio, &
          constrained_predicted_drop, constrained_quality_ratio, &
          dense_metric_shadow_predicted_drop, dense_metric_shadow_quality_ratio, &
-         gauge_residual_quality_ratio, measured_drop, metric_residual_quality, &
-         multisecant_predicted_drop, multisecant_quality_ratio, occgap_shadow_predicted_drop, &
-         occgap_shadow_quality_ratio, predicted_drop, &
+         density_stationarity_quality_ratio, gauge_residual_quality_ratio, measured_drop, &
+         metric_residual_quality, multisecant_predicted_drop, multisecant_quality_ratio, &
+         occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, predicted_drop, &
          projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality
       REAL(KIND=dp) :: projector_density_audit_quality_ratio, &
          projector_density_descent_base_predicted_drop, &
@@ -6193,6 +6211,30 @@ CONTAINS
          residual_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_model_delta > EPSILON(residual_current_delta)) &
             residual_quality_ratio = residual_drop/local_ot_env(1)%schur_model_delta
+         density_stationarity_quality_ready = mermin_search .AND. measured_drop > 0.0_dp .AND. &
+                                              local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
+                                              local_ot_env(1)%schur_model_density_stationarity_delta > &
+                                              EPSILON(1.0_dp)
+         density_stationarity_quality_ratio = 0.0_dp
+         IF (density_stationarity_quality_ready) THEN
+            density_stationarity_quality_ratio = qs_scf_kp_density_stationarity_quality( &
+                                                 local_ot_env(1)%schur_model_density_stationarity_delta, &
+                                                 local_ot_env(1)%kpoint_density_stationarity_delta)
+            local_ot_env(1)%schur_density_stationarity_quality = &
+               density_stationarity_quality_ratio
+            samples = MIN(local_ot_env(1)%schur_density_stationarity_quality_samples + 1, &
+                          HUGE(samples) - 1)
+            local_ot_env(1)%schur_density_stationarity_quality_samples = samples
+            IF (samples == 1) THEN
+               local_ot_env(1)%schur_density_stationarity_quality_ema = &
+                  density_stationarity_quality_ratio
+            ELSE
+               local_ot_env(1)%schur_density_stationarity_quality_ema = &
+                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                  local_ot_env(1)%schur_density_stationarity_quality_ema + &
+                  ot_kp_schur_quality_ema_alpha*density_stationarity_quality_ratio
+            END IF
+         END IF
          raw_residual_quality_ratio = residual_quality_ratio
          sample_gap = 0.0_dp
          sample_quality = 1.0_dp
@@ -7295,6 +7337,23 @@ CONTAINS
             END IF
             local_ot_env(1)%schur_projector_density_full_selected_residual_quality = &
                residual_quality_ratio
+            IF (density_stationarity_quality_ready) THEN
+               local_ot_env(1)%schur_projector_density_full_selected_stationarity_quality = &
+                  density_stationarity_quality_ratio
+               samples = MIN( &
+                         local_ot_env(1)%schur_projector_density_full_selected_stationarity_samples + 1, &
+                         HUGE(samples) - 1)
+               local_ot_env(1)%schur_projector_density_full_selected_stationarity_samples = samples
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_projector_density_full_selected_stationarity_quality_ema = &
+                     density_stationarity_quality_ratio
+               ELSE
+                  local_ot_env(1)%schur_projector_density_full_selected_stationarity_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_projector_density_full_selected_stationarity_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*density_stationarity_quality_ratio
+               END IF
+            END IF
             local_ot_env(1)%schur_projector_density_full_selected_drop_sum = &
                local_ot_env(1)%schur_projector_density_full_selected_drop_sum + &
                projector_density_full_selected_predicted_drop
@@ -8804,6 +8863,17 @@ CONTAINS
                local_ot_env(1)%schur_projector_density_full_selected_drop_sum, &
                local_ot_env(1)%schur_projector_density_full_selected_measured_sum, &
                projector_density_full_selected_predicted_drop
+            WRITE (cp_logger_get_default_unit_nr(logger), &
+                   '(A,1X,I6,4(1X,ES16.8),1X,I6,2(1X,ES16.8))') &
+               " OT Schur LS canonical density history n model current ratio ema full_n full_ratio full_ema:", &
+               local_ot_env(1)%schur_density_stationarity_quality_samples, &
+               local_ot_env(1)%schur_model_density_stationarity_delta, &
+               local_ot_env(1)%kpoint_density_stationarity_delta, &
+               local_ot_env(1)%schur_density_stationarity_quality, &
+               local_ot_env(1)%schur_density_stationarity_quality_ema, &
+               local_ot_env(1)%schur_projector_density_full_selected_stationarity_samples, &
+               local_ot_env(1)%schur_projector_density_full_selected_stationarity_quality, &
+               local_ot_env(1)%schur_projector_density_full_selected_stationarity_quality_ema
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,9(1X,ES16.8),1X,L1)') &
                " OT Schur LS projector full-density direct n ratio ema pred meas latest trust tema wtr atr enabled:", &
                local_ot_env(1)%schur_projector_density_full_direct_quality_samples, &
@@ -9305,6 +9375,7 @@ CONTAINS
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
             local_ot_env(1)%schur_model_delta = 0.0_dp
             local_ot_env(1)%schur_model_control_delta = 0.0_dp
+            local_ot_env(1)%schur_model_density_stationarity_delta = -1.0_dp
             local_ot_env(1)%schur_model_residual_drop = 0.0_dp
             local_ot_env(1)%kpoint_physical_delta_ready = .TRUE.
             local_ot_env(1)%kpoint_physical_delta_groups = 0
@@ -21319,6 +21390,10 @@ CONTAINS
             local_ot_env(1)%schur_model_delta = MAX(local_ot_env(1)%schur_model_delta, residual_delta)
             local_ot_env(1)%schur_model_control_delta = &
                MAX(local_ot_env(1)%schur_model_control_delta, density_projector_control_delta)
+            IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
+               local_ot_env(1)%schur_model_density_stationarity_delta = &
+               MAX(local_ot_env(1)%schur_model_density_stationarity_delta, &
+                   local_ot_env(1)%kpoint_density_stationarity_delta)
             IF (vector_secant_update_used .AND. schur_used_attempt == 3 .AND. &
                 accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
                local_ot_env(1)%schur_vector_secant_pending = .TRUE.

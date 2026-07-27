@@ -57,14 +57,15 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_density_residual, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
         qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_fermi_entropy_state, &
-        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_residual_split, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_control_delta, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -167,6 +168,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_raw_exit_floor_ratio("k-point OT independent raw exit floor", 5.0E-15_dp, nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
+   CALL check_kpoint_density_stationarity_history( &
+      "k-point OT accepted canonical density history", 5.0E-14_dp, nfail)
    CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_occ_metric_continuation("k-point OT occupation-metric continuation", &
@@ -4578,6 +4581,36 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_canonical_density_residual
+
+! **************************************************************************************************
+!> \brief Check accepted-step canonical-density quality.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_density_stationarity_history(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: decrease, err, increase, invalid, limited
+
+      decrease = qs_scf_kp_density_stationarity_quality(1.0E-5_dp, 8.0E-6_dp)
+      increase = qs_scf_kp_density_stationarity_quality(1.0E-5_dp, 1.5E-5_dp)
+      limited = qs_scf_kp_density_stationarity_quality(1.0E-5_dp, 3.0E-5_dp)
+      invalid = qs_scf_kp_density_stationarity_quality(0.0_dp, 1.0E-5_dp)
+
+      err = MAX(ABS(decrease - 0.2_dp), ABS(increase + 0.5_dp), &
+                ABS(limited + 1.0_dp), ABS(invalid))
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES16.8))') TRIM(label), &
+            "failed with decrease/increase/limited/invalid", decrease, increase, limited, invalid
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_density_stationarity_history
 
 ! **************************************************************************************************
 !> \brief Check calibrated physical residual control without contaminating the response model.
