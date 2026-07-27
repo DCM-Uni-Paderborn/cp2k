@@ -233,7 +233,7 @@ CONTAINS
       growth_ratio = current_delta/previous_delta
       tail_min = MAX(ot_cg_kp_mermin_recovery_tail_min_delta, &
                      ot_cg_kp_mermin_recovery_tail_min_eps_factor*MAX(0.0_dp, eps_scf))
-      tail_growth = previous_delta >= tail_min .AND. &
+      tail_growth = current_delta >= tail_min .AND. &
                     previous_delta <= ot_cg_kp_mermin_residual_growth_max_delta .AND. &
                     growth_ratio > ot_cg_kp_mermin_residual_growth_ratio
       catastrophic = previous_delta > ot_cg_kp_mermin_residual_growth_max_delta .AND. &

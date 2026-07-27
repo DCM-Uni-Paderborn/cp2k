@@ -4703,6 +4703,13 @@ CONTAINS
                                               1.0E-6_dp, reset, quality, catastrophic)
       failed = failed .OR. .NOT. reset .OR. catastrophic .OR. ABS(quality - 0.25_dp) > tol
 
+      ! Crossing into the residual tail invalidates CG even if the old point was just below it.
+      CALL ot_kpoint_cg_residual_growth_guard(1.45414674E-6_dp, 1.38067263E-5_dp, &
+                                              4.46710305E-6_dp, 1.0E-6_dp, &
+                                              reset, quality, catastrophic)
+      failed = failed .OR. .NOT. reset .OR. catastrophic .OR. &
+               ABS(quality - (1.45414674E-6_dp/1.38067263E-5_dp)**2) > tol
+
       ! This is the first unstable accepted Al Sym3 step seen in the HIGH trace.
       CALL ot_kpoint_cg_residual_growth_guard(2.54336845E-1_dp, 2.22932170_dp, &
                                               1.94216619E-1_dp, 1.0E-6_dp, &
