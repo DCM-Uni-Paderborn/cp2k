@@ -3,9 +3,9 @@
 ! regtest stays cheap.  It exercises the adaptive AUTO tail grow/rebuild path.
 ! Local 2026-07 HIGH reference from an isolated working directory after the
 ! fixed-N gauge, multiplicity, and collapsed-search recovery fixes: initial
-! AUTO buffer 4, grow to 8 and 16, then final convergence in 38 OT steps.
-! Total OT lines across AUTO rebuilds: 151.
-! E_total = Mermin = -8.14585334840572 Ha, with no first/last-band warning,
+! AUTO buffer 4, grow to 8 and 16, then MPI-2 convergence in 35 final-stage
+! OT steps with a 1.9E-7 canonical-density residual.
+! E_total = Mermin = -8.14585306476248 Ha, with no first/last-band warning,
 ! no AUTO-exhausted warning, and no "Unsupported content type" signature.  Run
 ! this companion from a fresh CWD because PROJECT files are written there and
 ! stale Al_kp_ot_added_auto* files make diagnosis ambiguous.  The final tail is
