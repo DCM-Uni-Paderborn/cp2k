@@ -53,6 +53,7 @@ MODULE qs_ot
    PUBLIC  :: qs_ot_apply_complex_frechet_dbcsr
    PUBLIC  :: qs_ot_complex_exp_frechet_kernel
    PUBLIC  :: qs_ot_generate_rotation_complex
+   PUBLIC  :: qs_ot_ref_update_required
    PUBLIC  :: qs_ot_rot_mat_derivative_complex
    PUBLIC  :: qs_ot_new_preconditioner
    PRIVATE :: qs_ot_p2m_diag
@@ -701,6 +702,19 @@ CONTAINS
    END FUNCTION qs_ot_ref_update
 
 ! **************************************************************************************************
+!> \brief expose the REF-update decision for synchronized local k-point channels
+!> \param qs_ot_env1 ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION qs_ot_ref_update_required(qs_ot_env1) RESULT(update)
+      TYPE(qs_ot_type)                                   :: qs_ot_env1
+      LOGICAL                                            :: update
+
+      update = qs_ot_ref_update(qs_ot_env1)
+
+   END FUNCTION qs_ot_ref_update_required
+
+! **************************************************************************************************
 !> \brief Reset minimizer data tied to the pre-absorption REF rotation coordinates.
 !> \param qs_ot_env ...
 ! **************************************************************************************************
@@ -997,12 +1011,15 @@ CONTAINS
 !> \param matrix_s ...
 !> \param matrix_s_im ...
 !> \param qs_ot_env ...
+!> \param ref_update synchronized REF-absorption decision shared by local k-point channels
 ! **************************************************************************************************
-   SUBROUTINE qs_ot_get_orbitals_ref_complex(matrix_c, matrix_c_im, matrix_s, matrix_s_im, qs_ot_env)
+   SUBROUTINE qs_ot_get_orbitals_ref_complex(matrix_c, matrix_c_im, matrix_s, matrix_s_im, qs_ot_env, &
+                                             ref_update)
 
       TYPE(dbcsr_type), POINTER                          :: matrix_c, matrix_c_im, matrix_s, &
                                                             matrix_s_im
       TYPE(qs_ot_type)                                   :: qs_ot_env
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ref_update
 
       CHARACTER(len=*), PARAMETER :: routineN = 'qs_ot_get_orbitals_ref_complex'
 
@@ -1121,7 +1138,11 @@ CONTAINS
          CALL dbcsr_copy(matrix_c_im, sc_im)
       END IF
 
-      update = qs_ot_ref_update(qs_ot_env)
+      IF (PRESENT(ref_update)) THEN
+         update = ref_update
+      ELSE
+         update = qs_ot_ref_update(qs_ot_env)
+      END IF
       IF (update) THEN
          ! Absorb an accepted finite k-point rotation into the REF basis.  Otherwise the next
          ! REF step optimizes around the pre-rotation basis while carrying a stale generator.

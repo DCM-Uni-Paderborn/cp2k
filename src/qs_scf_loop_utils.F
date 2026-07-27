@@ -83,6 +83,7 @@ MODULE qs_scf_loop_utils
                                               qs_ot_generate_rotation_complex,&
                                               qs_ot_get_derivative_ref_complex,&
                                               qs_ot_get_orbitals_ref_complex,&
+                                              qs_ot_ref_update_required,&
                                               qs_ot_rot_mat_derivative_complex
    USE qs_ot_minimizer,                 ONLY: ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry,&
@@ -260,6 +261,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_canonical_density_blend, &
              qs_scf_kp_canonical_density_multimode_blend, &
              qs_scf_kp_canonical_density_tangent, &
+             qs_scf_kp_exit_residual, &
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
              qs_scf_kp_symmetric_multisecant_update, &
@@ -2160,8 +2162,8 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL :: fermi_window_guarded, initial_density_rebase, initial_density_reference, &
          minimizer_step_taken, post_fermi_window_guarded, protect_mermin_ls_sample, ref_guard_ok, &
-         ref_guarded, transfer_step, update_ot_energy_state, update_ot_energy_state_after, &
-         use_real_wfn
+         ref_guarded, shared_ref_update, transfer_step, update_ot_energy_state, &
+         update_ot_energy_state_after, use_real_wfn
       REAL(KIND=dp) :: ener_nondiag, full_all_spin_scale, maxocc, occupation_floor, &
          occupation_floor_fraction, occupation_scale_full, ref_guard_max, ref_guard_min, &
          ref_guard_scale, trial_kTS, unweighted_residual_im2, unweighted_residual_re2
@@ -2333,6 +2335,7 @@ CONTAINS
          END IF
       END IF
 
+      shared_ref_update = qs_ot_ref_update_required(local_ot_env(1))
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -2352,10 +2355,18 @@ CONTAINS
             CALL copy_fm_to_dbcsr_bc(kp%ot_hmat(2, ispin), matrix_h_cache_im(local_channel)%matrix)
             CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
-            CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
-                                                matrix_hc_im(local_channel)%matrix, &
-                                                matrix_s_re, matrix_s_im, &
-                                                local_ot_env(local_channel))
+            IF (local_channel == 1) THEN
+               CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                   matrix_hc_im(local_channel)%matrix, &
+                                                   matrix_s_re, matrix_s_im, &
+                                                   local_ot_env(local_channel))
+            ELSE
+               CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                   matrix_hc_im(local_channel)%matrix, &
+                                                   matrix_s_re, matrix_s_im, &
+                                                   local_ot_env(local_channel), &
+                                                   ref_update=shared_ref_update)
+            END IF
             CALL copy_dbcsr_to_fm(matrix_hc(local_channel)%matrix, mo_coeff)
             CALL copy_dbcsr_to_fm(matrix_hc_im(local_channel)%matrix, mo_coeff_im)
          END DO
@@ -2701,9 +2712,9 @@ CONTAINS
             update_ot_energy_state_after = .TRUE.
          END IF
       END IF
-      CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta, &
-                                               scf_control%eps_scf)
+      CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, scf_env%iter_delta)
 
+      shared_ref_update = qs_ot_ref_update_required(local_ot_env(1))
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
@@ -2714,10 +2725,18 @@ CONTAINS
             CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues, &
                             nmo=nmo)
             CALL get_mo_set(kp%mos(2, ispin), mo_coeff=mo_coeff_im)
-            CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
-                                                matrix_hc_im(local_channel)%matrix, &
-                                                matrix_s_re, matrix_s_im, &
-                                                local_ot_env(local_channel))
+            IF (local_channel == 1) THEN
+               CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                   matrix_hc_im(local_channel)%matrix, &
+                                                   matrix_s_re, matrix_s_im, &
+                                                   local_ot_env(local_channel))
+            ELSE
+               CALL qs_ot_get_orbitals_ref_complex(matrix_hc(local_channel)%matrix, &
+                                                   matrix_hc_im(local_channel)%matrix, &
+                                                   matrix_s_re, matrix_s_im, &
+                                                   local_ot_env(local_channel), &
+                                                   ref_update=shared_ref_update)
+            END IF
             CALL copy_dbcsr_to_fm(matrix_hc(local_channel)%matrix, mo_coeff)
             CALL copy_dbcsr_to_fm(matrix_hc_im(local_channel)%matrix, mo_coeff_im)
             IF (kpoint_ot_project_energy_subproblem(local_ot_env(local_channel), scf_control%smear)) THEN
@@ -2840,6 +2859,29 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_residual_split
 
 ! **************************************************************************************************
+!> \brief combine the unchanged search residual with independent physical exit guards
+!> \param search_delta residual used by the minimizer and subspace-refresh control
+!> \param physical_delta complete fixed-N Mermin residual
+!> \param physical_ready whether the physical residual is complete
+!> \param density_delta fixed-N canonical-density stationarity residual
+!> \param density_ready whether the density residual is complete
+!> \param calibrated_floor additional calibrated raw/physical exit floor
+!> \return residual used only by the final SCF convergence decision
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_exit_residual(search_delta, physical_delta, physical_ready, &
+                                         density_delta, density_ready, calibrated_floor) RESULT(exit_delta)
+      REAL(KIND=dp), INTENT(IN)                          :: search_delta, physical_delta, density_delta, &
+                                                            calibrated_floor
+      LOGICAL, INTENT(IN)                                :: physical_ready, density_ready
+      REAL(KIND=dp)                                      :: exit_delta
+
+      exit_delta = MAX(0.0_dp, search_delta, calibrated_floor)
+      IF (physical_ready) exit_delta = MAX(exit_delta, physical_delta)
+      IF (density_ready) exit_delta = MAX(exit_delta, density_delta)
+
+   END FUNCTION qs_scf_kp_exit_residual
+
+! **************************************************************************************************
 !> \brief Keep the raw residual as an independent, history-calibrated SCF exit guard.
 !> \param accepted_samples accepted Mermin model-quality samples
 !> \param accepted_quality_ema accepted/predicted Mermin-drop quality
@@ -2947,6 +2989,66 @@ CONTAINS
       END DO
 
    END SUBROUTINE qs_scf_loop_sync_ot_kp_global_delta
+
+! **************************************************************************************************
+!> \brief apply physical k-point OT residuals only to the final SCF exit decision
+!> \param local_ot_env local spin/k-point OT channels
+!> \param para_env_inter_kp communicator spanning the distributed k-point groups
+!> \param eps_scf requested SCF threshold
+!> \param residual_delta on input the search residual, on output the exit residual
+! **************************************************************************************************
+   SUBROUTINE qs_scf_loop_ot_kp_exit_delta(local_ot_env, para_env_inter_kp, eps_scf, residual_delta)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
+      REAL(KIND=dp), INTENT(IN)                          :: eps_scf
+      REAL(KIND=dp), INTENT(INOUT)                       :: residual_delta
+
+      REAL(KIND=dp) :: calibrated_floor_delta, density_stationarity_delta, model_delta, &
+         ot_delta, physical_delta, raw_delta, raw_floor_ratio
+
+      CPASSERT(SIZE(local_ot_env) > 0)
+
+      ot_delta = MAX(0.0_dp, local_ot_env(1)%delta)
+      raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
+      physical_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_physical_delta)
+      density_stationarity_delta = 0.0_dp
+      IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
+         density_stationarity_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_density_stationarity_delta)
+      CALL para_env_inter_kp%max(ot_delta)
+      CALL para_env_inter_kp%max(raw_delta)
+      CALL para_env_inter_kp%max(physical_delta)
+      CALL para_env_inter_kp%max(density_stationarity_delta)
+
+      calibrated_floor_delta = 0.0_dp
+      CALL ot_kpoint_physical_residual_split( &
+         raw_delta, physical_delta, local_ot_env(1)%kpoint_physical_delta_ready, &
+         eps_scf, local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+         local_ot_env(1)%mermin_ls_accepted_quality_ema, local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+         model_delta, calibrated_floor_delta)
+      ! The complete fixed-N residual is an exit condition independent of the
+      ! preconditioned search metric.  Applying it here avoids feeding an
+      ! exit-only quantity back into subspace refresh and CG/history control.
+      IF (local_ot_env(1)%kpoint_physical_delta_ready) &
+         calibrated_floor_delta = MAX(calibrated_floor_delta, physical_delta)
+      IF (eps_scf > 0.0_dp .AND. raw_delta > ot_delta .AND. &
+          local_ot_env(1)%kpoint_physical_delta_ready) THEN
+         raw_floor_ratio = qs_scf_kp_raw_exit_floor_ratio( &
+                           local_ot_env(1)%mermin_ls_accepted_quality_samples, &
+                           local_ot_env(1)%mermin_ls_accepted_quality_ema, &
+                           local_ot_env(1)%mermin_ls_accepted_gap_ema)
+         CALL para_env_inter_kp%max(raw_floor_ratio)
+         calibrated_floor_delta = MAX(calibrated_floor_delta, raw_floor_ratio*raw_delta)
+      END IF
+      CALL para_env_inter_kp%max(calibrated_floor_delta)
+
+      residual_delta = qs_scf_kp_exit_residual( &
+                       residual_delta, physical_delta, &
+                       local_ot_env(1)%kpoint_physical_delta_ready, &
+                       density_stationarity_delta, &
+                       local_ot_env(1)%kpoint_density_stationarity_ready, &
+                       calibrated_floor_delta)
+
+   END SUBROUTINE qs_scf_loop_ot_kp_exit_delta
 
 ! **************************************************************************************************
 !> \brief check the complex REF overlap spectrum after a k-point OT step
@@ -32268,13 +32370,29 @@ CONTAINS
       LOGICAL                                            :: should_stop, just_energy, &
                                                             exit_inner_loop, inner_loop_converged
       INTEGER                                            :: output_unit
+      REAL(KIND=dp)                                      :: convergence_delta
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
 
+      NULLIFY (kpoints, para_env_inter_kp)
       inner_loop_converged = .FALSE.
       exit_inner_loop = .FALSE.
+      convergence_delta = scf_env%iter_delta
+
+      ! Keep physical fixed-N exit guards out of scf_env%iter_delta: that
+      ! residual also drives k-point subspace refresh and minimizer history.
+      IF (scf_env%method == ot_method_nr .AND. ASSOCIATED(scf_env%qs_ot_env)) THEN
+         IF (ANY(scf_env%qs_ot_env(:)%kpoint_index > 0)) THEN
+            CALL get_qs_env(qs_env=qs_env, kpoints=kpoints)
+            CALL get_kpoint_info(kpoints, para_env_inter_kp=para_env_inter_kp)
+            CALL qs_scf_loop_ot_kp_exit_delta(scf_env%qs_ot_env, para_env_inter_kp, &
+                                              scf_control%eps_scf, convergence_delta)
+         END IF
+      END IF
 
       CALL external_control(should_stop, "SCF", target_time=qs_env%target_time, &
                             start_time=qs_env%start_time)
-      IF (scf_env%iter_delta < scf_control%eps_scf) THEN
+      IF (convergence_delta < scf_control%eps_scf) THEN
          IF (output_unit > 0) THEN
             WRITE (UNIT=output_unit, FMT="(/,T3,A,I5,A/)") &
                "*** SCF run converged in ", scf_env%iter_count, " steps ***"

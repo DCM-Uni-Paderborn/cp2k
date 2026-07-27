@@ -44,7 +44,8 @@ PROGRAM qs_ot_frechet_unittest
                                               make_complex_full_all
    USE preconditioner_types,            ONLY: preconditioner_type
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
-                                              qs_ot_complex_exp_frechet_kernel
+                                              qs_ot_complex_exp_frechet_kernel,&
+                                              qs_ot_ref_update_required
    USE qs_ot_minimizer,                 ONLY: ot_kpoint_cg_residual_growth_guard,&
                                               ot_kpoint_fermi_window_direction_scale,&
                                               ot_kpoint_fermi_window_energy_coordinate,&
@@ -68,7 +69,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
         qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_exit_residual, qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
         qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
         qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
         qs_scf_kp_symmetric_secant_update
@@ -171,6 +172,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_control_delta("k-point OT accepted density-projector tail", &
                                            5.0E-15_dp, nfail)
    CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
+   CALL check_kpoint_exit_residual("k-point OT exit-only physical residual", 5.0E-15_dp, nfail)
    CALL check_kpoint_raw_exit_floor_ratio("k-point OT independent raw exit floor", 5.0E-15_dp, nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
@@ -549,6 +551,7 @@ PROGRAM qs_ot_frechet_unittest
       "canonical density tangent reduced Mermin blend", 2.0E-13_dp, nfail)
    CALL check_accepted_model_calibration_reset( &
       "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
+   CALL check_shared_ref_update_control("shared k-point REF update control", nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_modal_cap( &
@@ -4506,6 +4509,36 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_residual_split
+
+! **************************************************************************************************
+!> \brief Check that physical exit guards do not replace the minimizer's search residual.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_exit_residual(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: exit_delta
+
+      exit_delta = qs_scf_kp_exit_residual(7.0E-7_dp, 3.0E-6_dp, .TRUE., &
+                                           2.0E-6_dp, .TRUE., 1.5E-6_dp)
+      failed = ABS(exit_delta - 3.0E-6_dp) > tol
+      exit_delta = qs_scf_kp_exit_residual(7.0E-7_dp, 3.0E-6_dp, .FALSE., &
+                                           2.0E-6_dp, .FALSE., 1.5E-6_dp)
+      failed = failed .OR. ABS(exit_delta - 1.5E-6_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "failed", exit_delta
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_exit_residual
 
 ! **************************************************************************************************
 !> \brief Check that Mermin-tail calibration cannot eliminate the independent raw exit guard.
@@ -23062,6 +23095,41 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_accepted_model_calibration_reset
+
+! **************************************************************************************************
+!> \brief Check that every local k-point channel follows the synchronized REF-absorption decision.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_shared_ref_update_control(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: local_update, shared_update
+      TYPE(qs_ot_type)                                   :: local_channel, shared_control
+
+      shared_control%settings%ot_method = "CG"
+      shared_control%settings%line_search_method = "2PNT"
+      shared_control%settings%occupation_preconditioner = .TRUE.
+      shared_control%has_complex_kpoint_state = .TRUE.
+      shared_control%kpoint_occ_preconditioner_active = .TRUE.
+      shared_control%line_search_count = 3
+
+      local_channel = shared_control
+      local_channel%line_search_count = 0
+      local_update = qs_ot_ref_update_required(local_channel)
+      shared_update = qs_ot_ref_update_required(shared_control)
+
+      IF (local_update .OR. .NOT. shared_update) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,2(1X,L1))') TRIM(label), &
+            "failed with local/shared", local_update, shared_update
+      ELSE
+         WRITE (*, '(A,1X,A,2(1X,L1))') TRIM(label), &
+            "OK with local/shared", local_update, shared_update
+      END IF
+
+   END SUBROUTINE check_shared_ref_update_control
 
 ! **************************************************************************************************
 !> \brief Check that near-degenerate cluster-to-singleton blocks use a covariant divided difference.
