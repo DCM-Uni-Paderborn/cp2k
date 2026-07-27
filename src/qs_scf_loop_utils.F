@@ -258,6 +258,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_quadratic_position_drop, &
              qs_scf_kp_canonical_density_residual, &
              qs_scf_kp_canonical_density_blend, &
+             qs_scf_kp_canonical_density_multimode_blend, &
              qs_scf_kp_canonical_density_tangent, &
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
@@ -383,17 +384,23 @@ CONTAINS
 !> \param canonical_occupation fixed-N occupations of the projected Hamiltonian eigenvalues
 !> \param occupation_regularization Tikhonov floor for nearly equal occupation pairs
 !> \param frechet_regularization Tikhonov floor for a nearly singular exponential map
-!> \param max_pair_rotation maximum physical current-frame rotation for one occupation pair
+!> \param max_pair_rotation current-frame trust radius for the physical density rotation
 !> \param tangent_re real antisymmetric generator-coordinate tangent
 !> \param tangent_im imaginary symmetric generator-coordinate tangent
 !> \param target_offdiag_norm off-diagonal norm of the canonical density mismatch
 !> \param linear_offdiag_norm mismatch norm after the mapped linear tangent
 !> \param tangent_norm norm of the returned finite-generator tangent
+!> \param active_i optional first orbital of the active complex rotation coordinates
+!> \param active_j optional second orbital of the active complex rotation coordinates
+!> \param active_kind optional coordinate kind, 1 for real and 2 for imaginary
+!> \param cauchy_tangent_re optional real finite-generator Cauchy tangent
+!> \param cauchy_tangent_im optional imaginary finite-generator Cauchy tangent
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_canonical_density_tangent( &
       x_re, x_im, eigenvectors, current_occupation, canonical_occupation, &
       occupation_regularization, frechet_regularization, max_pair_rotation, tangent_re, tangent_im, &
-      target_offdiag_norm, linear_offdiag_norm, tangent_norm)
+      target_offdiag_norm, linear_offdiag_norm, tangent_norm, active_i, active_j, active_kind, &
+      cauchy_tangent_re, cauchy_tangent_im)
 
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: eigenvectors
@@ -403,13 +410,16 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: tangent_re, tangent_im
       REAL(KIND=dp), INTENT(OUT)                         :: target_offdiag_norm, &
                                                             linear_offdiag_norm, tangent_norm
+      INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: active_i, active_j, active_kind
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT), OPTIONAL :: cauchy_tangent_re, &
+                                                               cauchy_tangent_im
 
       COMPLEX(KIND=dp) :: kernel, right_kernel
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: achieved, achieved_inner, density_residual, &
-         generator, generator_evec, omega, omega_inner, tangent, tangent_inner, weighted_evec
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: achieved, achieved_inner, cauchy_omega, &
+         cauchy_tangent, density_residual, generator, generator_evec, omega, omega_inner, tangent, &
+         tangent_inner, weighted_evec
       INTEGER                                            :: i, j, n
-      REAL(KIND=dp) :: frechet_floor_sq, occ_delta, occ_floor_sq, tangent_norm_sq, &
-         target_norm_sq, trial_abs
+      REAL(KIND=dp) :: frechet_floor_sq, tangent_norm_sq, target_norm_sq
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: generator_evals
 
       n = SIZE(current_occupation)
@@ -423,10 +433,22 @@ CONTAINS
       CPASSERT(occupation_regularization >= 0.0_dp)
       CPASSERT(frechet_regularization >= 0.0_dp)
       CPASSERT(max_pair_rotation > 0.0_dp)
+      CPASSERT(PRESENT(active_i) .EQV. PRESENT(active_j))
+      CPASSERT(PRESENT(active_i) .EQV. PRESENT(active_kind))
+      CPASSERT(PRESENT(cauchy_tangent_re) .EQV. PRESENT(cauchy_tangent_im))
+      IF (PRESENT(active_i)) THEN
+         CPASSERT(SIZE(active_j) == SIZE(active_i))
+         CPASSERT(SIZE(active_kind) == SIZE(active_i))
+      END IF
+      IF (PRESENT(cauchy_tangent_re)) THEN
+         CPASSERT(ALL(SHAPE(cauchy_tangent_re) == [n, n]))
+         CPASSERT(ALL(SHAPE(cauchy_tangent_im) == [n, n]))
+      END IF
 
-      ALLOCATE (achieved(n, n), achieved_inner(n, n), density_residual(n, n), &
-                generator(n, n), generator_evec(n, n), omega(n, n), omega_inner(n, n), &
-                tangent(n, n), tangent_inner(n, n), weighted_evec(n, n), generator_evals(n))
+      ALLOCATE (achieved(n, n), achieved_inner(n, n), cauchy_omega(n, n), &
+                cauchy_tangent(n, n), density_residual(n, n), generator(n, n), &
+                generator_evec(n, n), omega(n, n), omega_inner(n, n), tangent(n, n), &
+                tangent_inner(n, n), weighted_evec(n, n), generator_evals(n))
 
       weighted_evec(:, :) = eigenvectors(:, :)
       DO i = 1, n
@@ -437,23 +459,14 @@ CONTAINS
          density_residual(i, i) = density_residual(i, i) - current_occupation(i)
       END DO
 
-      ! For U -> U exp(Omega), d(U f U^H)=[Omega,f].  The least-squares
-      ! solution below remains bounded when two current occupations become
-      ! indistinguishable; such a pair cannot carry a first-order density
-      ! correction by an internal orbital rotation.
-      omega(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-      occ_floor_sq = occupation_regularization**2
-      DO j = 2, n
-         DO i = 1, j - 1
-            occ_delta = current_occupation(j) - current_occupation(i)
-            omega(i, j) = density_residual(i, j)*occ_delta/ &
-                          (occ_delta**2 + occ_floor_sq + EPSILON(1.0_dp))
-            trial_abs = ABS(omega(i, j))
-            IF (trial_abs > max_pair_rotation) &
-               omega(i, j) = (max_pair_rotation/trial_abs)*omega(i, j)
-            omega(j, i) = -CONJG(omega(i, j))
-         END DO
-      END DO
+      ! For U -> U exp(Omega), d(U f U^H)=[Omega,f].  Use the complete
+      ! Riemannian Hessian of 0.5*||U f U^H-P_FD||^2, not the pairwise
+      ! Gauss-Newton inverse.  The residual-Hessian term couples real and
+      ! imaginary rotations and prevents nearly equal occupations from
+      ! becoming large gauge-dominated pair steps.
+      CALL canonical_density_trust_tangent( &
+         density_residual, current_occupation, occupation_regularization, max_pair_rotation, omega, &
+         active_i, active_j, active_kind, cauchy_omega)
 
       ! The OT variables are the finite generator X, while Omega=U^H dU is
       ! the physical tangent in the current orbital frame.  Invert the
@@ -481,6 +494,29 @@ CONTAINS
       END DO
       tangent_re(:, :) = REAL(tangent, KIND=dp)
       tangent_im(:, :) = AIMAG(tangent)
+
+      IF (PRESENT(cauchy_tangent_re)) THEN
+         omega_inner(:, :) = MATMUL(CONJG(TRANSPOSE(generator_evec)), &
+                                    MATMUL(cauchy_omega, generator_evec))
+         tangent_inner(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         DO j = 1, n
+            DO i = 1, n
+               kernel = qs_ot_complex_exp_frechet_kernel(generator_evals(i), generator_evals(j))
+               right_kernel = EXP(CMPLX(0.0_dp, generator_evals(i), KIND=dp))*kernel
+               tangent_inner(i, j) = omega_inner(i, j)*CONJG(right_kernel)/ &
+                                     (ABS(right_kernel)**2 + frechet_floor_sq + EPSILON(1.0_dp))
+            END DO
+         END DO
+         cauchy_tangent(:, :) = MATMUL(generator_evec, &
+                                       MATMUL(tangent_inner, CONJG(TRANSPOSE(generator_evec))))
+         cauchy_tangent(:, :) = &
+            0.5_dp*(cauchy_tangent(:, :) - CONJG(TRANSPOSE(cauchy_tangent(:, :))))
+         DO i = 1, n
+            cauchy_tangent(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         END DO
+         cauchy_tangent_re(:, :) = REAL(cauchy_tangent, KIND=dp)
+         cauchy_tangent_im(:, :) = AIMAG(cauchy_tangent)
+      END IF
 
       ! Re-evaluate the physical linear tangent after projecting out diagonal
       ! phase gauges, so the reported reduction describes exactly the
@@ -513,10 +549,237 @@ CONTAINS
       linear_offdiag_norm = SQRT(MAX(0.0_dp, linear_offdiag_norm))
       tangent_norm = SQRT(MAX(0.0_dp, tangent_norm_sq))
 
-      DEALLOCATE (achieved, achieved_inner, density_residual, generator, generator_evec, &
-                  omega, omega_inner, tangent, tangent_inner, weighted_evec, generator_evals)
+      DEALLOCATE (achieved, achieved_inner, cauchy_omega, cauchy_tangent, density_residual, &
+                  generator, generator_evec, omega, omega_inner, tangent, tangent_inner, &
+                  weighted_evec, generator_evals)
 
    END SUBROUTINE qs_scf_kp_canonical_density_tangent
+
+! **************************************************************************************************
+!> \brief Build a gradient-connected trust-region Newton tangent for the canonical density.
+!> \param density_residual P_FD-f in the current orbital frame
+!> \param occupation current diagonal occupations
+!> \param curvature_regularization numerical floor for the shifted Hessian
+!> \param trust_radius Euclidean radius of the independent anti-Hermitian coordinates
+!> \param omega local anti-Hermitian density-rotation tangent
+!> \param active_i optional first orbital of active coordinates
+!> \param active_j optional second orbital of active coordinates
+!> \param active_kind optional coordinate kind, 1 for real and 2 for imaginary
+!> \param cauchy_omega optional trust-region Cauchy direction in the current orbital frame
+! **************************************************************************************************
+   SUBROUTINE canonical_density_trust_tangent( &
+      density_residual, occupation, curvature_regularization, trust_radius, omega, &
+      active_i, active_j, active_kind, cauchy_omega)
+
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: density_residual
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation
+      REAL(KIND=dp), INTENT(IN)                          :: curvature_regularization, trust_radius
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: omega
+      INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: active_i, active_j, active_kind
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT), OPTIONAL :: cauchy_omega
+
+      INTEGER, PARAMETER                                 :: trust_bisection_steps = 80
+
+      COMPLEX(KIND=dp)                                  :: basis_value, response_value
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: basis, commutator_left, &
+         commutator_right, density_error, response
+      INTEGER                                            :: i, icoord, j, jcoord, kind, n, ncoord
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: coord_i, coord_j, coord_kind
+      LOGICAL                                            :: boundary_step
+      REAL(KIND=dp) :: cauchy_curvature, cauchy_scale, curvature_scale, direction_norm, &
+         gradient_dot, gradient_norm_sq, shift, shift_high, shift_low, shift_mid, shift_tolerance
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: cauchy_direction, coefficients, direction, &
+         eigenvalues, gradient, projected_gradient
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: hessian
+
+      n = SIZE(occupation)
+      CPASSERT(n > 0)
+      CPASSERT(ALL(SHAPE(density_residual) == [n, n]))
+      CPASSERT(ALL(SHAPE(omega) == [n, n]))
+      IF (PRESENT(cauchy_omega)) THEN
+         CPASSERT(ALL(SHAPE(cauchy_omega) == [n, n]))
+      END IF
+      CPASSERT(curvature_regularization >= 0.0_dp)
+      CPASSERT(trust_radius > 0.0_dp)
+      CPASSERT(PRESENT(active_i) .EQV. PRESENT(active_j))
+      CPASSERT(PRESENT(active_i) .EQV. PRESENT(active_kind))
+
+      IF (PRESENT(active_i)) THEN
+         ncoord = SIZE(active_i)
+         CPASSERT(SIZE(active_j) == ncoord)
+         CPASSERT(SIZE(active_kind) == ncoord)
+      ELSE
+         ncoord = n*(n - 1)
+      END IF
+      omega(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      IF (PRESENT(cauchy_omega)) cauchy_omega(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      IF (ncoord <= 0) RETURN
+
+      ALLOCATE (coord_i(ncoord), coord_j(ncoord), coord_kind(ncoord))
+      IF (PRESENT(active_i)) THEN
+         coord_i(:) = active_i(:)
+         coord_j(:) = active_j(:)
+         coord_kind(:) = active_kind(:)
+      ELSE
+         icoord = 0
+         DO j = 2, n
+            DO i = 1, j - 1
+               icoord = icoord + 1
+               coord_i(icoord) = i
+               coord_j(icoord) = j
+               coord_kind(icoord) = 1
+               icoord = icoord + 1
+               coord_i(icoord) = i
+               coord_j(icoord) = j
+               coord_kind(icoord) = 2
+            END DO
+         END DO
+         CPASSERT(icoord == ncoord)
+      END IF
+      CPASSERT(ALL(coord_i >= 1 .AND. coord_i <= n))
+      CPASSERT(ALL(coord_j >= 1 .AND. coord_j <= n))
+      CPASSERT(ALL(coord_i < coord_j))
+      CPASSERT(ALL(coord_kind == 1 .OR. coord_kind == 2))
+
+      ALLOCATE (basis(n, n), commutator_left(n, n), commutator_right(n, n), &
+                density_error(n, n), response(n, n))
+      ALLOCATE (cauchy_direction(ncoord), coefficients(ncoord), direction(ncoord), &
+                eigenvalues(ncoord), gradient(ncoord), projected_gradient(ncoord), &
+                hessian(ncoord, ncoord))
+      density_error(:, :) = -density_residual(:, :)
+      gradient(:) = 0.0_dp
+      hessian(:, :) = 0.0_dp
+
+      DO jcoord = 1, ncoord
+         i = coord_i(jcoord)
+         j = coord_j(jcoord)
+         kind = coord_kind(jcoord)
+         basis_value = MERGE(CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
+                             CMPLX(0.0_dp, 1.0_dp, KIND=dp), kind == 1)
+         basis(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         basis(i, j) = basis_value
+         basis(j, i) = -CONJG(basis_value)
+         response(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         response_value = basis_value*(occupation(j) - occupation(i))
+         response(i, j) = response_value
+         response(j, i) = CONJG(response_value)
+
+         gradient(jcoord) = 2.0_dp*REAL(CONJG(density_error(i, j))*response_value, KIND=dp)
+         commutator_left(:, :) = MATMUL(density_error, basis) - MATMUL(basis, density_error)
+         commutator_right(:, :) = MATMUL(response, density_error) - MATMUL(density_error, response)
+         DO icoord = 1, ncoord
+            i = coord_i(icoord)
+            j = coord_j(icoord)
+            kind = coord_kind(icoord)
+            basis_value = MERGE(CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
+                                CMPLX(0.0_dp, 1.0_dp, KIND=dp), kind == 1)
+            response_value = basis_value*(occupation(j) - occupation(i))
+            hessian(icoord, jcoord) = &
+               MERGE(2.0_dp*ABS(response_value)**2, 0.0_dp, icoord == jcoord) + &
+               REAL(CONJG(commutator_left(i, j))*response_value - &
+                    CONJG(commutator_right(i, j))*basis_value, KIND=dp)
+         END DO
+      END DO
+      hessian(:, :) = 0.5_dp*(hessian(:, :) + TRANSPOSE(hessian(:, :)))
+
+      cauchy_direction(:) = -gradient(:)
+      gradient_norm_sq = DOT_PRODUCT(gradient, gradient)
+      cauchy_scale = 0.0_dp
+      IF (gradient_norm_sq > EPSILON(gradient_norm_sq)) THEN
+         direction_norm = SQRT(gradient_norm_sq)
+         cauchy_scale = trust_radius/direction_norm
+         cauchy_curvature = DOT_PRODUCT(cauchy_direction, MATMUL(hessian, cauchy_direction))
+         IF (cauchy_curvature > EPSILON(ABS(cauchy_curvature))) &
+            cauchy_scale = MIN(cauchy_scale, gradient_norm_sq/cauchy_curvature)
+      END IF
+      cauchy_direction(:) = cauchy_scale*cauchy_direction(:)
+
+      CALL diamat_all(hessian, eigenvalues, dac=.TRUE.)
+      projected_gradient(:) = MATMUL(TRANSPOSE(hessian), gradient)
+      curvature_scale = MAX(1.0_dp, MAXVAL(ABS(eigenvalues)))
+      shift_tolerance = MAX(curvature_regularization**2, &
+                            100.0_dp*EPSILON(curvature_scale)*curvature_scale)
+      boundary_step = eigenvalues(1) <= shift_tolerance
+      IF (.NOT. boundary_step) THEN
+         coefficients(:) = -projected_gradient(:)/eigenvalues(:)
+         boundary_step = DOT_PRODUCT(coefficients, coefficients) > trust_radius**2
+      END IF
+
+      IF (boundary_step) THEN
+         shift_low = MAX(0.0_dp, -eigenvalues(1)) + shift_tolerance
+         shift_high = MAX(1.0_dp, 2.0_dp*shift_low, &
+                          MAXVAL(ABS(projected_gradient))/MAX(trust_radius, EPSILON(trust_radius)))
+         DO
+            coefficients(:) = -projected_gradient(:)/(eigenvalues(:) + shift_high)
+            IF (DOT_PRODUCT(coefficients, coefficients) <= trust_radius**2) EXIT
+            shift_high = 2.0_dp*shift_high
+         END DO
+         coefficients(:) = -projected_gradient(:)/(eigenvalues(:) + shift_low)
+         IF (DOT_PRODUCT(coefficients, coefficients) <= trust_radius**2) THEN
+            shift = shift_low
+         ELSE
+            DO icoord = 1, trust_bisection_steps
+               shift_mid = 0.5_dp*(shift_low + shift_high)
+               coefficients(:) = -projected_gradient(:)/(eigenvalues(:) + shift_mid)
+               IF (DOT_PRODUCT(coefficients, coefficients) > trust_radius**2) THEN
+                  shift_low = shift_mid
+               ELSE
+                  shift_high = shift_mid
+               END IF
+            END DO
+            shift = shift_high
+         END IF
+         coefficients(:) = -projected_gradient(:)/(eigenvalues(:) + shift)
+      END IF
+
+      direction(:) = MATMUL(hessian, coefficients)
+      gradient_dot = DOT_PRODUCT(gradient, direction)
+      IF (gradient_dot >= 0.0_dp .OR. gradient_dot /= gradient_dot) THEN
+         direction(:) = -gradient(:)
+         direction_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(direction, direction)))
+         IF (direction_norm > trust_radius) direction(:) = (trust_radius/direction_norm)*direction(:)
+      END IF
+
+      DO icoord = 1, ncoord
+         i = coord_i(icoord)
+         j = coord_j(icoord)
+         kind = coord_kind(icoord)
+         IF (kind == 1) THEN
+            omega(i, j) = omega(i, j) + CMPLX(direction(icoord), 0.0_dp, KIND=dp)
+         ELSE
+            omega(i, j) = omega(i, j) + CMPLX(0.0_dp, direction(icoord), KIND=dp)
+         END IF
+      END DO
+      DO j = 2, n
+         DO i = 1, j - 1
+            omega(j, i) = -CONJG(omega(i, j))
+         END DO
+      END DO
+      IF (PRESENT(cauchy_omega)) THEN
+         DO icoord = 1, ncoord
+            i = coord_i(icoord)
+            j = coord_j(icoord)
+            kind = coord_kind(icoord)
+            IF (kind == 1) THEN
+               cauchy_omega(i, j) = cauchy_omega(i, j) + &
+                                    CMPLX(cauchy_direction(icoord), 0.0_dp, KIND=dp)
+            ELSE
+               cauchy_omega(i, j) = cauchy_omega(i, j) + &
+                                    CMPLX(0.0_dp, cauchy_direction(icoord), KIND=dp)
+            END IF
+         END DO
+         DO j = 2, n
+            DO i = 1, j - 1
+               cauchy_omega(j, i) = -CONJG(cauchy_omega(i, j))
+            END DO
+         END DO
+      END IF
+
+      DEALLOCATE (basis, cauchy_direction, coefficients, commutator_left, commutator_right, &
+                  coord_i, coord_j, coord_kind, density_error, direction, eigenvalues, gradient, &
+                  hessian, projected_gradient, response)
+
+   END SUBROUTINE canonical_density_trust_tangent
 
 ! **************************************************************************************************
 !> \brief Select a bounded canonical-density tangent in the same reduced fixed-N Mermin model as
@@ -604,6 +867,111 @@ CONTAINS
                   tangent_cross_energy, tangent_response)
 
    END SUBROUTINE qs_scf_kp_canonical_density_blend
+
+! **************************************************************************************************
+!> \brief Blend independent channel density tangents in one coupled fixed-N Mermin model.
+!> \param grad_rot rotation gradient
+!> \param grad_e energy-variable gradient
+!> \param rot_hessian finite complex rotation Hessian
+!> \param energy_cross rotation/energy Hessian cross block
+!> \param energy_response fixed-N solution H_ee^-1 H_er
+!> \param base_rot base rotation candidate
+!> \param tangent_modes channel-resolved canonical-density tangents
+!> \param initial_alpha common scalar coefficient used as the feasible starting point
+!> \param alpha optimized bounded coefficient of every tangent mode
+!> \param mode_linear reduced-model linear gain of every mode
+!> \param mode_curvature reduced-model diagonal curvature of every mode
+!> \param total_gain predicted incremental Mermin decrease
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_canonical_density_multimode_blend( &
+      grad_rot, grad_e, rot_hessian, energy_cross, energy_response, base_rot, tangent_modes, &
+      initial_alpha, alpha, mode_linear, mode_curvature, total_gain)
+
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: grad_rot, grad_e, base_rot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rot_hessian, energy_cross, &
+         energy_response, tangent_modes
+      REAL(KIND=dp), INTENT(IN)                          :: initial_alpha
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: alpha, mode_linear, mode_curvature
+      REAL(KIND=dp), INTENT(OUT)                         :: total_gain
+
+      INTEGER, PARAMETER                                 :: coordinate_sweeps = 16
+
+      INTEGER                                            :: imode, isweep, ne, nmode, nrot
+      REAL(KIND=dp)                                      :: effective_linear, endpoint_gain
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: base_cross, base_response, &
+         hessian_base, mode_gdot
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: hessian_modes, mode_cross_energy, &
+         mode_response, reduced_mode_hessian
+
+      nrot = SIZE(grad_rot)
+      ne = SIZE(grad_e)
+      nmode = SIZE(tangent_modes, 2)
+      CPASSERT(nrot > 0)
+      CPASSERT(ne > 0)
+      CPASSERT(nmode > 0)
+      CPASSERT(SIZE(base_rot) == nrot)
+      CPASSERT(SIZE(tangent_modes, 1) == nrot)
+      CPASSERT(ALL(SHAPE(rot_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_cross) == [ne, nrot]))
+      CPASSERT(ALL(SHAPE(energy_response) == [ne, nrot]))
+      CPASSERT(SIZE(alpha) == nmode)
+      CPASSERT(SIZE(mode_linear) == nmode)
+      CPASSERT(SIZE(mode_curvature) == nmode)
+
+      ALLOCATE (base_cross(ne), base_response(ne), hessian_base(nrot), mode_gdot(nmode))
+      ALLOCATE (hessian_modes(nrot, nmode), mode_cross_energy(ne, nmode), &
+                mode_response(ne, nmode), reduced_mode_hessian(nmode, nmode))
+      base_cross(:) = MATMUL(energy_cross, base_rot)
+      base_response(:) = MATMUL(energy_response, base_rot)
+      hessian_base(:) = 0.5_dp*MATMUL(rot_hessian + TRANSPOSE(rot_hessian), base_rot)
+      hessian_modes(:, :) = 0.5_dp*MATMUL(rot_hessian + TRANSPOSE(rot_hessian), tangent_modes)
+      mode_cross_energy(:, :) = MATMUL(energy_cross, tangent_modes)
+      mode_response(:, :) = MATMUL(energy_response, tangent_modes)
+
+      mode_gdot(:) = MATMUL(TRANSPOSE(tangent_modes), grad_rot) + &
+                      MATMUL(TRANSPOSE(mode_response), grad_e)
+      mode_linear(:) = mode_gdot(:) - MATMUL(TRANSPOSE(tangent_modes), hessian_base) + &
+                       0.5_dp*(MATMUL(TRANSPOSE(mode_response), base_cross) + &
+                               MATMUL(TRANSPOSE(mode_cross_energy), base_response))
+      reduced_mode_hessian(:, :) = MATMUL(TRANSPOSE(tangent_modes), hessian_modes) - &
+                                    0.5_dp*(MATMUL(TRANSPOSE(mode_response), mode_cross_energy) + &
+                                            MATMUL(TRANSPOSE(mode_cross_energy), mode_response))
+      reduced_mode_hessian(:, :) = &
+         0.5_dp*(reduced_mode_hessian(:, :) + TRANSPOSE(reduced_mode_hessian(:, :)))
+      DO imode = 1, nmode
+         mode_curvature(imode) = reduced_mode_hessian(imode, imode)
+      END DO
+
+      alpha(:) = MIN(1.0_dp, MAX(0.0_dp, initial_alpha))
+      DO imode = 1, nmode
+         IF (MAXVAL(ABS(tangent_modes(:, imode))) <= EPSILON(1.0_dp)) alpha(imode) = 0.0_dp
+      END DO
+      DO isweep = 1, coordinate_sweeps
+         DO imode = 1, nmode
+            IF (MAXVAL(ABS(tangent_modes(:, imode))) <= EPSILON(1.0_dp)) CYCLE
+            effective_linear = mode_linear(imode) - &
+                               DOT_PRODUCT(reduced_mode_hessian(imode, :), alpha) + &
+                               reduced_mode_hessian(imode, imode)*alpha(imode)
+            IF (mode_curvature(imode) > EPSILON(ABS(mode_curvature(imode)))) THEN
+               alpha(imode) = MIN(1.0_dp, MAX(0.0_dp, &
+                                             effective_linear/mode_curvature(imode)))
+            ELSE
+               endpoint_gain = effective_linear - 0.5_dp*mode_curvature(imode)
+               alpha(imode) = MERGE(1.0_dp, 0.0_dp, endpoint_gain > 0.0_dp)
+            END IF
+         END DO
+      END DO
+      total_gain = DOT_PRODUCT(mode_linear, alpha) - &
+                   0.5_dp*DOT_PRODUCT(alpha, MATMUL(reduced_mode_hessian, alpha))
+      IF (total_gain <= EPSILON(ABS(total_gain))) THEN
+         alpha(:) = 0.0_dp
+         total_gain = 0.0_dp
+      END IF
+
+      DEALLOCATE (base_cross, base_response, hessian_base, hessian_modes, mode_cross_energy, &
+                  mode_gdot, mode_response, reduced_mode_hessian)
+
+   END SUBROUTINE qs_scf_kp_canonical_density_multimode_blend
 
 ! **************************************************************************************************
 !> \brief Fractional reduction of the exact fixed-N canonical density residual.
@@ -6211,15 +6579,18 @@ CONTAINS
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: channel_evec
-      INTEGER                                            :: ikpoint, ispin, local_channel, &
-                                                            local_kpoint, nmo
+      INTEGER                                            :: ikpoint, imo, ispin, jmo, local_channel, &
+                                                            local_kpoint, max_i, max_j, nmo
+      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: channel_pair_i, channel_pair_j
       LOGICAL                                            :: audit_ready
       REAL(KIND=dp) :: canonical_kTS, channel_max, channel_metric, channel_metric_diag, &
-         channel_metric_offdiag, channel_weight, density_delta, density_max, density_metric, &
-         density_weight, maxocc, sigma
+         channel_metric_offdiag, channel_pair_max, channel_weight, density_delta, density_max, &
+         density_metric, density_weight, maxocc, sigma
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_mu, evals
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: channel_density_diag, channel_density_max, &
          channel_density_metric, channel_density_offdiag, channel_density_weight, h_im, h_re
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :) :: channel_pair_canonical_occ, &
+         channel_pair_current_occ, channel_pair_eigenvalue
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: canonical_eigenvalues, &
                                                             canonical_occupation
 
@@ -6242,6 +6613,10 @@ CONTAINS
          ALLOCATE (canonical_occupation, MOLD=trial_occupation)
          ALLOCATE (canonical_mu(SIZE(trial_mu)))
          ALLOCATE (channel_evec(nmo, nmo, SIZE(local_ot_env)))
+         ALLOCATE (channel_pair_i(SIZE(wkp), nspin_ot), channel_pair_j(SIZE(wkp), nspin_ot), &
+                   channel_pair_canonical_occ(2, SIZE(wkp), nspin_ot), &
+                   channel_pair_current_occ(2, SIZE(wkp), nspin_ot), &
+                   channel_pair_eigenvalue(2, SIZE(wkp), nspin_ot))
          ALLOCATE (channel_density_diag(SIZE(wkp), nspin_ot), &
                    channel_density_max(SIZE(wkp), nspin_ot), &
                    channel_density_metric(SIZE(wkp), nspin_ot), &
@@ -6251,6 +6626,11 @@ CONTAINS
          canonical_occupation(:, :, :) = 0.0_dp
          canonical_mu(:) = 0.0_dp
          channel_evec(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         channel_pair_i(:, :) = 0
+         channel_pair_j(:, :) = 0
+         channel_pair_canonical_occ(:, :, :) = 0.0_dp
+         channel_pair_current_occ(:, :, :) = 0.0_dp
+         channel_pair_eigenvalue(:, :, :) = 0.0_dp
          channel_density_diag(:, :) = 0.0_dp
          channel_density_max(:, :) = 0.0_dp
          channel_density_metric(:, :) = 0.0_dp
@@ -6305,6 +6685,32 @@ CONTAINS
                channel_density_metric(ikpoint, ispin) = channel_metric
                channel_density_offdiag(ikpoint, ispin) = channel_metric_offdiag
                channel_density_weight(ikpoint, ispin) = channel_weight
+               channel_pair_max = -1.0_dp
+               max_i = 0
+               max_j = 0
+               DO jmo = 2, nmo
+                  DO imo = 1, jmo - 1
+                     IF (local_ot_env(local_channel)%kpoint_density_pair_residual(imo, jmo) > &
+                         channel_pair_max) THEN
+                        channel_pair_max = &
+                           local_ot_env(local_channel)%kpoint_density_pair_residual(imo, jmo)
+                        max_i = imo
+                        max_j = jmo
+                     END IF
+                  END DO
+               END DO
+               channel_pair_i(ikpoint, ispin) = max_i
+               channel_pair_j(ikpoint, ispin) = max_j
+               IF (max_i > 0 .AND. max_j > 0) THEN
+                  channel_pair_current_occ(:, ikpoint, ispin) = &
+                     [trial_occupation(max_i, ikpoint, ispin), trial_occupation(max_j, ikpoint, ispin)]
+                  channel_pair_canonical_occ(:, ikpoint, ispin) = &
+                     [canonical_occupation(max_i, ikpoint, ispin), &
+                      canonical_occupation(max_j, ikpoint, ispin)]
+                  channel_pair_eigenvalue(:, ikpoint, ispin) = &
+                     [canonical_eigenvalues(max_i, ikpoint, ispin), &
+                      canonical_eigenvalues(max_j, ikpoint, ispin)]
+               END IF
                density_metric = density_metric + channel_metric
                density_weight = density_weight + channel_weight
                density_max = MAX(density_max, channel_max)
@@ -6317,6 +6723,11 @@ CONTAINS
          CALL para_env_inter_kp%sum(channel_density_metric)
          CALL para_env_inter_kp%sum(channel_density_offdiag)
          CALL para_env_inter_kp%sum(channel_density_weight)
+         CALL para_env_inter_kp%sum(channel_pair_i)
+         CALL para_env_inter_kp%sum(channel_pair_j)
+         CALL para_env_inter_kp%sum(channel_pair_current_occ)
+         CALL para_env_inter_kp%sum(channel_pair_canonical_occ)
+         CALL para_env_inter_kp%sum(channel_pair_eigenvalue)
          DO ispin = 1, nspin_ot
             DO ikpoint = 1, SIZE(wkp)
                CALL para_env_inter_kp%max(channel_density_max(ikpoint, ispin))
@@ -6352,11 +6763,21 @@ CONTAINS
                      " OT k-point canonical density channel spin k rms diag offdiag max:", &
                      ispin, ikpoint, channel_metric, channel_metric_diag, channel_metric_offdiag, &
                      channel_density_max(ikpoint, ispin)
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I4),7(1X,ES16.8))') &
+                     " OT k-point canonical density max-pair spin k i j residual "// &
+                     "occ_i occ_j can_i can_j eps_i eps_j:", &
+                     ispin, ikpoint, channel_pair_i(ikpoint, ispin), channel_pair_j(ikpoint, ispin), &
+                     channel_density_max(ikpoint, ispin), &
+                     channel_pair_current_occ(:, ikpoint, ispin), &
+                     channel_pair_canonical_occ(:, ikpoint, ispin), &
+                     channel_pair_eigenvalue(:, ikpoint, ispin)
                END DO
             END DO
          END IF
 
          DEALLOCATE (canonical_eigenvalues, canonical_occupation, canonical_mu, channel_evec, &
+                     channel_pair_i, channel_pair_j, channel_pair_canonical_occ, &
+                     channel_pair_current_occ, channel_pair_eigenvalue, &
                      channel_density_diag, channel_density_max, channel_density_metric, &
                      channel_density_offdiag, channel_density_weight)
 
@@ -9852,7 +10273,8 @@ CONTAINS
          schur_model_gap_factor = 5.0E-1_dp, schur_response_penalty_scale = 1.0_dp, &
          schur_response_trust_factor = 2.5E-1_dp
 
-      INTEGER :: channel_var_start, constrained_reject_reason, coupled_reject_reason, &
+      INTEGER :: accepted_pair_im_var, accepted_pair_re_var, accepted_pair_var, &
+         channel_var_start, constrained_reject_reason, coupled_reject_reason, &
          dense_reject_reason, density_pair_available, density_pair_candidates, failed_i, &
          gauge_projected_count, global_channel, global_kpoint, global_spin, group, ie, ikpoint, &
          imo, info, ispin, ivar, jmo, local_channel, local_kpoint, max_channel_nmo, nchannels, ne, &
@@ -9860,11 +10282,12 @@ CONTAINS
          projector_fd_cluster_replacements, projector_kernel_cluster_groups, r, reject_reason, s, &
          schur_attempt, schur_used_attempt, selected_attempt, selected_flavor
       INTEGER :: split_selected_attempt
-      INTEGER, ALLOCATABLE, DIMENSION(:) :: channel_multiplicity, channel_nmo, channel_nrot, &
-         channel_var_offset, e_offset, ipiv, ipiv_energy, var_channel, var_ei, var_ej, var_i, &
-         var_j, var_kind
+      INTEGER, ALLOCATABLE, DIMENSION(:) :: canonical_density_cauchy_channel, &
+         channel_multiplicity, channel_nmo, channel_nrot, channel_var_offset, e_offset, ipiv, &
+         ipiv_energy, var_channel, var_ei, var_ej, var_i, var_j, var_kind
       INTEGER, DIMENSION(3)                              :: density_pair_location
       LOGICAL :: accepted_reduced_secant_shadow_ready, active_pair, attempt_failed, &
+         channel_canonical_cauchy_used, &
          constrained_candidate_enabled, constrained_candidate_ready, &
          constrained_candidate_selected, dense_exact_scale_ready, density_descent_bootstrap_ready, &
          density_descent_candidate_ready, density_descent_candidate_selected, &
@@ -9934,7 +10357,8 @@ CONTAINS
          accepted_projector_inactive_offdiag_negative, &
          accepted_projector_inactive_offdiag_signed_ratio, &
          accepted_projector_inactive_offdiag_step_negative, accepted_projector_mode_drop, &
-         accepted_projector_mode_response_drop, accepted_projector_mode_response_negative_fraction
+         accepted_projector_mode_response_drop, accepted_projector_mode_response_negative_fraction, &
+         accepted_pair_residual
       REAL(KIND=dp) :: accepted_projector_mode_step_negative_fraction, &
          accepted_projector_mode_trust_quality, accepted_projector_offdiag_abs_ratio, &
          accepted_projector_offdiag_drop, accepted_projector_offdiag_negative, &
@@ -10561,8 +10985,10 @@ CONTAINS
          projector_physical_unit_weighted_step, projector_plateau_gap_delta_diag_avg
       REAL(KIND=dp) :: canonical_density_tangent_alpha, canonical_density_tangent_cross, &
          canonical_density_tangent_gain, canonical_density_tangent_gdot, &
+         canonical_density_mode_base_cross, canonical_density_mode_energy_gdot, &
+         canonical_density_mode_rotation_gdot, &
          canonical_density_tangent_norm, &
-         canonical_density_tangent_raw_norm
+         canonical_density_tangent_raw_norm, canonical_density_tangent_scalar_gain
       REAL(KIND=dp) :: projector_plateau_gap_delta_weight, &
          projector_plateau_gap_quality_for_selection, projector_response_character_abs_avg, &
          projector_response_character_fraction, projector_response_character_max, &
@@ -10626,6 +11052,7 @@ CONTAINS
          tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max, &
          total_curv_diag_sum, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, &
+         canonical_density_mode_alpha, canonical_density_mode_curvature, canonical_density_mode_linear, &
          canonical_density_tangent, canonical_density_trial_raw_rx_e, &
          canonical_density_trial_sol, canonical_occ_curv, canonical_occ_curv_channel, &
          canonical_occupation_channel, channel_maxocc, &
@@ -10662,7 +11089,8 @@ CONTAINS
          z_density_plateau_trial, z_density_trial, z_e
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_exact_physical_trial, z_exact_raw_trial, &
          z_exact_trial, z_multisecant, z_trial
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross, energy_cross_density, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: canonical_density_tangent_modes, energy_cross, &
+         energy_cross_density, &
          energy_cross_density_basis_audit, energy_cross_density_basis_curvfloor_audit, &
          energy_cross_density_basis_damped_audit, energy_cross_density_basis_filtered_audit, &
          energy_cross_density_basis_selective_audit, energy_cross_density_direct, &
@@ -10795,9 +11223,11 @@ CONTAINS
          ! k-point group contributes only its owned channel blocks; the
          ! inter-kpoint communicator assembles them below before the solve.
          nchannels = nspin_ot*SIZE(wkp)
-         ALLOCATE (channel_multiplicity(nchannels), channel_nmo(nchannels), &
+         ALLOCATE (canonical_density_cauchy_channel(nchannels), &
+                   channel_multiplicity(nchannels), channel_nmo(nchannels), &
                    channel_nrot(nchannels), channel_var_offset(nchannels), &
                    channel_maxocc(nchannels), e_offset(nchannels))
+         canonical_density_cauchy_channel(:) = 0
          channel_multiplicity(:) = 0
          channel_nmo(:) = 0
          channel_nrot(:) = 0
@@ -10962,8 +11392,9 @@ CONTAINS
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),1(1X,L1))') &
                " OT Schur skipped group ne nrot full max active:", &
                target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_subspace
-            DEALLOCATE (channel_multiplicity, channel_nmo, channel_nrot, channel_var_offset, &
-                        channel_maxocc, e_offset, channel_density_pair_residual, &
+            DEALLOCATE (canonical_density_cauchy_channel, channel_multiplicity, channel_nmo, &
+                        channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
+                        channel_density_pair_residual, &
                         channel_density_pair_active, channel_density_pair_candidate)
             RETURN
          END IF
@@ -11033,6 +11464,8 @@ CONTAINS
                    var_grad_metric_weight(nrot), var_occ_gap_weight(nrot), &
                    var_projector_active_weight(nrot), var_projector_response_weight(nrot), &
                    var_projector_weight(nrot), var_step_weight(nrot), var_thermal_activity(nrot))
+         ALLOCATE (canonical_density_mode_alpha(nchannels), canonical_density_mode_curvature(nchannels), &
+                   canonical_density_mode_linear(nchannels), canonical_density_tangent_modes(nrot, nchannels))
          ALLOCATE (canonical_density_trial_raw_rx_e(ne))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot), projector_physical_direct_active_lcomp(nrot))
@@ -12370,8 +12803,9 @@ CONTAINS
                CPASSERT(failed_i == channel_nrot(global_channel))
                density_global_lift_control = &
                   kpoint_ot_density_global_lift_control(eps_scf_channel, residual_delta)
+               channel_canonical_cauchy_used = .FALSE.
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
-                                                    e_offset(global_channel), h_re, h_im, &
+                                                    e_offset(global_channel), h_re, h_im, grad_re, grad_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     projector_occupation_window_gap, &
                                                     occ_curv(e_offset(global_channel):e_offset(global_channel) + nmo - 1), &
@@ -12397,7 +12831,10 @@ CONTAINS
                                                     canonical_density_tangent, &
                                                     projector_fd_cluster_derivatives, &
                                                     projector_fd_cluster_replacements, &
-                                                    projector_kernel_cluster_groups, failed)
+                                                    projector_kernel_cluster_groups, &
+                                                    channel_canonical_cauchy_used, failed)
+               canonical_density_cauchy_channel(global_channel) = &
+                  MERGE(1, 0, channel_canonical_cauchy_used)
                DEALLOCATE (h_re, h_im, grad_re, grad_im, canonical_occupation_channel, &
                            canonical_occ_curv_channel)
             END DO
@@ -12437,6 +12874,7 @@ CONTAINS
             CALL para_env_inter_kp%sum(response_density_basis_audit)
             CALL para_env_inter_kp%sum(response_density_plateau)
             CALL para_env_inter_kp%sum(canonical_density_tangent)
+            CALL para_env_inter_kp%sum(canonical_density_cauchy_channel)
             CALL para_env_inter_kp%sum(rot_hessian)
             CALL para_env_inter_kp%sum(rot_hessian_coupled)
             CALL para_env_inter_kp%sum(rot_hessian_orbital_schur)
@@ -12670,6 +13108,8 @@ CONTAINS
                         projector_physical_rx_e, projector_physical_z_e, &
                         projector_response_rx_e, projector_response_z_e, split_z_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
+                        canonical_density_mode_alpha, canonical_density_mode_curvature, &
+                        canonical_density_mode_linear, canonical_density_tangent_modes, &
                         canonical_density_trial_sol, constrained_sol, &
                         projector_physical_direct_sol, &
                         projector_physical_sol, projector_offdiag_sol, &
@@ -12711,7 +13151,8 @@ CONTAINS
                         rot_hessian_projector_physical_offdiag, &
                         rot_hessian_projector_physical_offdiag_plateau, &
                         rot_hessian_projector_physical_offdiag_plateau_active, &
-                        schur, schur_metric, ipiv, ipiv_energy, channel_multiplicity, channel_nmo, &
+                        schur, schur_metric, ipiv, ipiv_energy, &
+                        canonical_density_cauchy_channel, channel_multiplicity, channel_nmo, &
                         channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                         channel_density_pair_residual, channel_density_pair_active, &
                         channel_density_pair_candidate)
@@ -16192,11 +16633,20 @@ CONTAINS
                      (projector_physical_direct_delta(:, :) - rot_hessian(:, :))
                   response_physical_model(:, :) = response_exact_physical(:, :)
                   canonical_density_trial_sol(:) = sol(:)
+                  canonical_density_tangent_modes(:, :) = 0.0_dp
+                  DO r = 1, nrot
+                     IF (canonical_density_cauchy_channel(var_channel(r)) == 0) &
+                        canonical_density_tangent_modes(r, var_channel(r)) = canonical_density_tangent(r)
+                  END DO
+                  canonical_density_mode_alpha(:) = 0.0_dp
+                  canonical_density_mode_curvature(:) = 0.0_dp
+                  canonical_density_mode_linear(:) = 0.0_dp
                   canonical_density_tangent_alpha = 0.0_dp
                   canonical_density_tangent_cross = 0.0_dp
                   canonical_density_tangent_gain = 0.0_dp
                   canonical_density_tangent_gdot = 0.0_dp
                   canonical_density_tangent_norm = 0.0_dp
+                  canonical_density_tangent_scalar_gain = 0.0_dp
                   canonical_density_tangent_raw_norm = &
                      kpoint_ot_weighted_vector_dot(canonical_density_tangent, &
                                                    canonical_density_tangent, var_step_weight)
@@ -16205,13 +16655,31 @@ CONTAINS
                      CALL qs_scf_kp_canonical_density_blend( &
                         grad_rot, grad_e, projector_physical_direct_schur_mat, &
                         energy_cross_physical_model, response_exact_physical, sol, &
-                        canonical_density_tangent, canonical_density_tangent_alpha, &
+                        SUM(canonical_density_tangent_modes, DIM=2), &
+                        canonical_density_tangent_alpha, &
                         canonical_density_tangent_gdot, canonical_density_tangent_cross, &
                         canonical_density_tangent_norm, canonical_density_tangent_gain)
+                     canonical_density_tangent_scalar_gain = canonical_density_tangent_gain
+                     CALL qs_scf_kp_canonical_density_multimode_blend( &
+                        grad_rot, grad_e, projector_physical_direct_schur_mat, &
+                        energy_cross_physical_model, response_exact_physical, sol, &
+                        canonical_density_tangent_modes, canonical_density_tangent_alpha, &
+                        canonical_density_mode_alpha, canonical_density_mode_linear, &
+                        canonical_density_mode_curvature, canonical_density_tangent_gain)
                      canonical_density_trial_sol(:) = sol(:) + &
-                                                      canonical_density_tangent_alpha* &
-                                                      canonical_density_tangent(:)
+                                                      MATMUL(canonical_density_tangent_modes, &
+                                                             canonical_density_mode_alpha)
                   END IF
+                  ! A density-Newton mode that is uphill for the physical
+                  ! Mermin gradient is not an additive correction to the
+                  ! coupled Schur direction.  Its trust-region Cauchy fallback
+                  ! is a complete channel step and must replace that channel's
+                  ! rotation variables.  The coupled response model and the
+                  ! ordinary line search still decide whether to accept it.
+                  DO r = 1, nrot
+                     IF (canonical_density_cauchy_channel(var_channel(r)) > 0) &
+                        canonical_density_trial_sol(r) = canonical_density_tangent(r)
+                  END DO
                   canonical_density_trial_raw_rx_e(:) = &
                      MATMUL(response_exact_raw, canonical_density_trial_sol)
                   CALL project_kpoint_ot_schur_response( &
@@ -16223,12 +16691,59 @@ CONTAINS
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
                   IF (logger%iter_info%print_level >= high_print_level .AND. &
                       logger%para_env%is_source()) &
-                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
-                     " OT Schur canonical density tangent blend group alpha gdot cross curv gain raw_norm:", &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,7(1X,ES16.8))') &
+                     " OT Schur canonical density tangent blend group alpha gdot cross curv "// &
+                     "scalar_gain multimode_gain raw_norm:", &
                      target_group, canonical_density_tangent_alpha, canonical_density_tangent_gdot, &
                      canonical_density_tangent_cross, canonical_density_tangent_norm, &
-                     canonical_density_tangent_gain, &
+                     canonical_density_tangent_scalar_gain, canonical_density_tangent_gain, &
                      canonical_density_tangent_raw_norm
+                  IF (logger%iter_info%print_level >= high_print_level .AND. &
+                      logger%para_env%is_source()) THEN
+                     DO global_channel = 1, nchannels
+                        IF (canonical_density_cauchy_channel(global_channel) > 0) THEN
+                           canonical_density_mode_rotation_gdot = 0.0_dp
+                           canonical_density_mode_energy_gdot = 0.0_dp
+                           DO r = 1, nrot
+                              IF (var_channel(r) /= global_channel) CYCLE
+                              canonical_density_mode_rotation_gdot = &
+                                 canonical_density_mode_rotation_gdot + &
+                                 grad_rot(r)*canonical_density_tangent(r)
+                              canonical_density_mode_energy_gdot = &
+                                 canonical_density_mode_energy_gdot + canonical_density_tangent(r)* &
+                                 DOT_PRODUCT(grad_e, response_exact_physical(:, r))
+                           END DO
+                           WRITE (cp_logger_get_default_unit_nr(logger), &
+                                  '(A,2(1X,I4),2(1X,ES16.8))') &
+                              " OT Schur canonical density Cauchy replacement group channel "// &
+                              "rot_gdot energy_gdot:", &
+                              target_group, global_channel, canonical_density_mode_rotation_gdot, &
+                              canonical_density_mode_energy_gdot
+                           CYCLE
+                        END IF
+                        IF (MAXVAL(ABS(canonical_density_tangent_modes(:, global_channel))) <= &
+                            EPSILON(1.0_dp)) CYCLE
+                        canonical_density_mode_rotation_gdot = &
+                           DOT_PRODUCT(grad_rot, canonical_density_tangent_modes(:, global_channel))
+                        canonical_density_mode_energy_gdot = DOT_PRODUCT( &
+                           grad_e, MATMUL(response_exact_physical, &
+                                          canonical_density_tangent_modes(:, global_channel)))
+                        canonical_density_mode_base_cross = &
+                           canonical_density_mode_rotation_gdot + canonical_density_mode_energy_gdot - &
+                           canonical_density_mode_linear(global_channel)
+                        WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I4),7(1X,ES16.8))') &
+                           " OT Schur canonical density tangent mode group channel alpha linear "// &
+                           "rot_gdot energy_gdot base_cross curv norm:", &
+                           target_group, global_channel, canonical_density_mode_alpha(global_channel), &
+                           canonical_density_mode_linear(global_channel), &
+                           canonical_density_mode_rotation_gdot, canonical_density_mode_energy_gdot, &
+                           canonical_density_mode_base_cross, &
+                           canonical_density_mode_curvature(global_channel), &
+                           kpoint_ot_weighted_vector_dot( &
+                              canonical_density_tangent_modes(:, global_channel), &
+                              canonical_density_tangent_modes(:, global_channel), var_step_weight)
+                     END DO
+                  END IF
                   ! The physical shadow must see the active occupation-response
                   ! curvature and the fixed-N density response, not only the
                   ! tiny projector-basis gauge remainder.  The diagonal density
@@ -18104,9 +18619,18 @@ CONTAINS
                      IF (exact_density_direct_response_ready) THEN
                         projector_physical_direct_density_sol(:) = &
                            projector_physical_direct_sol(:)
+                        ! Keep the independently calibrated Direct-density
+                        ! candidate, but replace any channel whose exact
+                        ! density Newton mode is Mermin-uphill by its
+                        ! gradient-connected trust-region Cauchy step.
+                        DO r = 1, nrot
+                           IF (canonical_density_cauchy_channel(var_channel(r)) > 0) &
+                              projector_physical_direct_density_sol(r) = &
+                              canonical_density_tangent(r)
+                        END DO
                         projector_physical_direct_density_rx_e(:) = &
-                           MATMUL(response_exact_physical, projector_physical_direct_sol) + &
-                           MATMUL(response_density_direct_exact, projector_physical_direct_sol)
+                           MATMUL(response_exact_physical, projector_physical_direct_density_sol) + &
+                           MATMUL(response_density_direct_exact, projector_physical_direct_density_sol)
                         CALL project_kpoint_ot_schur_response(projector_physical_direct_density_rx_e, &
                                                               occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                         projector_physical_direct_density_z_e(:) = &
@@ -21827,6 +22351,47 @@ CONTAINS
                accepted_projector_coupled_weight = projector_coupled_weight
                accepted_z_e(:) = z_e(:)
                accepted_sol(:) = sol(:)
+               IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+                  accepted_pair_var = 0
+                  accepted_pair_re_var = 0
+                  accepted_pair_im_var = 0
+                  accepted_pair_residual = 0.0_dp
+                  DO r = 1, nrot
+                     IF (var_kind(r) /= 1) CYCLE
+                     IF (channel_density_pair_residual(var_i(r), var_j(r), var_channel(r)) > &
+                         accepted_pair_residual) THEN
+                        accepted_pair_residual = &
+                           channel_density_pair_residual(var_i(r), var_j(r), var_channel(r))
+                        accepted_pair_var = r
+                        accepted_pair_re_var = r
+                     END IF
+                  END DO
+                  IF (accepted_pair_var > 0) THEN
+                     DO r = 1, nrot
+                        IF (var_kind(r) == 2 .AND. &
+                            var_channel(r) == var_channel(accepted_pair_var) .AND. &
+                            var_i(r) == var_i(accepted_pair_var) .AND. &
+                            var_j(r) == var_j(accepted_pair_var)) THEN
+                           accepted_pair_im_var = r
+                           EXIT
+                        END IF
+                     END DO
+                     WRITE (cp_logger_get_default_unit_nr(logger), &
+                            '(A,1X,I3,4(1X,I8),1X,ES16.8)') &
+                        " OT Schur accepted density-pair group flavor channel i j residual:", &
+                        target_group, selected_flavor, var_channel(accepted_pair_var), &
+                        var_i(accepted_pair_var), var_j(accepted_pair_var), accepted_pair_residual
+                     DO r = accepted_pair_re_var, accepted_pair_im_var, &
+                        MAX(1, accepted_pair_im_var - accepted_pair_re_var)
+                        WRITE (cp_logger_get_default_unit_nr(logger), &
+                               '(A,2(1X,I8),8(1X,ES16.8))') &
+                           " OT Schur accepted density coord kind var grad step tangent trial hb hc hs hp:", &
+                           var_kind(r), r, grad_rot(r), accepted_sol(r), canonical_density_tangent(r), &
+                           canonical_density_trial_sol(r), rot_hessian(r, r), rot_hessian_coupled(r, r), &
+                           schur(r, r), projector_physical_direct_delta(r, r)
+                     END DO
+                  END IF
+               END IF
                IF (reduced_secant_update_eligible) THEN
                   CALL qs_scf_kp_coupled_step_model( &
                      grad_rot, grad_e, rot_hessian_reduced_secant, energy_hessian_reference, &
@@ -24327,6 +24892,8 @@ CONTAINS
                      projector_physical_z_e, &
                      projector_response_rx_e, projector_response_z_e, split_z_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
+                     canonical_density_mode_alpha, canonical_density_mode_curvature, &
+                     canonical_density_mode_linear, canonical_density_tangent_modes, &
                      canonical_density_trial_sol, constrained_sol, &
                      projector_physical_direct_sol, &
                      projector_physical_direct_spectral_sol, &
@@ -24380,7 +24947,8 @@ CONTAINS
                      rot_hessian_projector_physical_offdiag, &
                      rot_hessian_projector_physical_offdiag_plateau, &
                      rot_hessian_projector_physical_offdiag_plateau_active, &
-                     schur, schur_metric, ipiv, ipiv_energy, channel_multiplicity, channel_nmo, &
+                     schur, schur_metric, ipiv, ipiv_energy, &
+                     canonical_density_cauchy_channel, channel_multiplicity, channel_nmo, &
                      channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                      channel_density_pair_residual, channel_density_pair_active, &
                      channel_density_pair_candidate)
@@ -29612,6 +30180,8 @@ CONTAINS
 !> \param first_energy ...
 !> \param chc_re ...
 !> \param chc_im ...
+!> \param mermin_grad_re ...
+!> \param mermin_grad_im ...
 !> \param occupation_numbers ...
 !> \param kpoint_weight ...
 !> \param projector_window_gap ...
@@ -29645,10 +30215,12 @@ CONTAINS
 !> \param projector_fd_cluster_derivatives ...
 !> \param projector_fd_cluster_replacements ...
 !> \param projector_kernel_cluster_groups ...
+!> \param canonical_cauchy_selected the physical Cauchy tangent replaced an uphill density Newton step
 !> \param failed ...
 ! **************************************************************************************************
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
-                                                 chc_re, chc_im, occupation_numbers, kpoint_weight, &
+                                                 chc_re, chc_im, mermin_grad_re, mermin_grad_im, &
+                                                 occupation_numbers, kpoint_weight, &
                                                  projector_window_gap, occ_curv_channel, &
                                                  canonical_occupation_numbers, canonical_occ_curv_channel, &
                                                  var_i, var_j, var_kind, &
@@ -29669,10 +30241,12 @@ CONTAINS
                                                  response_density_plateau, canonical_density_tangent, &
                                                  projector_fd_cluster_derivatives, &
                                                  projector_fd_cluster_replacements, &
-                                                 projector_kernel_cluster_groups, failed)
+                                                 projector_kernel_cluster_groups, &
+                                                 canonical_cauchy_selected, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
                                                             first_energy
-      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: chc_re, chc_im, mermin_grad_re, &
+                                                    mermin_grad_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, projector_window_gap
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel
@@ -29691,6 +30265,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: canonical_density_tangent
       INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, &
          projector_fd_cluster_replacements, projector_kernel_cluster_groups
+      LOGICAL, INTENT(OUT)                              :: canonical_cauchy_selected
       LOGICAL, INTENT(INOUT)                             :: failed
 
       REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-4_dp
@@ -29700,23 +30275,23 @@ CONTAINS
          orbital_occ_p, projector_evec_base, projector_evec_trial, u
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: orbital_occ_response
       INTEGER                                            :: ie, imo, jmo, kernel_cluster_groups, r, s
-      LOGICAL                                            :: compute_orbital_schur, fd_cluster_used
-      REAL(KIND=dp) :: channel_occ_curv_max, density_basis_response, density_global_lift_weight, &
-         density_plateau_full_response, density_plateau_response, density_response, &
-         density_response_alignment, projector_centered_shift, projector_response, &
-         projector_response_norm, projector_safe_response_dot, projector_weight, raw_response, &
-         safe_centered_shift, safe_response_norm, tangent_linear_norm, tangent_norm, &
-         tangent_target_norm, weighted_curv_sum
+      LOGICAL :: compute_orbital_schur, fd_cluster_used
+      REAL(KIND=dp) :: canonical_cauchy_alignment, canonical_newton_alignment, channel_occ_curv_max, &
+         density_basis_response, density_global_lift_weight, density_plateau_full_response, &
+         density_plateau_response, density_response, density_response_alignment, &
+         projector_centered_shift, projector_response, projector_response_norm, &
+         projector_safe_response_dot, projector_weight, raw_response, safe_centered_shift, &
+         safe_response_norm, tangent_linear_norm, tangent_norm, tangent_target_norm, weighted_curv_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_basis_column, &
          density_floor_audit_column, density_floor_safe_audit_column, &
          density_full_centered_column, density_full_column, density_mixed_column, &
          density_plateau_centered_column, density_plateau_column, density_projector_column, eps_m, &
          eps_p, projector_evals, projector_evals_m, projector_evals_p
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
-                                                            grad_p_re, orbital_schur_local, u_im, &
-                                                            tangent_im_complex, tangent_re_complex, u_re, &
-                                                            x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: canonical_cauchy_im, canonical_cauchy_re, &
+         grad_m_im, grad_m_re, grad_p_im, grad_p_re, orbital_schur_local, tangent_im_complex, &
+         tangent_re_complex, u_im, u_re, x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
 
+         canonical_cauchy_selected = .FALSE.
          IF (failed) RETURN
          IF (first_var > last_var) RETURN
 
@@ -29774,12 +30349,46 @@ CONTAINS
             DEALLOCATE (projector_evals)
          END IF
          IF (compute_projector_shadow .AND. projector_weight > 0.0_dp) THEN
-            ALLOCATE (tangent_re_complex(nmo, nmo), tangent_im_complex(nmo, nmo))
+            ALLOCATE (canonical_cauchy_re(nmo, nmo), canonical_cauchy_im(nmo, nmo), &
+                      tangent_re_complex(nmo, nmo), tangent_im_complex(nmo, nmo))
             CALL qs_scf_kp_canonical_density_tangent( &
                x_re, x_im, projector_evec_base, occupation_numbers, canonical_occupation_numbers, &
                ot_kp_canonical_density_occupation_floor, ot_kp_canonical_density_frechet_floor, &
                ot_kp_canonical_density_pair_rotation_max, tangent_re_complex, tangent_im_complex, &
-               tangent_target_norm, tangent_linear_norm, tangent_norm)
+               tangent_target_norm, tangent_linear_norm, tangent_norm, &
+               active_i=var_i(first_var:last_var), active_j=var_j(first_var:last_var), &
+               active_kind=var_kind(first_var:last_var), cauchy_tangent_re=canonical_cauchy_re, &
+               cauchy_tangent_im=canonical_cauchy_im)
+            canonical_newton_alignment = 0.0_dp
+            canonical_cauchy_alignment = 0.0_dp
+            DO r = first_var, last_var
+               imo = var_i(r)
+               jmo = var_j(r)
+               SELECT CASE (var_kind(r))
+               CASE (1)
+                  canonical_newton_alignment = canonical_newton_alignment + &
+                                               mermin_grad_re(imo, jmo)*tangent_re_complex(imo, jmo)
+                  canonical_cauchy_alignment = canonical_cauchy_alignment + &
+                                               mermin_grad_re(imo, jmo)*canonical_cauchy_re(imo, jmo)
+               CASE (2)
+                  canonical_newton_alignment = canonical_newton_alignment + &
+                                               mermin_grad_im(imo, jmo)*tangent_im_complex(imo, jmo)
+                  canonical_cauchy_alignment = canonical_cauchy_alignment + &
+                                               mermin_grad_im(imo, jmo)*canonical_cauchy_im(imo, jmo)
+               END SELECT
+            END DO
+            IF (canonical_newton_alignment >= 0.0_dp) THEN
+               IF (canonical_cauchy_alignment < 0.0_dp) THEN
+                  tangent_re_complex(:, :) = canonical_cauchy_re(:, :)
+                  tangent_im_complex(:, :) = canonical_cauchy_im(:, :)
+                  tangent_norm = SQRT(SUM(tangent_re_complex**2 + tangent_im_complex**2))
+                  canonical_cauchy_selected = .TRUE.
+               ELSE
+                  tangent_re_complex(:, :) = 0.0_dp
+                  tangent_im_complex(:, :) = 0.0_dp
+                  tangent_norm = 0.0_dp
+               END IF
+            END IF
             DO r = first_var, last_var
                imo = var_i(r)
                jmo = var_j(r)
@@ -29791,11 +30400,14 @@ CONTAINS
                END SELECT
             END DO
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,4(1X,ES16.8))') &
-               " OT Schur canonical density tangent channel target linear ratio norm:", &
-               local_channel, tangent_target_norm, tangent_linear_norm, &
-               tangent_linear_norm/MAX(tangent_target_norm, EPSILON(tangent_target_norm)), tangent_norm
-            DEALLOCATE (tangent_re_complex, tangent_im_complex)
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,6(1X,ES16.8))') &
+               " OT Schur canonical density tangent channel cauchy target newton_linear ratio norm "// &
+               "newton_gdot cauchy_gdot:", &
+               local_channel, canonical_cauchy_selected, &
+               tangent_target_norm, tangent_linear_norm, &
+               tangent_linear_norm/MAX(tangent_target_norm, EPSILON(tangent_target_norm)), tangent_norm, &
+               canonical_newton_alignment, canonical_cauchy_alignment
+            DEALLOCATE (canonical_cauchy_re, canonical_cauchy_im, tangent_re_complex, tangent_im_complex)
          END IF
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))

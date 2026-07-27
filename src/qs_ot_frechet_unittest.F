@@ -57,6 +57,7 @@ PROGRAM qs_ot_frechet_unittest
                                               qs_ot_type
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_canonical_density_multimode_blend, &
         qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_canonical_density_tangent, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
@@ -540,6 +541,10 @@ PROGRAM qs_ot_frechet_unittest
       "canonical projector similarity-gauge response", 5.0E-10_dp, nfail)
    CALL check_canonical_density_rotation_tangent( &
       "canonical finite-generator density tangent", 2.0E-6_dp, nfail)
+   CALL check_canonical_density_mermin_alignment( &
+      "canonical density tangent Mermin alignment", 2.0E-7_dp, nfail)
+   CALL check_canonical_density_mermin_cauchy_fallback( &
+      "canonical density tangent Mermin Cauchy fallback", 2.0E-7_dp, nfail)
    CALL check_canonical_density_tangent_blend( &
       "canonical density tangent reduced Mermin blend", 2.0E-13_dp, nfail)
    CALL check_accepted_model_calibration_reset( &
@@ -22677,6 +22682,242 @@ CONTAINS
    END SUBROUTINE check_canonical_density_rotation_tangent
 
 ! **************************************************************************************************
+!> \brief Check that the finite-generator canonical-density tangent is a Mermin descent direction.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_density_mermin_alignment(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4, nkp = 1
+      REAL(KIND=dp), PARAMETER :: fd_step = 1.0E-6_dp, frechet_floor = 1.0E-10_dp, &
+         max_pair_rotation = 0.25_dp, maxocc = 2.0_dp, nel = 2.35_dp, &
+         occ_floor = 1.0E-8_dp, sigma = 0.035_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base_channel, chc, evec, u
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, j
+      REAL(KIND=dp) :: alignment, fd, fd_err, kTS, mu, tangent_linear_norm, tangent_norm, &
+         tangent_target_norm, value, value_m, value_p
+      REAL(KIND=dp), DIMENSION(n)                        :: evals
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: canonical_occ, current_occ, eps, evals_kp, &
+                                                            grad_eps
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(n, n)                     :: tangent_im, tangent_re
+      REAL(KIND=dp), DIMENSION(n, n, nkp) :: grad_im, grad_re, x_im, x_m_im, x_m_re, x_p_im, &
+         x_p_re, x_re
+
+      wk(:) = 1.0_dp
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.22_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(-0.025_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(0.045_dp, 0.0_dp, KIND=dp)
+      chc(4, 4) = CMPLX(0.13_dp, 0.0_dp, KIND=dp)
+      chc(1, 2) = CMPLX(0.018_dp, -0.011_dp, KIND=dp)
+      chc(1, 3) = CMPLX(-0.012_dp, 0.008_dp, KIND=dp)
+      chc(2, 3) = CMPLX(0.015_dp, 0.019_dp, KIND=dp)
+      chc(2, 4) = CMPLX(-0.010_dp, 0.007_dp, KIND=dp)
+      chc(3, 4) = CMPLX(0.013_dp, -0.009_dp, KIND=dp)
+      DO j = 2, n
+         DO i = 1, j - 1
+            chc(j, i) = CONJG(chc(i, j))
+         END DO
+      END DO
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.17_dp
+      x_re(1, 3, 1) = -0.08_dp
+      x_re(2, 4, 1) = 0.06_dp
+      x_re(3, 4, 1) = -0.04_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i, 1) = -x_re(i, j, 1)
+         END DO
+      END DO
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 2, 1) = -0.05_dp
+      x_im(1, 3, 1) = 0.03_dp
+      x_im(2, 3, 1) = -0.04_dp
+      x_im(2, 4, 1) = 0.02_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_im(j, i, 1) = x_im(i, j, 1)
+         END DO
+      END DO
+
+      CALL dense_rotation_u(x_re(:, :, 1), x_im(:, :, 1), u)
+      base_channel(:, :) = MATMUL(u, MATMUL(chc, CONJG(TRANSPOSE(u))))
+      base(:, :, 1) = base_channel(:, :)
+      DO i = 1, n
+         eps(i, 1) = REAL(chc(i, i), KIND=dp)
+      END DO
+      CALL dense_fermi_kpoint(current_occ, mu, kTS, eps, nel, wk, sigma, maxocc)
+      CALL diag_complex(chc, evec, evals)
+      evals_kp(:, 1) = evals(:)
+      CALL dense_fermi_kpoint(canonical_occ, mu, kTS, evals_kp, nel, wk, sigma, maxocc)
+
+      CALL qs_scf_kp_canonical_density_tangent( &
+         x_re(:, :, 1), x_im(:, :, 1), evec, current_occ(:, 1), canonical_occ(:, 1), &
+         occ_floor, frechet_floor, max_pair_rotation, tangent_re, tangent_im, &
+         tangent_target_norm, tangent_linear_norm, tangent_norm)
+      CALL dense_complex_kpoint_mermin_gradient( &
+         x_re, x_im, base, eps, wk, nel, sigma, maxocc, grad_re, grad_im, grad_eps, value)
+
+      alignment = 0.0_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            alignment = alignment + grad_re(i, j, 1)*tangent_re(i, j) + &
+                        grad_im(i, j, 1)*tangent_im(i, j)
+         END DO
+      END DO
+      x_p_re(:, :, :) = x_re(:, :, :)
+      x_m_re(:, :, :) = x_re(:, :, :)
+      x_p_im(:, :, :) = x_im(:, :, :)
+      x_m_im(:, :, :) = x_im(:, :, :)
+      x_p_re(:, :, 1) = x_p_re(:, :, 1) + fd_step*tangent_re(:, :)
+      x_m_re(:, :, 1) = x_m_re(:, :, 1) - fd_step*tangent_re(:, :)
+      x_p_im(:, :, 1) = x_p_im(:, :, 1) + fd_step*tangent_im(:, :)
+      x_m_im(:, :, 1) = x_m_im(:, :, 1) - fd_step*tangent_im(:, :)
+      value_p = dense_complex_kpoint_mermin_value(x_p_re, x_p_im, base, eps, wk, nel, sigma, maxocc)
+      value_m = dense_complex_kpoint_mermin_value(x_m_re, x_m_im, base, eps, wk, nel, sigma, maxocc)
+      fd = (value_p - value_m)/(2.0_dp*fd_step)
+      fd_err = ABS(fd - alignment)
+
+      IF (fd_err > tol .OR. alignment >= -tol .OR. tangent_target_norm <= 1.0E-4_dp .OR. &
+          tangent_linear_norm >= tangent_target_norm .OR. tangent_norm <= 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with fd/alignment/error/target/linear", fd, alignment, fd_err, &
+            tangent_target_norm, tangent_linear_norm
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with fd/alignment/error/target/linear", fd, alignment, fd_err, &
+            tangent_target_norm, tangent_linear_norm
+      END IF
+
+   END SUBROUTINE check_canonical_density_mermin_alignment
+
+! **************************************************************************************************
+!> \brief Check the density Cauchy fallback when an active-subspace Newton step is Mermin-uphill.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_density_mermin_cauchy_fallback(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4, nkp = 1, nrot = 6
+      REAL(KIND=dp), PARAMETER :: frechet_floor = 1.0E-10_dp, max_pair_rotation = 0.25_dp, &
+         maxocc = 2.0_dp, nel = 1.94555_dp, occ_floor = 1.0E-8_dp, sigma = 0.035_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: cauchy_density, chc, density_0, evec, target_density, u, weighted
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, r
+      INTEGER, DIMENSION(nrot) :: active_i, active_j, active_kind
+      REAL(KIND=dp) :: cauchy_alignment, cauchy_density_norm, kTS, mu, newton_alignment, &
+         newton_density_norm, tangent_linear_norm, tangent_norm, tangent_target_norm, value
+      REAL(KIND=dp), DIMENSION(n)                        :: evals
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: canonical_occ, current_occ, eps, evals_kp, &
+                                                            grad_eps
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(n, n) :: cauchy_im, cauchy_re, tangent_im, tangent_re
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_re
+
+      active_i(:) = [1, 1, 2, 2, 2, 3]
+      active_j(:) = [2, 3, 3, 3, 4, 4]
+      active_kind(:) = [1, 1, 1, 2, 1, 2]
+      wk(:) = 1.0_dp
+      x_re(:, :, :) = 0.0_dp
+      x_im(:, :, :) = 0.0_dp
+
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      chc(1, 1) = CMPLX(-0.144274569078867_dp, 0.0_dp, KIND=dp)
+      chc(2, 2) = CMPLX(-0.121718168112945_dp, 0.0_dp, KIND=dp)
+      chc(3, 3) = CMPLX(-0.059039112540003_dp, 0.0_dp, KIND=dp)
+      chc(4, 4) = CMPLX(0.001739620299291_dp, 0.0_dp, KIND=dp)
+      chc(1, 2) = CMPLX(-0.035938478445818_dp, 0.060496591512136_dp, KIND=dp)
+      chc(1, 3) = CMPLX(0.002560122009227_dp, -0.085426581116627_dp, KIND=dp)
+      chc(1, 4) = CMPLX(0.002880860727624_dp, 0.105192006233035_dp, KIND=dp)
+      chc(2, 3) = CMPLX(-0.047329519161690_dp, -0.009466875264833_dp, KIND=dp)
+      chc(2, 4) = CMPLX(0.002019803829791_dp, -0.046088819676198_dp, KIND=dp)
+      chc(3, 4) = CMPLX(0.013903288131261_dp, 0.036226305348110_dp, KIND=dp)
+      DO i = 2, n
+         chc(i, 1:i - 1) = CONJG(chc(1:i - 1, i))
+      END DO
+      base(:, :, 1) = chc(:, :)
+      DO i = 1, n
+         eps(i, 1) = REAL(chc(i, i), KIND=dp)
+      END DO
+      CALL dense_fermi_kpoint(current_occ, mu, kTS, eps, nel, wk, sigma, maxocc)
+      CALL diag_complex(chc, evec, evals)
+      evals_kp(:, 1) = evals(:)
+      CALL dense_fermi_kpoint(canonical_occ, mu, kTS, evals_kp, nel, wk, sigma, maxocc)
+
+      CALL qs_scf_kp_canonical_density_tangent( &
+         x_re(:, :, 1), x_im(:, :, 1), evec, current_occ(:, 1), canonical_occ(:, 1), &
+         occ_floor, frechet_floor, max_pair_rotation, tangent_re, tangent_im, &
+         tangent_target_norm, tangent_linear_norm, tangent_norm, &
+         active_i=active_i, active_j=active_j, active_kind=active_kind, &
+         cauchy_tangent_re=cauchy_re, cauchy_tangent_im=cauchy_im)
+      CALL dense_complex_kpoint_mermin_gradient( &
+         x_re, x_im, base, eps, wk, nel, sigma, maxocc, grad_re, grad_im, grad_eps, value)
+
+      newton_alignment = 0.0_dp
+      cauchy_alignment = 0.0_dp
+      DO r = 1, nrot
+         IF (active_kind(r) == 1) THEN
+            newton_alignment = newton_alignment + &
+                               grad_re(active_i(r), active_j(r), 1)* &
+                               tangent_re(active_i(r), active_j(r))
+            cauchy_alignment = cauchy_alignment + &
+                               grad_re(active_i(r), active_j(r), 1)* &
+                               cauchy_re(active_i(r), active_j(r))
+         ELSE
+            newton_alignment = newton_alignment + &
+                               grad_im(active_i(r), active_j(r), 1)* &
+                               tangent_im(active_i(r), active_j(r))
+            cauchy_alignment = cauchy_alignment + &
+                               grad_im(active_i(r), active_j(r), 1)* &
+                               cauchy_im(active_i(r), active_j(r))
+         END IF
+      END DO
+
+      weighted(:, :) = evec(:, :)
+      DO i = 1, n
+         weighted(:, i) = canonical_occ(i, 1)*weighted(:, i)
+      END DO
+      target_density(:, :) = MATMUL(weighted, CONJG(TRANSPOSE(evec)))
+      density_0(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         density_0(i, i) = CMPLX(current_occ(i, 1), 0.0_dp, KIND=dp)
+      END DO
+      newton_density_norm = SQRT(REAL(SUM(CONJG(density_0 - target_density)* &
+                                               (density_0 - target_density)), KIND=dp))
+      CALL dense_rotation_u(cauchy_re, cauchy_im, u)
+      cauchy_density(:, :) = MATMUL(u, MATMUL(density_0, CONJG(TRANSPOSE(u))))
+      cauchy_density_norm = SQRT(REAL(SUM(CONJG(cauchy_density - target_density)* &
+                                              (cauchy_density - target_density)), KIND=dp))
+
+      IF (newton_alignment <= tol .OR. cauchy_alignment >= -tol .OR. &
+          cauchy_density_norm >= newton_density_norm .OR. tangent_norm <= 1.0E-4_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with newton/cauchy/density0/densityc", newton_alignment, cauchy_alignment, &
+            newton_density_norm, cauchy_density_norm
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with newton/cauchy/density0/densityc", newton_alignment, cauchy_alignment, &
+            newton_density_norm, cauchy_density_norm
+      END IF
+
+   END SUBROUTINE check_canonical_density_mermin_cauchy_fallback
+
+! **************************************************************************************************
 !> \brief Check the dense reduced fixed-N Mermin model used to blend a density tangent.
 !> \param label ...
 !> \param tol ...
@@ -22689,11 +22930,13 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: ne = 2, nrot = 2
       REAL(KIND=dp) :: alpha, curvature, cross, err, expected_alpha, expected_curvature, &
-         expected_cross, expected_gain, expected_gdot, gain, gdot
+         expected_cross, expected_gain, expected_gdot, gain, gdot, multimode_gain
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e
       REAL(KIND=dp), DIMENSION(nrot)                     :: base_rot, grad_rot, tangent_rot
+      REAL(KIND=dp), DIMENSION(nrot)                     :: mode_alpha, mode_curvature, mode_linear
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: energy_cross, energy_response
       REAL(KIND=dp), DIMENSION(nrot, nrot)               :: reduced_hessian, rot_hessian
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: tangent_modes
 
       grad_rot(:) = [0.8_dp, -0.3_dp]
       grad_e(:) = [0.2_dp, 0.1_dp]
@@ -22737,6 +22980,27 @@ CONTAINS
          alpha, gdot, cross, curvature, gain)
       err = MAX(err, ABS(alpha - 1.0_dp), ABS(gain - 0.04_dp), &
                 ABS(gdot - 0.02_dp), ABS(cross), ABS(curvature + 0.04_dp))
+
+      ! Independent channel amplitudes contain the common scalar blend as a
+      ! feasible point, but need not let one channel's curvature damp another.
+      rot_hessian(:, :) = 0.0_dp
+      rot_hessian(1, 1) = 4.0_dp
+      rot_hessian(2, 2) = 1.0_dp
+      energy_cross(:, :) = 0.0_dp
+      energy_response(:, :) = 0.0_dp
+      base_rot(:) = 0.0_dp
+      grad_rot(:) = [0.2_dp, 0.3_dp]
+      grad_e(:) = 0.0_dp
+      tangent_modes(:, :) = 0.0_dp
+      tangent_modes(1, 1) = 1.0_dp
+      tangent_modes(2, 2) = 1.0_dp
+      CALL qs_scf_kp_canonical_density_multimode_blend( &
+         grad_rot, grad_e, rot_hessian, energy_cross, energy_response, base_rot, tangent_modes, &
+         0.1_dp, mode_alpha, mode_linear, mode_curvature, multimode_gain)
+      err = MAX(err, MAXVAL(ABS(mode_alpha - [0.05_dp, 0.30_dp])), &
+                MAXVAL(ABS(mode_linear - [0.20_dp, 0.30_dp])), &
+                MAXVAL(ABS(mode_curvature - [4.0_dp, 1.0_dp])), &
+                ABS(multimode_gain - 0.05_dp))
 
       IF (err > tol) THEN
          nfail = nfail + 1
