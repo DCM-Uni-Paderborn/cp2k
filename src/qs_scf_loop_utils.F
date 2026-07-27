@@ -276,12 +276,13 @@ CONTAINS
 !> \param max_residual largest element residual in energy units
 !> \param diagonal_residual_sq optional diagonal contribution to residual_sq
 !> \param offdiagonal_residual_sq optional off-diagonal contribution to residual_sq
+!> \param pair_residual optional elementwise residual in energy units
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_canonical_density_residual(eigenvectors, current_occupation, &
                                                    canonical_occupation, sigma, maxocc, &
                                                    kpoint_weight, residual_sq, state_weight, &
                                                    max_residual, diagonal_residual_sq, &
-                                                   offdiagonal_residual_sq)
+                                                   offdiagonal_residual_sq, pair_residual)
 
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: eigenvectors
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: current_occupation, canonical_occupation
@@ -289,6 +290,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: residual_sq, state_weight, max_residual
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: diagonal_residual_sq, &
                                                             offdiagonal_residual_sq
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT), &
+         OPTIONAL                                        :: pair_residual
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: projector
       INTEGER                                            :: imo, nmo
@@ -305,6 +308,10 @@ CONTAINS
       max_residual = 0.0_dp
       IF (PRESENT(diagonal_residual_sq)) diagonal_residual_sq = 0.0_dp
       IF (PRESENT(offdiagonal_residual_sq)) offdiagonal_residual_sq = 0.0_dp
+      IF (PRESENT(pair_residual)) THEN
+         CPASSERT(ALL(SHAPE(pair_residual) == [nmo, nmo]))
+         pair_residual(:, :) = 0.0_dp
+      END IF
       IF (nmo == 0 .OR. sigma <= 0.0_dp .OR. maxocc <= 0.0_dp .OR. kpoint_weight <= 0.0_dp) RETURN
 
       ALLOCATE (projector(nmo, nmo))
@@ -334,6 +341,7 @@ CONTAINS
                                    MAX(0.0_dp, total_norm_sq - diagonal_norm_sq)
       state_weight = kpoint_weight*REAL(nmo, KIND=dp)
       max_residual = inverse_susceptibility*MAXVAL(ABS(projector(:, :)))
+      IF (PRESENT(pair_residual)) pair_residual(:, :) = inverse_susceptibility*ABS(projector(:, :))
       DEALLOCATE (projector)
 
    END SUBROUTINE qs_scf_kp_canonical_density_residual
@@ -6019,7 +6027,8 @@ CONTAINS
                   channel_evec(:, :, local_channel), trial_occupation(:, ikpoint, ispin), &
                   canonical_occupation(:, ikpoint, ispin), sigma, maxocc, wkp(ikpoint), &
                   channel_metric, channel_weight, channel_max, channel_metric_diag, &
-                  channel_metric_offdiag)
+                  channel_metric_offdiag, &
+                  local_ot_env(local_channel)%kpoint_density_pair_residual)
                channel_density_diag(ikpoint, ispin) = channel_metric_diag
                channel_density_max(ikpoint, ispin) = channel_max
                channel_density_metric(ikpoint, ispin) = channel_metric
@@ -9527,15 +9536,17 @@ CONTAINS
          schur_response_trust_factor = 2.5E-1_dp
 
       INTEGER :: channel_var_start, constrained_reject_reason, coupled_reject_reason, &
-         dense_reject_reason, failed_i, gauge_projected_count, global_channel, global_kpoint, &
-         global_spin, group, ie, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
-         local_kpoint, nchannels, ne, nmo, nrot, nrot_active, nrot_full, &
-         projector_fd_cluster_derivatives, projector_fd_cluster_replacements, &
-         projector_kernel_cluster_groups, r, reject_reason, s, schur_attempt, schur_used_attempt, &
-         selected_attempt, selected_flavor, split_selected_attempt
+         dense_reject_reason, density_pair_available, density_pair_candidates, failed_i, &
+         gauge_projected_count, global_channel, global_kpoint, global_spin, group, ie, ikpoint, &
+         imo, info, ispin, ivar, jmo, local_channel, local_kpoint, max_channel_nmo, nchannels, ne, &
+         nmo, nrot, nrot_active, nrot_density, nrot_full, projector_fd_cluster_derivatives, &
+         projector_fd_cluster_replacements, projector_kernel_cluster_groups, r, reject_reason, s, &
+         schur_attempt, schur_used_attempt, selected_attempt, selected_flavor
+      INTEGER :: split_selected_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:) :: channel_multiplicity, channel_nmo, channel_nrot, &
          channel_var_offset, e_offset, ipiv, ipiv_energy, var_channel, var_ei, var_ej, var_i, &
          var_j, var_kind
+      INTEGER, DIMENSION(3)                              :: density_pair_location
       LOGICAL :: accepted_reduced_secant_shadow_ready, active_pair, attempt_failed, &
          constrained_candidate_enabled, constrained_candidate_ready, &
          constrained_candidate_selected, dense_exact_scale_ready, density_descent_bootstrap_ready, &
@@ -9546,29 +9557,30 @@ CONTAINS
          density_full_global_bootstrap_ready, density_full_global_candidate_ready
       LOGICAL :: density_full_global_candidate_selected, density_full_global_history_ready, &
          density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
-         density_full_tail_probe_ready, exact_attempt_response, exact_density_basis_audit_ready, &
+         density_full_tail_probe_ready, density_pair_activation_ready, density_pair_shape_ok, &
+         exact_attempt_response, exact_density_basis_audit_ready, &
          exact_density_basis_curvfloor_audit_ready, exact_density_basis_damped_audit_ready, &
          exact_density_basis_filtered_audit_ready, exact_density_basis_selective_audit_ready, &
          exact_density_direct_response_ready, exact_density_floor_audit_ready, &
-         exact_density_floor_safe_audit_ready, exact_density_full_audit_ready, &
-         exact_density_full_response_ready
-      LOGICAL :: exact_density_plateau_response_ready, exact_density_response_ready, &
-         exact_energy_model_ready, exact_physical_response_ready, failed, &
+         exact_density_floor_safe_audit_ready
+      LOGICAL :: exact_density_full_audit_ready, exact_density_full_response_ready, &
+         exact_density_plateau_response_ready, exact_density_response_ready, &
+         exact_energy_model_ready, exact_physical_response_ready, failed, fermi_active_pair, &
          inactive_gauge_projection_used, metric_attempt_current_bridge, metric_attempt_response, &
          metric_attempt_selectable, metric_attempt_tail_bridge, multisecant_response_ready, &
          multisecant_update_eligible, multisecant_update_ready, multisecant_update_used, &
          new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
-         physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
-         projector_density_full_audit_enabled
-      LOGICAL :: projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, &
+         physical_delta_plateau_ready
+      LOGICAL :: physical_delta_raw_tail_ready, projector_density_full_audit_enabled, &
+         projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready, &
          projector_inactive_offdiag_tail_refresh_probe, &
          projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
          projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
          projector_physical_candidate_ready, projector_physical_candidate_selected, &
          projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used
-      LOGICAL :: projector_physical_direct_density_candidate_ready, &
+         projector_physical_direct_candidate_selected
+      LOGICAL :: projector_physical_direct_candidate_used, &
+         projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_density_fshadow_ready, &
          projector_physical_direct_density_quality_ready, &
@@ -9594,6 +9606,8 @@ CONTAINS
          split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
          split_candidate_selected, split_residual_competitive, trust_rejected, &
          vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
+      LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
+                                                            channel_density_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
          accepted_model_drop, accepted_model_gap_ratio, accepted_occgap_shadow_drop, &
          accepted_occgap_shadow_gap_ratio, accepted_projector_coupled_weight, &
@@ -10355,6 +10369,7 @@ CONTAINS
          rot_hessian_projector_physical_offdiag_plateau, &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
          rot_hessian_secant, schur, schur_metric
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: channel_density_pair_residual
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
 
@@ -10472,15 +10487,50 @@ CONTAINS
             CALL para_env_inter_kp%sum(channel_nmo)
             CALL para_env_inter_kp%sum(channel_maxocc)
          END IF
+         max_channel_nmo = MAX(1, MAXVAL(channel_nmo))
+         ALLOCATE (channel_density_pair_residual(max_channel_nmo, max_channel_nmo, nchannels), &
+                   channel_density_pair_active(max_channel_nmo, max_channel_nmo, nchannels), &
+                   channel_density_pair_candidate(max_channel_nmo, max_channel_nmo, nchannels))
+         channel_density_pair_residual(:, :, :) = 0.0_dp
+         channel_density_pair_active(:, :, :) = .FALSE.
+         channel_density_pair_candidate(:, :, :) = .FALSE.
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               group = MERGE(ispin, 1, ngroups == nspin_ot)
+               IF (group /= target_group) CYCLE
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               global_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
+               nmo = channel_nmo(global_channel)
+               IF (nmo <= 0) CYCLE
+               density_pair_shape_ok = &
+                  ALLOCATED(local_ot_env(local_channel)%kpoint_density_pair_residual)
+               CPASSERT(density_pair_shape_ok)
+               density_pair_shape_ok = &
+                  SIZE(local_ot_env(local_channel)%kpoint_density_pair_residual, 1) == nmo .AND. &
+                  SIZE(local_ot_env(local_channel)%kpoint_density_pair_residual, 2) == nmo
+               CPASSERT(density_pair_shape_ok)
+               channel_density_pair_residual(1:nmo, 1:nmo, global_channel) = &
+                  local_ot_env(local_channel)%kpoint_density_pair_residual(:, :)
+            END DO
+         END DO
+         IF (global_schur_replicated) &
+            CALL para_env_inter_kp%sum(channel_density_pair_residual)
 
          ne = 0
          nrot = 0
          nrot_active = 0
+         nrot_density = 0
          nrot_full = 0
          schur_active_occ_min = ot_kp_fermi_window_min_frac
          schur_active_subspace = .FALSE.
          schur_energy_window = ot_kp_fermi_window_outer_factor*MAX(sigma, EPSILON(sigma))
          projector_occupation_window_gap = schur_energy_window
+         density_pair_activation_ready = &
+            local_ot_env(1)%kpoint_density_stationarity_ready .AND. eps_scf_channel > 0.0_dp .AND. &
+            local_ot_env(1)%kpoint_density_stationarity_delta <= &
+            ot_kp_schur_projector_response_full_delta
          DO global_channel = 1, nchannels
             IF (channel_nmo(global_channel) <= 0) CYCLE
             schur_active_occ_min = MAX(schur_active_occ_min, &
@@ -10504,15 +10554,36 @@ CONTAINS
                                                maxocc - trial_occupation(imo, global_kpoint, global_spin)))
                   occ_tail_j = MAX(0.0_dp, MIN(trial_occupation(jmo, global_kpoint, global_spin), &
                                                maxocc - trial_occupation(jmo, global_kpoint, global_spin)))
-                  active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
-                                ABS(trial_eigenvalues(imo, global_kpoint, global_spin) - &
-                                    trial_mu(global_spin)) <= schur_energy_window .OR. &
-                                ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
-                                    trial_mu(global_spin)) <= schur_energy_window
-                  IF (active_pair) nrot_active = nrot_active + 2
+                  fermi_active_pair = MAX(occ_tail_i, occ_tail_j) >= schur_active_occ_min .OR. &
+                                      ABS(trial_eigenvalues(imo, global_kpoint, global_spin) - &
+                                          trial_mu(global_spin)) <= schur_energy_window .OR. &
+                                      ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
+                                          trial_mu(global_spin)) <= schur_energy_window
+                  IF (fermi_active_pair) THEN
+                     nrot_active = nrot_active + 2
+                  ELSE IF (density_pair_activation_ready .AND. &
+                           channel_density_pair_residual(imo, jmo, global_channel) > eps_scf_channel) THEN
+                     channel_density_pair_candidate(imo, jmo, global_channel) = .TRUE.
+                  END IF
                END DO
             END DO
          END DO
+         density_pair_available = MAX(0, (max_schur_rot - nrot_active)/2)
+         density_pair_candidates = COUNT(channel_density_pair_candidate)
+         IF (density_pair_candidates <= density_pair_available) THEN
+            channel_density_pair_active(:, :, :) = channel_density_pair_candidate(:, :, :)
+         ELSE
+            DO r = 1, density_pair_available
+               density_pair_location = MAXLOC(channel_density_pair_residual, &
+                                              MASK=channel_density_pair_candidate)
+               channel_density_pair_active(density_pair_location(1), density_pair_location(2), &
+                                           density_pair_location(3)) = .TRUE.
+               channel_density_pair_candidate(density_pair_location(1), density_pair_location(2), &
+                                              density_pair_location(3)) = .FALSE.
+            END DO
+         END IF
+         nrot_density = 2*COUNT(channel_density_pair_active)
+         nrot_active = nrot_active + nrot_density
          schur_active_subspace = nrot_full > max_schur_rot
          nrot = MERGE(nrot_active, nrot_full, schur_active_subspace)
 
@@ -10537,7 +10608,8 @@ CONTAINS
                                    ABS(trial_eigenvalues(imo, global_kpoint, global_spin) - &
                                        trial_mu(global_spin)) <= schur_energy_window .OR. &
                                    ABS(trial_eigenvalues(jmo, global_kpoint, global_spin) - &
-                                       trial_mu(global_spin)) <= schur_energy_window
+                                       trial_mu(global_spin)) <= schur_energy_window .OR. &
+                                   channel_density_pair_active(imo, jmo, global_channel)
                      IF (.NOT. active_pair) CYCLE
                   END IF
                   channel_nrot(global_channel) = channel_nrot(global_channel) + 2
@@ -10553,7 +10625,8 @@ CONTAINS
                " OT Schur skipped group ne nrot full max active:", &
                target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_subspace
             DEALLOCATE (channel_multiplicity, channel_nmo, channel_nrot, channel_var_offset, &
-                        channel_maxocc, e_offset)
+                        channel_maxocc, e_offset, channel_density_pair_residual, &
+                        channel_density_pair_active, channel_density_pair_candidate)
             RETURN
          END IF
          IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
@@ -10561,6 +10634,11 @@ CONTAINS
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),2(1X,ES16.8))') &
             " OT Schur active subspace group ne nrot full max occ ewin:", &
             target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_occ_min, schur_energy_window
+         IF (schur_active_subspace .AND. logger%iter_info%print_level >= high_print_level .AND. &
+             logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,I8))') &
+            " OT Schur density-pair activation group selected candidates capacity:", &
+            target_group, nrot_density/2, density_pair_candidates, density_pair_available
 
          ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), accepted_z_e(ne), &
                    density_basis_selective_floor_weight(ne), energy_grad_metric_weight(ne), &
@@ -11851,7 +11929,8 @@ CONTAINS
                                       ABS(trial_eigenvalues(imo, ikpoint, ispin) - trial_mu(ispin)) <= &
                                       schur_energy_window .OR. &
                                       ABS(trial_eigenvalues(jmo, ikpoint, ispin) - trial_mu(ispin)) <= &
-                                      schur_energy_window
+                                      schur_energy_window .OR. &
+                                      channel_density_pair_active(imo, jmo, global_channel)
                         IF (.NOT. active_pair) CYCLE
                      END IF
                      ivar = ivar + 1
@@ -12245,7 +12324,9 @@ CONTAINS
                         rot_hessian_projector_physical_offdiag_plateau, &
                         rot_hessian_projector_physical_offdiag_plateau_active, &
                         schur, schur_metric, ipiv, ipiv_energy, channel_multiplicity, channel_nmo, &
-                        channel_nrot, channel_var_offset, channel_maxocc, e_offset)
+                        channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
+                        channel_density_pair_residual, channel_density_pair_active, &
+                        channel_density_pair_candidate)
             RETURN
          END IF
 
@@ -23776,7 +23857,9 @@ CONTAINS
                      rot_hessian_projector_physical_offdiag_plateau, &
                      rot_hessian_projector_physical_offdiag_plateau_active, &
                      schur, schur_metric, ipiv, ipiv_energy, channel_multiplicity, channel_nmo, &
-                     channel_nrot, channel_var_offset, channel_maxocc, e_offset)
+                     channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
+                     channel_density_pair_residual, channel_density_pair_active, &
+                     channel_density_pair_candidate)
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
 ! **************************************************************************************************

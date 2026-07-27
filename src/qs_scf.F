@@ -3979,6 +3979,9 @@ CONTAINS
          qs_ot_env%ener_mermin_y_previous(:) = 0.0_dp
       END IF
 
+      ALLOCATE (qs_ot_env%kpoint_density_pair_residual(nmo, nmo))
+      qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
+
       qs_ot_env%has_complex_kpoint_state = .TRUE.
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
       qs_ot_env%ener_direction_linear = .FALSE.

@@ -4534,6 +4534,7 @@ CONTAINS
       REAL(KIND=dp) :: diagonal_metric, max_residual, max_rotated, metric, metric_rotated, &
          offdiagonal_metric, state_weight, state_weight_rotated, theta, zero_max, zero_metric
       REAL(KIND=dp), DIMENSION(2)                        :: canonical_occ, current_occ
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: pair_residual, pair_residual_rotated
 
       evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       evec(1, 1) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
@@ -4542,10 +4543,12 @@ CONTAINS
       current_occ(:) = canonical_occ(:)
       CALL qs_scf_kp_canonical_density_residual(evec, current_occ, canonical_occ, &
                                                 1.0E-3_dp, 2.0_dp, 0.25_dp, &
-                                                metric, state_weight, max_residual)
+                                                metric, state_weight, max_residual, &
+                                                pair_residual=pair_residual)
       zero_metric = metric
       zero_max = max_residual
-      failed = ABS(zero_metric) > tol .OR. ABS(zero_max) > tol
+      failed = ABS(zero_metric) > tol .OR. ABS(zero_max) > tol .OR. &
+               MAXVAL(ABS(pair_residual)) > tol
 
       theta = 0.31_dp
       evec(1, 1) = CMPLX(COS(theta), 0.0_dp, KIND=dp)
@@ -4556,10 +4559,13 @@ CONTAINS
       CALL qs_scf_kp_canonical_density_residual(evec, current_occ, canonical_occ, &
                                                 1.0E-3_dp, 2.0_dp, 0.25_dp, &
                                                 metric, state_weight, max_residual, &
-                                                diagonal_metric, offdiagonal_metric)
+                                                diagonal_metric, offdiagonal_metric, pair_residual)
       failed = failed .OR. metric <= 0.0_dp .OR. max_residual <= 0.0_dp .OR. &
                ABS(metric - diagonal_metric - offdiagonal_metric) > tol .OR. &
-               diagonal_metric <= tol .OR. offdiagonal_metric <= tol
+               diagonal_metric <= tol .OR. offdiagonal_metric <= tol .OR. &
+               ABS(MAXVAL(pair_residual) - max_residual) > tol .OR. &
+               MAXVAL(ABS(pair_residual - TRANSPOSE(pair_residual))) > tol .OR. &
+               pair_residual(1, 2) <= tol
 
       theta = 0.37_dp
       unitary(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -4569,9 +4575,11 @@ CONTAINS
       CALL qs_scf_kp_canonical_density_residual(rotated_evec, current_occ, canonical_occ, &
                                                 1.0E-3_dp, 2.0_dp, 0.25_dp, &
                                                 metric_rotated, state_weight_rotated, max_rotated, &
-                                                diagonal_metric, offdiagonal_metric)
+                                                diagonal_metric, offdiagonal_metric, &
+                                                pair_residual_rotated)
       failed = failed .OR. ABS(state_weight_rotated - state_weight) > tol .OR. &
-               ABS(metric_rotated - metric) > tol .OR. ABS(max_rotated - max_residual) > tol
+               ABS(metric_rotated - metric) > tol .OR. ABS(max_rotated - max_residual) > tol .OR. &
+               MAXVAL(ABS(pair_residual_rotated - pair_residual)) > tol
       IF (failed) THEN
          WRITE (default_output_unit, '(A,9(1X,ES16.8))') &
             TRIM(label)//" failed zero/max/metric/rotated/weight/rotated/max/rotated/tol", &
