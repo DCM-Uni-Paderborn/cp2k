@@ -296,12 +296,14 @@ CONTAINS
       CALL section_vals_val_get(print_section, "NAMD_PRINT%PRINT_PHASES", l_val=print_phases)
 
       nmo_virt = nao - nmo_occ
-      IF (nlumo >= 0) &
+      IF (nlumo >= 0) THEN
          nmo_virt = MIN(nmo_virt, nlumo)
+      END IF
 
-      IF (nmo_virt <= 0) &
+      IF (nmo_virt <= 0) THEN
          CALL cp_abort(__LOCATION__, &
                        'At least one unoccupied molecular orbital is required to calculate excited states.')
+      END IF
 
       do_eigen = .FALSE.
       ! diagonalise the Kohn-Sham matrix one more time if the number of available unoccupied states are too small
@@ -425,11 +427,13 @@ CONTAINS
 
             irow_global = row_indices(irow_local)
             IF (sign_int > 0) THEN
-               IF (minrow_pos_array(icol_global) > irow_global) &
+               IF (minrow_pos_array(icol_global) > irow_global) THEN
                   minrow_pos_array(icol_global) = irow_global
+               END IF
             ELSE IF (sign_int < 0) THEN
-               IF (minrow_neg_array(icol_global) > irow_global) &
+               IF (minrow_neg_array(icol_global) > irow_global) THEN
                   minrow_neg_array(icol_global) = irow_global
+               END IF
             END IF
          END DO
       END DO
@@ -507,11 +511,13 @@ CONTAINS
 
                irow_global = row_indices(irow_local)
                IF (sign_int > 0) THEN
-                  IF (minrow_pos_array(icol_global) > irow_global) &
+                  IF (minrow_pos_array(icol_global) > irow_global) THEN
                      minrow_pos_array(icol_global) = irow_global
+                  END IF
                ELSE IF (sign_int < 0) THEN
-                  IF (minrow_neg_array(icol_global) > irow_global) &
+                  IF (minrow_neg_array(icol_global) > irow_global) THEN
                      minrow_neg_array(icol_global) = irow_global
+                  END IF
                END IF
             END DO
          END DO
@@ -569,20 +575,25 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      IF (ALLOCATED(gs_mos%phases_occ)) &
+      IF (ALLOCATED(gs_mos%phases_occ)) THEN
          DEALLOCATE (gs_mos%phases_occ)
+      END IF
 
-      IF (ALLOCATED(gs_mos%evals_virt)) &
+      IF (ALLOCATED(gs_mos%evals_virt)) THEN
          DEALLOCATE (gs_mos%evals_virt)
+      END IF
 
-      IF (ALLOCATED(gs_mos%evals_occ)) &
+      IF (ALLOCATED(gs_mos%evals_occ)) THEN
          DEALLOCATE (gs_mos%evals_occ)
+      END IF
 
-      IF (ALLOCATED(gs_mos%phases_virt)) &
+      IF (ALLOCATED(gs_mos%phases_virt)) THEN
          DEALLOCATE (gs_mos%phases_virt)
+      END IF
 
-      IF (ALLOCATED(gs_mos%index_active)) &
+      IF (ALLOCATED(gs_mos%index_active)) THEN
          DEALLOCATE (gs_mos%index_active)
+      END IF
 
       IF (ASSOCIATED(gs_mos%evals_occ_matrix)) THEN
          CALL cp_fm_release(gs_mos%evals_occ_matrix)
@@ -685,9 +696,9 @@ CONTAINS
 
          IF (dft_control%qs_control%semi_empirical) THEN
             CPABORT("TDDFPT with SE not possible")
-         ELSEIF (dft_control%qs_control%dftb) THEN
+         ELSE IF (dft_control%qs_control%dftb) THEN
             CPABORT("TDDFPT with DFTB not possible")
-         ELSEIF (dft_control%qs_control%xtb) THEN
+         ELSE IF (dft_control%qs_control%xtb) THEN
             IF (dft_control%qs_control%xtb_control%do_tblite) THEN
                CALL build_tblite_ks_matrix(qs_env, calculate_forces=.FALSE., just_energy=.FALSE., &
                                            ext_ks_matrix=matrix_ks_oep)
@@ -1131,9 +1142,10 @@ CONTAINS
       DO istate = 1, nstates
          IF (ASSOCIATED(evects(1, istate)%matrix_struct)) THEN
             ! Initial guess vector read from restart file
-            IF (log_unit > 0) &
+            IF (log_unit > 0) THEN
                WRITE (log_unit, '(T7,I8,T28,A19,T60,F14.5)') &
-               istate, "***  restarted  ***", evals(istate)*evolt
+                  istate, "***  restarted  ***", evals(istate)*evolt
+            END IF
          ELSE
             ! New initial guess vector
             !
@@ -1165,9 +1177,10 @@ CONTAINS
             ! Assign initial guess for excitation energy
             evals(istate) = e_virt_minus_occ(istate)
 
-            IF (log_unit > 0) &
+            IF (log_unit > 0) THEN
                WRITE (log_unit, '(T7,I8,T24,I8,T37,A5,T45,I8,T54,A5,T60,F14.5)') &
-               istate, imo_occ, spin_label1, nmo(spin2) + imo_virt, spin_label2, e_virt_minus_occ(istate)*evolt
+                  istate, imo_occ, spin_label1, nmo(spin2) + imo_virt, spin_label2, e_virt_minus_occ(istate)*evolt
+            END IF
 
             DO jspin = 1, SIZE(evects, 1)
                ! .NOT. ASSOCIATED(evects(jspin, istate)%matrix_struct))

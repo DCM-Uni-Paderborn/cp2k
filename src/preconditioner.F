@@ -150,8 +150,9 @@ CONTAINS
       ! Thanks to the mess with the matrices we need to make sure in this case that the
       ! Previous inverse is properly stored as a sparse matrix, fm gets deallocated here
       ! if it wasn't anyway
-      IF (preconditioner_env%solver == ot_precond_solver_update) &
+      IF (preconditioner_env%solver == ot_precond_solver_update) THEN
          CALL transfer_fm_to_dbcsr(preconditioner_env%fm, preconditioner_env%dbcsr_matrix, matrix_h)
+      END IF
 
       needs_full_spectrum = .FALSE.
       needs_homo = .FALSE.
@@ -376,7 +377,8 @@ CONTAINS
             END DO
             DEALLOCATE (preconditioner)
             NULLIFY (preconditioner)
-         CASE (ot_precond_none, ot_precond_full_kinetic, ot_precond_s_inverse, ot_precond_full_single_inverse) ! these are 'independent'
+         CASE (ot_precond_none, ot_precond_full_kinetic, ot_precond_s_inverse, &
+               ot_precond_full_single_inverse) ! these are 'independent'
             ! do nothing
          CASE DEFAULT
             CPABORT("Unknown preconditioner type")
@@ -498,7 +500,7 @@ CONTAINS
                                                    co_rotate=qs_env%mo_derivs(ispin)%matrix, &
                                                    para_env=para_env, &
                                                    blacs_env=blacs_env)
-            ELSEIF (use_mo_coeff_b) THEN
+            ELSE IF (use_mo_coeff_b) THEN
                CALL calculate_subspace_eigenvalues(mo_coeff_b, matrix_ks(ispin)%matrix, &
                                                    do_rotation=.TRUE., &
                                                    para_env=para_env, &

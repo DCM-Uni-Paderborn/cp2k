@@ -217,7 +217,8 @@ CONTAINS
             END IF
             !! Get total number of MOs
             CALL get_qs_env(qs_env, mos=mos)
-            IF (SIZE(mos) > 1) CPABORT("Unrestricted ALMO methods are NYI") !! Unrestricted ALMO is not implemented yet
+             !! Unrestricted ALMO is not implemented yet
+            IF (SIZE(mos) > 1) CPABORT("Unrestricted ALMO methods are NYI")
             CALL get_mo_set(mo_set=mos(1), nmo=nmo)
             !! Initialize storage of MO energies for ALMO smearing
             CPASSERT(ASSOCIATED(almo_scf_env))

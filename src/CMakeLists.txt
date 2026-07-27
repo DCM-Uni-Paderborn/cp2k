@@ -329,6 +329,7 @@ list(
   kpoint_k_r_trafo_simple.F
   kpoint_methods.F
   kpoint_mo_dump.F
+  kpoint_mo_symmetry_methods.F
   kpoint_transitional.F
   kpoint_types.F
   kpsym.F
@@ -354,7 +355,7 @@ list(
   manybody_deepmd.F
   manybody_gal21.F
   manybody_gal.F
-  manybody_nequip.F
+  manybody_e3nn.F
   manybody_potential.F
   manybody_siepmann.F
   manybody_tersoff.F
@@ -883,6 +884,7 @@ list(
   xray_diffraction.F
   xtb_qresp.F
   xtb_coulomb.F
+  xtb_spinpol.F
   xtb_eeq.F
   xtb_ehess.F
   xtb_ehess_force.F
@@ -1378,6 +1380,7 @@ list(
   xc/xc.F
   xc/xc_functionals_utilities.F
   xc/xc_fxc_kernel.F
+  xc/xc_gauxc_cache.F
   xc/xc_gauxc_functional.F
   xc/xc_gauxc_interface.F
   xc/xc_hcth.F

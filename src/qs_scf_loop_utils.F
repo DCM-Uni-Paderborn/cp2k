@@ -1458,13 +1458,13 @@ CONTAINS
                              "SCF%DIAGONALIZATION if "// &
                              "CORE_CORRECTION /= 0.0 and "// &
                              "SURFACE_DIPOLE_CORRECTION TRUE ")
-            ELSEIF (dft_control%roks) THEN
+            ELSE IF (dft_control%roks) THEN
                CALL cp_abort(__LOCATION__, &
                              "Combination of "// &
                              "CORE_CORRECTION /= 0.0 and "// &
                              "SURFACE_DIPOLE_CORRECTION TRUE "// &
                              "is not implemented with ROKS")
-            ELSEIF (scf_control%diagonalization%mom) THEN
+            ELSE IF (scf_control%diagonalization%mom) THEN
                CALL cp_abort(__LOCATION__, &
                              "Combination of "// &
                              "CORE_CORRECTION /= 0.0 and "// &
@@ -1654,8 +1654,9 @@ CONTAINS
          scf_control%eps_diis = 0.0_dp
       END IF
 
-      IF (dft_control%roks) &
+      IF (dft_control%roks) THEN
          CPABORT("KP code: ROKS method not available: ")
+      END IF
 
       SELECT CASE (scf_env%method)
       CASE DEFAULT
@@ -1689,7 +1690,7 @@ CONTAINS
             ELSE IF (scf_env%mixing_method == 1) THEN
                scf_env%iter_param = scf_env%p_mix_alpha
                scf_env%iter_method = "P_Mix/Diag."
-            ELSEIF (scf_env%mixing_method > 1) THEN
+            ELSE IF (scf_env%mixing_method > 1) THEN
                scf_env%iter_param = scf_env%mixing_store%alpha
                scf_env%iter_method = TRIM(scf_env%mixing_store%iter_method)//"/Diag."
             END IF
@@ -2408,6 +2409,7 @@ CONTAINS
          ! in an independent post-step density map.
          CALL kpoint_density_transform(kpoints, density_target, .FALSE., &
                                        matrix_s(1, 1)%matrix, sab_nl, fmwork, &
+                                       overlap_rs=matrix_s, &
                                        qs_ot_env=scf_env%qs_ot_env)
          scf_env%iter_method = scf_env%qs_ot_env(first_channel)%OT_METHOD_FULL
          scf_env%iter_param = scf_env%qs_ot_env(first_channel)%ds_min

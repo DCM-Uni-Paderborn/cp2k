@@ -109,7 +109,7 @@ CONTAINS
    END FUNCTION xc_section_uses_native_skala_grid
 
 ! **************************************************************************************************
-!> \brief Return true if the GAUXC subsection requests a Skala-style model.
+!> \brief Return true if the GAUXC subsection requests a model evaluation.
 !> \param xc_section ...
 !> \return ...
 ! **************************************************************************************************
@@ -117,16 +117,20 @@ CONTAINS
       TYPE(section_vals_type), INTENT(IN), POINTER       :: xc_section
       LOGICAL                                            :: uses_gauxc_model
 
-      CHARACTER(len=default_path_length)                 :: model_key, model_name
+      CHARACTER(len=default_path_length)                 :: model_key, model_name, xc_key, xc_name
       TYPE(section_vals_type), POINTER                   :: gauxc_section
 
       uses_gauxc_model = .FALSE.
       gauxc_section => get_gauxc_section(xc_section)
       IF (ASSOCIATED(gauxc_section)) THEN
          CALL section_vals_val_get(gauxc_section, "MODEL", c_val=model_name)
+         CALL section_vals_val_get(gauxc_section, "FUNCTIONAL", c_val=xc_name)
          model_key = ADJUSTL(model_name)
+         xc_key = ADJUSTL(xc_name)
          CALL uppercase(model_key)
-         uses_gauxc_model = (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE")
+         CALL uppercase(xc_key)
+         uses_gauxc_model = (TRIM(model_key) /= "" .AND. TRIM(model_key) /= "NONE" .AND. &
+                             TRIM(model_key) /= TRIM(xc_key))
       END IF
 
    END FUNCTION xc_section_uses_gauxc_model
@@ -1510,8 +1514,9 @@ CONTAINS
          CPASSERT(SUM(features%route_point_send_counts) == nroute_points)
 
          nroute_grad_per_point = ngrad_per_point
-         IF (features%uses_collapsed_rks_dynamic) &
+         IF (features%uses_collapsed_rks_dynamic) THEN
             nroute_grad_per_point = ncollapsed_grad_per_point
+         END IF
          ALLOCATE (send_grad_buffer(MAX(1, nroute_grad_per_point*features%chunk_feature_count)), &
                    recv_grad_buffer(MAX(1, nroute_grad_per_point*nroute_points)), &
                    route_grad_return_send_counts(SIZE(features%route_point_recv_counts)), &

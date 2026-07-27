@@ -1592,15 +1592,17 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &
          CALL dbcsr_set(qs_ot_env%matrix_gx_im, 0.0_dp)
 
-      IF (qs_ot_env%use_dx) &
+      IF (qs_ot_env%use_dx) THEN
          CALL dbcsr_set(qs_ot_env%matrix_dx, 0.0_dp)
-      IF (qs_ot_env%use_dx .AND. ASSOCIATED(qs_ot_env%matrix_dx_im)) &
-         CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%matrix_dx_im)) &
+            CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
+      END IF
 
-      IF (qs_ot_env%use_gx_old) &
+      IF (qs_ot_env%use_gx_old) THEN
          CALL dbcsr_set(qs_ot_env%matrix_gx_old, 0.0_dp)
-      IF (qs_ot_env%use_gx_old .AND. ASSOCIATED(qs_ot_env%matrix_gx_old_im)) &
-         CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%matrix_gx_old_im)) &
+            CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
+      END IF
 
       IF (qs_ot_env%settings%do_rotation) THEN
          CALL dbcsr_set(qs_ot_env%rot_mat_u, 0.0_dp)
@@ -1617,14 +1619,16 @@ CONTAINS
             CALL dbcsr_set(qs_ot_env%rot_mat_pgx, 0.0_dp)
          IF (ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) &
             CALL dbcsr_set(qs_ot_env%rot_mat_pgx_im, 0.0_dp)
-         IF (qs_ot_env%use_dx) &
+         IF (qs_ot_env%use_dx) THEN
             CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
-         IF (qs_ot_env%use_dx .AND. ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
-         IF (qs_ot_env%use_gx_old) &
+            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
+               CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
+         END IF
+         IF (qs_ot_env%use_gx_old) THEN
             CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
-         IF (qs_ot_env%use_gx_old .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
+               CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+         END IF
       END IF
       IF (qs_ot_env%settings%do_ener) THEN
          qs_ot_env%ener_gx(:) = 0.0_dp
@@ -1656,10 +1660,12 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) &
             qs_ot_env%matrix_occ_precond_scale(:) = 1.0_dp
-         IF (qs_ot_env%use_dx) &
+         IF (qs_ot_env%use_dx) THEN
             qs_ot_env%ener_dx(:) = 0.0_dp
-         IF (qs_ot_env%use_gx_old) &
+         END IF
+         IF (qs_ot_env%use_gx_old) THEN
             qs_ot_env%ener_gx_old(:) = 0.0_dp
+         END IF
       END IF
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.
       qs_ot_env%ener_direction_linear = .FALSE.
