@@ -54,17 +54,17 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_control_delta, &
-        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_canonical_density_residual, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_fermi_entropy_state, &
+        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_residual_split, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -165,6 +165,8 @@ PROGRAM qs_ot_frechet_unittest
                                            5.0E-15_dp, nfail)
    CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
    CALL check_kpoint_raw_exit_floor_ratio("k-point OT independent raw exit floor", 5.0E-15_dp, nfail)
+   CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
+                                                5.0E-14_dp, nfail)
    CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_occ_metric_continuation("k-point OT occupation-metric continuation", &
@@ -4512,6 +4514,70 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_raw_exit_floor_ratio
+
+! **************************************************************************************************
+!> \brief Check zero, noncanonical and phase-covariant finite-T density residuals.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_canonical_density_residual(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      COMPLEX(KIND=dp), DIMENSION(2, 2)                  :: evec, rotated_evec, unitary
+      LOGICAL                                            :: failed
+      REAL(KIND=dp) :: diagonal_metric, max_residual, max_rotated, metric, metric_rotated, &
+         offdiagonal_metric, state_weight, state_weight_rotated, theta, zero_max, zero_metric
+      REAL(KIND=dp), DIMENSION(2)                        :: canonical_occ, current_occ
+
+      evec(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      evec(1, 1) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
+      canonical_occ(:) = [1.25_dp, 0.75_dp]
+      current_occ(:) = canonical_occ(:)
+      CALL qs_scf_kp_canonical_density_residual(evec, current_occ, canonical_occ, &
+                                                1.0E-3_dp, 2.0_dp, 0.25_dp, &
+                                                metric, state_weight, max_residual)
+      zero_metric = metric
+      zero_max = max_residual
+      failed = ABS(zero_metric) > tol .OR. ABS(zero_max) > tol
+
+      theta = 0.31_dp
+      evec(1, 1) = CMPLX(COS(theta), 0.0_dp, KIND=dp)
+      evec(1, 2) = CMPLX(-SIN(theta), 0.0_dp, KIND=dp)
+      evec(2, 1) = CMPLX(SIN(theta), 0.0_dp, KIND=dp)
+      evec(2, 2) = CMPLX(COS(theta), 0.0_dp, KIND=dp)
+      current_occ(:) = [2.0_dp, 0.0_dp]
+      CALL qs_scf_kp_canonical_density_residual(evec, current_occ, canonical_occ, &
+                                                1.0E-3_dp, 2.0_dp, 0.25_dp, &
+                                                metric, state_weight, max_residual, &
+                                                diagonal_metric, offdiagonal_metric)
+      failed = failed .OR. metric <= 0.0_dp .OR. max_residual <= 0.0_dp .OR. &
+               ABS(metric - diagonal_metric - offdiagonal_metric) > tol .OR. &
+               diagonal_metric <= tol .OR. offdiagonal_metric <= tol
+
+      theta = 0.37_dp
+      unitary(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      unitary(1, 1) = EXP(CMPLX(0.0_dp, theta, KIND=dp))
+      unitary(2, 2) = EXP(CMPLX(0.0_dp, -2.0_dp*theta, KIND=dp))
+      rotated_evec(:, :) = MATMUL(unitary, evec)
+      CALL qs_scf_kp_canonical_density_residual(rotated_evec, current_occ, canonical_occ, &
+                                                1.0E-3_dp, 2.0_dp, 0.25_dp, &
+                                                metric_rotated, state_weight_rotated, max_rotated, &
+                                                diagonal_metric, offdiagonal_metric)
+      failed = failed .OR. ABS(state_weight_rotated - state_weight) > tol .OR. &
+               ABS(metric_rotated - metric) > tol .OR. ABS(max_rotated - max_residual) > tol
+      IF (failed) THEN
+         WRITE (default_output_unit, '(A,9(1X,ES16.8))') &
+            TRIM(label)//" failed zero/max/metric/rotated/weight/rotated/max/rotated/tol", &
+            zero_metric, zero_max, metric, metric_rotated, state_weight, state_weight_rotated, &
+            max_residual, max_rotated, tol
+         nfail = nfail + 1
+      END IF
+
+   END SUBROUTINE check_kpoint_canonical_density_residual
 
 ! **************************************************************************************************
 !> \brief Check calibrated physical residual control without contaminating the response model.

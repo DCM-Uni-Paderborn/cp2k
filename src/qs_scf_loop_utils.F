@@ -251,6 +251,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_canonical_density_residual, &
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
              qs_scf_kp_symmetric_multisecant_update, &
@@ -260,6 +261,81 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Measure finite-temperature density stationarity in a projected Hamiltonian eigenbasis.
+!> \param eigenvectors eigenvectors of the Hermitian projected Hamiltonian
+!> \param current_occupation occupations attached to the current orbital labels
+!> \param canonical_occupation fixed-N occupations of the projected Hamiltonian eigenvalues
+!> \param sigma electronic temperature in Hartree
+!> \param maxocc maximum occupation of one orbital
+!> \param kpoint_weight irreducible k-point integration weight
+!> \param residual_sq weighted squared residual in energy units
+!> \param state_weight weighted number of states
+!> \param max_residual largest element residual in energy units
+!> \param diagonal_residual_sq optional diagonal contribution to residual_sq
+!> \param offdiagonal_residual_sq optional off-diagonal contribution to residual_sq
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_canonical_density_residual(eigenvectors, current_occupation, &
+                                                   canonical_occupation, sigma, maxocc, &
+                                                   kpoint_weight, residual_sq, state_weight, &
+                                                   max_residual, diagonal_residual_sq, &
+                                                   offdiagonal_residual_sq)
+
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: eigenvectors
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: current_occupation, canonical_occupation
+      REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc, kpoint_weight
+      REAL(KIND=dp), INTENT(OUT)                         :: residual_sq, state_weight, max_residual
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: diagonal_residual_sq, &
+                                                            offdiagonal_residual_sq
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: projector
+      INTEGER                                            :: imo, nmo
+      REAL(KIND=dp)                                      :: diagonal_norm_sq, &
+                                                            inverse_susceptibility, total_norm_sq
+
+      nmo = SIZE(eigenvectors, 1)
+      CPASSERT(SIZE(eigenvectors, 2) == nmo)
+      CPASSERT(SIZE(current_occupation) == nmo)
+      CPASSERT(SIZE(canonical_occupation) == nmo)
+
+      residual_sq = 0.0_dp
+      state_weight = 0.0_dp
+      max_residual = 0.0_dp
+      IF (PRESENT(diagonal_residual_sq)) diagonal_residual_sq = 0.0_dp
+      IF (PRESENT(offdiagonal_residual_sq)) offdiagonal_residual_sq = 0.0_dp
+      IF (nmo == 0 .OR. sigma <= 0.0_dp .OR. maxocc <= 0.0_dp .OR. kpoint_weight <= 0.0_dp) RETURN
+
+      ALLOCATE (projector(nmo, nmo))
+      projector(:, :) = eigenvectors(:, :)
+      DO imo = 1, nmo
+         projector(:, imo) = canonical_occupation(imo)*projector(:, imo)
+      END DO
+      projector(:, :) = MATMUL(projector, CONJG(TRANSPOSE(eigenvectors)))
+      DO imo = 1, nmo
+         projector(imo, imo) = projector(imo, imo) - current_occupation(imo)
+      END DO
+
+      ! The largest Fermi-Dirac susceptibility is maxocc/(4*sigma).
+      ! Its inverse maps a bounded density mismatch to a conservative
+      ! thermodynamic residual with the same energy units as EPS_SCF.
+      inverse_susceptibility = 4.0_dp*sigma/maxocc
+      total_norm_sq = REAL(SUM(CONJG(projector(:, :))*projector(:, :)), KIND=dp)
+      diagonal_norm_sq = 0.0_dp
+      DO imo = 1, nmo
+         diagonal_norm_sq = diagonal_norm_sq + ABS(projector(imo, imo))**2
+      END DO
+      residual_sq = kpoint_weight*inverse_susceptibility**2*total_norm_sq
+      IF (PRESENT(diagonal_residual_sq)) &
+         diagonal_residual_sq = kpoint_weight*inverse_susceptibility**2*diagonal_norm_sq
+      IF (PRESENT(offdiagonal_residual_sq)) &
+         offdiagonal_residual_sq = kpoint_weight*inverse_susceptibility**2* &
+                                   MAX(0.0_dp, total_norm_sq - diagonal_norm_sq)
+      state_weight = kpoint_weight*REAL(nmo, KIND=dp)
+      max_residual = inverse_susceptibility*MAXVAL(ABS(projector(:, :)))
+      DEALLOCATE (projector)
+
+   END SUBROUTINE qs_scf_kp_canonical_density_residual
 
 ! **************************************************************************************************
 !> \brief Contract the FULL_ALL complement metric with finite complex occupation-matrix responses.
@@ -2158,8 +2234,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: eps_scf
 
       INTEGER                                            :: local_channel
-      REAL(KIND=dp) :: exit_floor_delta, model_delta, ot_delta, physical_delta, &
-         physical_exit_floor_delta, physical_model_delta, raw_delta, raw_floor_ratio
+      REAL(KIND=dp) :: density_stationarity_delta, exit_floor_delta, model_delta, ot_delta, &
+         physical_delta, physical_exit_floor_delta, physical_model_delta, raw_delta, &
+         raw_floor_ratio
 
       CPASSERT(SIZE(local_ot_env) > 0)
 
@@ -2172,11 +2249,16 @@ CONTAINS
       exit_floor_delta = 0.0_dp
       raw_delta = 0.0_dp
       physical_delta = 0.0_dp
+      density_stationarity_delta = 0.0_dp
       IF (local_ot_env(1)%kpoint_raw_delta > 0.0_dp) raw_delta = local_ot_env(1)%kpoint_raw_delta
       IF (local_ot_env(1)%kpoint_physical_delta > 0.0_dp) &
          physical_delta = local_ot_env(1)%kpoint_physical_delta
+      IF (local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
+          local_ot_env(1)%kpoint_density_stationarity_delta > 0.0_dp) &
+         density_stationarity_delta = local_ot_env(1)%kpoint_density_stationarity_delta
       CALL para_env_inter_kp%max(raw_delta)
       CALL para_env_inter_kp%max(physical_delta)
+      CALL para_env_inter_kp%max(density_stationarity_delta)
       IF (PRESENT(eps_scf)) THEN
          CALL ot_kpoint_physical_residual_split( &
             raw_delta, physical_delta, local_ot_env(1)%kpoint_physical_delta_ready, &
@@ -2185,6 +2267,11 @@ CONTAINS
             physical_model_delta, physical_exit_floor_delta)
          CALL para_env_inter_kp%max(physical_exit_floor_delta)
          exit_floor_delta = MAX(exit_floor_delta, physical_exit_floor_delta)
+         ! P = f(C^H H C - mu) is the finite-temperature fixed-N
+         ! stationarity condition.  Keep its bounded density residual
+         ! independent of the optional occupation preconditioner so a
+         ! low-entropy auxiliary-energy plateau cannot report convergence.
+         exit_floor_delta = MAX(exit_floor_delta, density_stationarity_delta)
          IF (eps_scf > 0.0_dp .AND. raw_delta > ot_delta .AND. &
              local_ot_env(1)%kpoint_physical_delta_ready) THEN
             raw_floor_ratio = qs_scf_kp_raw_exit_floor_ratio( &
@@ -5627,6 +5714,8 @@ CONTAINS
                               smear%do_smear .AND. smear%method == smear_fermi_dirac
       global_schur_replicated = para_env_inter_kp%num_pe > 1
 
+      CALL audit_kpoint_ot_canonical_density()
+
       rot_generator_re = 0.0_dp
       rot_generator_im = 0.0_dp
       IF (local_ot_env(1)%settings%do_rotation) THEN
@@ -5825,6 +5914,155 @@ CONTAINS
       CPASSERT(kp_range(2) - kp_range(1) + 1 == SIZE(kpoints%kp_env))
 
    CONTAINS
+
+! **************************************************************************************************
+!> \brief Evaluate P-current minus the canonical fixed-N Fermi projector of C^H H C.
+! **************************************************************************************************
+      SUBROUTINE audit_kpoint_ot_canonical_density()
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: chc, evec
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: channel_evec
+      INTEGER                                            :: ikpoint, ispin, local_channel, &
+                                                            local_kpoint, nmo
+      LOGICAL                                            :: audit_ready
+      REAL(KIND=dp) :: canonical_kTS, channel_max, channel_metric, channel_metric_diag, &
+         channel_metric_offdiag, channel_weight, density_delta, density_max, density_metric, &
+         density_weight, maxocc, sigma
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: canonical_mu, evals
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: channel_density_diag, channel_density_max, &
+         channel_density_metric, channel_density_offdiag, channel_density_weight, h_im, h_re
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: canonical_eigenvalues, &
+                                                            canonical_occupation
+
+         audit_ready = local_ot_env(1)%settings%do_rotation .AND. &
+                       local_ot_env(1)%settings%do_ener .AND. smear%do_smear .AND. &
+                       smear%method == smear_fermi_dirac .AND. smear%electronic_temperature > 0.0_dp
+         DO local_channel = 1, SIZE(local_ot_env)
+            local_ot_env(local_channel)%kpoint_density_stationarity_ready = .FALSE.
+            local_ot_env(local_channel)%kpoint_density_stationarity_delta = -1.0_dp
+            local_ot_env(local_channel)%kpoint_density_stationarity_max = -1.0_dp
+         END DO
+         IF (.NOT. audit_ready) RETURN
+
+         sigma = smear%electronic_temperature
+         nmo = SIZE(trial_eigenvalues, 1)
+         ALLOCATE (canonical_eigenvalues, MOLD=trial_eigenvalues)
+         ALLOCATE (canonical_occupation, MOLD=trial_occupation)
+         ALLOCATE (canonical_mu(SIZE(trial_mu)))
+         ALLOCATE (channel_evec(nmo, nmo, SIZE(local_ot_env)))
+         ALLOCATE (channel_density_diag(SIZE(wkp), nspin_ot), &
+                   channel_density_max(SIZE(wkp), nspin_ot), &
+                   channel_density_metric(SIZE(wkp), nspin_ot), &
+                   channel_density_offdiag(SIZE(wkp), nspin_ot), &
+                   channel_density_weight(SIZE(wkp), nspin_ot))
+         canonical_eigenvalues(:, :, :) = 0.0_dp
+         canonical_occupation(:, :, :) = 0.0_dp
+         canonical_mu(:) = 0.0_dp
+         channel_evec(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+         channel_density_diag(:, :) = 0.0_dp
+         channel_density_max(:, :) = 0.0_dp
+         channel_density_metric(:, :) = 0.0_dp
+         channel_density_offdiag(:, :) = 0.0_dp
+         channel_density_weight(:, :) = 0.0_dp
+
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               ALLOCATE (h_re(nmo, nmo), h_im(nmo, nmo), chc(nmo, nmo), evec(nmo, nmo), evals(nmo))
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc, h_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc_im, h_im)
+               CALL local_ot_env(local_channel)%para_env%sum(h_re)
+               CALL local_ot_env(local_channel)%para_env%sum(h_im)
+               chc(:, :) = CMPLX(h_re, h_im, KIND=dp)
+               chc(:, :) = 0.5_dp*(chc(:, :) + CONJG(TRANSPOSE(chc(:, :))))
+               CALL diag_complex(chc, evec, evals)
+               canonical_eigenvalues(:, ikpoint, ispin) = evals(:)
+               channel_evec(:, :, local_channel) = evec(:, :)
+               DEALLOCATE (h_re, h_im, chc, evec, evals)
+            END DO
+         END DO
+         CALL para_env_inter_kp%sum(canonical_eigenvalues)
+         CALL qs_scf_loop_smear_ot_kp_trial_eigenvalues( &
+            kpoints, nspin_ot, wkp, smear, canonical_eigenvalues, canonical_occupation, &
+            canonical_mu, canonical_kTS)
+
+         density_metric = 0.0_dp
+         density_weight = 0.0_dp
+         density_max = 0.0_dp
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            ikpoint = kp%nkpoint
+            DO ispin = 1, nspin_ot
+               local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
+               CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc)
+               CALL qs_scf_kp_canonical_density_residual( &
+                  channel_evec(:, :, local_channel), trial_occupation(:, ikpoint, ispin), &
+                  canonical_occupation(:, ikpoint, ispin), sigma, maxocc, wkp(ikpoint), &
+                  channel_metric, channel_weight, channel_max, channel_metric_diag, &
+                  channel_metric_offdiag)
+               channel_density_diag(ikpoint, ispin) = channel_metric_diag
+               channel_density_max(ikpoint, ispin) = channel_max
+               channel_density_metric(ikpoint, ispin) = channel_metric
+               channel_density_offdiag(ikpoint, ispin) = channel_metric_offdiag
+               channel_density_weight(ikpoint, ispin) = channel_weight
+               density_metric = density_metric + channel_metric
+               density_weight = density_weight + channel_weight
+               density_max = MAX(density_max, channel_max)
+            END DO
+         END DO
+         CALL para_env_inter_kp%sum(density_metric)
+         CALL para_env_inter_kp%sum(density_weight)
+         CALL para_env_inter_kp%max(density_max)
+         CALL para_env_inter_kp%sum(channel_density_diag)
+         CALL para_env_inter_kp%sum(channel_density_metric)
+         CALL para_env_inter_kp%sum(channel_density_offdiag)
+         CALL para_env_inter_kp%sum(channel_density_weight)
+         DO ispin = 1, nspin_ot
+            DO ikpoint = 1, SIZE(wkp)
+               CALL para_env_inter_kp%max(channel_density_max(ikpoint, ispin))
+            END DO
+         END DO
+         density_delta = 0.0_dp
+         IF (density_weight > 0.0_dp) density_delta = SQRT(MAX(0.0_dp, density_metric)/density_weight)
+
+         DO local_channel = 1, SIZE(local_ot_env)
+            local_ot_env(local_channel)%kpoint_density_stationarity_ready = .TRUE.
+            local_ot_env(local_channel)%kpoint_density_stationarity_delta = density_delta
+            local_ot_env(local_channel)%kpoint_density_stationarity_max = density_max
+         END DO
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,ES16.8))') &
+            " OT k-point canonical density stationarity rms max mu kTS:", &
+            density_delta, density_max, canonical_mu(1), canonical_kTS
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            DO ispin = 1, nspin_ot
+               DO ikpoint = 1, SIZE(wkp)
+                  channel_metric = 0.0_dp
+                  channel_metric_diag = 0.0_dp
+                  channel_metric_offdiag = 0.0_dp
+                  IF (channel_density_weight(ikpoint, ispin) > 0.0_dp) THEN
+                     channel_metric = SQRT(MAX(0.0_dp, channel_density_metric(ikpoint, ispin))/ &
+                                           channel_density_weight(ikpoint, ispin))
+                     channel_metric_diag = SQRT(MAX(0.0_dp, channel_density_diag(ikpoint, ispin))/ &
+                                                channel_density_weight(ikpoint, ispin))
+                     channel_metric_offdiag = SQRT(MAX(0.0_dp, channel_density_offdiag(ikpoint, ispin))/ &
+                                                   channel_density_weight(ikpoint, ispin))
+                  END IF
+                  WRITE (cp_logger_get_default_unit_nr(logger), '(A,2(1X,I4),4(1X,ES16.8))') &
+                     " OT k-point canonical density channel spin k rms diag offdiag max:", &
+                     ispin, ikpoint, channel_metric, channel_metric_diag, channel_metric_offdiag, &
+                     channel_density_max(ikpoint, ispin)
+               END DO
+            END DO
+         END IF
+
+         DEALLOCATE (canonical_eigenvalues, canonical_occupation, canonical_mu, channel_evec, &
+                     channel_density_diag, channel_density_max, channel_density_metric, &
+                     channel_density_offdiag, channel_density_weight)
+
+      END SUBROUTINE audit_kpoint_ot_canonical_density
 
 ! **************************************************************************************************
 !> \brief ...

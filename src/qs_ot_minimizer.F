@@ -634,10 +634,13 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%schur_residual_history_reset_pending)
       CALL para_env%bcast(qs_ot_env(1)%schur_residual_history_quality)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta_ready)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_density_stationarity_ready)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta_groups)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_raw_delta)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_physical_delta)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_projected_delta)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_density_stationarity_delta)
+      CALL para_env%bcast(qs_ot_env(1)%kpoint_density_stationarity_max)
       CALL para_env%bcast(qs_ot_env(1)%kpoint_eps_scf)
       CALL para_env%bcast(qs_ot_env(1)%ener_direction_linear)
 

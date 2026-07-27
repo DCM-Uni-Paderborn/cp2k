@@ -4,10 +4,12 @@
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-07 reference after rebuilding the initial virtual subspace from
 ! the first physical Hamiltonian: AUTO grows from 4 to 8 and 16.  It converges
-! in 21 final-stage MPI-2 OT steps at -8.15998707914759 Ha and in 172 total
-! serial steps at -8.15998696519346 Ha.  It prints no first/last-band,
-! AUTO-exhausted, or unsupported-content warning.  Together with the full-grid
-! companion this guards the weighted symmetry reduction.
+! in 21 final-stage MPI-2 OT steps at -8.15998707914759 Ha and in 148 total
+! serial OT steps at -8.15998690653974 Ha.  The canonical-density stationarity
+! residual is below 8E-7 Ha for both layouts, which agree within 2E-7 Ha.  It
+! prints no first/last-band, AUTO-exhausted, or unsupported-content warning.
+! Together with the full-grid companion this guards the weighted symmetry
+! reduction.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
