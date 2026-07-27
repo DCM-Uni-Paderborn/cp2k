@@ -57,6 +57,7 @@ MODULE qs_ot_types
    PUBLIC  :: qs_ot_channel_index
    PUBLIC  :: qs_ot_check_channel_context
    PUBLIC  :: qs_ot_init
+   PUBLIC  :: qs_ot_reset_accepted_model_calibration
    PUBLIC  :: qs_ot_number_of_channels
    PUBLIC  :: qs_ot_occupation_preconditioner_active
    PUBLIC  :: qs_ot_settings_init
@@ -368,6 +369,7 @@ MODULE qs_ot_types
       INTEGER :: schur_projector_density_full_global_sel_quality_samples = 0
       INTEGER :: schur_dense_metric_shadow_quality_samples = 0
       REAL(KIND=dp) :: schur_model_drop = 0.0_dp, schur_model_calibrated_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_model_slope = 0.0_dp, schur_model_quadratic = 0.0_dp
       REAL(KIND=dp) :: schur_model_measured_drop = 0.0_dp
       REAL(KIND=dp) :: schur_model_quality = 0.0_dp, schur_model_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_model_calibrated_quality = 0.0_dp, schur_model_calibrated_quality_ema = 0.0_dp
@@ -1154,6 +1156,8 @@ CONTAINS
       qs_ot_env%schur_dense_metric_shadow_quality_samples = 0
       qs_ot_env%schur_model_drop = 0.0_dp
       qs_ot_env%schur_model_calibrated_drop = 0.0_dp
+      qs_ot_env%schur_model_slope = 0.0_dp
+      qs_ot_env%schur_model_quadratic = 0.0_dp
       qs_ot_env%schur_model_measured_drop = 0.0_dp
       qs_ot_env%schur_model_quality = 0.0_dp
       qs_ot_env%schur_model_quality_ema = 0.0_dp
@@ -1661,6 +1665,194 @@ CONTAINS
       qs_ot_env%ener_direction_linear = .FALSE.
 
    END SUBROUTINE qs_ot_init
+
+! **************************************************************************************************
+!> \brief Reset accepted-direction model calibration while retaining physical and minimizer history.
+!> \param qs_ot_env ...
+! **************************************************************************************************
+   SUBROUTINE qs_ot_reset_accepted_model_calibration(qs_ot_env)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+
+      qs_ot_env%schur_model_pending = .FALSE.
+      qs_ot_env%schur_model_quality_ready = .FALSE.
+      qs_ot_env%schur_model_attempt = 0
+      qs_ot_env%schur_model_flavor = 0
+      qs_ot_env%schur_model_drop = 0.0_dp
+      qs_ot_env%schur_model_calibrated_drop = 0.0_dp
+      qs_ot_env%schur_model_slope = 0.0_dp
+      qs_ot_env%schur_model_quadratic = 0.0_dp
+      qs_ot_env%schur_model_measured_drop = 0.0_dp
+      qs_ot_env%schur_model_quality = 0.0_dp
+      qs_ot_env%schur_model_quality_ema = 0.0_dp
+      qs_ot_env%schur_model_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_model_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_model_quality_samples = 0
+
+      qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
+      qs_ot_env%schur_constrained_quality = 0.0_dp
+      qs_ot_env%schur_constrained_quality_ema = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_constrained_drop_sum = 0.0_dp
+      qs_ot_env%schur_constrained_measured_sum = 0.0_dp
+      qs_ot_env%schur_constrained_calibrated_drop_sum = 0.0_dp
+      qs_ot_env%schur_constrained_quality_samples = 0
+      qs_ot_env%schur_split_candidate_enabled = .FALSE.
+      qs_ot_env%schur_split_quality = 0.0_dp
+      qs_ot_env%schur_split_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_split_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_residual_quality = 0.0_dp
+      qs_ot_env%schur_split_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_split_drop_sum = 0.0_dp
+      qs_ot_env%schur_split_measured_sum = 0.0_dp
+      qs_ot_env%schur_split_calibrated_drop_sum = 0.0_dp
+      qs_ot_env%schur_split_quality_samples = 0
+      qs_ot_env%schur_coupled_quality = 0.0_dp
+      qs_ot_env%schur_coupled_quality_ema = 0.0_dp
+      qs_ot_env%schur_coupled_calibrated_quality = 0.0_dp
+      qs_ot_env%schur_coupled_calibrated_quality_ema = 0.0_dp
+      qs_ot_env%schur_coupled_residual_quality = 0.0_dp
+      qs_ot_env%schur_coupled_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_coupled_drop_sum = 0.0_dp
+      qs_ot_env%schur_coupled_measured_sum = 0.0_dp
+      qs_ot_env%schur_coupled_calibrated_drop_sum = 0.0_dp
+      qs_ot_env%schur_coupled_quality_samples = 0
+
+      qs_ot_env%schur_vector_secant_candidate_enabled = .FALSE.
+      qs_ot_env%schur_vector_secant_quality_samples = 0
+      qs_ot_env%schur_vector_secant_quality = 0.0_dp
+      qs_ot_env%schur_vector_secant_quality_ema = 0.0_dp
+      qs_ot_env%schur_vector_secant_residual_quality = 0.0_dp
+      qs_ot_env%schur_vector_secant_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_vector_secant_drop_sum = 0.0_dp
+      qs_ot_env%schur_vector_secant_measured_sum = 0.0_dp
+      qs_ot_env%schur_multisecant_candidate_enabled = .FALSE.
+      qs_ot_env%schur_multisecant_quality_samples = 0
+      qs_ot_env%schur_multisecant_quality = 0.0_dp
+      qs_ot_env%schur_multisecant_quality_ema = 0.0_dp
+      qs_ot_env%schur_multisecant_residual_quality = 0.0_dp
+      qs_ot_env%schur_multisecant_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_multisecant_drop_sum = 0.0_dp
+      qs_ot_env%schur_multisecant_measured_sum = 0.0_dp
+      qs_ot_env%schur_reduced_secant_shadow_validated = .FALSE.
+      qs_ot_env%schur_reduced_secant_quality_samples = 0
+      qs_ot_env%schur_reduced_secant_quality = 0.0_dp
+      qs_ot_env%schur_reduced_secant_quality_ema = 0.0_dp
+      qs_ot_env%schur_reduced_secant_residual_quality = 0.0_dp
+      qs_ot_env%schur_reduced_secant_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_reduced_secant_drop_sum = 0.0_dp
+      qs_ot_env%schur_reduced_secant_measured_sum = 0.0_dp
+
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_offdiag_selected_quality_samples, &
+         qs_ot_env%schur_projector_offdiag_selected_quality, &
+         qs_ot_env%schur_projector_offdiag_selected_quality_ema, &
+         qs_ot_env%schur_projector_offdiag_selected_residual_quality, &
+         qs_ot_env%schur_projector_offdiag_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_offdiag_selected_drop_sum, &
+         qs_ot_env%schur_projector_offdiag_selected_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_quality_samples, &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_quality, &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_quality_ema, &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_residual_quality, &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_drop_sum, &
+         qs_ot_env%schur_projector_inactive_offdiag_selected_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_response_selected_quality_samples, &
+         qs_ot_env%schur_projector_response_selected_quality, &
+         qs_ot_env%schur_projector_response_selected_quality_ema, &
+         qs_ot_env%schur_projector_response_selected_residual_quality, &
+         qs_ot_env%schur_projector_response_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_response_selected_drop_sum, &
+         qs_ot_env%schur_projector_response_selected_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_physical_selected_quality_samples, &
+         qs_ot_env%schur_projector_physical_selected_quality, &
+         qs_ot_env%schur_projector_physical_selected_quality_line_ema, &
+         qs_ot_env%schur_projector_physical_selected_residual_quality, &
+         qs_ot_env%schur_projector_physical_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_physical_selected_drop_sum, &
+         qs_ot_env%schur_projector_physical_selected_measured_sum)
+      qs_ot_env%schur_projector_physical_selected_quality_ema = 0.0_dp
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_physical_direct_selected_quality_samples, &
+         qs_ot_env%schur_projector_physical_direct_selected_quality, &
+         qs_ot_env%schur_projector_physical_direct_selected_quality_ema, &
+         qs_ot_env%schur_projector_physical_direct_selected_residual_quality, &
+         qs_ot_env%schur_projector_physical_direct_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_physical_direct_selected_drop_sum, &
+         qs_ot_env%schur_projector_physical_direct_selected_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_phys_direct_density_sel_quality_samples, &
+         qs_ot_env%schur_projector_phys_direct_density_sel_quality, &
+         qs_ot_env%schur_projector_phys_direct_density_sel_quality_ema, &
+         qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality, &
+         qs_ot_env%schur_projector_phys_direct_density_sel_resid_quality_ema, &
+         qs_ot_env%schur_projector_phys_direct_density_sel_drop_sum, &
+         qs_ot_env%schur_projector_phys_direct_density_sel_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_density_descent_selected_quality_samples, &
+         qs_ot_env%schur_projector_density_descent_selected_quality, &
+         qs_ot_env%schur_projector_density_descent_selected_quality_ema, &
+         qs_ot_env%schur_projector_density_descent_selected_residual_quality, &
+         qs_ot_env%schur_projector_density_descent_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_density_descent_selected_drop_sum, &
+         qs_ot_env%schur_projector_density_descent_selected_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_density_full_selected_quality_samples, &
+         qs_ot_env%schur_projector_density_full_selected_quality, &
+         qs_ot_env%schur_projector_density_full_selected_quality_ema, &
+         qs_ot_env%schur_projector_density_full_selected_residual_quality, &
+         qs_ot_env%schur_projector_density_full_selected_residual_quality_ema, &
+         qs_ot_env%schur_projector_density_full_selected_drop_sum, &
+         qs_ot_env%schur_projector_density_full_selected_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_density_fdir_sel_quality_samples, &
+         qs_ot_env%schur_projector_density_fdir_sel_quality, &
+         qs_ot_env%schur_projector_density_fdir_sel_quality_ema, &
+         qs_ot_env%schur_projector_density_fdir_sel_resid_quality, &
+         qs_ot_env%schur_projector_density_fdir_sel_resid_quality_ema, &
+         qs_ot_env%schur_projector_density_fdir_sel_drop_sum, &
+         qs_ot_env%schur_projector_density_fdir_sel_measured_sum)
+      CALL reset_selected_calibration( &
+         qs_ot_env%schur_projector_density_full_global_sel_quality_samples, &
+         qs_ot_env%schur_projector_density_full_global_sel_quality, &
+         qs_ot_env%schur_projector_density_full_global_sel_quality_ema, &
+         qs_ot_env%schur_projector_density_full_global_sel_resid_quality, &
+         qs_ot_env%schur_projector_density_full_global_sel_resid_quality_ema, &
+         qs_ot_env%schur_projector_density_full_global_sel_drop_sum, &
+         qs_ot_env%schur_projector_density_full_global_sel_measured_sum)
+      qs_ot_env%schur_projector_spectral_selected_quality_samples = 0
+      qs_ot_env%schur_projector_spectral_selected_failure_samples = 0
+      qs_ot_env%schur_projector_spectral_selected_quality = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_quality_ema = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_residual_quality = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_residual_quality_ema = 1.0_dp
+      qs_ot_env%schur_projector_spectral_selected_drop_sum = 0.0_dp
+      qs_ot_env%schur_projector_spectral_selected_measured_sum = 0.0_dp
+
+   CONTAINS
+
+      SUBROUTINE reset_selected_calibration(samples, quality, quality_ema, residual_quality, &
+                                            residual_quality_ema, drop_sum, measured_sum)
+         INTEGER, INTENT(OUT)                            :: samples
+         REAL(KIND=dp), INTENT(OUT) :: quality, quality_ema, residual_quality, &
+            residual_quality_ema, drop_sum, measured_sum
+
+         samples = 0
+         quality = 0.0_dp
+         quality_ema = 0.0_dp
+         residual_quality = 0.0_dp
+         residual_quality_ema = 1.0_dp
+         drop_sum = 0.0_dp
+         measured_sum = 0.0_dp
+
+      END SUBROUTINE reset_selected_calibration
+
+   END SUBROUTINE qs_ot_reset_accepted_model_calibration
 
 ! **************************************************************************************************
 !> \brief allocates the data in qs_ot_env, for a calculation with fm_struct_ref

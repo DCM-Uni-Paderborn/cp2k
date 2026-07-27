@@ -59,7 +59,7 @@ MODULE qs_scf_types
 
    INTEGER, PARAMETER, PUBLIC :: qs_ot_restart_adaptive_nint = 15, &
                                  qs_ot_restart_adaptive_nlog = 13, &
-                                 qs_ot_restart_adaptive_nreal = 96
+                                 qs_ot_restart_adaptive_nreal = 98
 
    PUBLIC :: qs_scf_env_type
    PUBLIC :: qs_ot_restart_dense_matrix_type

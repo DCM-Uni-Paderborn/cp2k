@@ -128,6 +128,9 @@ MODULE qs_scf_loop_utils
                                         ot_kp_canonical_density_branch_max_weight = 1.0E-1_dp, &
                                         ot_kp_canonical_projector_delta = 5.0E-3_dp, &
                                         ot_kp_canonical_projector_max_weight = 0.10_dp, &
+                                        ot_kp_canonical_density_pair_rotation_max = 2.5E-1_dp, &
+                                        ot_kp_canonical_density_occupation_floor = 1.0E-8_dp, &
+                                        ot_kp_canonical_density_frechet_floor = 1.0E-10_dp, &
                                         ot_kp_projector_occupation_gauge_gap = 3.0E-5_dp, &
                                         ot_kp_projector_occupation_thermal_gap_fraction = 2.5E-1_dp, &
                                         ot_kp_projector_occupation_thermal_gap_max_factor = 5.0E1_dp, &
@@ -252,7 +255,10 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
+             qs_scf_kp_quadratic_position_drop, &
              qs_scf_kp_canonical_density_residual, &
+             qs_scf_kp_canonical_density_blend, &
+             qs_scf_kp_canonical_density_tangent, &
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
              qs_scf_kp_symmetric_multisecant_update, &
@@ -262,6 +268,27 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Quadratic Mermin-model decrease at a finite line-search position.
+!> \param slope directional Mermin slope g^T p
+!> \param quadratic directional curvature p^T H p
+!> \param position cumulative line-search coordinate
+!> \return nonnegative predicted Mermin decrease
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_quadratic_position_drop(slope, quadratic, position) RESULT(model_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: slope, quadratic, position
+      REAL(KIND=dp)                                      :: model_drop
+
+      REAL(KIND=dp)                                      :: bounded_position
+
+      bounded_position = MAX(0.0_dp, position)
+      model_drop = bounded_position*slope - &
+                   0.5_dp*bounded_position*bounded_position*quadratic
+      IF (model_drop /= model_drop .OR. ABS(model_drop) >= HUGE(model_drop)) model_drop = 0.0_dp
+      model_drop = MAX(0.0_dp, model_drop)
+
+   END FUNCTION qs_scf_kp_quadratic_position_drop
 
 ! **************************************************************************************************
 !> \brief Measure finite-temperature density stationarity in a projected Hamiltonian eigenbasis.
@@ -345,6 +372,238 @@ CONTAINS
       DEALLOCATE (projector)
 
    END SUBROUTINE qs_scf_kp_canonical_density_residual
+
+! **************************************************************************************************
+!> \brief Build the finite-generator tangent which rotates the current diagonal occupation
+!>        matrix toward the fixed-N canonical density in the current orbital basis.
+!> \param x_re real antisymmetric part of the finite OT generator
+!> \param x_im imaginary symmetric part of the finite OT generator
+!> \param eigenvectors eigenvectors of the current projected Hamiltonian
+!> \param current_occupation occupations attached to the current orbital labels
+!> \param canonical_occupation fixed-N occupations of the projected Hamiltonian eigenvalues
+!> \param occupation_regularization Tikhonov floor for nearly equal occupation pairs
+!> \param frechet_regularization Tikhonov floor for a nearly singular exponential map
+!> \param max_pair_rotation maximum physical current-frame rotation for one occupation pair
+!> \param tangent_re real antisymmetric generator-coordinate tangent
+!> \param tangent_im imaginary symmetric generator-coordinate tangent
+!> \param target_offdiag_norm off-diagonal norm of the canonical density mismatch
+!> \param linear_offdiag_norm mismatch norm after the mapped linear tangent
+!> \param tangent_norm norm of the returned finite-generator tangent
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_canonical_density_tangent( &
+      x_re, x_im, eigenvectors, current_occupation, canonical_occupation, &
+      occupation_regularization, frechet_regularization, max_pair_rotation, tangent_re, tangent_im, &
+      target_offdiag_norm, linear_offdiag_norm, tangent_norm)
+
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: x_re, x_im
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: eigenvectors
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: current_occupation, canonical_occupation
+      REAL(KIND=dp), INTENT(IN)                          :: occupation_regularization, &
+                                                            frechet_regularization, max_pair_rotation
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: tangent_re, tangent_im
+      REAL(KIND=dp), INTENT(OUT)                         :: target_offdiag_norm, &
+                                                            linear_offdiag_norm, tangent_norm
+
+      COMPLEX(KIND=dp) :: kernel, right_kernel
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: achieved, achieved_inner, density_residual, &
+         generator, generator_evec, omega, omega_inner, tangent, tangent_inner, weighted_evec
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp) :: frechet_floor_sq, occ_delta, occ_floor_sq, tangent_norm_sq, &
+         target_norm_sq, trial_abs
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: generator_evals
+
+      n = SIZE(current_occupation)
+      CPASSERT(n > 0)
+      CPASSERT(ALL(SHAPE(x_re) == [n, n]))
+      CPASSERT(ALL(SHAPE(x_im) == [n, n]))
+      CPASSERT(ALL(SHAPE(eigenvectors) == [n, n]))
+      CPASSERT(SIZE(canonical_occupation) == n)
+      CPASSERT(ALL(SHAPE(tangent_re) == [n, n]))
+      CPASSERT(ALL(SHAPE(tangent_im) == [n, n]))
+      CPASSERT(occupation_regularization >= 0.0_dp)
+      CPASSERT(frechet_regularization >= 0.0_dp)
+      CPASSERT(max_pair_rotation > 0.0_dp)
+
+      ALLOCATE (achieved(n, n), achieved_inner(n, n), density_residual(n, n), &
+                generator(n, n), generator_evec(n, n), omega(n, n), omega_inner(n, n), &
+                tangent(n, n), tangent_inner(n, n), weighted_evec(n, n), generator_evals(n))
+
+      weighted_evec(:, :) = eigenvectors(:, :)
+      DO i = 1, n
+         weighted_evec(:, i) = canonical_occupation(i)*weighted_evec(:, i)
+      END DO
+      density_residual(:, :) = MATMUL(weighted_evec, CONJG(TRANSPOSE(eigenvectors)))
+      DO i = 1, n
+         density_residual(i, i) = density_residual(i, i) - current_occupation(i)
+      END DO
+
+      ! For U -> U exp(Omega), d(U f U^H)=[Omega,f].  The least-squares
+      ! solution below remains bounded when two current occupations become
+      ! indistinguishable; such a pair cannot carry a first-order density
+      ! correction by an internal orbital rotation.
+      omega(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      occ_floor_sq = occupation_regularization**2
+      DO j = 2, n
+         DO i = 1, j - 1
+            occ_delta = current_occupation(j) - current_occupation(i)
+            omega(i, j) = density_residual(i, j)*occ_delta/ &
+                          (occ_delta**2 + occ_floor_sq + EPSILON(1.0_dp))
+            trial_abs = ABS(omega(i, j))
+            IF (trial_abs > max_pair_rotation) &
+               omega(i, j) = (max_pair_rotation/trial_abs)*omega(i, j)
+            omega(j, i) = -CONJG(omega(i, j))
+         END DO
+      END DO
+
+      ! The OT variables are the finite generator X, while Omega=U^H dU is
+      ! the physical tangent in the current orbital frame.  Invert the
+      ! right-trivialized Frechet derivative of U=exp(X), rather than treating
+      ! the local Omega as an additive finite-generator coordinate.
+      generator(:, :) = CMPLX(-x_im(:, :), x_re(:, :), KIND=dp)
+      CALL diag_complex(generator, generator_evec, generator_evals)
+      omega_inner(:, :) = MATMUL(CONJG(TRANSPOSE(generator_evec)), &
+                                 MATMUL(omega, generator_evec))
+      tangent_inner(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      frechet_floor_sq = frechet_regularization**2
+      DO j = 1, n
+         DO i = 1, n
+            kernel = qs_ot_complex_exp_frechet_kernel(generator_evals(i), generator_evals(j))
+            right_kernel = EXP(CMPLX(0.0_dp, generator_evals(i), KIND=dp))*kernel
+            tangent_inner(i, j) = omega_inner(i, j)*CONJG(right_kernel)/ &
+                                  (ABS(right_kernel)**2 + frechet_floor_sq + EPSILON(1.0_dp))
+         END DO
+      END DO
+      tangent(:, :) = MATMUL(generator_evec, &
+                             MATMUL(tangent_inner, CONJG(TRANSPOSE(generator_evec))))
+      tangent(:, :) = 0.5_dp*(tangent(:, :) - CONJG(TRANSPOSE(tangent(:, :))))
+      DO i = 1, n
+         tangent(i, i) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      END DO
+      tangent_re(:, :) = REAL(tangent, KIND=dp)
+      tangent_im(:, :) = AIMAG(tangent)
+
+      ! Re-evaluate the physical linear tangent after projecting out diagonal
+      ! phase gauges, so the reported reduction describes exactly the
+      ! coordinates returned to the OT minimizer.
+      tangent_inner(:, :) = MATMUL(CONJG(TRANSPOSE(generator_evec)), &
+                                   MATMUL(tangent, generator_evec))
+      DO j = 1, n
+         DO i = 1, n
+            kernel = qs_ot_complex_exp_frechet_kernel(generator_evals(i), generator_evals(j))
+            right_kernel = EXP(CMPLX(0.0_dp, generator_evals(i), KIND=dp))*kernel
+            achieved_inner(i, j) = right_kernel*tangent_inner(i, j)
+         END DO
+      END DO
+      achieved(:, :) = MATMUL(generator_evec, &
+                              MATMUL(achieved_inner, CONJG(TRANSPOSE(generator_evec))))
+      achieved(:, :) = 0.5_dp*(achieved(:, :) - CONJG(TRANSPOSE(achieved(:, :))))
+
+      target_norm_sq = 0.0_dp
+      linear_offdiag_norm = 0.0_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            target_norm_sq = target_norm_sq + 2.0_dp*ABS(density_residual(i, j))**2
+            linear_offdiag_norm = linear_offdiag_norm + &
+               2.0_dp*ABS(density_residual(i, j) - &
+                          (current_occupation(j) - current_occupation(i))*achieved(i, j))**2
+         END DO
+      END DO
+      tangent_norm_sq = REAL(SUM(CONJG(tangent(:, :))*tangent(:, :)), KIND=dp)
+      target_offdiag_norm = SQRT(MAX(0.0_dp, target_norm_sq))
+      linear_offdiag_norm = SQRT(MAX(0.0_dp, linear_offdiag_norm))
+      tangent_norm = SQRT(MAX(0.0_dp, tangent_norm_sq))
+
+      DEALLOCATE (achieved, achieved_inner, density_residual, generator, generator_evec, &
+                  omega, omega_inner, tangent, tangent_inner, weighted_evec, generator_evals)
+
+   END SUBROUTINE qs_scf_kp_canonical_density_tangent
+
+! **************************************************************************************************
+!> \brief Select a bounded canonical-density tangent in the same reduced fixed-N Mermin model as
+!>        the coupled rotation/energy candidate.
+!> \param grad_rot rotation gradient
+!> \param grad_e energy-variable gradient
+!> \param rot_hessian finite complex rotation Hessian
+!> \param energy_cross rotation/energy Hessian cross block
+!> \param energy_response fixed-N solution H_ee^-1 H_er
+!> \param base_rot base rotation candidate
+!> \param tangent_rot canonical-density rotation tangent
+!> \param alpha optimal bounded tangent coefficient
+!> \param tangent_gdot Mermin gradient contraction with the tangent
+!> \param tangent_cross reduced-Hessian cross term between base and tangent
+!> \param tangent_curvature reduced-Hessian tangent curvature
+!> \param tangent_gain predicted incremental Mermin decrease at alpha
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_canonical_density_blend( &
+      grad_rot, grad_e, rot_hessian, energy_cross, energy_response, base_rot, tangent_rot, &
+      alpha, tangent_gdot, tangent_cross, tangent_curvature, tangent_gain)
+
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: grad_rot, grad_e, base_rot, tangent_rot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rot_hessian, energy_cross, &
+                                                            energy_response
+      REAL(KIND=dp), INTENT(OUT)                         :: alpha, tangent_gdot, tangent_cross, &
+                                                            tangent_curvature, tangent_gain
+
+      INTEGER                                            :: ne, nrot
+      REAL(KIND=dp)                                      :: endpoint_gain
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: base_cross, base_response, hessian_base, &
+         hessian_tangent, tangent_cross_energy, tangent_response
+
+      nrot = SIZE(grad_rot)
+      ne = SIZE(grad_e)
+      CPASSERT(nrot > 0)
+      CPASSERT(ne > 0)
+      CPASSERT(SIZE(base_rot) == nrot)
+      CPASSERT(SIZE(tangent_rot) == nrot)
+      CPASSERT(ALL(SHAPE(rot_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_cross) == [ne, nrot]))
+      CPASSERT(ALL(SHAPE(energy_response) == [ne, nrot]))
+
+      ALLOCATE (base_cross(ne), base_response(ne), hessian_base(nrot), &
+                hessian_tangent(nrot), tangent_cross_energy(ne), tangent_response(ne))
+      base_cross(:) = MATMUL(energy_cross, base_rot)
+      tangent_cross_energy(:) = MATMUL(energy_cross, tangent_rot)
+      base_response(:) = MATMUL(energy_response, base_rot)
+      tangent_response(:) = MATMUL(energy_response, tangent_rot)
+      hessian_base(:) = 0.5_dp*MATMUL(rot_hessian + TRANSPOSE(rot_hessian), base_rot)
+      hessian_tangent(:) = 0.5_dp*MATMUL(rot_hessian + TRANSPOSE(rot_hessian), tangent_rot)
+
+      ! With the CP2K search convention H_ee e - H_er r = g_e, eliminating e gives
+      ! S = H_rr - sym(H_re H_ee^-1 H_er).  Evaluate both the tangent curvature and
+      ! its cross term with the base in that same dense reduced model.
+      tangent_gdot = DOT_PRODUCT(grad_rot, tangent_rot) + &
+                     DOT_PRODUCT(grad_e, tangent_response)
+      tangent_cross = DOT_PRODUCT(tangent_rot, hessian_base) - &
+                      0.5_dp*(DOT_PRODUCT(tangent_response, base_cross) + &
+                              DOT_PRODUCT(tangent_cross_energy, base_response))
+      tangent_curvature = DOT_PRODUCT(tangent_rot, hessian_tangent) - &
+                          DOT_PRODUCT(tangent_response, tangent_cross_energy)
+
+      alpha = 0.0_dp
+      tangent_gain = 0.0_dp
+      IF (tangent_curvature > EPSILON(ABS(tangent_curvature))) THEN
+         alpha = MIN(1.0_dp, MAX(0.0_dp, &
+                                 (tangent_gdot - tangent_cross)/tangent_curvature))
+         tangent_gain = alpha*(tangent_gdot - tangent_cross) - &
+                        0.5_dp*alpha*alpha*tangent_curvature
+      ELSE
+         ! A negative reduced mode is not a reason to discard a bounded physical
+         ! tangent: the Mermin decrease is then maximal at an endpoint.
+         endpoint_gain = tangent_gdot - tangent_cross - 0.5_dp*tangent_curvature
+         IF (endpoint_gain > EPSILON(ABS(endpoint_gain))) THEN
+            alpha = 1.0_dp
+            tangent_gain = endpoint_gain
+         END IF
+      END IF
+      IF (tangent_gain <= EPSILON(ABS(tangent_gain))) THEN
+         alpha = 0.0_dp
+         tangent_gain = 0.0_dp
+      END IF
+
+      DEALLOCATE (base_cross, base_response, hessian_base, hessian_tangent, &
+                  tangent_cross_energy, tangent_response)
+
+   END SUBROUTINE qs_scf_kp_canonical_density_blend
 
 ! **************************************************************************************************
 !> \brief Fractional reduction of the exact fixed-N canonical density residual.
@@ -2610,6 +2869,8 @@ CONTAINS
       local_ot_env(1)%schur_model_flavor = 0
       local_ot_env(1)%schur_model_drop = 0.0_dp
       local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
+      local_ot_env(1)%schur_model_slope = 0.0_dp
+      local_ot_env(1)%schur_model_quadratic = 0.0_dp
       local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
       local_ot_env(1)%schur_model_control_delta = 0.0_dp
       local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
@@ -6112,6 +6373,7 @@ CONTAINS
          constrained_predicted_drop, constrained_quality_ratio, &
          dense_metric_shadow_predicted_drop, dense_metric_shadow_quality_ratio, &
          density_stationarity_quality_ratio, gauge_residual_quality_ratio, measured_drop, &
+         line_search_model_drop, line_search_model_position, line_search_model_scale, &
          metric_residual_quality, multisecant_predicted_drop, multisecant_quality_ratio, &
          occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, predicted_drop, &
          projector_density_audit_amplification_quality, projector_density_audit_lowcurv_quality
@@ -6215,12 +6477,35 @@ CONTAINS
 
          predicted_drop = local_ot_env(1)%schur_model_drop
          calibrated_predicted_drop = local_ot_env(1)%schur_model_calibrated_drop
+         line_search_model_position = MAX(0.0_dp, local_ot_env(1)%mermin_ls_next_pos)
+         IF (line_search_model_position <= EPSILON(line_search_model_position) .AND. &
+             local_ot_env(1)%mermin_ls_best_sample_index > 0) &
+            line_search_model_position = MAX(0.0_dp, local_ot_env(1)%mermin_ls_best_sample_pos)
+         line_search_model_drop = qs_scf_kp_quadratic_position_drop( &
+                                  local_ot_env(1)%schur_model_slope, &
+                                  local_ot_env(1)%schur_model_quadratic, &
+                                  line_search_model_position)
+         line_search_model_scale = 1.0_dp
+         IF (predicted_drop > EPSILON(predicted_drop) .AND. &
+             line_search_model_position > EPSILON(line_search_model_position) .AND. &
+             line_search_model_drop > 0.0_dp) THEN
+            line_search_model_scale = line_search_model_drop/predicted_drop
+            predicted_drop = line_search_model_drop
+            calibrated_predicted_drop = line_search_model_scale*calibrated_predicted_drop
+         END IF
          IF (calibrated_predicted_drop <= EPSILON(calibrated_predicted_drop)) &
             calibrated_predicted_drop = predicted_drop
          local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
          local_ot_env(1)%schur_residual_history_quality = 1.0_dp
          measured_drop = local_ot_env(1)%OT_energy(1) - local_ot_env(1)%etotal
          local_ot_env(1)%schur_model_measured_drop = measured_drop
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I4,6(1X,ES16.8))') &
+            " OT Schur accepted-position model flavor pos slope quad unit_drop pos_drop scale:", &
+            local_ot_env(1)%schur_model_flavor, line_search_model_position, &
+            local_ot_env(1)%schur_model_slope, local_ot_env(1)%schur_model_quadratic, &
+            local_ot_env(1)%schur_model_drop, line_search_model_drop, line_search_model_scale
          CALL qs_scf_loop_sync_ot_kp_global_delta(local_ot_env, para_env_inter_kp, residual_current_delta)
          residual_current_delta = MAX(residual_current_delta, 0.0_dp)
          residual_drop = MAX(0.0_dp, local_ot_env(1)%schur_model_delta - residual_current_delta)
@@ -6895,6 +7180,8 @@ CONTAINS
          END IF
          projector_offdiag_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_offdiag_selected
+         projector_offdiag_selected_predicted_drop = line_search_model_scale* &
+                                                      projector_offdiag_selected_predicted_drop
          projector_offdiag_selected_quality_ratio = 0.0_dp
          IF (local_ot_env(1)%schur_model_flavor == 37) THEN
             IF (projector_offdiag_selected_predicted_drop <= &
@@ -7014,6 +7301,8 @@ CONTAINS
          END IF
          projector_inactive_offdiag_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_inactive_offdiag_selected
+         projector_inactive_offdiag_selected_predicted_drop = line_search_model_scale* &
+                                                               projector_inactive_offdiag_selected_predicted_drop
          projector_inactive_offdiag_selected_quality_ratio = 0.0_dp
          IF (local_ot_env(1)%schur_model_flavor == 41) THEN
             IF (projector_inactive_offdiag_selected_predicted_drop <= &
@@ -7097,6 +7386,8 @@ CONTAINS
          END IF
          projector_response_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_response_selected
+         projector_response_selected_predicted_drop = line_search_model_scale* &
+                                                       projector_response_selected_predicted_drop
          projector_response_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_response_selected_predicted_drop > &
              EPSILON(projector_response_selected_predicted_drop) .AND. &
@@ -7327,6 +7618,8 @@ CONTAINS
          END IF
          projector_density_full_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_density_full_selected
+         projector_density_full_selected_predicted_drop = line_search_model_scale* &
+                                                           projector_density_full_selected_predicted_drop
          projector_density_full_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_density_full_selected_predicted_drop > &
              projector_density_full_min_drop .AND. measured_drop > 0.0_dp) THEN
@@ -7440,6 +7733,8 @@ CONTAINS
          END IF
          projector_density_full_direct_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_density_fdir_selected
+         projector_density_full_direct_selected_predicted_drop = line_search_model_scale* &
+                                                                  projector_density_full_direct_selected_predicted_drop
          projector_density_full_direct_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_density_full_direct_selected_predicted_drop > &
              projector_density_full_min_drop .AND. measured_drop > 0.0_dp) THEN
@@ -7543,6 +7838,8 @@ CONTAINS
          END IF
          projector_density_full_global_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_density_full_global_selected
+         projector_density_full_global_selected_predicted_drop = line_search_model_scale* &
+                                                                  projector_density_full_global_selected_predicted_drop
          projector_density_full_global_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_density_full_global_selected_predicted_drop > &
              projector_density_full_min_drop .AND. measured_drop > 0.0_dp) THEN
@@ -7674,6 +7971,8 @@ CONTAINS
          END IF
          projector_density_descent_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_density_descent_selected
+         projector_density_descent_selected_predicted_drop = line_search_model_scale* &
+                                                              projector_density_descent_selected_predicted_drop
          projector_density_descent_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_density_descent_selected_predicted_drop > &
              EPSILON(projector_density_descent_selected_predicted_drop) .AND. &
@@ -8115,6 +8414,8 @@ CONTAINS
          END IF
          projector_physical_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_physical_selected
+         projector_physical_selected_predicted_drop = line_search_model_scale* &
+                                                       projector_physical_selected_predicted_drop
          projector_physical_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_physical_selected_predicted_drop > &
              EPSILON(projector_physical_selected_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
@@ -8177,6 +8478,8 @@ CONTAINS
          END IF
          projector_physical_direct_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_physical_direct_selected
+         projector_physical_direct_selected_predicted_drop = line_search_model_scale* &
+                                                              projector_physical_direct_selected_predicted_drop
          projector_physical_direct_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_physical_direct_selected_predicted_drop > &
              EPSILON(projector_physical_direct_selected_predicted_drop) .AND. &
@@ -8215,6 +8518,8 @@ CONTAINS
          END IF
          projector_physical_direct_density_selected_predicted_drop = &
             local_ot_env(1)%schur_projector_phys_direct_density_sel
+         projector_physical_direct_density_selected_predicted_drop = line_search_model_scale* &
+                                                                      projector_physical_direct_density_selected_predicted_drop
          projector_physical_direct_density_selected_quality_ratio = 0.0_dp
          IF (mermin_search .AND. projector_physical_direct_density_selected_predicted_drop > &
              EPSILON(projector_physical_direct_density_selected_predicted_drop) .AND. &
@@ -9389,6 +9694,8 @@ CONTAINS
             local_ot_env(1)%schur_model_flavor = 0
             local_ot_env(1)%schur_model_drop = 0.0_dp
             local_ot_env(1)%schur_model_calibrated_drop = 0.0_dp
+            local_ot_env(1)%schur_model_slope = 0.0_dp
+            local_ot_env(1)%schur_model_quadratic = 0.0_dp
             local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
             local_ot_env(1)%schur_model_delta = 0.0_dp
             local_ot_env(1)%schur_model_control_delta = 0.0_dp
@@ -9561,7 +9868,8 @@ CONTAINS
          density_descent_candidate_ready, density_descent_candidate_selected, &
          density_descent_tail_probe_ready, density_full_candidate_ready, &
          density_full_candidate_selected, density_full_direct_candidate_ready, &
-         density_full_direct_candidate_selected, density_full_direct_tail_probe_ready, &
+         density_full_direct_candidate_selected, density_full_direct_coupled_model_ready, &
+         density_full_direct_tail_probe_ready, &
          density_full_global_bootstrap_ready, density_full_global_candidate_ready
       LOGICAL :: density_full_global_candidate_selected, density_full_global_history_ready, &
          density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
@@ -9609,6 +9917,7 @@ CONTAINS
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited
       LOGICAL :: projector_physical_shadow_enabled, projector_plateau_gap_model_enabled, &
+         projector_physical_coupled_model_ready, &
          projector_response_candidate_ready, projector_response_candidate_selected, &
          reduced_secant_update_eligible, response_model_available, schur_active_subspace, solved, &
          split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
@@ -9745,7 +10054,8 @@ CONTAINS
          density_full_direct_history_scale, density_full_direct_history_trust_quality, &
          density_full_direct_history_weighted_step, &
          density_full_direct_history_weighted_trust_ratio, &
-         density_full_direct_model_calibrated_drop, density_full_direct_model_drop, &
+         density_full_direct_coupled_quadratic, density_full_direct_model_calibrated_drop, &
+         density_full_direct_model_drop, &
          density_full_direct_norm_energy, density_full_direct_norm_rotation, &
          density_full_direct_normp
       REAL(KIND=dp) :: density_full_direct_quality_for_selection, &
@@ -10237,6 +10547,8 @@ CONTAINS
          projector_physical_response_raw_negative_fraction, projector_physical_response_weight, &
          projector_physical_response_weighted_step, projector_physical_shadow_coupled_weight
       REAL(KIND=dp) :: projector_physical_response_weighted_trust_ratio, &
+         projector_physical_coupled_model_drop, projector_physical_coupled_quadratic, &
+         projector_physical_coupled_slope, &
          projector_physical_scale_quality, projector_physical_step_fermi_norm, &
          projector_physical_step_gap_norm, projector_physical_step_gauge_norm, &
          projector_physical_step_gauge_quality, projector_physical_step_gauge_ratio, &
@@ -10245,6 +10557,10 @@ CONTAINS
          projector_physical_trace_split_quality, projector_physical_trust_quality, &
          projector_physical_trust_scale, projector_physical_unit_abs_step, &
          projector_physical_unit_weighted_step, projector_plateau_gap_delta_diag_avg
+      REAL(KIND=dp) :: canonical_density_tangent_alpha, canonical_density_tangent_cross, &
+         canonical_density_tangent_gain, canonical_density_tangent_gdot, &
+         canonical_density_tangent_norm, &
+         canonical_density_tangent_raw_norm
       REAL(KIND=dp) :: projector_plateau_gap_delta_weight, &
          projector_plateau_gap_quality_for_selection, projector_response_character_abs_avg, &
          projector_response_character_fraction, projector_response_character_max, &
@@ -10308,7 +10624,9 @@ CONTAINS
          tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max, &
          total_curv_diag_sum, z_shift, z_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, &
-         canonical_occ_curv, canonical_occ_curv_channel, canonical_occupation_channel, channel_maxocc, &
+         canonical_density_tangent, canonical_density_trial_raw_rx_e, &
+         canonical_density_trial_sol, canonical_occ_curv, canonical_occ_curv_channel, &
+         canonical_occupation_channel, channel_maxocc, &
          constrained_sol, constrained_z_e, curv, density_basis_selective_floor_weight, &
          density_descent_rx_e, density_descent_z_e, density_full_global_rx_e, &
          density_full_global_sol, density_full_rx_e, density_full_sol, density_full_z_e, &
@@ -10349,7 +10667,7 @@ CONTAINS
          energy_cross_density_floor_audit, energy_cross_density_floor_safe_audit, &
          energy_cross_density_full, energy_cross_density_full_audit, &
          energy_cross_density_full_global, energy_cross_density_plateau, energy_cross_multisecant, &
-         energy_cross_physical, energy_cross_raw, energy_hessian
+         energy_cross_physical, energy_cross_physical_model, energy_cross_raw, energy_hessian
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_hessian_multisecant, &
          energy_hessian_reference, grad_im, grad_re, h_im, h_re, &
          projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
@@ -10705,7 +11023,7 @@ CONTAINS
                    projector_physical_z_e(ne), projector_response_rx_e(ne), &
                    projector_response_z_e(ne), split_z_e(ne))
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), accepted_sol(nrot), &
-                   constrained_sol(nrot), &
+                   canonical_density_tangent(nrot), canonical_density_trial_sol(nrot), constrained_sol(nrot), &
                    projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
                    projector_physical_direct_spectral_sol(nrot), &
                    projector_offdiag_sol(nrot), projector_inactive_offdiag_sol(nrot), &
@@ -10713,6 +11031,7 @@ CONTAINS
                    var_grad_metric_weight(nrot), var_occ_gap_weight(nrot), &
                    var_projector_active_weight(nrot), var_projector_response_weight(nrot), &
                    var_projector_weight(nrot), var_step_weight(nrot), var_thermal_activity(nrot))
+         ALLOCATE (canonical_density_trial_raw_rx_e(ne))
          ALLOCATE (var_channel(nrot), var_ei(nrot), var_ej(nrot), var_i(nrot), var_j(nrot), var_kind(nrot))
          ALLOCATE (rot_floor(nrot), row_floor_shift(nrot), projector_physical_direct_active_lcomp(nrot))
          ALLOCATE (energy_cross(ne, nrot), energy_cross_density(ne, nrot), &
@@ -10728,6 +11047,7 @@ CONTAINS
                    energy_cross_density_full_audit(ne, nrot), &
                    energy_cross_density_full_global(ne, nrot), energy_cross_density_plateau(ne, nrot), &
                    energy_cross_multisecant(ne, nrot), energy_cross_physical(ne, nrot), &
+                   energy_cross_physical_model(ne, nrot), &
                    energy_cross_raw(ne, nrot), energy_hessian(ne, ne), &
                    energy_hessian_multisecant(ne, ne), energy_hessian_reference(ne, ne), &
                    response(ne, nrot), response_coupled(ne, nrot), &
@@ -10784,6 +11104,9 @@ CONTAINS
          tether_curv(:) = 0.0_dp
          z_e(:) = 0.0_dp
          accepted_z_e(:) = 0.0_dp
+         canonical_density_tangent(:) = 0.0_dp
+         canonical_density_trial_raw_rx_e(:) = 0.0_dp
+         canonical_density_trial_sol(:) = 0.0_dp
          z_exact_physical_trial(:) = 0.0_dp
          z_exact_raw_trial(:) = 0.0_dp
          z_exact_trial(:) = 0.0_dp
@@ -10876,6 +11199,7 @@ CONTAINS
          energy_cross_density_basis_selective_audit(:, :) = 0.0_dp
          energy_cross_density_floor_audit(:, :) = 0.0_dp
          energy_cross_density_floor_safe_audit(:, :) = 0.0_dp
+         energy_cross_physical_model(:, :) = 0.0_dp
          energy_cross_density_full(:, :) = 0.0_dp
          energy_cross_density_full_audit(:, :) = 0.0_dp
          energy_cross_density_full_global(:, :) = 0.0_dp
@@ -11824,6 +12148,7 @@ CONTAINS
          density_full_candidate_selected = .FALSE.
          density_full_direct_candidate_ready = .FALSE.
          density_full_direct_candidate_selected = .FALSE.
+         density_full_direct_coupled_model_ready = .FALSE.
          density_full_direct_tail_probe_ready = .FALSE.
          density_full_global_bootstrap_ready = .FALSE.
          density_full_global_candidate_ready = .FALSE.
@@ -12067,6 +12392,7 @@ CONTAINS
                                                     response_density_full_audit, &
                                                     response_density_basis_audit, &
                                                     response_density_plateau, &
+                                                    canonical_density_tangent, &
                                                     projector_fd_cluster_derivatives, &
                                                     projector_fd_cluster_replacements, &
                                                     projector_kernel_cluster_groups, failed)
@@ -12108,6 +12434,7 @@ CONTAINS
             CALL para_env_inter_kp%sum(response_density_full_audit)
             CALL para_env_inter_kp%sum(response_density_basis_audit)
             CALL para_env_inter_kp%sum(response_density_plateau)
+            CALL para_env_inter_kp%sum(canonical_density_tangent)
             CALL para_env_inter_kp%sum(rot_hessian)
             CALL para_env_inter_kp%sum(rot_hessian_coupled)
             CALL para_env_inter_kp%sum(rot_hessian_orbital_schur)
@@ -12314,6 +12641,7 @@ CONTAINS
                         z_density_full_trial, z_density_trial, &
                         z_exact_physical_trial, z_exact_raw_trial, &
                         z_exact_trial, z_multisecant, z_trial, rx_e, rx_model, constrained_z_e, &
+                        canonical_density_trial_raw_rx_e, &
                         projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                         projector_physical_direct_response_rx_e, &
                         projector_physical_direct_diagref_rx_e, &
@@ -12339,7 +12667,8 @@ CONTAINS
                         projector_inactive_offdiag_z_e, &
                         projector_physical_rx_e, projector_physical_z_e, &
                         projector_response_rx_e, projector_response_z_e, split_z_e)
-            DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, constrained_sol, &
+            DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
+                        canonical_density_trial_sol, constrained_sol, &
                         projector_physical_direct_sol, &
                         projector_physical_sol, projector_offdiag_sol, &
                         projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
@@ -12353,7 +12682,8 @@ CONTAINS
                         energy_cross_density_full, &
                         energy_cross_density_full_audit, energy_cross_density_full_global, &
                         energy_cross_density_plateau, &
-                        energy_cross_multisecant, energy_cross_physical, energy_cross_raw, &
+                        energy_cross_multisecant, energy_cross_physical, &
+                        energy_cross_physical_model, energy_cross_raw, &
                         energy_hessian, energy_hessian_multisecant, energy_hessian_reference, &
                         response, response_coupled, response_multisecant, &
                         response_density_exact, &
@@ -13980,7 +14310,15 @@ CONTAINS
                                                        energy_cross_physical, response_exact_physical, &
                                                        z_exact_physical_trial, ipiv_energy, &
                                                        exact_physical_response_ready, energy_gauge_weight)
-         IF (exact_physical_response_ready) z_exact_physical_trial(:) = z_exact_trial(:)
+         IF (exact_physical_response_ready) THEN
+            z_exact_physical_trial(:) = z_exact_trial(:)
+            ! response_exact_physical is the desired canonical fixed-N map,
+            ! while the actual optimization coordinates still use the current
+            ! auxiliary-energy Hessian.  Reconstruct its conjugate cross block
+            ! in that metric so B and H_ee^-1 B describe the same response.
+            energy_cross_physical_model(:, :) = &
+               MATMUL(energy_hessian_reference, response_exact_physical)
+         END IF
          IF (exact_energy_model_ready) &
             CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response, response, grad_e, &
                                                        channel_nmo, e_offset, energy_hessian, energy_cross_raw, &
@@ -14982,6 +15320,8 @@ CONTAINS
                density_full_direct_history_trust_quality = 1.0_dp
                density_full_direct_history_weighted_step = 0.0_dp
                density_full_direct_history_weighted_trust_ratio = 0.0_dp
+               density_full_direct_coupled_model_ready = .FALSE.
+               density_full_direct_coupled_quadratic = 0.0_dp
                density_full_direct_model_calibrated_drop = 0.0_dp
                density_full_direct_model_drop = 0.0_dp
                density_full_direct_norm_energy = 0.0_dp
@@ -15783,16 +16123,10 @@ CONTAINS
                   ! the legacy REF-diagonal density solves here would count the
                   ! same projector motion a second time in basis-dependent
                   ! auxiliary-energy coordinates.
-                  response_physical_model(:, :) = response_exact_physical(:, :)
-                  projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
-                  CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
-                                                        occ_curv_projection_sum, channel_nmo, e_offset)
-                  ! The physical shadow must see the active occupation-response
-                  ! curvature and the fixed-N density response, not only the
-                  ! tiny projector-basis gauge remainder.  The diagonal density
-                  ! response is represented in response_physical_model below;
-                  ! add the gauge-filtered off-diagonal projector Hessian to
-                  ! the rotational metric used for the modal response audit.
+                  ! Build the physical finite-rotation metric before blending
+                  ! the signed canonical-density tangent.  Its coefficient
+                  ! must be selected in this same dense Rotation/epsilon
+                  ! model, rather than in an unrelated diagonal step metric.
                   projector_physical_direct_inactive_offdiag_weight = 0.0_dp
                   IF (residual_delta <= ot_kp_schur_projector_coupled_tail_delta) THEN
                      IF (projector_inactive_offdiag_quality_for_selection* &
@@ -15851,8 +16185,57 @@ CONTAINS
                   projector_physical_direct_delta(:, :) = &
                      0.5_dp*(projector_physical_direct_delta(:, :) + &
                              TRANSPOSE(projector_physical_direct_delta(:, :)))
+                  projector_physical_direct_schur_mat(:, :) = rot_hessian_coupled(:, :) + &
+                     projector_physical_shadow_coupled_weight* &
+                     (projector_physical_direct_delta(:, :) - rot_hessian(:, :))
+                  response_physical_model(:, :) = response_exact_physical(:, :)
+                  canonical_density_trial_sol(:) = sol(:)
+                  canonical_density_tangent_alpha = 0.0_dp
+                  canonical_density_tangent_cross = 0.0_dp
+                  canonical_density_tangent_gain = 0.0_dp
+                  canonical_density_tangent_gdot = 0.0_dp
+                  canonical_density_tangent_norm = 0.0_dp
+                  canonical_density_tangent_raw_norm = &
+                     kpoint_ot_weighted_vector_dot(canonical_density_tangent, &
+                                                   canonical_density_tangent, var_step_weight)
+                  IF (canonical_density_tangent_raw_norm > &
+                      EPSILON(canonical_density_tangent_raw_norm)) THEN
+                     CALL qs_scf_kp_canonical_density_blend( &
+                        grad_rot, grad_e, projector_physical_direct_schur_mat, &
+                        energy_cross_physical_model, response_exact_physical, sol, &
+                        canonical_density_tangent, canonical_density_tangent_alpha, &
+                        canonical_density_tangent_gdot, canonical_density_tangent_cross, &
+                        canonical_density_tangent_norm, canonical_density_tangent_gain)
+                     canonical_density_trial_sol(:) = sol(:) + &
+                                                      canonical_density_tangent_alpha* &
+                                                      canonical_density_tangent(:)
+                  END IF
+                  canonical_density_trial_raw_rx_e(:) = &
+                     MATMUL(response_exact_raw, canonical_density_trial_sol)
+                  CALL project_kpoint_ot_schur_response( &
+                     canonical_density_trial_raw_rx_e, occ_curv, tether_curv, &
+                     occ_curv_projection_sum, channel_nmo, e_offset)
+                  projector_physical_model_e(:) = &
+                     MATMUL(response_physical_model, canonical_density_trial_sol)
+                  CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
+                                                        occ_curv_projection_sum, channel_nmo, e_offset)
+                  IF (logger%iter_info%print_level >= high_print_level .AND. &
+                      logger%para_env%is_source()) &
+                     WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,6(1X,ES16.8))') &
+                     " OT Schur canonical density tangent blend group alpha gdot cross curv gain raw_norm:", &
+                     target_group, canonical_density_tangent_alpha, canonical_density_tangent_gdot, &
+                     canonical_density_tangent_cross, canonical_density_tangent_norm, &
+                     canonical_density_tangent_gain, &
+                     canonical_density_tangent_raw_norm
+                  ! The physical shadow must see the active occupation-response
+                  ! curvature and the fixed-N density response, not only the
+                  ! tiny projector-basis gauge remainder.  The diagonal density
+                  ! response is represented in response_physical_model below;
+                  ! add the gauge-filtered off-diagonal projector Hessian to
+                  ! the rotational metric used for the modal response audit.
                   CALL audit_kpoint_ot_projector_response_modes(rot_hessian, &
-                                                                projector_physical_direct_delta, sol, &
+                                                                projector_physical_direct_delta, &
+                                                                canonical_density_trial_sol, &
                                                                 response_exact_raw, response_physical_model, curv, &
                                                                 occ_curv, tether_curv, occ_curv_projection_sum, &
                                                                 channel_nmo, e_offset, .TRUE., &
@@ -15860,7 +16243,8 @@ CONTAINS
                                                                 projector_mode_history_quality, &
                                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
                                                                 projector_mode_history_response_ratio, grad_e, &
-                                                                z_e + rx_e, rx_e, &
+                                                                z_e + canonical_density_trial_raw_rx_e, &
+                                                                canonical_density_trial_raw_rx_e, &
                                                                 projector_physical_rx_e, projector_physical_response_weight, &
                                                                 projector_physical_response_correction_drop, &
                                                                 projector_physical_response_correction_negative, &
@@ -15887,16 +16271,25 @@ CONTAINS
                   IF (projector_physical_response_weight > EPSILON(projector_physical_response_weight)) THEN
                      projector_physical_z_e(:) = z_e(:) + projector_physical_rx_e(:)
                      projector_physical_gdot_energy = DOT_PRODUCT(grad_e, projector_physical_z_e)
-                     projector_physical_gdot_rotation = DOT_PRODUCT(grad_rot, sol)
+                     projector_physical_gdot_rotation = &
+                        DOT_PRODUCT(grad_rot, canonical_density_trial_sol)
                      projector_physical_norm_energy = &
                         kpoint_ot_weighted_vector_dot(projector_physical_z_e, projector_physical_z_e, &
                                                       energy_step_weight)
                      projector_physical_norm_rotation = &
-                        kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
-                     projector_physical_gdotp = projector_physical_gdot_energy + projector_physical_gdot_rotation
+                        kpoint_ot_weighted_vector_dot(canonical_density_trial_sol, &
+                                                      canonical_density_trial_sol, var_step_weight)
                      projector_physical_normp = projector_physical_norm_energy + projector_physical_norm_rotation
                      projector_physical_norm_ratio = projector_physical_normp/MAX(gnorm, EPSILON(1.0_dp))
-                     IF (projector_physical_gdotp > 0.0_dp .AND. &
+                     CALL qs_scf_kp_coupled_step_model( &
+                        grad_rot, grad_e, projector_physical_direct_schur_mat, &
+                        energy_hessian_reference, energy_cross_physical_model, &
+                        canonical_density_trial_sol, projector_physical_z_e, &
+                        projector_physical_coupled_slope, projector_physical_coupled_quadratic, &
+                        projector_physical_coupled_model_drop, projector_physical_coupled_model_ready)
+                     projector_physical_gdotp = projector_physical_coupled_slope
+                     IF (projector_physical_coupled_model_ready .AND. &
+                         projector_physical_gdotp > 0.0_dp .AND. &
                          projector_physical_normp > EPSILON(projector_physical_normp) .AND. &
                          projector_physical_norm_ratio <= max_norm_ratio) THEN
                         projector_physical_unit_abs_step = MAXVAL(ABS(projector_physical_rx_e))
@@ -15916,19 +16309,28 @@ CONTAINS
                            projector_physical_trust_scale = &
                            MIN(projector_physical_trust_scale, &
                                0.8_dp*response_abs_trust/projector_physical_unit_abs_step)
+                        projector_physical_direction_scale = 0.0_dp
+                        IF (projector_physical_coupled_quadratic > &
+                            EPSILON(ABS(projector_physical_coupled_quadratic))) THEN
+                           projector_physical_direction_scale = MIN(1.0_dp, &
+                              projector_physical_gdotp/projector_physical_coupled_quadratic)
+                        ELSE IF (projector_physical_coupled_model_drop > &
+                                 EPSILON(projector_physical_coupled_model_drop)) THEN
+                           projector_physical_direction_scale = 1.0_dp
+                        END IF
                         projector_physical_direction_scale = &
-                           MIN(1.0_dp, projector_physical_trust_scale, &
-                               projector_physical_gdotp/ &
-                               MAX(projector_physical_normp, EPSILON(projector_physical_normp)))
+                           MAX(0.0_dp, MIN(projector_physical_direction_scale, &
+                                           projector_physical_trust_scale))
                         projector_physical_scale_quality = &
                            kpoint_ot_schur_scale_quality(projector_physical_direction_scale, schur_min_coupled_scale)
                         projector_physical_z_e(:) = projector_physical_direction_scale*projector_physical_z_e(:)
-                        projector_physical_sol(:) = projector_physical_direction_scale*sol(:)
+                        projector_physical_sol(:) = projector_physical_direction_scale* &
+                                                    canonical_density_trial_sol(:)
                         projector_physical_model_drop = projector_physical_direction_scale* &
                                                         projector_physical_gdotp - &
                                                         0.5_dp*projector_physical_direction_scale* &
                                                         projector_physical_direction_scale* &
-                                                        projector_physical_normp
+                                                        projector_physical_coupled_quadratic
                         projector_physical_response_abs_step = &
                            projector_physical_direction_scale*projector_physical_unit_abs_step
                         projector_physical_response_weighted_step = &
@@ -16006,6 +16408,17 @@ CONTAINS
                            EPSILON(projector_physical_model_drop) .AND. &
                            projector_physical_response_weighted_step <= response_trust .AND. &
                            projector_physical_response_abs_step <= response_abs_trust
+                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                            logger%para_env%is_source()) &
+                           WRITE (cp_logger_get_default_unit_nr(logger), &
+                                  '(A,1X,I3,1X,L1,7(1X,ES16.8))') &
+                           " OT Schur canonical-density coupled model group ready slope quad scale drop expected "// &
+                           "wtrust atrust:", target_group, projector_physical_coupled_model_ready, &
+                           projector_physical_coupled_slope, projector_physical_coupled_quadratic, &
+                           projector_physical_direction_scale, projector_physical_model_drop, &
+                           projector_physical_expected_drop, &
+                           projector_physical_response_weighted_trust_ratio, &
+                           projector_physical_response_abs_trust_ratio
                      END IF
                   END IF
                END IF
@@ -18194,8 +18607,27 @@ CONTAINS
                               DOT_PRODUCT(grad_e, z_density_full_trial)
                            density_full_direct_gdot_rotation = &
                               DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
-                           density_full_direct_gdotp = density_full_direct_gdot_energy + &
-                                                       density_full_direct_gdot_rotation
+                           response_physical_model(:, :) = response_exact_physical(:, :)
+                           IF (exact_density_full_audit_ready) THEN
+                              response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                              response_density_full_audit_exact(:, :)
+                           ELSE
+                              response_physical_model(:, :) = response_physical_model(:, :) + &
+                                                              response_density_full_exact(:, :)
+                           END IF
+                           energy_cross_physical_model(:, :) = &
+                              MATMUL(energy_hessian_reference, response_physical_model)
+                           schur(:, :) = rot_hessian_coupled(:, :) + &
+                                         projector_coupled_weight* &
+                                         projector_physical_direct_delta(:, :)
+                           schur(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+                           CALL qs_scf_kp_coupled_step_model( &
+                              grad_rot, grad_e, schur, energy_hessian_reference, &
+                              energy_cross_physical_model, projector_physical_direct_sol, &
+                              z_density_full_trial, density_full_direct_gdotp, &
+                              density_full_direct_coupled_quadratic, &
+                              density_full_direct_model_drop, &
+                              density_full_direct_coupled_model_ready)
                            CALL kpoint_ot_mixed_projected_term(z_density_full_trial, &
                                                              z_density_full_trial, occ_curv, tether_curv, occ_curv_projection_sum, &
                                                                channel_nmo, e_offset, density_full_direct_norm_energy)
@@ -18216,13 +18648,22 @@ CONTAINS
                                                            var_step_weight)
                            density_full_direct_normp = density_full_direct_norm_energy + &
                                                        density_full_direct_norm_rotation
-                           IF (density_full_direct_gdotp > 0.0_dp .AND. &
+                           IF (density_full_direct_coupled_model_ready .AND. &
+                               density_full_direct_gdotp > 0.0_dp .AND. &
                                density_full_direct_normp > &
                                EPSILON(density_full_direct_normp)) THEN
-                              density_full_direct_direction_scale = MIN(1.0_dp, &
-                                                                        density_full_direct_gdotp/ &
-                                                                        MAX(density_full_direct_normp, &
-                                                                            EPSILON(density_full_direct_normp)))
+                              density_full_direct_direction_scale = 0.0_dp
+                              IF (density_full_direct_coupled_quadratic > &
+                                  EPSILON(ABS(density_full_direct_coupled_quadratic))) THEN
+                                 density_full_direct_direction_scale = MIN(1.0_dp, &
+                                    density_full_direct_gdotp/ &
+                                    density_full_direct_coupled_quadratic)
+                              ELSE IF (density_full_direct_model_drop > &
+                                       EPSILON(density_full_direct_model_drop)) THEN
+                                 density_full_direct_direction_scale = 1.0_dp
+                              END IF
+                              density_full_direct_direction_scale = &
+                                 MAX(0.0_dp, density_full_direct_direction_scale)
                               density_full_direct_direction_scale = &
                                  density_full_direct_direction_scale*density_full_direct_history_scale
                               density_full_direct_response_abs_step = MAXVAL(ABS(rx_e))
@@ -18253,7 +18694,7 @@ CONTAINS
                                  density_full_direct_gdotp - &
                                  0.5_dp*density_full_direct_direction_scale* &
                                  density_full_direct_direction_scale* &
-                                 density_full_direct_normp
+                                 density_full_direct_coupled_quadratic
                               density_full_direct_model_drop = &
                                  MAX(0.0_dp, density_full_direct_model_drop)
                               density_full_direct_model_calibrated_drop = &
@@ -18301,6 +18742,17 @@ CONTAINS
                                  ot_kp_schur_projector_density_full_min_drop .AND. &
                                  density_full_direct_response_weighted_step <= response_trust .AND. &
                                  density_full_direct_response_abs_step <= response_abs_trust
+                              IF (logger%iter_info%print_level >= high_print_level .AND. &
+                                  logger%para_env%is_source()) &
+                                 WRITE (cp_logger_get_default_unit_nr(logger), &
+                                        '(A,1X,I3,1X,L1,7(1X,ES16.8))') &
+                                 " OT Schur density-full Direct coupled model group ready slope quad scale drop expected "// &
+                                 "wtrust atrust:", target_group, density_full_direct_coupled_model_ready, &
+                                 density_full_direct_gdotp, density_full_direct_coupled_quadratic, &
+                                 density_full_direct_direction_scale, density_full_direct_model_drop, &
+                                 density_full_direct_expected_drop, &
+                                 density_full_direct_response_weighted_trust_ratio, &
+                                 density_full_direct_response_abs_trust_ratio
                            END IF
                         END IF
                      END IF
@@ -21525,6 +21977,12 @@ CONTAINS
             local_ot_env(1)%schur_model_drop = local_ot_env(1)%schur_model_drop + accepted_model_drop
             local_ot_env(1)%schur_model_calibrated_drop = &
                local_ot_env(1)%schur_model_calibrated_drop + accepted_model_calibrated_drop
+            local_ot_env(1)%schur_model_slope = local_ot_env(1)%schur_model_slope + &
+                                                DOT_PRODUCT(grad_rot, accepted_sol) + &
+                                                DOT_PRODUCT(grad_e, accepted_z_e)
+            local_ot_env(1)%schur_model_quadratic = local_ot_env(1)%schur_model_quadratic + &
+               2.0_dp*(DOT_PRODUCT(grad_rot, accepted_sol) + &
+                       DOT_PRODUCT(grad_e, accepted_z_e) - accepted_model_drop)
             local_ot_env(1)%schur_model_gap_ratio = MAX(local_ot_env(1)%schur_model_gap_ratio, &
                                                         accepted_model_gap_ratio)
             local_ot_env(1)%schur_model_delta = MAX(local_ot_env(1)%schur_model_delta, residual_delta)
@@ -23831,6 +24289,7 @@ CONTAINS
                      z_density_full_trial, z_density_trial, &
                      z_exact_physical_trial, z_exact_raw_trial, &
                      z_exact_trial, z_multisecant, z_trial, rx_e, rx_model, constrained_z_e, &
+                     canonical_density_trial_raw_rx_e, &
                      direct_pg_base_e, direct_pg_rx_e, &
                      projector_physical_direct_curv_eval, projector_physical_direct_model_e, &
                      projector_physical_direct_response_rx_e, &
@@ -23865,7 +24324,8 @@ CONTAINS
                      projector_physical_model_e, projector_physical_rx_e, &
                      projector_physical_z_e, &
                      projector_response_rx_e, projector_response_z_e, split_z_e)
-         DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, constrained_sol, &
+         DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
+                     canonical_density_trial_sol, constrained_sol, &
                      projector_physical_direct_sol, &
                      projector_physical_direct_spectral_sol, &
                      projector_physical_sol, projector_offdiag_sol, &
@@ -23880,6 +24340,7 @@ CONTAINS
                      energy_cross_density_basis_damped_audit, energy_cross_density_basis_filtered_audit, &
                      energy_cross_density_basis_selective_audit, &
                      energy_cross_density_direct, energy_cross_multisecant, energy_cross_physical, &
+                     energy_cross_physical_model, &
                      energy_cross_raw, &
                      energy_cross_density_floor_audit, energy_cross_density_floor_safe_audit, &
                      energy_cross_density_full, energy_cross_density_full_audit, &
@@ -29203,7 +29664,8 @@ CONTAINS
                                                  response_density_floor_safe_audit, response_density_full, &
                                                  response_density_full_audit, &
                                                  response_density_basis_audit, &
-                                                 response_density_plateau, projector_fd_cluster_derivatives, &
+                                                 response_density_plateau, canonical_density_tangent, &
+                                                 projector_fd_cluster_derivatives, &
                                                  projector_fd_cluster_replacements, &
                                                  projector_kernel_cluster_groups, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
@@ -29224,6 +29686,7 @@ CONTAINS
          response, response_occ, response_occ_canonical, response_occ_physical, response_density_physical, &
          response_density_floor_audit, response_density_floor_safe_audit, response_density_full, &
          response_density_full_audit, response_density_basis_audit, response_density_plateau
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: canonical_density_tangent
       INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, &
          projector_fd_cluster_replacements, projector_kernel_cluster_groups
       LOGICAL, INTENT(INOUT)                             :: failed
@@ -29240,7 +29703,8 @@ CONTAINS
          density_plateau_full_response, density_plateau_response, density_response, &
          density_response_alignment, projector_centered_shift, projector_response, &
          projector_response_norm, projector_safe_response_dot, projector_weight, raw_response, &
-         safe_centered_shift, safe_response_norm, weighted_curv_sum
+         safe_centered_shift, safe_response_norm, tangent_linear_norm, tangent_norm, &
+         tangent_target_norm, weighted_curv_sum
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_basis_column, &
          density_floor_audit_column, density_floor_safe_audit_column, &
          density_full_centered_column, density_full_column, density_mixed_column, &
@@ -29248,8 +29712,8 @@ CONTAINS
          eps_p, projector_evals, projector_evals_m, projector_evals_p
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: grad_m_im, grad_m_re, grad_p_im, &
                                                             grad_p_re, orbital_schur_local, u_im, &
-                                                            u_re, x_im, x_m_im, x_m_re, x_p_im, &
-                                                            x_p_re, x_re
+                                                            tangent_im_complex, tangent_re_complex, u_re, &
+                                                            x_im, x_m_im, x_m_re, x_p_im, x_p_re, x_re
 
          IF (failed) RETURN
          IF (first_var > last_var) RETURN
@@ -29306,6 +29770,30 @@ CONTAINS
             ALLOCATE (projector_evals(nmo))
             CALL diag_complex(chc, projector_evec_base, projector_evals)
             DEALLOCATE (projector_evals)
+         END IF
+         IF (compute_projector_shadow .AND. projector_weight > 0.0_dp) THEN
+            ALLOCATE (tangent_re_complex(nmo, nmo), tangent_im_complex(nmo, nmo))
+            CALL qs_scf_kp_canonical_density_tangent( &
+               x_re, x_im, projector_evec_base, occupation_numbers, canonical_occupation_numbers, &
+               ot_kp_canonical_density_occupation_floor, ot_kp_canonical_density_frechet_floor, &
+               ot_kp_canonical_density_pair_rotation_max, tangent_re_complex, tangent_im_complex, &
+               tangent_target_norm, tangent_linear_norm, tangent_norm)
+            DO r = first_var, last_var
+               imo = var_i(r)
+               jmo = var_j(r)
+               SELECT CASE (var_kind(r))
+               CASE (1)
+                  canonical_density_tangent(r) = -REAL(tangent_re_complex(imo, jmo), KIND=dp)
+               CASE (2)
+                  canonical_density_tangent(r) = -REAL(tangent_im_complex(imo, jmo), KIND=dp)
+               END SELECT
+            END DO
+            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,4(1X,ES16.8))') &
+               " OT Schur canonical density tangent channel target linear ratio norm:", &
+               local_channel, tangent_target_norm, tangent_linear_norm, &
+               tangent_linear_norm/MAX(tangent_target_norm, EPSILON(tangent_target_norm)), tangent_norm
+            DEALLOCATE (tangent_re_complex, tangent_im_complex)
          END IF
 
          ALLOCATE (x_p_re(nmo, nmo), x_p_im(nmo, nmo), x_m_re(nmo, nmo), x_m_im(nmo, nmo))

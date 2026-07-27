@@ -53,8 +53,12 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_multiplicity_direction_scale,&
                                               ot_kpoint_physical_residual_split,&
                                               ot_kpoint_secant_geometry
+   USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
+                                              qs_ot_type
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_canonical_density_residual, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_canonical_density_tangent, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
         qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
         qs_scf_kp_density_control_delta, qs_scf_kp_density_stationarity_quality, &
@@ -62,6 +66,7 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_quadratic_position_drop, &
         qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
         qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
         qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
@@ -533,6 +538,12 @@ PROGRAM qs_ot_frechet_unittest
       "canonical fixed-N occupation-projector derivative", 5.0E-7_dp, nfail)
    CALL check_canonical_projector_similarity_gauge( &
       "canonical projector similarity-gauge response", 5.0E-10_dp, nfail)
+   CALL check_canonical_density_rotation_tangent( &
+      "canonical finite-generator density tangent", 2.0E-6_dp, nfail)
+   CALL check_canonical_density_tangent_blend( &
+      "canonical density tangent reduced Mermin blend", 2.0E-13_dp, nfail)
+   CALL check_accepted_model_calibration_reset( &
+      "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_modal_cap( &
@@ -5139,13 +5150,17 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
       LOGICAL                                            :: ready, scaled_ready
-      REAL(KIND=dp) :: error, model_drop, model_quadratic, model_slope, scaled_model_drop, &
-         scaled_model_quadratic, scaled_model_slope
+      REAL(KIND=dp) :: eliminated_drop, eliminated_quadratic, eliminated_slope, error, &
+         expected_eliminated_quadratic, expected_eliminated_slope, model_drop, &
+         model_quadratic, model_slope, position_drop, scaled_model_drop, scaled_model_quadratic, &
+         scaled_model_slope
       REAL(KIND=dp), DIMENSION(2)                        :: energy_gradient, energy_step, &
+                                                            independent_energy_step, &
                                                             rotation_gradient, rotation_step, &
                                                             scaled_energy_gradient, &
                                                             scaled_energy_step
       REAL(KIND=dp), DIMENSION(2, 2)                     :: energy_cross, energy_hessian, &
+                                                            energy_response, reduced_hessian, &
                                                             rotation_hessian, scaled_energy_cross, &
                                                             scaled_energy_hessian
 
@@ -5170,10 +5185,37 @@ CONTAINS
          scaled_energy_cross, rotation_step, scaled_energy_step, scaled_model_slope, &
          scaled_model_quadratic, scaled_model_drop, scaled_ready)
 
+      ! The canonical density candidates construct a physical fixed-N response R
+      ! first and recover its conjugate cross block as B=H_ee R in the current
+      ! auxiliary-energy coordinates.  Check that the full block model then
+      ! agrees with the analytically eliminated Schur model for e=e_0+Rr.
+      energy_response(:, :) = RESHAPE([0.2_dp, -0.1_dp, 0.05_dp, 0.3_dp], [2, 2])
+      energy_cross(:, :) = MATMUL(energy_hessian, energy_response)
+      independent_energy_step(:) = [0.07_dp, -0.11_dp]
+      energy_gradient(:) = MATMUL(energy_hessian, independent_energy_step)
+      energy_step(:) = independent_energy_step + MATMUL(energy_response, rotation_step)
+      reduced_hessian(:, :) = rotation_hessian - &
+                              MATMUL(TRANSPOSE(energy_response), energy_cross)
+      expected_eliminated_slope = DOT_PRODUCT(rotation_gradient, rotation_step) + &
+                                  DOT_PRODUCT(energy_gradient, energy_step)
+      expected_eliminated_quadratic = &
+         DOT_PRODUCT(rotation_step, MATMUL(reduced_hessian, rotation_step)) + &
+         DOT_PRODUCT(independent_energy_step, &
+                     MATMUL(energy_hessian, independent_energy_step))
+      CALL qs_scf_kp_coupled_step_model( &
+         rotation_gradient, energy_gradient, rotation_hessian, energy_hessian, energy_cross, &
+         rotation_step, energy_step, eliminated_slope, eliminated_quadratic, eliminated_drop, ready)
+      position_drop = qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, 0.25_dp)
+
       error = ABS(model_slope - 0.355_dp) + ABS(model_quadratic - 0.058725_dp) + &
               ABS(model_drop - 0.3256375_dp) + ABS(scaled_model_slope - model_slope) + &
               ABS(scaled_model_quadratic - model_quadratic) + &
-              ABS(scaled_model_drop - model_drop)
+              ABS(scaled_model_drop - model_drop) + &
+              ABS(eliminated_slope - expected_eliminated_slope) + &
+              ABS(eliminated_quadratic - expected_eliminated_quadratic) + &
+              ABS(eliminated_drop - MAX(0.0_dp, eliminated_slope - 0.5_dp*eliminated_quadratic)) + &
+              ABS(position_drop - 0.46875_dp) + &
+              ABS(qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, -0.25_dp))
       IF (.NOT. ready .OR. .NOT. scaled_ready .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,2(1X,L1),4(1X,ES16.8))') TRIM(label)// &
@@ -22530,6 +22572,232 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_canonical_projector_similarity_gauge
+
+! **************************************************************************************************
+!> \brief Check the regularized canonical density tangent in finite complex generator coordinates.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_density_rotation_tangent(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER :: fd_step = 1.0E-6_dp, frechet_floor = 1.0E-10_dp, &
+         max_pair_rotation = 0.25_dp, occ_floor = 1.0E-8_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: achieved_fd, density_0, density_m, density_p, evec, &
+         tangent, target_density, u_0, u_m, u_p, weighted
+      INTEGER                                            :: i, j
+      REAL(KIND=dp) :: antiherm_err, fd_err, fd_linear_norm, linear_norm, reduction, tangent_norm, &
+         target_norm, trace_err
+      REAL(KIND=dp), DIMENSION(n) :: canonical_occ, current_occ
+      REAL(KIND=dp), DIMENSION(n, n)                     :: tangent_im, tangent_re, x_im, x_re, &
+                                                            xp_im, xp_re
+
+      current_occ(:) = [0.93_dp, 0.61005_dp, 0.60995_dp, 0.08_dp]
+      canonical_occ(:) = [0.94_dp, 0.67_dp, 0.55_dp, 0.07_dp]
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.24_dp
+      x_re(1, 3) = -0.13_dp
+      x_re(2, 4) = 0.08_dp
+      x_re(3, 4) = -0.05_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 2) = -0.07_dp
+      x_im(1, 3) = 0.05_dp
+      x_im(2, 3) = -0.04_dp
+      x_im(2, 4) = 0.03_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+
+      ! A nontrivial complex canonical basis leaves both real and imaginary
+      ! signed density residuals in the current orbital frame.
+      CALL dense_rotation_u(0.7_dp*x_re, -0.8_dp*x_im, evec)
+      CALL qs_scf_kp_canonical_density_tangent( &
+         x_re, x_im, evec, current_occ, canonical_occ, occ_floor, frechet_floor, &
+         max_pair_rotation, tangent_re, tangent_im, target_norm, linear_norm, tangent_norm)
+      tangent(:, :) = CMPLX(tangent_re, tangent_im, KIND=dp)
+      antiherm_err = MAXVAL(ABS(tangent(:, :) + CONJG(TRANSPOSE(tangent(:, :)))))
+
+      weighted(:, :) = evec(:, :)
+      DO i = 1, n
+         weighted(:, i) = canonical_occ(i)*weighted(:, i)
+      END DO
+      target_density(:, :) = MATMUL(weighted, CONJG(TRANSPOSE(evec)))
+      density_0(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         density_0(i, i) = CMPLX(current_occ(i), 0.0_dp, KIND=dp)
+      END DO
+
+      CALL dense_rotation_u(x_re, x_im, u_0)
+      xp_re(:, :) = x_re(:, :) + fd_step*tangent_re(:, :)
+      xp_im(:, :) = x_im(:, :) + fd_step*tangent_im(:, :)
+      CALL dense_rotation_u(xp_re, xp_im, u_p)
+      xp_re(:, :) = x_re(:, :) - fd_step*tangent_re(:, :)
+      xp_im(:, :) = x_im(:, :) - fd_step*tangent_im(:, :)
+      CALL dense_rotation_u(xp_re, xp_im, u_m)
+      density_p(:, :) = MATMUL(CONJG(TRANSPOSE(u_0)), &
+                               MATMUL(u_p, MATMUL(density_0, &
+                                                MATMUL(CONJG(TRANSPOSE(u_p)), u_0))))
+      density_m(:, :) = MATMUL(CONJG(TRANSPOSE(u_0)), &
+                               MATMUL(u_m, MATMUL(density_0, &
+                                                MATMUL(CONJG(TRANSPOSE(u_m)), u_0))))
+      achieved_fd(:, :) = (density_p(:, :) - density_m(:, :))/(2.0_dp*fd_step)
+      fd_linear_norm = 0.0_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            fd_linear_norm = fd_linear_norm + &
+               2.0_dp*ABS(target_density(i, j) - achieved_fd(i, j))**2
+         END DO
+      END DO
+      fd_linear_norm = SQRT(MAX(0.0_dp, fd_linear_norm))
+      fd_err = ABS(fd_linear_norm - linear_norm)
+
+      trace_err = ABS(REAL(SUM([(achieved_fd(i, i), i=1, n)]), KIND=dp))
+      reduction = linear_norm/MAX(target_norm, EPSILON(target_norm))
+      IF (antiherm_err > tol .OR. fd_err > tol .OR. trace_err > tol .OR. &
+          target_norm <= 1.0E-4_dp .OR. tangent_norm <= 1.0E-4_dp .OR. reduction >= 0.75_dp .OR. &
+          MAXVAL(ABS(tangent_re(:, :))) > 5.0_dp .OR. MAXVAL(ABS(tangent_im(:, :))) > 5.0_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "failed with antiherm/fd/trace/target/reduction/tangent", antiherm_err, fd_err, trace_err, &
+            target_norm, reduction, tangent_norm
+      ELSE
+         WRITE (*, '(A,1X,A,6(1X,ES12.5))') TRIM(label), &
+            "OK with antiherm/fd/trace/target/reduction/tangent", antiherm_err, fd_err, trace_err, &
+            target_norm, reduction, tangent_norm
+      END IF
+
+   END SUBROUTINE check_canonical_density_rotation_tangent
+
+! **************************************************************************************************
+!> \brief Check the dense reduced fixed-N Mermin model used to blend a density tangent.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_density_tangent_blend(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 2, nrot = 2
+      REAL(KIND=dp) :: alpha, curvature, cross, err, expected_alpha, expected_curvature, &
+         expected_cross, expected_gain, expected_gdot, gain, gdot
+      REAL(KIND=dp), DIMENSION(ne)                       :: grad_e
+      REAL(KIND=dp), DIMENSION(nrot)                     :: base_rot, grad_rot, tangent_rot
+      REAL(KIND=dp), DIMENSION(ne, nrot)                 :: energy_cross, energy_response
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: reduced_hessian, rot_hessian
+
+      grad_rot(:) = [0.8_dp, -0.3_dp]
+      grad_e(:) = [0.2_dp, 0.1_dp]
+      base_rot(:) = [0.15_dp, -0.08_dp]
+      tangent_rot(:) = [0.25_dp, 0.4_dp]
+      rot_hessian(:, :) = RESHAPE([3.0_dp, 0.4_dp, 0.4_dp, 2.0_dp], [nrot, nrot])
+      energy_cross(:, :) = RESHAPE([0.6_dp, 0.1_dp, -0.2_dp, 0.5_dp], [ne, nrot])
+      energy_response(:, :) = RESHAPE([0.3_dp, 0.05_dp, -0.1_dp, 0.2_dp], [ne, nrot])
+
+      reduced_hessian(:, :) = 0.5_dp*(rot_hessian + TRANSPOSE(rot_hessian)) - &
+                              0.5_dp*(MATMUL(TRANSPOSE(energy_cross), energy_response) + &
+                                      MATMUL(TRANSPOSE(energy_response), energy_cross))
+      expected_gdot = DOT_PRODUCT(grad_rot, tangent_rot) + &
+                      DOT_PRODUCT(grad_e, MATMUL(energy_response, tangent_rot))
+      expected_cross = DOT_PRODUCT(tangent_rot, MATMUL(reduced_hessian, base_rot))
+      expected_curvature = DOT_PRODUCT(tangent_rot, MATMUL(reduced_hessian, tangent_rot))
+      expected_alpha = MIN(1.0_dp, MAX(0.0_dp, &
+                                      (expected_gdot - expected_cross)/expected_curvature))
+      expected_gain = expected_alpha*(expected_gdot - expected_cross) - &
+                      0.5_dp*expected_alpha**2*expected_curvature
+      CALL qs_scf_kp_canonical_density_blend( &
+         grad_rot, grad_e, rot_hessian, energy_cross, energy_response, base_rot, tangent_rot, &
+         alpha, gdot, cross, curvature, gain)
+      err = MAX(ABS(alpha - expected_alpha), ABS(gdot - expected_gdot), &
+                ABS(cross - expected_cross), ABS(curvature - expected_curvature), &
+                ABS(gain - expected_gain))
+
+      ! An indefinite bounded direction is selected at alpha=1 only when its
+      ! endpoint still predicts a positive Mermin decrease.
+      rot_hessian(:, :) = 0.0_dp
+      rot_hessian(1, 1) = -1.0_dp
+      rot_hessian(2, 2) = -0.5_dp
+      energy_cross(:, :) = 0.0_dp
+      energy_response(:, :) = 0.0_dp
+      base_rot(:) = 0.0_dp
+      grad_rot(:) = [0.1_dp, 0.0_dp]
+      grad_e(:) = 0.0_dp
+      tangent_rot(:) = [0.2_dp, 0.0_dp]
+      CALL qs_scf_kp_canonical_density_blend( &
+         grad_rot, grad_e, rot_hessian, energy_cross, energy_response, base_rot, tangent_rot, &
+         alpha, gdot, cross, curvature, gain)
+      err = MAX(err, ABS(alpha - 1.0_dp), ABS(gain - 0.04_dp), &
+                ABS(gdot - 0.02_dp), ABS(cross), ABS(curvature + 0.04_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with err/alpha/gdot/cross/curv", err, alpha, gdot, cross, curvature
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with err/alpha/gdot/cross/curv", err, alpha, gdot, cross, curvature
+      END IF
+
+   END SUBROUTINE check_canonical_density_tangent_blend
+
+! **************************************************************************************************
+!> \brief Check that restart migration drops unit-step calibration but retains physical history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_accepted_model_calibration_reset(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: error
+      TYPE(qs_ot_type)                                   :: ot_env
+
+      ot_env%gnorm = 3.0_dp
+      ot_env%line_search_count = 5
+      ot_env%schur_projector_physical_quality_samples = 7
+      ot_env%schur_projector_physical_drop_sum = 4.0_dp
+      ot_env%schur_model_pending = .TRUE.
+      ot_env%schur_model_drop = 2.0_dp
+      ot_env%schur_model_slope = 2.5_dp
+      ot_env%schur_model_quadratic = 1.0_dp
+      ot_env%schur_model_quality_samples = 6
+      ot_env%schur_projector_physical_selected_quality_samples = 5
+      ot_env%schur_projector_physical_selected_drop_sum = 1.5_dp
+      ot_env%schur_projector_physical_selected_measured_sum = 0.2_dp
+      ot_env%schur_projector_physical_selected_quality_line_ema = 0.1_dp
+      CALL qs_ot_reset_accepted_model_calibration(ot_env)
+
+      error = ABS(ot_env%gnorm - 3.0_dp) + &
+              ABS(REAL(ot_env%line_search_count - 5, KIND=dp)) + &
+              ABS(REAL(ot_env%schur_projector_physical_quality_samples - 7, KIND=dp)) + &
+              ABS(ot_env%schur_projector_physical_drop_sum - 4.0_dp) + &
+              ABS(ot_env%schur_model_drop) + ABS(ot_env%schur_model_slope) + &
+              ABS(ot_env%schur_model_quadratic) + &
+              ABS(REAL(ot_env%schur_model_quality_samples, KIND=dp)) + &
+              ABS(REAL(ot_env%schur_projector_physical_selected_quality_samples, KIND=dp)) + &
+              ABS(ot_env%schur_projector_physical_selected_drop_sum) + &
+              ABS(ot_env%schur_projector_physical_selected_measured_sum) + &
+              ABS(ot_env%schur_projector_physical_selected_quality_line_ema)
+      IF (ot_env%schur_model_pending .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,L1,1X,ES12.5)') TRIM(label), &
+            "failed with pending/error", ot_env%schur_model_pending, error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_accepted_model_calibration_reset
 
 ! **************************************************************************************************
 !> \brief Check that near-degenerate cluster-to-singleton blocks use a covariant divided difference.

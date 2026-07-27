@@ -176,6 +176,7 @@ MODULE qs_scf
                                               qs_ot_check_channel_context,&
                                               qs_ot_init,&
                                               qs_ot_number_of_channels,&
+                                              qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_set_context,&
                                               qs_ot_type
    USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
@@ -3758,6 +3759,18 @@ CONTAINS
                scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(95)
             qs_ot_env%schur_projector_density_full_selected_stationarity_samples = &
                MAX(0, NINT(scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(96)))
+         END IF
+         IF (scf_env%qs_ot_restart%format_version >= 25) THEN
+            qs_ot_env%schur_model_slope = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(97)
+            qs_ot_env%schur_model_quadratic = &
+               scf_env%qs_ot_restart%channel(shared_channel)%adaptive_real(98)
+         ELSE
+            ! Version 24 and older calibrated accepted directions against the
+            ! unit-step quadratic model even when the line search accepted at
+            ! another coordinate.  Keep orbitals and minimizer history, but
+            ! relearn only the incompatible accepted-direction statistics.
+            CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
          IF (scf_env%qs_ot_restart%format_version < 20) THEN
             ! Version 20 keeps the structural CG direction flags invariant.

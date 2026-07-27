@@ -70,7 +70,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 24
+   INTEGER, PARAMETER                   :: ot_restart_version = 25
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
@@ -938,7 +938,9 @@ CONTAINS
                                   qs_ot_env(ichannel)%schur_projector_density_full_selected_stationarity_quality, &
                                   qs_ot_env(ichannel)%schur_projector_density_full_selected_stationarity_quality_ema, &
                                   REAL(qs_ot_env(ichannel)%schur_projector_density_full_selected_stationarity_samples, &
-                                       KIND=dp)]
+                                       KIND=dp), &
+                                  qs_ot_env(ichannel)%schur_model_slope, &
+                                  qs_ot_env(ichannel)%schur_model_quadratic]
 
          channel_source = qs_ot_env(ichannel)%state_allocated
          IF (channel_source) THEN
@@ -1342,6 +1344,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(88)                       :: adaptive_real_payload_v21
       REAL(KIND=dp), DIMENSION(89)                       :: adaptive_real_payload_v23, &
                                                             schur_real_payload_v8
+      REAL(KIND=dp), DIMENSION(96)                       :: adaptive_real_payload_v24
       REAL(KIND=dp), &
          DIMENSION(qs_ot_restart_adaptive_nreal)         :: adaptive_real_payload
 
@@ -1483,10 +1486,15 @@ CONTAINS
                schur_int_payload(6:12) = schur_int_payload_v4(5:11)
                schur_real_payload(1:51) = schur_real_payload_v4
             END IF
-            IF (version_read >= 24) THEN
+            IF (version_read >= 25) THEN
                READ (rst_unit) adaptive_int_payload
                READ (rst_unit) adaptive_log_payload
                READ (rst_unit) adaptive_real_payload
+            ELSE IF (version_read == 24) THEN
+               READ (rst_unit) adaptive_int_payload
+               READ (rst_unit) adaptive_log_payload
+               READ (rst_unit) adaptive_real_payload_v24
+               adaptive_real_payload(1:96) = adaptive_real_payload_v24
             ELSE IF (version_read >= 22) THEN
                READ (rst_unit) adaptive_int_payload
                READ (rst_unit) adaptive_log_payload
