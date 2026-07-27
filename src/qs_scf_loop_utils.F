@@ -5967,6 +5967,9 @@ CONTAINS
             local_ot_env(local_channel)%kpoint_density_stationarity_ready = .FALSE.
             local_ot_env(local_channel)%kpoint_density_stationarity_delta = -1.0_dp
             local_ot_env(local_channel)%kpoint_density_stationarity_max = -1.0_dp
+            local_ot_env(local_channel)%kpoint_canonical_occupation_ready = .FALSE.
+            IF (ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)) &
+               local_ot_env(local_channel)%kpoint_canonical_occupation(:) = 0.0_dp
          END DO
          IF (.NOT. audit_ready) RETURN
 
@@ -6023,6 +6026,11 @@ CONTAINS
             DO ispin = 1, nspin_ot
                local_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot) - first_channel + 1
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc)
+               CPASSERT(ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation))
+               CPASSERT(SIZE(local_ot_env(local_channel)%kpoint_canonical_occupation) == nmo)
+               local_ot_env(local_channel)%kpoint_canonical_occupation(:) = &
+                  canonical_occupation(:, ikpoint, ispin)
+               local_ot_env(local_channel)%kpoint_canonical_occupation_ready = .TRUE.
                CALL qs_scf_kp_canonical_density_residual( &
                   channel_evec(:, :, local_channel), trial_occupation(:, ikpoint, ispin), &
                   canonical_occupation(:, ikpoint, ispin), sigma, maxocc, wkp(ikpoint), &
@@ -10227,7 +10235,7 @@ CONTAINS
          projector_physical_response_negative_coeff, projector_physical_response_negative_drop, &
          projector_physical_response_positive_coeff, projector_physical_response_positive_drop, &
          projector_physical_response_raw_negative_fraction, projector_physical_response_weight, &
-         projector_physical_response_weighted_step
+         projector_physical_response_weighted_step, projector_physical_shadow_coupled_weight
       REAL(KIND=dp) :: projector_physical_response_weighted_trust_ratio, &
          projector_physical_scale_quality, projector_physical_step_fermi_norm, &
          projector_physical_step_gap_norm, projector_physical_step_gauge_norm, &
@@ -10299,7 +10307,8 @@ CONTAINS
          tether_curv_diag_max, tether_curv_diag_sum, tether_projected_term, tether_response, &
          tether_response_diag_sum, tether_strength, tether_weight, total_curv_diag_max, &
          total_curv_diag_sum, z_shift, z_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, channel_maxocc, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, &
+         canonical_occ_curv, canonical_occ_curv_channel, canonical_occupation_channel, channel_maxocc, &
          constrained_sol, constrained_z_e, curv, density_basis_selective_floor_weight, &
          density_descent_rx_e, density_descent_z_e, density_full_global_rx_e, &
          density_full_global_sol, density_full_rx_e, density_full_sol, density_full_z_e, &
@@ -10359,7 +10368,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_full_global_exact, &
          response_density_physical, response_density_plateau, response_density_plateau_exact, &
          response_exact, response_exact_physical, response_exact_raw, response_multisecant, &
-         response_occ, response_occ_physical, response_physical_model, response_split, &
+         response_occ, response_occ_canonical, response_occ_physical, response_physical_model, response_split, &
          rot_hessian, rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_orbital_schur, &
          rot_hessian_projector, rot_hessian_projector_physical, &
          rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
@@ -10394,6 +10403,15 @@ CONTAINS
                                                 ot_kp_schur_projector_response_min_samples .OR. &
                                                 local_ot_env(1)%schur_projector_density_fdir_sel_quality_samples >= &
                                                 ot_kp_schur_calibration_min_samples
+         ! Bootstrap the physical fixed-N response as a shadow in the
+         ! residual tail.  Requiring prior shadow samples here creates a
+         ! closed loop: samples are recorded only after this model is built.
+         ! Candidate selection still requires measured Mermin/residual
+         ! quality, so this does not promote an uncalibrated direction.
+         IF (new_search_point .AND. &
+             residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+             local_ot_env(1)%kpoint_density_stationarity_ready) &
+            projector_physical_shadow_enabled = .TRUE.
          projector_physical_direct_shadow_quality_for_promotion = 0.0_dp
          projector_physical_direct_promoted = .FALSE.
          IF (new_search_point .AND. &
@@ -10640,7 +10658,8 @@ CONTAINS
             " OT Schur density-pair activation group selected candidates capacity:", &
             target_group, nrot_density/2, density_pair_candidates, density_pair_available
 
-         ALLOCATE (curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), z_e(ne), accepted_z_e(ne), &
+         ALLOCATE (canonical_occ_curv(ne), curv(ne), grad_e(ne), occ_curv(ne), tether_curv(ne), &
+                   z_e(ne), accepted_z_e(ne), &
                    density_basis_selective_floor_weight(ne), energy_grad_metric_weight(ne), &
                    energy_step_weight(ne), z_exact_raw_trial(ne), &
                    z_exact_physical_trial(ne), z_exact_trial(ne), z_multisecant(ne), z_trial(ne), &
@@ -10732,7 +10751,8 @@ CONTAINS
                    response_density_plateau_exact(ne, nrot), &
                    response_exact(ne, nrot), response_exact_physical(ne, nrot), &
                    response_exact_raw(ne, nrot), response_multisecant(ne, nrot), &
-                   response_occ(ne, nrot), response_occ_physical(ne, nrot), &
+                   response_occ(ne, nrot), response_occ_canonical(ne, nrot), &
+                   response_occ_physical(ne, nrot), &
                    response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
@@ -10760,6 +10780,7 @@ CONTAINS
          curv(:) = 0.0_dp
          grad_e(:) = 0.0_dp
          occ_curv(:) = 0.0_dp
+         canonical_occ_curv(:) = 0.0_dp
          tether_curv(:) = 0.0_dp
          z_e(:) = 0.0_dp
          accepted_z_e(:) = 0.0_dp
@@ -10893,6 +10914,7 @@ CONTAINS
          response_exact_raw(:, :) = 0.0_dp
          response_multisecant(:, :) = 0.0_dp
          response_occ(:, :) = 0.0_dp
+         response_occ_canonical(:, :) = 0.0_dp
          response_occ_physical(:, :) = 0.0_dp
          response_physical_model(:, :) = 0.0_dp
          response_split(:, :) = 0.0_dp
@@ -11870,7 +11892,34 @@ CONTAINS
                                                        ot_kp_canonical_projector_max_weight)
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
                mu = trial_mu(ispin)
-               ALLOCATE (h_re(nmo, nmo), h_im(nmo, nmo), grad_re(nmo, nmo), grad_im(nmo, nmo))
+               ALLOCATE (h_re(nmo, nmo), h_im(nmo, nmo), grad_re(nmo, nmo), grad_im(nmo, nmo), &
+                         canonical_occupation_channel(nmo), canonical_occ_curv_channel(nmo))
+               canonical_occupation_channel(:) = trial_occupation(1:nmo, ikpoint, ispin)
+               IF (local_ot_env(local_channel)%kpoint_canonical_occupation_ready) THEN
+                  density_pair_shape_ok = &
+                     ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)
+                  CPASSERT(density_pair_shape_ok)
+                  density_pair_shape_ok = &
+                     SIZE(local_ot_env(local_channel)%kpoint_canonical_occupation) == nmo
+                  CPASSERT(density_pair_shape_ok)
+                  canonical_occupation_channel(:) = &
+                     local_ot_env(local_channel)%kpoint_canonical_occupation(:)
+               END IF
+               canonical_occ_curv_channel(:) = 0.0_dp
+               IF (smear%method == smear_fermi_dirac .AND. sigma > EPSILON(sigma) .AND. &
+                   maxocc > EPSILON(maxocc)) THEN
+                  DO imo = 1, nmo
+                     canonical_occ_curv_channel(imo) = wkp(ikpoint)*maxocc* &
+                        (canonical_occupation_channel(imo)/maxocc)* &
+                        (1.0_dp - canonical_occupation_channel(imo)/maxocc)/sigma
+                  END DO
+               END IF
+               WHERE (canonical_occ_curv_channel <= &
+                      SQRT(EPSILON(1.0_dp))*MAXVAL(canonical_occ_curv_channel))
+                  canonical_occ_curv_channel = 0.0_dp
+               END WHERE
+               canonical_occ_curv(e_offset(global_channel):e_offset(global_channel) + nmo - 1) = &
+                  canonical_occ_curv_channel(:)
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc, h_re)
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_chc_im, h_im)
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_gx, grad_re)
@@ -11999,6 +12048,8 @@ CONTAINS
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     projector_occupation_window_gap, &
                                                     occ_curv(e_offset(global_channel):e_offset(global_channel) + nmo - 1), &
+                                                    canonical_occupation_channel, &
+                                                    canonical_occ_curv_channel, &
                                                     var_i, var_j, var_kind, &
                                                     projector_physical_shadow_enabled, &
                                                     projector_density_full_audit_enabled, &
@@ -12009,7 +12060,8 @@ CONTAINS
                                                     rot_hessian_projector_physical, &
                                                     rot_hessian_projector_physical_offdiag, &
                                                     rot_hessian_projector_physical_offdiag_plateau, response, &
-                                                    response_occ, response_occ_physical, response_density_physical, &
+                                                    response_occ, response_occ_canonical, response_occ_physical, &
+                                                    response_density_physical, &
                                                     response_density_floor_audit, &
                                                     response_density_floor_safe_audit, response_density_full, &
                                                     response_density_full_audit, &
@@ -12018,7 +12070,8 @@ CONTAINS
                                                     projector_fd_cluster_derivatives, &
                                                     projector_fd_cluster_replacements, &
                                                     projector_kernel_cluster_groups, failed)
-               DEALLOCATE (h_re, h_im, grad_re, grad_im)
+               DEALLOCATE (h_re, h_im, grad_re, grad_im, canonical_occupation_channel, &
+                           canonical_occ_curv_channel)
             END DO
          END DO
 
@@ -12026,6 +12079,7 @@ CONTAINS
             CALL para_env_inter_kp%sum(curv)
             CALL para_env_inter_kp%sum(grad_e)
             CALL para_env_inter_kp%sum(occ_curv)
+            CALL para_env_inter_kp%sum(canonical_occ_curv)
             CALL para_env_inter_kp%sum(tether_curv)
             CALL para_env_inter_kp%sum(energy_grad_metric_weight)
             CALL para_env_inter_kp%sum(energy_step_weight)
@@ -12045,6 +12099,7 @@ CONTAINS
             CALL para_env_inter_kp%sum(var_thermal_activity)
             CALL para_env_inter_kp%sum(response)
             CALL para_env_inter_kp%sum(response_occ)
+            CALL para_env_inter_kp%sum(response_occ_canonical)
             CALL para_env_inter_kp%sum(response_occ_physical)
             CALL para_env_inter_kp%sum(response_density_physical)
             CALL para_env_inter_kp%sum(response_density_floor_audit)
@@ -12251,7 +12306,7 @@ CONTAINS
             ot_kp_schur_physical_tail_eps_factor*eps_scf_channel, &
             local_ot_env(1)%mermin_ls_accepted_quality_samples
          IF (failed) THEN
-            DEALLOCATE (curv, grad_e, occ_curv, tether_curv, energy_grad_metric_weight, &
+            DEALLOCATE (canonical_occ_curv, curv, grad_e, occ_curv, tether_curv, energy_grad_metric_weight, &
                         energy_step_weight, z_e, accepted_z_e, z_density_plateau_trial, &
                         z_density_floor_audit_trial, z_density_floor_safe_audit_trial, &
                         z_density_full_audit_trial, &
@@ -12309,7 +12364,8 @@ CONTAINS
                         response_density_full_global, response_density_full_global_exact, response_density_physical, &
                         response_density_plateau, response_density_plateau_exact, &
                         response_exact, response_exact_physical, &
-                        response_exact_raw, response_occ, response_occ_physical, response_split, rot_hessian, &
+                        response_exact_raw, response_occ, response_occ_canonical, response_occ_physical, &
+                        response_split, rot_hessian, &
                         projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
                         projector_physical_direct_delta, &
                         rot_hessian_coupled, rot_hessian_multisecant, &
@@ -13918,14 +13974,13 @@ CONTAINS
                                                     energy_hessian_reference=energy_hessian_reference)
          exact_physical_response_ready = .FALSE.
          IF (exact_energy_model_ready .AND. projector_physical_shadow_enabled) &
-            CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response_occ_physical, response, &
-                                                       grad_e, channel_nmo, e_offset, energy_hessian, &
+            CALL build_kpoint_ot_exact_energy_response(canonical_occ_curv, 0.0_dp*tether_curv, &
+                                                       response_occ_canonical, 0.0_dp*response, &
+                                                       0.0_dp*grad_e, channel_nmo, e_offset, energy_hessian, &
                                                        energy_cross_physical, response_exact_physical, &
                                                        z_exact_physical_trial, ipiv_energy, &
                                                        exact_physical_response_ready, energy_gauge_weight)
-         IF (exact_physical_response_ready) &
-            CALL project_kpoint_ot_schur_response(z_exact_physical_trial, occ_curv, tether_curv, &
-                                                  occ_curv_projection_sum, channel_nmo, e_offset)
+         IF (exact_physical_response_ready) z_exact_physical_trial(:) = z_exact_trial(:)
          IF (exact_energy_model_ready) &
             CALL build_kpoint_ot_exact_energy_response(occ_curv, tether_curv, response, response, grad_e, &
                                                        channel_nmo, e_offset, energy_hessian, energy_cross_raw, &
@@ -15708,23 +15763,27 @@ CONTAINS
                      END IF
                   END IF
                END IF
+               projector_physical_shadow_coupled_weight = projector_coupled_weight
+               IF (projector_physical_shadow_enabled .AND. &
+                   residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                   local_ot_env(1)%kpoint_density_stationarity_ready) &
+                  projector_physical_shadow_coupled_weight = &
+                     MAX(projector_physical_shadow_coupled_weight, density_projector_fraction)
                IF (schur_attempt == 3 .AND. exact_attempt_response .AND. exact_physical_response_ready .AND. &
                    projector_physical_shadow_enabled .AND. &
-                   projector_coupled_weight > EPSILON(projector_coupled_weight) .AND. &
+                   projector_physical_shadow_coupled_weight > &
+                   EPSILON(projector_physical_shadow_coupled_weight) .AND. &
                    (local_ot_env(1)%schur_projector_mode_quality_samples >= &
                     ot_kp_schur_calibration_min_samples .OR. &
-                    projector_density_history_weight > EPSILON(projector_density_history_weight))) THEN
+                    projector_density_history_weight > EPSILON(projector_density_history_weight) .OR. &
+                    (residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                     local_ot_env(1)%kpoint_density_stationarity_ready))) THEN
+                  ! The canonical eigenvalue response is already coupled to the
+                  ! full covariant dP in the rotation Hessian.  Adding one of
+                  ! the legacy REF-diagonal density solves here would count the
+                  ! same projector motion a second time in basis-dependent
+                  ! auxiliary-energy coordinates.
                   response_physical_model(:, :) = response_exact_physical(:, :)
-                  IF (exact_density_full_response_ready) THEN
-                     response_physical_model(:, :) = response_physical_model(:, :) + &
-                                                     response_density_full_exact(:, :)
-                  ELSE IF (exact_density_direct_response_ready) THEN
-                     response_physical_model(:, :) = response_physical_model(:, :) + &
-                                                     response_density_direct_exact(:, :)
-                  ELSE IF (exact_density_response_ready) THEN
-                     response_physical_model(:, :) = response_physical_model(:, :) + &
-                                                     response_density_exact(:, :)
-                  END IF
                   projector_physical_model_e(:) = MATMUL(response_physical_model, sol)
                   CALL project_kpoint_ot_schur_response(projector_physical_model_e, occ_curv, tether_curv, &
                                                         occ_curv_projection_sum, channel_nmo, e_offset)
@@ -15741,7 +15800,7 @@ CONTAINS
                          EPSILON(projector_inactive_offdiag_quality_for_selection)) THEN
                         projector_physical_direct_inactive_offdiag_balance = &
                            kpoint_ot_direct_inactive_offdiag_mix_weight( &
-                           residual_delta, projector_coupled_weight, &
+                           residual_delta, projector_physical_shadow_coupled_weight, &
                            projector_inactive_offdiag_quality_for_selection, &
                            projector_inactive_offdiag_selected_scale, &
                            projector_inactive_offdiag_history_quality, &
@@ -15763,7 +15822,7 @@ CONTAINS
                      ELSE
                         projector_physical_direct_inactive_offdiag_balance = &
                            kpoint_ot_direct_inactive_offdiag_mix_weight( &
-                           residual_delta, projector_coupled_weight, &
+                           residual_delta, projector_physical_shadow_coupled_weight, &
                            projector_mode_history_quality, 1.0_dp, &
                            projector_mode_history_quality, &
                            local_ot_env(1)%schur_projector_mode_trust_ema, &
@@ -15797,7 +15856,7 @@ CONTAINS
                                                                 response_exact_raw, response_physical_model, curv, &
                                                                 occ_curv, tether_curv, occ_curv_projection_sum, &
                                                                 channel_nmo, e_offset, .TRUE., &
-                                                                projector_coupled_weight, residual_delta, &
+                                                                projector_physical_shadow_coupled_weight, residual_delta, &
                                                                 projector_mode_history_quality, &
                                                                 local_ot_env(1)%schur_projector_mode_trust_ema, &
                                                                 projector_mode_history_response_ratio, grad_e, &
@@ -23762,7 +23821,8 @@ CONTAINS
             END IF
          END IF
 
-         DEALLOCATE (curv, grad_e, occ_curv, tether_curv, density_basis_selective_floor_weight, &
+         DEALLOCATE (canonical_occ_curv, curv, grad_e, occ_curv, tether_curv, &
+                     density_basis_selective_floor_weight, &
                      energy_grad_metric_weight, energy_step_weight, &
                      z_e, accepted_z_e, z_density_plateau_trial, &
                      z_density_floor_audit_trial, z_density_floor_safe_audit_trial, &
@@ -23840,7 +23900,8 @@ CONTAINS
                      response_density_full_global, response_density_full_global_exact, response_density_physical, &
                      response_density_plateau, response_density_plateau_exact, &
                      response_exact, response_exact_physical, response_exact_raw, &
-                     response_occ, response_occ_physical, response_physical_model, response_split, rot_hessian, &
+                     response_occ, response_occ_canonical, response_occ_physical, response_physical_model, &
+                     response_split, rot_hessian, &
                      projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
@@ -29109,6 +29170,7 @@ CONTAINS
 !> \param rot_hessian_projector_physical_offdiag_plateau ...
 !> \param response ...
 !> \param response_occ ...
+!> \param response_occ_canonical ...
 !> \param response_occ_physical ...
 !> \param response_density_physical ...
 !> \param response_density_floor_audit ...
@@ -29124,7 +29186,9 @@ CONTAINS
 ! **************************************************************************************************
       SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
                                                  chc_re, chc_im, occupation_numbers, kpoint_weight, &
-                                                 projector_window_gap, occ_curv_channel, var_i, var_j, var_kind, &
+                                                 projector_window_gap, occ_curv_channel, &
+                                                 canonical_occupation_numbers, canonical_occ_curv_channel, &
+                                                 var_i, var_j, var_kind, &
                                                  compute_projector_shadow, &
                                                  compute_density_full_audit, compute_projector_plateau_audit, &
                                                  step_gauge_quality, density_lift_control, &
@@ -29133,7 +29197,8 @@ CONTAINS
                                                  rot_hessian_projector_physical, &
                                                  rot_hessian_projector_physical_offdiag, &
                                                  rot_hessian_projector_physical_offdiag_plateau, response, &
-                                                 response_occ, response_occ_physical, response_density_physical, &
+                                                 response_occ, response_occ_canonical, response_occ_physical, &
+                                                 response_density_physical, &
                                                  response_density_floor_audit, &
                                                  response_density_floor_safe_audit, response_density_full, &
                                                  response_density_full_audit, &
@@ -29147,6 +29212,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
       REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, projector_window_gap
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv_channel
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN) :: canonical_occupation_numbers, &
+                                                 canonical_occ_curv_channel
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       LOGICAL, INTENT(IN) :: compute_projector_shadow, compute_density_full_audit, &
          compute_projector_plateau_audit
@@ -29154,7 +29221,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT) :: rot_hessian, rot_hessian_coupled, &
          rot_hessian_orbital_schur, rot_hessian_projector, rot_hessian_projector_physical, &
          rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_plateau, &
-         response, response_occ, response_occ_physical, response_density_physical, &
+         response, response_occ, response_occ_canonical, response_occ_physical, response_density_physical, &
          response_density_floor_audit, response_density_floor_safe_audit, response_density_full, &
          response_density_full_audit, response_density_basis_audit, response_density_plateau
       INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, &
@@ -29321,6 +29388,8 @@ CONTAINS
                   projector_response = (projector_evals_p(ie) - projector_evals_m(ie))/(2.0_dp*fd_step)
                response_occ_physical(first_energy + ie - 1, s) = &
                   (1.0_dp - projector_weight)*raw_response + projector_weight*projector_response
+               response_occ_canonical(first_energy + ie - 1, s) = &
+                  response_occ_physical(first_energy + ie - 1, s)
                density_projector_column(ie) = -projector_weight*projector_response
             END DO
             CALL dense_history_safe_occ_projector(chc_p, occupation_numbers, kpoint_weight, &
@@ -29351,9 +29420,10 @@ CONTAINS
                                                                 local_ot_env(local_channel)%delta, docc_mat)
                fd_cluster_used = .FALSE.
                kernel_cluster_groups = 0
-               CALL dense_history_safe_occ_projector_derivative(chc, dchc, occupation_numbers, kpoint_weight, &
+               CALL dense_history_safe_occ_projector_derivative(chc, dchc, canonical_occupation_numbers, &
+                                                                kpoint_weight, &
                                                                 local_ot_env(local_channel)%delta, docc_plateau, &
-                                                                occ_curv_channel, &
+                                                                canonical_occ_curv_channel, &
                                                                 ot_kp_projector_occupation_gauge_gap, &
                                                                 fd_cluster_used, projector_window_gap, &
                                                                 kernel_cluster_groups)
@@ -29361,12 +29431,12 @@ CONTAINS
                projector_kernel_cluster_groups = projector_kernel_cluster_groups + kernel_cluster_groups
                IF (fd_cluster_used) &
                   projector_fd_cluster_replacements = projector_fd_cluster_replacements + 1
-               ! The diagonal density response is consumed by the auxiliary-energy
-               ! channel below.  The remaining spectral Projector motion is the
-               ! history-safe off-diagonal occupation response.  Use the
-               ! gauge-filtered derivative for the physical rotation Hessian so
-               ! near-degenerate projector-gauge motion does not enter the
-               ! finite complex Mermin curvature.
+               ! docc_mat belongs to the legacy auxiliary-energy response and
+               ! can be split into REF-diagonal and off-diagonal audit channels.
+               ! docc_plateau is the canonical covariant dP in the REF basis:
+               ! its REF diagonal generally moves under a pure similarity
+               ! rotation and is therefore not a band-energy derivative.  Keep
+               ! the complete matrix in the physical complex rotation Hessian.
                density_full_column(:) = 0.0_dp
                density_basis_column(:) = 0.0_dp
                density_floor_audit_column(:) = 0.0_dp
@@ -29470,16 +29540,11 @@ CONTAINS
                END IF
                DO ie = 1, nmo
                   IF (ABS(occ_curv_channel(ie)) > EPSILON(occ_curv_channel(ie))) THEN
-                     ! Keep the production density response tied to finite
-                     ! spectral density motion plus the bounded physical
-                     ! occupation-response component.  The raw diagonal
-                     ! derivative is still exposed through the audit channel.
+                     ! Keep the legacy auxiliary-energy density responses in
+                     ! the current occupation coordinates. The separate
+                     ! canonical rotation model below never divides a
+                     ! REF-basis dP diagonal by these band-label curvatures.
                      density_plateau_response = density_mixed_column(ie)
-                     ! The full density response below keeps channel-uniform
-                     ! components for the global fixed-N Mermin projector.  The
-                     ! plateau-gap model is only a local trust/audit source, so
-                     ! feed it the local fixed-N centered shape and do not let
-                     ! channel gauge shifts inflate the response trust.
                      density_plateau_full_response = density_projector_column(ie)
                      density_response = 0.5_dp*REAL(docc_mat(ie, ie), KIND=dp)/ &
                                         occ_curv_channel(ie)
@@ -29504,12 +29569,7 @@ CONTAINS
                         response_occ_physical(first_energy + ie - 1, s) = &
                            response_occ_physical(first_energy + ie - 1, s) - &
                            response_density_physical(first_energy + ie - 1, s)
-                        ! The diagonal projector response is represented by the
-                        ! energy-response channel above.  Keeping it in the
-                        ! rotation Hessian as well double-counts the same density
-                        ! response and creates an artificial physical row floor.
                         docc_mat(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
-                        docc_plateau(ie, ie) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
                      END IF
                   END IF
                END DO

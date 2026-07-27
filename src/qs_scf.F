@@ -3981,6 +3981,9 @@ CONTAINS
 
       ALLOCATE (qs_ot_env%kpoint_density_pair_residual(nmo, nmo))
       qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
+      ALLOCATE (qs_ot_env%kpoint_canonical_occupation(nmo))
+      qs_ot_env%kpoint_canonical_occupation(:) = 0.0_dp
+      qs_ot_env%kpoint_canonical_occupation_ready = .FALSE.
 
       qs_ot_env%has_complex_kpoint_state = .TRUE.
       qs_ot_env%kpoint_preconditioned_direction_ready = .FALSE.

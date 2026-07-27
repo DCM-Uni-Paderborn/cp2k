@@ -394,6 +394,8 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: kpoint_density_stationarity_delta = -1.0_dp
       REAL(KIND=dp) :: kpoint_density_stationarity_max = -1.0_dp
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: kpoint_density_pair_residual
+      LOGICAL :: kpoint_canonical_occupation_ready = .FALSE.
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: kpoint_canonical_occupation
       REAL(KIND=dp) :: kpoint_eps_scf = -1.0_dp
       REAL(KIND=dp) :: kpoint_physical_gnorm = 0.0_dp, kpoint_physical_rot_gnorm = 0.0_dp
       REAL(KIND=dp) :: kpoint_physical_energy_gnorm = 0.0_dp, kpoint_gauge_gnorm = 0.0_dp
@@ -1185,6 +1187,9 @@ CONTAINS
       qs_ot_env%kpoint_density_stationarity_max = -1.0_dp
       IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) &
          qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
+      qs_ot_env%kpoint_canonical_occupation_ready = .FALSE.
+      IF (ALLOCATED(qs_ot_env%kpoint_canonical_occupation)) &
+         qs_ot_env%kpoint_canonical_occupation(:) = 0.0_dp
       qs_ot_env%kpoint_eps_scf = -1.0_dp
       qs_ot_env%kpoint_physical_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
@@ -2164,6 +2169,8 @@ CONTAINS
          DEALLOCATE (qs_ot_env%orbital_schur_response_metric)
       IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) &
          DEALLOCATE (qs_ot_env%kpoint_density_pair_residual)
+      IF (ALLOCATED(qs_ot_env%kpoint_canonical_occupation)) &
+         DEALLOCATE (qs_ot_env%kpoint_canonical_occupation)
 
       qs_ot_env%state_allocated = .FALSE.
       qs_ot_env%has_complex_kpoint_state = .FALSE.

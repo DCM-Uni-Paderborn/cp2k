@@ -529,6 +529,10 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector fixed-N cluster shape", 5.0E-8_dp, nfail)
    CALL check_history_safe_occ_projector_covariant_fd( &
       "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
+   CALL check_canonical_fixed_n_occ_projector_derivative( &
+      "canonical fixed-N occupation-projector derivative", 5.0E-7_dp, nfail)
+   CALL check_canonical_projector_similarity_gauge( &
+      "canonical projector similarity-gauge response", 5.0E-10_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_modal_cap( &
@@ -22325,6 +22329,207 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_history_safe_occ_projector_covariant_fd
+
+! **************************************************************************************************
+!> \brief Check that the physical dP kernel follows canonical fixed-N Fermi occupations rather
+!>        than independent auxiliary occupations.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_fixed_n_occ_projector_derivative(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, fd_step = 1.0E-5_dp, &
+         gauge_gap = 1.0E-6_dp, maxocc = 1.0_dp, nel = 2.15_dp, &
+         projector_weight = 0.43_dp, sigma = 0.08_dp, wk = 1.0_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: chc, chc_rot, dchc, dchc_rot, docc_aux, &
+         docc_back, docc_canonical, docc_fd, docc_rot, evec, occ_mat_m, occ_mat_p, q
+      INTEGER                                            :: i
+      REAL(KIND=dp) :: cov_err, fd_err, kTS, model_gap, mu, trace_err
+      REAL(KIND=dp), DIMENSION(n) :: aux_curv, aux_occ, canonical_curv, canonical_scale, &
+         evals, evals_m, evals_p, occ_scale_m, occ_scale_p
+      REAL(KIND=dp), DIMENSION(n, 1)                     :: eps, occ
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+      REAL(KIND=dp), DIMENSION(1)                        :: weights
+
+      weights(1) = wk
+      evals(:) = [-0.31_dp, -0.06_dp, 0.04_dp, 0.29_dp]
+      chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      dchc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      dchc(1, 1) = CMPLX(0.13_dp, 0.0_dp, KIND=dp)
+      dchc(2, 2) = CMPLX(-0.08_dp, 0.0_dp, KIND=dp)
+      dchc(3, 3) = CMPLX(0.05_dp, 0.0_dp, KIND=dp)
+      dchc(4, 4) = CMPLX(-0.03_dp, 0.0_dp, KIND=dp)
+      dchc(1, 2) = CMPLX(0.17_dp, -0.11_dp, KIND=dp)
+      dchc(1, 3) = CMPLX(-0.09_dp, 0.07_dp, KIND=dp)
+      dchc(2, 3) = CMPLX(0.21_dp, -0.14_dp, KIND=dp)
+      dchc(2, 4) = CMPLX(-0.06_dp, -0.04_dp, KIND=dp)
+      dchc(3, 4) = CMPLX(0.12_dp, 0.09_dp, KIND=dp)
+      DO i = 2, n
+         dchc(i, 1:i - 1) = CONJG(dchc(1:i - 1, i))
+      END DO
+
+      eps(:, 1) = evals(:)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, weights, sigma, maxocc)
+      canonical_scale(:) = 2.0_dp*wk*occ(:, 1)
+      canonical_curv(:) = wk*maxocc*(occ(:, 1)/maxocc)*(1.0_dp - occ(:, 1)/maxocc)/sigma
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc, dchc, canonical_scale, projector_weight, docc_canonical, canonical_curv, gauge_gap)
+
+      CALL diag_complex(chc + fd_step*dchc, evec, evals_p)
+      eps(:, 1) = evals_p(:)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, weights, sigma, maxocc)
+      occ_scale_p(:) = 2.0_dp*wk*occ(:, 1)
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, occ_scale_p, occ_mat_p)
+      CALL diag_complex(chc - fd_step*dchc, evec, evals_m)
+      eps(:, 1) = evals_m(:)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, weights, sigma, maxocc)
+      occ_scale_m(:) = 2.0_dp*wk*occ(:, 1)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_scale_m, occ_mat_m)
+      docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      fd_err = MAXVAL(ABS(docc_canonical(:, :) - docc_fd(:, :)))
+
+      aux_occ(:) = [0.96_dp, 0.81_dp, 0.31_dp, 0.07_dp]
+      aux_curv(:) = wk*maxocc*(aux_occ(:)/maxocc)*(1.0_dp - aux_occ(:)/maxocc)/sigma
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc, dchc, 2.0_dp*wk*aux_occ, projector_weight, docc_aux, aux_curv, gauge_gap)
+      model_gap = MAXVAL(ABS(docc_aux(:, :) - docc_canonical(:, :)))
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.19_dp
+      x_re(1, 3) = -0.08_dp
+      x_re(2, 4) = 0.04_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.02_dp
+      x_im(2, 2) = -0.01_dp
+      x_im(1, 2) = -0.03_dp
+      x_im(2, 3) = 0.04_dp
+      x_im(3, 4) = -0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc_rot(:, :) = MATMUL(q, MATMUL(chc, CONJG(TRANSPOSE(q))))
+      dchc_rot(:, :) = MATMUL(q, MATMUL(dchc, CONJG(TRANSPOSE(q))))
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc_rot, dchc_rot, canonical_scale, projector_weight, docc_rot, canonical_curv, gauge_gap)
+      docc_back(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc_rot, q))
+      cov_err = MAXVAL(ABS(docc_back(:, :) - docc_canonical(:, :)))
+      trace_err = ABS(REAL(SUM([(docc_canonical(i, i), i=1, n)]), KIND=dp))
+
+      IF (fd_err > tol .OR. cov_err > tol .OR. trace_err > tol .OR. model_gap < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with fd/cov/trace/model-gap", fd_err, cov_err, trace_err, model_gap
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with fd/cov/trace/model-gap", fd_err, cov_err, trace_err, model_gap
+      END IF
+
+   END SUBROUTINE check_canonical_fixed_n_occ_projector_derivative
+
+! **************************************************************************************************
+!> \brief Check that a pure similarity rotation has no canonical band-energy response although
+!>        the covariant dP can have a finite diagonal in the current REF basis.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_projector_similarity_gauge(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, gauge_gap = 1.0E-6_dp, &
+         maxocc = 1.0_dp, nel = 2.15_dp, projector_weight = 0.43_dp, sigma = 0.08_dp, wk = 1.0_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: chc, chc_eig, dchc, dchc_eig, docc, &
+         docc_eig, generator, q
+      INTEGER                                            :: i
+      REAL(KIND=dp) :: eig_diag, herm_err, kTS, mu, ref_diag, trace_err
+      REAL(KIND=dp), DIMENSION(n)                        :: canonical_curv, canonical_scale, evals
+      REAL(KIND=dp), DIMENSION(n, 1)                     :: eps, occ
+      REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
+      REAL(KIND=dp), DIMENSION(1)                        :: weights
+
+      weights(1) = wk
+      evals(:) = [-0.31_dp, -0.06_dp, 0.04_dp, 0.29_dp]
+      chc_eig(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      DO i = 1, n
+         chc_eig(i, i) = CMPLX(evals(i), 0.0_dp, KIND=dp)
+      END DO
+      eps(:, 1) = evals(:)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, weights, sigma, maxocc)
+      canonical_scale(:) = 2.0_dp*wk*occ(:, 1)
+      canonical_curv(:) = wk*maxocc*(occ(:, 1)/maxocc)*(1.0_dp - occ(:, 1)/maxocc)/sigma
+
+      generator(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      generator(1, 2) = CMPLX(0.17_dp, 0.08_dp, KIND=dp)
+      generator(1, 3) = CMPLX(-0.09_dp, 0.05_dp, KIND=dp)
+      generator(2, 4) = CMPLX(0.06_dp, -0.11_dp, KIND=dp)
+      generator(3, 4) = CMPLX(-0.13_dp, -0.04_dp, KIND=dp)
+      DO i = 2, n
+         generator(i, 1:i - 1) = -CONJG(generator(1:i - 1, i))
+      END DO
+      dchc_eig(:, :) = MATMUL(generator, chc_eig) - MATMUL(chc_eig, generator)
+
+      x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.21_dp
+      x_re(1, 3) = -0.11_dp
+      x_re(2, 4) = 0.07_dp
+      DO i = 2, n
+         x_re(i, 1:i - 1) = -x_re(1:i - 1, i)
+      END DO
+      x_im(:, :) = 0.0_dp
+      x_im(1, 1) = 0.03_dp
+      x_im(2, 2) = -0.02_dp
+      x_im(3, 3) = 0.01_dp
+      x_im(1, 2) = -0.04_dp
+      x_im(2, 3) = 0.03_dp
+      x_im(3, 4) = -0.02_dp
+      DO i = 2, n
+         x_im(i, 1:i - 1) = x_im(1:i - 1, i)
+      END DO
+      CALL dense_rotation_u(x_re, x_im, q)
+      chc(:, :) = MATMUL(q, MATMUL(chc_eig, CONJG(TRANSPOSE(q))))
+      dchc(:, :) = MATMUL(q, MATMUL(dchc_eig, CONJG(TRANSPOSE(q))))
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc, dchc, canonical_scale, projector_weight, docc, canonical_curv, gauge_gap)
+      docc_eig(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc, q))
+
+      eig_diag = 0.0_dp
+      ref_diag = 0.0_dp
+      trace_err = 0.0_dp
+      DO i = 1, n
+         eig_diag = MAX(eig_diag, ABS(docc_eig(i, i)))
+         ref_diag = MAX(ref_diag, ABS(docc(i, i)))
+         trace_err = trace_err + REAL(docc(i, i), KIND=dp)
+      END DO
+      trace_err = ABS(trace_err)
+      herm_err = MAXVAL(ABS(docc(:, :) - CONJG(TRANSPOSE(docc(:, :)))))
+
+      IF (eig_diag > tol .OR. trace_err > tol .OR. herm_err > tol .OR. ref_diag < active_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "failed with eigdiag/refdiag/trace/herm", eig_diag, ref_diag, trace_err, herm_err
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with eigdiag/refdiag/trace/herm", eig_diag, ref_diag, trace_err, herm_err
+      END IF
+
+   END SUBROUTINE check_canonical_projector_similarity_gauge
 
 ! **************************************************************************************************
 !> \brief Check that near-degenerate cluster-to-singleton blocks use a covariant divided difference.
