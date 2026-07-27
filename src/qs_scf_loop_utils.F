@@ -3003,39 +3003,63 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: eps_scf
       REAL(KIND=dp), INTENT(INOUT)                       :: residual_delta
 
+      INTEGER :: density_stationarity_ready_i, physical_delta_ready_i, quality_samples
+      LOGICAL :: density_stationarity_ready, physical_delta_ready
       REAL(KIND=dp) :: calibrated_floor_delta, density_stationarity_delta, model_delta, &
-         ot_delta, physical_delta, raw_delta, raw_floor_ratio
+         ot_delta, physical_delta, quality_ema, quality_gap_ema, raw_delta, raw_floor_ratio
 
-      CPASSERT(SIZE(local_ot_env) > 0)
-
-      ot_delta = MAX(0.0_dp, local_ot_env(1)%delta)
-      raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
-      physical_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_physical_delta)
+      ot_delta = 0.0_dp
+      raw_delta = 0.0_dp
+      physical_delta = 0.0_dp
       density_stationarity_delta = 0.0_dp
-      IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
-         density_stationarity_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_density_stationarity_delta)
+      physical_delta_ready_i = 0
+      density_stationarity_ready_i = 0
+      quality_samples = 0
+      quality_ema = 0.0_dp
+      quality_gap_ema = 0.0_dp
+      IF (ASSOCIATED(local_ot_env)) THEN
+         IF (SIZE(local_ot_env) > 0) THEN
+            ot_delta = MAX(0.0_dp, local_ot_env(1)%delta)
+            raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
+            physical_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_physical_delta)
+            IF (local_ot_env(1)%kpoint_density_stationarity_ready) &
+               density_stationarity_delta = &
+               MAX(0.0_dp, local_ot_env(1)%kpoint_density_stationarity_delta)
+            physical_delta_ready_i = MERGE(1, 0, local_ot_env(1)%kpoint_physical_delta_ready)
+            density_stationarity_ready_i = &
+               MERGE(1, 0, local_ot_env(1)%kpoint_density_stationarity_ready)
+            quality_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
+            quality_ema = MAX(0.0_dp, local_ot_env(1)%mermin_ls_accepted_quality_ema)
+            quality_gap_ema = MAX(0.0_dp, local_ot_env(1)%mermin_ls_accepted_gap_ema)
+         END IF
+      END IF
+      CALL para_env_inter_kp%max(residual_delta)
       CALL para_env_inter_kp%max(ot_delta)
       CALL para_env_inter_kp%max(raw_delta)
       CALL para_env_inter_kp%max(physical_delta)
       CALL para_env_inter_kp%max(density_stationarity_delta)
+      CALL para_env_inter_kp%max(physical_delta_ready_i)
+      CALL para_env_inter_kp%max(density_stationarity_ready_i)
+      CALL para_env_inter_kp%max(quality_samples)
+      CALL para_env_inter_kp%max(quality_ema)
+      CALL para_env_inter_kp%max(quality_gap_ema)
+      physical_delta_ready = physical_delta_ready_i > 0
+      density_stationarity_ready = density_stationarity_ready_i > 0
 
       calibrated_floor_delta = 0.0_dp
       CALL ot_kpoint_physical_residual_split( &
-         raw_delta, physical_delta, local_ot_env(1)%kpoint_physical_delta_ready, &
-         eps_scf, local_ot_env(1)%mermin_ls_accepted_quality_samples, &
-         local_ot_env(1)%mermin_ls_accepted_quality_ema, local_ot_env(1)%mermin_ls_accepted_gap_ema, &
+         raw_delta, physical_delta, physical_delta_ready, eps_scf, quality_samples, &
+         quality_ema, quality_gap_ema, &
          model_delta, calibrated_floor_delta)
       ! The complete fixed-N residual is an exit condition independent of the
       ! preconditioned search metric.  Applying it here avoids feeding an
       ! exit-only quantity back into subspace refresh and CG/history control.
-      IF (local_ot_env(1)%kpoint_physical_delta_ready) &
+      IF (physical_delta_ready) &
          calibrated_floor_delta = MAX(calibrated_floor_delta, physical_delta)
       IF (eps_scf > 0.0_dp .AND. raw_delta > ot_delta .AND. &
-          local_ot_env(1)%kpoint_physical_delta_ready) THEN
+          physical_delta_ready) THEN
          raw_floor_ratio = qs_scf_kp_raw_exit_floor_ratio( &
-                           local_ot_env(1)%mermin_ls_accepted_quality_samples, &
-                           local_ot_env(1)%mermin_ls_accepted_quality_ema, &
-                           local_ot_env(1)%mermin_ls_accepted_gap_ema)
+                           quality_samples, quality_ema, quality_gap_ema)
          CALL para_env_inter_kp%max(raw_floor_ratio)
          calibrated_floor_delta = MAX(calibrated_floor_delta, raw_floor_ratio*raw_delta)
       END IF
@@ -3043,9 +3067,9 @@ CONTAINS
 
       residual_delta = qs_scf_kp_exit_residual( &
                        residual_delta, physical_delta, &
-                       local_ot_env(1)%kpoint_physical_delta_ready, &
+                       physical_delta_ready, &
                        density_stationarity_delta, &
-                       local_ot_env(1)%kpoint_density_stationarity_ready, &
+                       density_stationarity_ready, &
                        calibrated_floor_delta)
 
    END SUBROUTINE qs_scf_loop_ot_kp_exit_delta
@@ -18740,7 +18764,7 @@ CONTAINS
                         projector_physical_direct_density_gdot_energy = &
                            DOT_PRODUCT(grad_e, projector_physical_direct_density_z_e)
                         projector_physical_direct_density_gdot_rotation = &
-                           DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
+                           DOT_PRODUCT(grad_rot, projector_physical_direct_density_sol)
                         projector_physical_direct_density_gdotp = &
                            projector_physical_direct_density_gdot_energy + &
                            projector_physical_direct_density_gdot_rotation
@@ -18752,16 +18776,16 @@ CONTAINS
                            MAX(0.0_dp, projector_physical_direct_density_norm_energy)
                         projector_physical_direct_density_norm_rotation = &
                            ABS(kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_sol))
+                                                        projector_physical_direct_density_sol))
                         IF (projector_physical_direct_density_norm_rotation <= &
                             EPSILON(projector_physical_direct_density_norm_rotation)) &
                            projector_physical_direct_density_norm_rotation = &
-                           ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
+                           ABS(DOT_PRODUCT(rtd, projector_physical_direct_density_sol))
                         IF (projector_physical_direct_density_norm_rotation <= &
                             EPSILON(projector_physical_direct_density_norm_rotation)) &
                            projector_physical_direct_density_norm_rotation = &
                            kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_sol, &
+                                                        projector_physical_direct_density_sol, &
                                                         var_step_weight)
                         projector_physical_direct_density_normp = &
                            projector_physical_direct_density_norm_energy + &
@@ -32367,7 +32391,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
-      LOGICAL                                            :: should_stop, just_energy, &
+      LOGICAL                                            :: do_kpoints, should_stop, just_energy, &
                                                             exit_inner_loop, inner_loop_converged
       INTEGER                                            :: output_unit
       REAL(KIND=dp)                                      :: convergence_delta
@@ -32381,9 +32405,9 @@ CONTAINS
 
       ! Keep physical fixed-N exit guards out of scf_env%iter_delta: that
       ! residual also drives k-point subspace refresh and minimizer history.
-      IF (scf_env%method == ot_method_nr .AND. ASSOCIATED(scf_env%qs_ot_env)) THEN
-         IF (ANY(scf_env%qs_ot_env(:)%kpoint_index > 0)) THEN
-            CALL get_qs_env(qs_env=qs_env, kpoints=kpoints)
+      IF (scf_env%method == ot_method_nr) THEN
+         CALL get_qs_env(qs_env=qs_env, kpoints=kpoints, do_kpoints=do_kpoints)
+         IF (do_kpoints) THEN
             CALL get_kpoint_info(kpoints, para_env_inter_kp=para_env_inter_kp)
             CALL qs_scf_loop_ot_kp_exit_delta(scf_env%qs_ot_env, para_env_inter_kp, &
                                               scf_control%eps_scf, convergence_delta)
