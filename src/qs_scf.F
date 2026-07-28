@@ -46,6 +46,7 @@
 ! **************************************************************************************************
 MODULE qs_scf
    USE atomic_kind_types,               ONLY: atomic_kind_type
+   USE cell_types,                      ONLY: cell_type
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
@@ -407,6 +408,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(cp_result_type), POINTER                      :: results
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks
@@ -431,7 +433,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (dft_control, rho, energy, &
+      NULLIFY (cell, dft_control, rho, energy, &
                logger, qs_charges, ks_env, mos, atomic_kind_set, qs_kind_set, &
                particle_set, dft_section, input, &
                scf_section, para_env, results, kpoints, pw_env, rho_ao_kp, mos_last_converged)
@@ -443,6 +445,7 @@ CONTAINS
       t1 = m_walltime()
 
       CALL get_qs_env(qs_env=qs_env, &
+                      cell=cell, &
                       energy=energy, &
                       particle_set=particle_set, &
                       qs_charges=qs_charges, &
@@ -722,7 +725,8 @@ CONTAINS
             END IF
 
             IF (do_kpoints) THEN
-               CALL write_kpoints_restart(rho_ao_kp, kpoints, scf_env, dft_section, particle_set, qs_kind_set)
+               CALL write_kpoints_restart(rho_ao_kp, kpoints, scf_env, dft_section, &
+                                          particle_set, qs_kind_set, cell)
                IF (exit_inner_loop .AND. ASSOCIATED(scf_env%qs_ot_env)) THEN
                   IF (ANY(scf_env%qs_ot_env(:)%kpoint_index > 0)) THEN
                      DO ispin = 1, SIZE(scf_env%qs_ot_env)

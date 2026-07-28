@@ -35,6 +35,7 @@ PROGRAM qs_ot_frechet_unittest
                                               cp_logger_type,&
                                               cp_rm_default_logger
    USE kinds,                           ONLY: dp
+   USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible
    USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets,&
                                               kpoint_ot_energy_weighted_density
    USE machine,                         ONLY: default_output_unit
@@ -562,6 +563,8 @@ PROGRAM qs_ot_frechet_unittest
       "canonical density tangent reduced Mermin blend", 2.0E-13_dp, nfail)
    CALL check_accepted_model_calibration_reset( &
       "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
+   CALL check_kpoint_ot_restart_geometry_signature( &
+      "k-point OT restart geometry signature", nfail)
    CALL check_shared_ref_update_control("shared k-point REF update control", nfail)
    CALL check_history_safe_occ_projector_cluster_offblock_response( &
       "history-safe occupation-projector cluster offblock response", 5.0E-12_dp, nfail)
@@ -23309,6 +23312,58 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_accepted_model_calibration_reset
+
+! **************************************************************************************************
+!> \brief Check that OT minimizer history is reused only for the same cell and atomic geometry.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_ot_restart_geometry_signature(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: changed_cell, changed_position, &
+                                                            changed_shape, roundoff_match, same
+      REAL(KIND=dp), DIMENSION(3, 1)                     :: short_positions
+      REAL(KIND=dp), DIMENSION(3, 2)                     :: current_positions, restart_positions
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: current_hmat, restart_hmat
+
+      current_hmat = RESHAPE([4.0_dp, 0.1_dp, 0.0_dp, &
+                              0.0_dp, 3.8_dp, 0.2_dp, &
+                              0.0_dp, 0.0_dp, 4.2_dp], SHAPE(current_hmat))
+      current_positions = RESHAPE([0.0_dp, 0.1_dp, 0.2_dp, &
+                                   1.1_dp, 1.2_dp, 1.3_dp], SHAPE(current_positions))
+      restart_hmat = current_hmat
+      restart_positions = current_positions
+      short_positions = current_positions(:, 1:1)
+
+      same = kpoint_ot_restart_geometry_compatible( &
+             current_hmat, current_positions, restart_hmat, restart_positions)
+      restart_positions(2, 2) = restart_positions(2, 2) + 1.0E-11_dp
+      roundoff_match = kpoint_ot_restart_geometry_compatible( &
+                       current_hmat, current_positions, restart_hmat, restart_positions)
+      restart_positions = current_positions
+      restart_positions(2, 2) = restart_positions(2, 2) + 1.0E-7_dp
+      changed_position = kpoint_ot_restart_geometry_compatible( &
+                         current_hmat, current_positions, restart_hmat, restart_positions)
+      restart_positions = current_positions
+      restart_hmat(1, 1) = restart_hmat(1, 1) + 1.0E-7_dp
+      changed_cell = kpoint_ot_restart_geometry_compatible( &
+                     current_hmat, current_positions, restart_hmat, restart_positions)
+      changed_shape = kpoint_ot_restart_geometry_compatible( &
+                      current_hmat, current_positions, current_hmat, short_positions)
+
+      IF (.NOT. same .OR. .NOT. roundoff_match .OR. changed_position .OR. &
+          changed_cell .OR. changed_shape) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "failed with same/roundoff/position/cell/shape", same, roundoff_match, &
+            changed_position, changed_cell, changed_shape
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_ot_restart_geometry_signature
 
 ! **************************************************************************************************
 !> \brief Check that every local k-point channel follows the synchronized REF-absorption decision.

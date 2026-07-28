@@ -15,6 +15,7 @@ MODULE kpoint_io
    USE atomic_kind_types,               ONLY: get_atomic_kind
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
+   USE cell_types,                      ONLY: cell_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_get_info,&
                                               dbcsr_p_type,&
                                               dbcsr_type
@@ -70,11 +71,13 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 25
+   INTEGER, PARAMETER                   :: ot_restart_version = 26
+   REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
    PUBLIC :: read_kpoints_restart, &
              write_kpoints_restart
+   PUBLIC :: kpoint_ot_restart_geometry_compatible
    PUBLIC :: get_cell, write_kpoints_file_header
 
 ! **************************************************************************************************
@@ -89,9 +92,10 @@ CONTAINS
 !> \param dft_section ...
 !> \param particle_set ...
 !> \param qs_kind_set ...
+!> \param cell current simulation cell
 ! **************************************************************************************************
    SUBROUTINE write_kpoints_restart(denmat, kpoints, scf_env, dft_section, &
-                                    particle_set, qs_kind_set)
+                                    particle_set, qs_kind_set, cell)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: denmat
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -99,6 +103,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: dft_section
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(cell_type), POINTER                           :: cell
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'write_kpoints_restart'
       CHARACTER(LEN=30), DIMENSION(2), PARAMETER :: &
@@ -107,7 +112,7 @@ CONTAINS
       INTEGER                                            :: handle, ic, ikey, ires, ispin, nimages, &
                                                             nkp, nspin
       INTEGER, DIMENSION(2)                              :: kp_range
-      INTEGER, DIMENSION(3)                              :: cell
+      INTEGER, DIMENSION(3)                              :: image_cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: ot_restricted, use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
@@ -161,17 +166,18 @@ CONTAINS
                   IF (ires > 0) WRITE (ires) ispin, nspin, nimages
                   DO ic = 1, nimages
                      IF (nimages > 1) THEN
-                        cell = get_cell(ic, cell_to_index)
+                        image_cell = get_cell(ic, cell_to_index)
                      ELSE
-                        cell = 0
+                        image_cell = 0
                      END IF
-                     IF (ires > 0) WRITE (ires) ic, cell
+                     IF (ires > 0) WRITE (ires) ic, image_cell
                      CALL copy_dbcsr_to_fm(denmat(ispin, ic)%matrix, fmat)
                      CALL cp_fm_write_unformatted(fmat, ires)
                   END DO
                END DO
                IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
-                  CALL write_kpoint_ot_restart_payload(scf_env%qs_ot_env, fmat, ires)
+                  CALL write_kpoint_ot_restart_payload(scf_env%qs_ot_env, fmat, ires, &
+                                                       cell, particle_set)
                END IF
 
                CALL cp_print_key_finished_output(ires, logger, dft_section, TRIM(keys(ikey)))
@@ -185,6 +191,34 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE write_kpoints_restart
+
+! **************************************************************************************************
+!> \brief test whether a serialized OT minimizer state belongs to the current geometry
+!> \param current_hmat current cell matrix
+!> \param current_positions current Cartesian atom positions
+!> \param restart_hmat serialized cell matrix
+!> \param restart_positions serialized Cartesian atom positions
+!> \return true when the minimizer coordinates and history can be continued
+! **************************************************************************************************
+   PURE FUNCTION kpoint_ot_restart_geometry_compatible(current_hmat, current_positions, &
+                                                       restart_hmat, restart_positions) RESULT(compatible)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: current_hmat, current_positions, &
+                                                            restart_hmat, restart_positions
+      LOGICAL                                            :: compatible
+
+      REAL(KIND=dp)                                      :: geometry_delta, geometry_scale
+
+      compatible = ALL(SHAPE(current_hmat) == SHAPE(restart_hmat)) .AND. &
+                   ALL(SHAPE(current_positions) == SHAPE(restart_positions))
+      IF (.NOT. compatible) RETURN
+
+      geometry_scale = MAX(1.0_dp, MAXVAL(ABS(current_hmat)), MAXVAL(ABS(restart_hmat)), &
+                           MAXVAL(ABS(current_positions)), MAXVAL(ABS(restart_positions)))
+      geometry_delta = MAX(MAXVAL(ABS(current_hmat - restart_hmat)), &
+                           MAXVAL(ABS(current_positions - restart_positions)))
+      compatible = geometry_delta <= ot_restart_geometry_tolerance*geometry_scale
+
+   END FUNCTION kpoint_ot_restart_geometry_compatible
 
 ! **************************************************************************************************
 !> \brief ...
@@ -343,9 +377,12 @@ CONTAINS
 !> \param dft_section ...
 !> \param natom_mismatch ...
 !> \param scf_env ...
+!> \param cell current simulation cell when an OT payload may be restored
+!> \param particle_set current atomic geometry when an OT payload may be restored
 ! **************************************************************************************************
    SUBROUTINE read_kpoints_restart(denmat, kpoints, fmwork, natom, &
-                                   para_env, id_nr, dft_section, natom_mismatch, scf_env)
+                                   para_env, id_nr, dft_section, natom_mismatch, scf_env, &
+                                   cell, particle_set)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: denmat
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -356,6 +393,9 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: dft_section
       LOGICAL, INTENT(OUT)                               :: natom_mismatch
       TYPE(qs_scf_env_type), OPTIONAL, POINTER           :: scf_env
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      TYPE(particle_type), DIMENSION(:), OPTIONAL, &
+         POINTER                                         :: particle_set
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'read_kpoints_restart'
 
@@ -387,8 +427,13 @@ CONTAINS
       END IF
 
       IF (PRESENT(scf_env)) THEN
+         CPASSERT(PRESENT(cell))
+         CPASSERT(PRESENT(particle_set))
+         CPASSERT(ASSOCIATED(cell))
+         CPASSERT(ASSOCIATED(particle_set))
          CALL read_kpoints_restart_low(denmat, kpoints, fmwork(1), para_env, &
-                                       natom, restart_unit, natom_mismatch, scf_env=scf_env)
+                                       natom, restart_unit, natom_mismatch, scf_env=scf_env, &
+                                       cell=cell, particle_set=particle_set)
       ELSE
          CALL read_kpoints_restart_low(denmat, kpoints, fmwork(1), para_env, &
                                        natom, restart_unit, natom_mismatch)
@@ -419,7 +464,7 @@ CONTAINS
 !> \author MI
 ! **************************************************************************************************
    SUBROUTINE read_kpoints_restart_low(denmat, kpoints, fmat, para_env, &
-                                       natom, rst_unit, natom_mismatch, scf_env)
+                                       natom, rst_unit, natom_mismatch, scf_env, cell, particle_set)
 
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: denmat
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -428,12 +473,15 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: natom, rst_unit
       LOGICAL, INTENT(OUT)                               :: natom_mismatch
       TYPE(qs_scf_env_type), OPTIONAL, POINTER           :: scf_env
+      TYPE(cell_type), OPTIONAL, POINTER                 :: cell
+      TYPE(particle_type), DIMENSION(:), OPTIONAL, &
+         POINTER                                         :: particle_set
 
       INTEGER                                            :: ic, image, ispin, nao, nao_read, &
                                                             natom_read, ni, nimages, nset_max, &
                                                             nshell_max, nspin, nspin_read, &
                                                             version_read
-      INTEGER, DIMENSION(3)                              :: cell
+      INTEGER, DIMENSION(3)                              :: image_cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: natom_match
 
@@ -489,16 +537,16 @@ CONTAINS
             END IF
             DO ic = 1, ni
                IF (para_env%is_source()) THEN
-                  READ (rst_unit) image, cell
+                  READ (rst_unit) image, image_cell
                END IF
                CALL para_env%bcast(image)
-               CALL para_env%bcast(cell)
+               CALL para_env%bcast(image_cell)
                !
                CALL cp_fm_read_unformatted(fmat, rst_unit)
                !
                IF (nimages > 1) THEN
-                  image = get_index(cell, cell_to_index)
-               ELSE IF (SUM(ABS(cell(:))) == 0) THEN
+                  image = get_index(image_cell, cell_to_index)
+               ELSE IF (SUM(ABS(image_cell(:))) == 0) THEN
                   image = 1
                ELSE
                   image = 0
@@ -510,7 +558,10 @@ CONTAINS
             IF (ispin == nspin_read) EXIT
          END DO
          IF (PRESENT(scf_env)) THEN
-            CALL read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env)
+            CPASSERT(PRESENT(cell))
+            CPASSERT(PRESENT(particle_set))
+            CALL read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env, &
+                                                cell, particle_set)
          END IF
 
       END IF
@@ -522,14 +573,18 @@ CONTAINS
 !> \param qs_ot_env OT channels
 !> \param fmat_template global restart FM distribution
 !> \param ires restart unit
+!> \param cell current simulation cell
+!> \param particle_set current atomic geometry
 ! **************************************************************************************************
-   SUBROUTINE write_kpoint_ot_restart_payload(qs_ot_env, fmat_template, ires)
+   SUBROUTINE write_kpoint_ot_restart_payload(qs_ot_env, fmat_template, ires, cell, particle_set)
       TYPE(qs_ot_type), DIMENSION(:), INTENT(IN)         :: qs_ot_env
       TYPE(cp_fm_type), INTENT(IN)                       :: fmat_template
       INTEGER, INTENT(IN)                                :: ires
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
-      INTEGER                                            :: ichannel, ihist, nchannel, ndiis, nener, &
-                                                            nmo, nmo_ortho, source_count
+      INTEGER                                            :: iatom, ichannel, ihist, nchannel, ndiis, &
+                                                            nener, nmo, nmo_ortho, source_count
       INTEGER, DIMENSION(15)                             :: int_payload
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(29)                             :: log_payload_int
@@ -542,6 +597,7 @@ CONTAINS
          has_rot_mat_gx_old, has_rot_mat_gx_old_im, has_rot_mat_x, has_rot_mat_x_im
       LOGICAL, DIMENSION(29)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
       REAL(KIND=dp), DIMENSION(53)                       :: ot_energy_payload, ot_grad_payload, &
@@ -554,10 +610,20 @@ CONTAINS
       NULLIFY (global_para_env, restart_matrix)
       global_para_env => fmat_template%matrix_struct%para_env
       nchannel = SIZE(qs_ot_env)
+      CPASSERT(ASSOCIATED(cell))
+      CPASSERT(ASSOCIATED(particle_set))
+      ALLOCATE (restart_positions(3, SIZE(particle_set)))
+      DO iatom = 1, SIZE(particle_set)
+         restart_positions(:, iatom) = particle_set(iatom)%r
+      END DO
       IF (ires > 0) THEN
          WRITE (ires) ot_restart_marker
          WRITE (ires) ot_restart_version, nchannel
+         WRITE (ires) SIZE(particle_set)
+         WRITE (ires) cell%hmat
+         WRITE (ires) restart_positions
       END IF
+      DEALLOCATE (restart_positions)
       DO ichannel = 1, nchannel
          nmo = 0
          nmo_ortho = 0
@@ -1300,16 +1366,21 @@ CONTAINS
 !> \param para_env parallel environment
 !> \param fmat restart FM template
 !> \param scf_env SCF environment receiving the cache
+!> \param cell current simulation cell
+!> \param particle_set current atomic geometry
 ! **************************************************************************************************
-   SUBROUTINE read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env)
+   SUBROUTINE read_kpoint_ot_restart_payload(rst_unit, para_env, fmat, scf_env, cell, particle_set)
       INTEGER, INTENT(IN)                                :: rst_unit
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(cp_fm_type), INTENT(INOUT)                    :: fmat
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
 
       CHARACTER(LEN=LEN(ot_restart_marker))              :: marker
-      INTEGER                                            :: adaptive_ios, ichannel, ihist, ios, &
-                                                            nchannel, ndiis, nener, version_read
+      INTEGER                                            :: adaptive_ios, iatom, ichannel, ihist, &
+                                                            ios, natom_restart, nchannel, ndiis, &
+                                                            nener, version_read
       INTEGER, DIMENSION(11)                             :: schur_int_payload_v4
       INTEGER, DIMENSION(12)                             :: schur_int_payload_v5
       INTEGER, DIMENSION(13)                             :: adaptive_int_payload_v20, &
@@ -1321,13 +1392,14 @@ CONTAINS
       INTEGER, DIMENSION(18)                             :: schur_int_payload_v13
       INTEGER, DIMENSION(19)                             :: schur_int_payload
       INTEGER, DIMENSION(qs_ot_restart_adaptive_nint)    :: adaptive_int_payload
-      LOGICAL                                            :: payload_found
+      LOGICAL                                            :: geometry_compatible, payload_found
       LOGICAL, DIMENSION(11)                             :: adaptive_log_payload_v20
       LOGICAL, DIMENSION(12)                             :: adaptive_log_payload_v21
       LOGICAL, DIMENSION(27)                             :: log_payload_v10
       LOGICAL, DIMENSION(28)                             :: log_payload_v18
       LOGICAL, DIMENSION(29)                             :: log_payload
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: current_positions, restart_positions
       REAL(KIND=dp), DIMENSION(118)                      :: schur_real_payload_v9
       REAL(KIND=dp), DIMENSION(124)                      :: schur_real_payload_v11
       REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload_v12
@@ -1335,6 +1407,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
       REAL(KIND=dp), DIMENSION(19)                       :: real_payload
       REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: restart_hmat
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
       REAL(KIND=dp), DIMENSION(65)                       :: schur_real_payload_v6
@@ -1364,6 +1437,57 @@ CONTAINS
       CALL para_env%bcast(nchannel)
       IF (version_read < 3 .OR. version_read > ot_restart_version) THEN
          CALL cp_warn(__LOCATION__, "Ignoring unsupported k-point OT restart payload version")
+         RETURN
+      END IF
+      IF (version_read < 26) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring k-point OT minimizer payload without a geometry signature")
+         RETURN
+      END IF
+
+      CPASSERT(ASSOCIATED(cell))
+      CPASSERT(ASSOCIATED(particle_set))
+      natom_restart = 0
+      ios = 0
+      IF (para_env%is_source()) READ (rst_unit, IOSTAT=ios) natom_restart
+      CALL para_env%bcast(ios)
+      CALL para_env%bcast(natom_restart)
+      IF (ios /= 0 .OR. natom_restart <= 0) THEN
+         CALL cp_warn(__LOCATION__, "Ignoring malformed k-point OT restart geometry signature")
+         RETURN
+      END IF
+      IF (natom_restart /= SIZE(particle_set)) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring k-point OT minimizer payload from a different cell or geometry")
+         RETURN
+      END IF
+      ALLOCATE (restart_positions(3, natom_restart))
+      restart_hmat(:, :) = 0.0_dp
+      restart_positions(:, :) = 0.0_dp
+      IF (para_env%is_source()) THEN
+         READ (rst_unit, IOSTAT=ios) restart_hmat
+         IF (ios == 0) READ (rst_unit, IOSTAT=ios) restart_positions
+      END IF
+      CALL para_env%bcast(ios)
+      CALL para_env%bcast(restart_hmat)
+      CALL para_env%bcast(restart_positions)
+      IF (ios /= 0) THEN
+         DEALLOCATE (restart_positions)
+         CALL cp_warn(__LOCATION__, "Ignoring malformed k-point OT restart geometry signature")
+         RETURN
+      END IF
+
+      ALLOCATE (current_positions(3, SIZE(particle_set)))
+      DO iatom = 1, SIZE(particle_set)
+         current_positions(:, iatom) = particle_set(iatom)%r
+      END DO
+      geometry_compatible = kpoint_ot_restart_geometry_compatible( &
+                            cell%hmat, current_positions, restart_hmat, restart_positions)
+      DEALLOCATE (current_positions)
+      DEALLOCATE (restart_positions)
+      IF (.NOT. geometry_compatible) THEN
+         CALL cp_warn(__LOCATION__, &
+                      "Ignoring k-point OT minimizer payload from a different cell or geometry")
          RETURN
       END IF
 
