@@ -1,0 +1,73 @@
+! Slow/manual companion for monotone Gaussian smearing with symmetry-reduced
+! metallic k-point OT. This input is intentionally not listed in
+! TEST_FILES.toml so the default regression remains inexpensive.
+! Local 2026-07 MPI-2 reference: ADDED_MOS AUTO grows from 4 to 8, the final
+! stage converges in 41 OT steps, and reaches -8.15946107220269 Ha. The
+! smearing free-energy correction is -3.5733645378E-4 Ha. The corresponding
+! diagonalization reference differs by 4.4E-8 Ha.
+&GLOBAL
+  PRINT_LEVEL HIGH
+  PROJECT Al_kp_ot_gaussian_sym3_converge
+  RUN_TYPE ENERGY
+&END GLOBAL
+
+&FORCE_EVAL
+  METHOD Quickstep
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_SET
+    POTENTIAL_FILE_NAME POTENTIAL
+    &KPOINTS
+      FULL_GRID OFF
+      SCHEME MONKHORST-PACK 3 1 1
+      SYMMETRY ON
+    &END KPOINTS
+    &MGRID
+      CUTOFF 40
+    &END MGRID
+    &PRINT
+      &KPOINTS ON
+      &END KPOINTS
+    &END PRINT
+    &QS
+      EPS_DEFAULT 1.0E-8
+    &END QS
+    &SCF
+      ADDED_MOS AUTO
+      EPS_SCF 1.0E-6
+      MAX_SCF 220
+      SCF_GUESS ATOMIC
+      &OT
+        ALGORITHM IRAC
+        ENERGIES
+        LINESEARCH 2PNT
+        MINIMIZER CG
+        OCCUPATION_PRECONDITIONER
+        PRECONDITIONER FULL_SINGLE_INVERSE
+        ROTATION
+      &END OT
+      &SMEAR
+        METHOD GAUSSIAN
+        SIGMA [eV] 0.025852
+      &END SMEAR
+    &END SCF
+    &XC
+      &XC_FUNCTIONAL Pade
+      &END XC_FUNCTIONAL
+    &END XC
+  &END DFT
+  &SUBSYS
+    &CELL
+      ABC 6.0 6.0 6.0
+    &END CELL
+    &COORD
+      Al        -0.4201082476       -0.4201082770       -0.4201082658
+      Al         2.1120503717        0.1540265147        0.1540265525
+      Al         0.1540266214        2.1120506065        0.1540265605
+      Al         0.1540266183        0.1540265196        2.1120505165
+    &END COORD
+    &KIND Al
+      BASIS_SET DZVP-GTH-PADE-CONFINED
+      POTENTIAL GTH-PADE-q3
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL

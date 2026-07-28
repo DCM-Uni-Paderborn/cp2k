@@ -55,10 +55,10 @@ MODULE qs_scf_initialization
    USE hairy_probes,                    ONLY: AO_boundaries
    USE input_constants,                 ONLY: &
         broy_mix, cholesky_dbcsr, cholesky_inverse, cholesky_off, diag_block_davidson, &
-        diag_block_krylov, diag_filter_matrix, diag_ot, diag_standard, direct_p_mix, kerker_mix, &
-        gfn2xtb, modified_broy_mix, multisec_mix, new_pulay_mix, no_mix, ot2cdft, outer_scf_none, &
-        plus_u_lowdin, pulay_mix, smeagol_runtype_emtransport, smear_fermi_dirac, &
-        wfi_frozen_method_nr, wfi_ps_method_nr, wfi_use_guess_method_nr
+        diag_block_krylov, diag_filter_matrix, diag_ot, diag_standard, direct_p_mix, gfn2xtb, &
+        kerker_mix, modified_broy_mix, multisec_mix, new_pulay_mix, no_mix, ot2cdft, &
+        outer_scf_none, plus_u_lowdin, pulay_mix, smeagol_runtype_emtransport, smear_fermi_dirac, &
+        smear_gaussian, wfi_frozen_method_nr, wfi_ps_method_nr, wfi_use_guess_method_nr
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
@@ -904,17 +904,26 @@ CONTAINS
          CALL section_vals_val_get(scf_section, "OT%ENERGIES", l_val=ot_energies)
          CALL section_vals_val_get(scf_section, "OT%ROTATION", l_val=ot_rotation)
          IF (scf_control%smear%do_smear) THEN
-            IF (.NOT. ot_energies) &
+            IF (.NOT. ot_energies) THEN
                CPABORT("OT with smearing requires OT%ENERGIES.")
-            IF (.NOT. ot_rotation) &
+            END IF
+            IF (.NOT. ot_rotation) THEN
                CPABORT("OT with smearing requires OT%ROTATION.")
-            IF (scf_control%smear%method /= smear_fermi_dirac) &
-               CPABORT("OT with smearing currently supports only FERMI_DIRAC.")
+            END IF
+            IF (scf_control%smear%method /= smear_fermi_dirac .AND. &
+                scf_control%smear%method /= smear_gaussian) THEN
+               CPABORT("OT smearing supports only FERMI_DIRAC or GAUSSIAN.")
+            END IF
+            IF (scf_control%smear%method == smear_gaussian .AND. .NOT. do_kpoints) THEN
+               CPABORT("Gaussian smearing with OT currently requires KPOINTS.")
+            END IF
          END IF
-         IF (SUM(ABS(scf_control%added_mos)) > 0 .AND. .NOT. ot_energies) &
+         IF (SUM(ABS(scf_control%added_mos)) > 0 .AND. .NOT. ot_energies) THEN
             CPABORT("OT with ADDED_MOS requires OT%ENERGIES.")
-         IF (dft_control%restricted .AND. dft_control%nspins /= 2) &
+         END IF
+         IF (dft_control%restricted .AND. dft_control%nspins /= 2) THEN
             CPABORT("nspin must be 2 for restricted (ROKS)")
+         END IF
          ! K-point OT is allowed to reach the spin/k-point channel allocation stub.
       ELSE IF (scf_env%method /= smeagol_method_nr) THEN
          CPABORT("OT or DIAGONALIZATION have to be set")

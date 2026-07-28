@@ -45,7 +45,7 @@ MODULE smearing_utils
    PRIVATE
 
    ! Unified interface (method as parameter)
-   PUBLIC :: SmearOcc, SmearFixed, SmearFixedDeriv, SmearFixedDerivMV
+   PUBLIC :: SmearOcc, SmearFixed, SmearFixedDeriv, SmearFixedDerivMV, SmearingDerivative
    PUBLIC :: Smearkp, Smearkp2
    PRIVATE :: cite_smearing
 
@@ -56,6 +56,49 @@ MODULE smearing_utils
    REAL(KIND=dp), PARAMETER, PRIVATE                     :: MPMV_MAX_NEWTON_STEP = 2.0_dp
 
 CONTAINS
+! **************************************************************************************************
+!> \brief Fixed-chemical-potential occupation response g=-df/de for one state
+!> \param occupation occupation from SmearOcc
+!> \param eigenvalue orbital energy
+!> \param mu chemical potential
+!> \param sigma smearing width
+!> \param maxocc maximum occupation
+!> \param method smearing method selector
+!> \return occupation response
+! **************************************************************************************************
+   FUNCTION SmearingDerivative(occupation, eigenvalue, mu, sigma, maxocc, method) RESULT(gvalue)
+      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, maxocc
+      INTEGER, INTENT(IN)                                :: method
+      REAL(KIND=dp)                                      :: gvalue
+
+      REAL(KIND=dp)                                      :: expu2, expx2, fi_norm, u, x
+
+      IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) THEN
+         gvalue = 0.0_dp
+         RETURN
+      END IF
+
+      x = (eigenvalue - mu)/sigma
+      SELECT CASE (method)
+      CASE (smear_fermi_dirac)
+         fi_norm = MAX(0.0_dp, MIN(1.0_dp, occupation/maxocc))
+         gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
+      CASE (smear_gaussian)
+         expx2 = EXP(-x*x)
+         gvalue = maxocc/(sigma*rootpi)*expx2
+      CASE (smear_mp)
+         expx2 = EXP(-x*x)
+         gvalue = maxocc*(3.0_dp - 2.0_dp*x*x)/(2.0_dp*sigma*rootpi)*expx2
+      CASE (smear_mv)
+         u = x + sqrthalf
+         expu2 = EXP(-u*u)
+         gvalue = maxocc*(2.0_dp + sqrt2*x)/(sigma*rootpi)*expu2
+      CASE DEFAULT
+         CPABORT("SmearingDerivative: unknown smearing method")
+      END SELECT
+
+   END FUNCTION SmearingDerivative
+
 ! **************************************************************************************************
 !> \brief   Citation of Smearing methods
 !> \param method ...
@@ -810,7 +853,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: festate
 
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: expu2, expx2, fi_norm, occ_i, u, x
+      REAL(KIND=dp)                                      :: occ_i
 
       DO i = 1, Nstate
          IF (PRESENT(estate) .AND. PRESENT(festate)) THEN
@@ -828,27 +871,7 @@ CONTAINS
             CYCLE
          END IF
 
-         x = (e(i) - mu)/sigma
-
-         SELECT CASE (method)
-         CASE (smear_fermi_dirac)
-            fi_norm = f(i)/occ_i
-            gvec(i) = occ_i*fi_norm*(1.0_dp - fi_norm)/sigma
-
-         CASE (smear_gaussian)
-            expx2 = EXP(-x*x)
-            gvec(i) = occ_i/(sigma*rootpi)*expx2
-
-         CASE (smear_mp)
-            expx2 = EXP(-x*x)
-            gvec(i) = occ_i*(3.0_dp - 2.0_dp*x*x)/(2.0_dp*sigma*rootpi)*expx2
-
-         CASE (smear_mv)
-            u = x + sqrthalf
-            expu2 = EXP(-u*u)
-            gvec(i) = occ_i*(2.0_dp + sqrt2*x)/(sigma*rootpi)*expu2
-
-         END SELECT
+         gvec(i) = SmearingDerivative(f(i), e(i), mu, sigma, occ_i, method)
       END DO
 
    END SUBROUTINE compute_gvec

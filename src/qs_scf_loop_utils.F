@@ -49,9 +49,7 @@ MODULE qs_scf_loop_utils
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_env_type,&
                                               kpoint_type
-   USE mathconstants,                   ONLY: rootpi,&
-                                              sqrt2,&
-                                              sqrthalf
+   USE mathconstants,                   ONLY: rootpi
    USE mathlib,                         ONLY: diag_complex,&
                                               diamat_all
    USE message_passing,                 ONLY: mp_para_env_type
@@ -115,7 +113,8 @@ MODULE qs_scf_loop_utils
    USE scf_control_types,               ONLY: scf_control_type,&
                                               smear_type
    USE smeagol_interface,               ONLY: run_smeagol_emtrans
-   USE smearing_utils,                  ONLY: Smearkp,&
+   USE smearing_utils,                  ONLY: SmearingDerivative,&
+                                              Smearkp,&
                                               Smearkp2
    USE tblite_interface,                ONLY: tb_native_scc_mixer_active
 #include "./base/base_uses.f90"
@@ -656,12 +655,13 @@ CONTAINS
 !> \param diagonal_residual_sq optional diagonal contribution to residual_sq
 !> \param offdiagonal_residual_sq optional off-diagonal contribution to residual_sq
 !> \param pair_residual optional elementwise residual in energy units
+!> \param method optional smearing method, defaults to Fermi-Dirac
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_canonical_density_residual(eigenvectors, current_occupation, &
                                                    canonical_occupation, sigma, maxocc, &
                                                    kpoint_weight, residual_sq, state_weight, &
                                                    max_residual, diagonal_residual_sq, &
-                                                   offdiagonal_residual_sq, pair_residual)
+                                                   offdiagonal_residual_sq, pair_residual, method)
 
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: eigenvectors
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: current_occupation, canonical_occupation
@@ -671,11 +671,13 @@ CONTAINS
                                                             offdiagonal_residual_sq
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT), &
          OPTIONAL                                        :: pair_residual
+      INTEGER, INTENT(IN), OPTIONAL                      :: method
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: projector
-      INTEGER                                            :: imo, nmo
+      INTEGER                                            :: imo, method_active, nmo
       REAL(KIND=dp)                                      :: diagonal_norm_sq, &
-                                                            inverse_susceptibility, total_norm_sq
+                                                            inverse_susceptibility, peak_response, &
+                                                            total_norm_sq
 
       nmo = SIZE(eigenvectors, 1)
       CPASSERT(SIZE(eigenvectors, 2) == nmo)
@@ -692,6 +694,10 @@ CONTAINS
          pair_residual(:, :) = 0.0_dp
       END IF
       IF (nmo == 0 .OR. sigma <= 0.0_dp .OR. maxocc <= 0.0_dp .OR. kpoint_weight <= 0.0_dp) RETURN
+      method_active = smear_fermi_dirac
+      IF (PRESENT(method)) method_active = method
+      peak_response = kpoint_ot_smearing_peak_response(sigma, maxocc, method_active)
+      IF (peak_response <= EPSILON(peak_response)) RETURN
 
       ALLOCATE (projector(nmo, nmo))
       projector(:, :) = eigenvectors(:, :)
@@ -703,10 +709,9 @@ CONTAINS
          projector(imo, imo) = projector(imo, imo) - current_occupation(imo)
       END DO
 
-      ! The largest Fermi-Dirac susceptibility is maxocc/(4*sigma).
-      ! Its inverse maps a bounded density mismatch to a conservative
-      ! thermodynamic residual with the same energy units as EPS_SCF.
-      inverse_susceptibility = 4.0_dp*sigma/maxocc
+      ! The inverse peak susceptibility maps a bounded density mismatch to a
+      ! conservative thermodynamic residual with the same energy units as EPS_SCF.
+      inverse_susceptibility = 1.0_dp/peak_response
       total_norm_sq = REAL(SUM(CONJG(projector(:, :))*projector(:, :)), KIND=dp)
       diagonal_norm_sq = 0.0_dp
       DO imo = 1, nmo
@@ -2901,7 +2906,8 @@ CONTAINS
             IF (ASSOCIATED(local_ot_env(local_channel)%matrix_occ_precond_scale) .AND. &
                 qs_ot_occupation_preconditioner_active(local_ot_env(local_channel)) .AND. &
                 scf_control%smear%do_smear .AND. &
-                scf_control%smear%method == smear_fermi_dirac) THEN
+                (scf_control%smear%method == smear_fermi_dirac .OR. &
+                 scf_control%smear%method == smear_gaussian)) THEN
                ! The subspace Hessian for column i carries the same f_i factor
                ! as H*C*diag(2*w_k*f).  Remove it from the preconditioned
                ! direction.  Nearly empty columns are regularized at the
@@ -3930,8 +3936,8 @@ CONTAINS
 
       refresh = .FALSE.
       IF (.NOT. allow_refresh .OR. fermi_window_guarded) RETURN
-      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
-      IF (smear%electronic_temperature <= 1.0E-14_dp) RETURN
+      IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
+      IF (kpoint_ot_smearing_width(smear) <= 1.0E-14_dp) RETURN
       IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(1), smear)) RETURN
       IF (local_ot_env(1)%energy_only) RETURN
 
@@ -4395,7 +4401,7 @@ CONTAINS
       guarded = .FALSE.
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
       IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
-      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+      IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
       ! Protect a pre-existing thermal frontier only during initial response
       ! calibration.  Later occupation changes must follow the physical Mermin
       ! minimization, including a legitimately gapped coarse k mesh.
@@ -4411,9 +4417,9 @@ CONTAINS
       CALL para_env_inter_kp%max(residual_delta)
       IF (qs_scf_kp_fermi_guard_release_ready(calibration_samples, residual_delta, eps_scf)) RETURN
 
-      sigma = smear%electronic_temperature
+      sigma = kpoint_ot_smearing_width(smear)
       IF (sigma <= 1.0E-14_dp) RETURN
-      anchor_window = kpoint_ot_fermi_window_anchor(sigma)
+      anchor_window = kpoint_ot_fermi_window_anchor(sigma, smear%method)
 
       trial_nmo = SIZE(trial_eigenvalues, 1)
       nkpoint = SIZE(trial_eigenvalues, 2)
@@ -4554,7 +4560,7 @@ CONTAINS
       IF (guarded .AND. logger%iter_info%print_level >= high_print_level .AND. &
           logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,ES16.8),1X,I5)') &
-            " OT k-point trial Fermi-window guard sigma anchor frac min_abs current trial release adjusted:", &
+            " OT k-point trial frontier-window guard sigma anchor frac min_abs current trial release adjusted:", &
             sigma, anchor_window, MINVAL(frac_weight), MINVAL(min_abs_eps_mu), &
             MINVAL(release_current), MINVAL(release_trial), MINVAL(release_trial), adjusted
       END IF
@@ -4578,24 +4584,104 @@ CONTAINS
 
       do_projection = qs_ot_env%settings%do_ener .AND. &
                       qs_ot_env%settings%do_rotation .AND. &
-                      smear%do_smear .AND. smear%method == smear_fermi_dirac
+                      smear%do_smear .AND. kpoint_ot_monotone_smearing(smear%method)
 
    END FUNCTION kpoint_ot_project_energy_subproblem
 
 ! **************************************************************************************************
-!> \brief Fermi-window guard anchor for the minimum resolvable FD frontier tail
+!> \brief whether a smearing method has a strictly non-negative occupation response
+!> \param method smearing method selector
+!> \return true for the monotone methods supported by metallic OT
+! **************************************************************************************************
+   PURE FUNCTION kpoint_ot_monotone_smearing(method) RESULT(monotone)
+      INTEGER, INTENT(IN)                                :: method
+      LOGICAL                                            :: monotone
+
+      monotone = method == smear_fermi_dirac .OR. method == smear_gaussian
+
+   END FUNCTION kpoint_ot_monotone_smearing
+
+! **************************************************************************************************
+!> \brief active width for a configured smearing method
+!> \param smear smearing settings
+!> \return smearing width in Hartree
+! **************************************************************************************************
+   PURE FUNCTION kpoint_ot_smearing_width(smear) RESULT(sigma)
+      TYPE(smear_type), INTENT(IN)                       :: smear
+      REAL(KIND=dp)                                      :: sigma
+
+      SELECT CASE (smear%method)
+      CASE (smear_fermi_dirac)
+         sigma = smear%electronic_temperature
+      CASE (smear_gaussian, smear_mp, smear_mv)
+         sigma = smear%smearing_width
+      CASE DEFAULT
+         sigma = 0.0_dp
+      END SELECT
+
+   END FUNCTION kpoint_ot_smearing_width
+
+! **************************************************************************************************
+!> \brief maximum fixed-mu occupation response for a monotone smearing method
+!> \param sigma smearing width
+!> \param maxocc maximum occupation
+!> \param method smearing method selector
+!> \return peak value of -df/de
+! **************************************************************************************************
+   PURE FUNCTION kpoint_ot_smearing_peak_response(sigma, maxocc, method) RESULT(peak)
+      REAL(KIND=dp), INTENT(IN)                          :: sigma, maxocc
+      INTEGER, INTENT(IN)                                :: method
+      REAL(KIND=dp)                                      :: peak
+
+      peak = 0.0_dp
+      IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) RETURN
+      SELECT CASE (method)
+      CASE (smear_fermi_dirac)
+         peak = maxocc/(4.0_dp*sigma)
+      CASE (smear_gaussian)
+         peak = maxocc/(sigma*rootpi)
+      END SELECT
+
+   END FUNCTION kpoint_ot_smearing_peak_response
+
+! **************************************************************************************************
+!> \brief frontier-window guard anchor for the minimum resolved occupation tail
 !> \param sigma ...
+!> \param method optional smearing method, defaults to Fermi-Dirac
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION kpoint_ot_fermi_window_anchor(sigma) RESULT(anchor)
+   PURE FUNCTION kpoint_ot_fermi_window_anchor(sigma, method) RESULT(anchor)
       REAL(KIND=dp), INTENT(IN)                          :: sigma
+      INTEGER, INTENT(IN), OPTIONAL                      :: method
       REAL(KIND=dp)                                      :: anchor
 
-      REAL(KIND=dp)                                      :: min_fraction
+      INTEGER                                            :: iter, method_active
+      REAL(KIND=dp)                                      :: lower, mid, min_fraction, &
+                                                            target_fraction, upper
 
       min_fraction = MIN(0.5_dp - EPSILON(1.0_dp), &
                          MAX(EPSILON(1.0_dp), ot_kp_fermi_window_min_frac))
-      anchor = sigma*LOG((1.0_dp - min_fraction)/min_fraction)
+      method_active = smear_fermi_dirac
+      IF (PRESENT(method)) method_active = method
+      SELECT CASE (method_active)
+      CASE (smear_fermi_dirac)
+         anchor = sigma*LOG((1.0_dp - min_fraction)/min_fraction)
+      CASE (smear_gaussian)
+         lower = 0.0_dp
+         upper = 8.0_dp
+         target_fraction = 2.0_dp*min_fraction
+         DO iter = 1, 80
+            mid = 0.5_dp*(lower + upper)
+            IF (ERFC(mid) > target_fraction) THEN
+               lower = mid
+            ELSE
+               upper = mid
+            END IF
+         END DO
+         anchor = sigma*0.5_dp*(lower + upper)
+      CASE DEFAULT
+         anchor = 0.0_dp
+      END SELECT
 
    END FUNCTION kpoint_ot_fermi_window_anchor
 
@@ -6130,13 +6216,13 @@ CONTAINS
       guarded = .FALSE.
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
       IF (.NOT. local_ot_env(1)%settings%occupation_preconditioner) RETURN
-      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+      IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
       IF (local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
           ot_kp_schur_calibration_min_samples) RETURN
 
-      sigma = smear%electronic_temperature
+      sigma = kpoint_ot_smearing_width(smear)
       IF (sigma <= 1.0E-14_dp) RETURN
-      anchor_window = kpoint_ot_fermi_window_anchor(sigma)
+      anchor_window = kpoint_ot_fermi_window_anchor(sigma, smear%method)
 
       ngroups = 1
       IF (nspin_ot == 2 .AND. smear%fixed_mag_mom >= 0.0_dp) ngroups = 2
@@ -6251,7 +6337,7 @@ CONTAINS
           logger%iter_info%print_level >= high_print_level .AND. &
           logger%para_env%is_source()) THEN
          WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,ES16.8),1X,I5)') &
-            " OT k-point Fermi-window guard sigma anchor frac min_abs instant release adjusted:", &
+            " OT k-point frontier-window guard sigma anchor frac min_abs instant release adjusted:", &
             sigma, anchor_window, MINVAL(frac_weight), MINVAL(min_abs_eps_mu), &
             MINVAL(release_instant), MINVAL(release_instant), adjusted
       END IF
@@ -6326,7 +6412,7 @@ CONTAINS
          END DO
       END IF
       mu = mu/REAL(nspin, KIND=dp)
-      sigma = smear%electronic_temperature
+      sigma = kpoint_ot_smearing_width(smear)
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
@@ -6477,7 +6563,7 @@ CONTAINS
                                                             ispin, local_channel, local_kpoint, nmo
       LOGICAL                                            :: active, fermi_guard_active, &
                                                             has_trust_weight
-      REAL(KIND=dp) :: edge_window, fermi_guard_anchor, fi_norm, frac_weight, gvalue, maxocc, &
+      REAL(KIND=dp) :: edge_window, fermi_guard_anchor, frac_weight, gvalue, maxocc, &
          min_abs_eps_mu, mu, occ_tail, rayleigh_edge_gap, rayleigh_gap, residual_delta, sigma, &
          trust_radius
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rayleigh_diag
@@ -6504,13 +6590,13 @@ CONTAINS
 
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
       IF (.NOT. qs_ot_occupation_preconditioner_active(local_ot_env(1))) RETURN
-      IF (.NOT. smear%do_smear .OR. smear%method /= smear_fermi_dirac) RETURN
+      IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
 
-      sigma = smear%electronic_temperature
+      sigma = kpoint_ot_smearing_width(smear)
       IF (sigma <= 1.0E-14_dp) RETURN
       trust_radius = trust_radius_factor*sigma
       edge_window = edge_window_factor*sigma
-      fermi_guard_anchor = kpoint_ot_fermi_window_anchor(sigma)
+      fermi_guard_anchor = kpoint_ot_fermi_window_anchor(sigma, smear%method)
       calibration_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
       CALL para_env_inter_kp%min(calibration_samples)
       residual_delta = 0.0_dp
@@ -6564,8 +6650,9 @@ CONTAINS
                IF (active) rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                                    ABS(rayleigh_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
                IF (active .AND. has_trust_weight) THEN
-                  fi_norm = trial_occupation(imo, ikpoint, ispin)/MAX(maxocc, EPSILON(maxocc))
-                  gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
+                  gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                              trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                              sigma, maxocc, smear%method)
                   local_ot_env(local_channel)%ener_x_trust_weight(imo) = wkp(ikpoint)*MAX(gvalue, 0.0_dp)
                END IF
             END DO
@@ -6586,23 +6673,25 @@ CONTAINS
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_trust
 
 ! **************************************************************************************************
-!> \brief active Fermi-window response for the k-point OT canonical tether
+!> \brief active frontier response for the k-point OT canonical tether
 !> \param occupation ...
 !> \param eigenvalue ...
 !> \param mu ...
 !> \param sigma ...
 !> \param maxocc ...
+!> \param method ...
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION kpoint_ot_canonical_tether_response(occupation, eigenvalue, mu, sigma, maxocc) RESULT(response)
+   FUNCTION kpoint_ot_canonical_tether_response(occupation, eigenvalue, mu, sigma, maxocc, method) RESULT(response)
       REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, maxocc
+      INTEGER, INTENT(IN)                                :: method
       REAL(KIND=dp)                                      :: response
 
       REAL(KIND=dp), PARAMETER :: edge_window_factor = 8.0_dp, partial_tol = 1.0E-8_dp, &
-         response_floor_fraction = 1.0E-2_dp
+         response_floor_fraction = 4.0E-2_dp
 
       LOGICAL                                            :: active
-      REAL(KIND=dp)                                      :: edge_window, fi_norm, gvalue, occ_tail, &
+      REAL(KIND=dp)                                      :: edge_window, gvalue, occ_tail, &
                                                             response_floor, tail_scale
 
       response = 0.0_dp
@@ -6613,9 +6702,9 @@ CONTAINS
       active = occ_tail > partial_tol*MAX(maxocc, 1.0_dp) .OR. ABS(eigenvalue - mu) < edge_window
       IF (.NOT. active) RETURN
 
-      fi_norm = occupation/MAX(maxocc, EPSILON(maxocc))
-      gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
-      response_floor = response_floor_fraction*maxocc/sigma
+      gvalue = SmearingDerivative(occupation, eigenvalue, mu, sigma, maxocc, method)
+      response_floor = response_floor_fraction* &
+                       kpoint_ot_smearing_peak_response(sigma, maxocc, method)
       tail_scale = occ_tail/MAX(ot_kp_fermi_window_tail_fraction*maxocc, EPSILON(maxocc))
       response_floor = response_floor*MIN(1.0_dp, MAX(0.0_dp, tail_scale))
       response = MAX(gvalue, response_floor)
@@ -6690,24 +6779,26 @@ CONTAINS
    END FUNCTION kpoint_ot_canonical_tether_strength
 
 ! **************************************************************************************************
-!> \brief response-weighted Fermi-window tether weight for k-point OT auxiliary energies
+!> \brief response-weighted frontier tether for k-point OT auxiliary energies
 !> \param occupation ...
 !> \param eigenvalue ...
 !> \param mu ...
 !> \param sigma ...
 !> \param maxocc ...
+!> \param method ...
 !> \param kpoint_weight ...
 !> \param tether_strength ...
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION kpoint_ot_canonical_tether_weight(occupation, eigenvalue, mu, sigma, maxocc, &
+   FUNCTION kpoint_ot_canonical_tether_weight(occupation, eigenvalue, mu, sigma, maxocc, method, &
                                               kpoint_weight, tether_strength) RESULT(weight)
-      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, &
-                                                            maxocc, kpoint_weight, tether_strength
+      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, maxocc
+      INTEGER, INTENT(IN)                                :: method
+      REAL(KIND=dp), INTENT(IN)                          :: kpoint_weight, tether_strength
       REAL(KIND=dp)                                      :: weight
 
       weight = tether_strength*kpoint_weight* &
-               kpoint_ot_canonical_tether_response(occupation, eigenvalue, mu, sigma, maxocc)
+               kpoint_ot_canonical_tether_response(occupation, eigenvalue, mu, sigma, maxocc, method)
 
    END FUNCTION kpoint_ot_canonical_tether_weight
 
@@ -6843,8 +6934,8 @@ CONTAINS
           qs_ot_occupation_preconditioner_active(qs_ot_env) .AND. &
           qs_ot_env%settings%canonical_tether .AND. &
           .NOT. project_energy_subproblem .AND. &
-          smear%do_smear .AND. smear%method == smear_fermi_dirac) THEN
-         sigma = smear%electronic_temperature
+          smear%do_smear .AND. kpoint_ot_monotone_smearing(smear%method)) THEN
+         sigma = kpoint_ot_smearing_width(smear)
          nmo = SIZE(qs_ot_env%ener_x)
          IF (sigma > 1.0E-14_dp .AND. SIZE(eigenvalues) >= nmo .AND. SIZE(occupation_numbers) >= nmo) THEN
             ALLOCATE (diagonal(nmo), tether_diag(nmo))
@@ -6855,14 +6946,14 @@ CONTAINS
             tether_weight_sum = 0.0_dp
             DO imo = 1, nmo
                tether_response = kpoint_ot_canonical_tether_response(occupation_numbers(imo), eigenvalues(imo), &
-                                                                     mu, sigma, maxocc)
+                                                                     mu, sigma, maxocc, smear%method)
                IF (tether_response > 0.0_dp) &
                   rayleigh_edge_gap = MAX(rayleigh_edge_gap, ABS(diagonal(imo) - qs_ot_env%ener_x(imo)))
             END DO
             tether_strength = kpoint_ot_canonical_tether_strength(qs_ot_env, rayleigh_edge_gap, sigma)
             DO imo = 1, nmo
                tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
-                                                                 mu, sigma, maxocc, kpoint_weight, &
+                                                                 mu, sigma, maxocc, smear%method, kpoint_weight, &
                                                                  tether_strength)
                IF (tether_weight <= 0.0_dp) CYCLE
                delta = diagonal(imo) - qs_ot_env%ener_x(imo)
@@ -6874,7 +6965,7 @@ CONTAINS
                canonical_tether_energy = 0.0_dp
                DO imo = 1, nmo
                   tether_weight = kpoint_ot_canonical_tether_weight(occupation_numbers(imo), eigenvalues(imo), &
-                                                                    mu, sigma, maxocc, kpoint_weight, &
+                                                                    mu, sigma, maxocc, smear%method, kpoint_weight, &
                                                                     tether_strength)
                   IF (tether_weight <= 0.0_dp) CYCLE
                   delta = diagonal(imo) - qs_ot_env%ener_x(imo) - tether_shift
@@ -7017,7 +7108,9 @@ CONTAINS
       precond_sum(:) = 0.0_dp
       schur_group_done(:) = .FALSE.
       active_preconditioner = qs_ot_occupation_preconditioner_active(local_ot_env(1)) .AND. &
-                              smear%do_smear .AND. smear%method == smear_fermi_dirac
+                              smear%do_smear .AND. &
+                              (smear%method == smear_fermi_dirac .OR. &
+                               smear%method == smear_gaussian)
       global_schur_replicated = para_env_inter_kp%num_pe > 1
 
       CALL audit_kpoint_ot_canonical_density()
@@ -7072,9 +7165,9 @@ CONTAINS
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
             mu = trial_mu(ispin)
             DO imo = 1, nmo
-               gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
-                                             trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                             sigma, maxocc, smear%method)
+               gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                           trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                           sigma, maxocc, smear%method)
                v = local_ot_env(local_channel)%ener_gx(imo) - trial_eigenvalues(imo, ikpoint, ispin) + mu
                gsum(group) = gsum(group) + wkp(ikpoint)*gvalue
                gdotv(group) = gdotv(group) + wkp(ikpoint)*gvalue*v
@@ -7094,9 +7187,9 @@ CONTAINS
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
             mu = trial_mu(ispin)
             DO imo = 1, nmo
-               gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
-                                             trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                             sigma, maxocc, smear%method)
+               gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                           trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                           sigma, maxocc, smear%method)
                IF (ABS(gsum(group)) > EPSILON(gsum(group))) THEN
                   v = local_ot_env(local_channel)%ener_gx(imo) - trial_eigenvalues(imo, ikpoint, ispin) + mu
                   local_ot_env(local_channel)%ener_gx(imo) = &
@@ -7143,7 +7236,7 @@ CONTAINS
                DO imo = 1, nmo
                   tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
                                                                         trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                                        sigma, maxocc)
+                                                                        sigma, maxocc, smear%method)
                   IF (tether_response > 0.0_dp) &
                      rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                              ABS(canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
@@ -7154,7 +7247,7 @@ CONTAINS
                DO imo = 1, nmo
                   tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
-                                                                    mu, sigma, maxocc, wkp(ikpoint), &
+                                                                    mu, sigma, maxocc, smear%method, wkp(ikpoint), &
                                                                     tether_strength)
                   IF (tether_weight <= 0.0_dp) CYCLE
                   delta = canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo)
@@ -7166,7 +7259,7 @@ CONTAINS
                   DO imo = 1, nmo
                      tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
                                                                        trial_eigenvalues(imo, ikpoint, ispin), &
-                                                                       mu, sigma, maxocc, wkp(ikpoint), &
+                                                                       mu, sigma, maxocc, smear%method, wkp(ikpoint), &
                                                                        tether_strength)
                      IF (tether_weight <= 0.0_dp) CYCLE
                      delta = canonical_diag(imo) - local_ot_env(local_channel)%ener_x(imo) - tether_shift
@@ -7245,18 +7338,22 @@ CONTAINS
 
          audit_ready = local_ot_env(1)%settings%do_rotation .AND. &
                        local_ot_env(1)%settings%do_ener .AND. smear%do_smear .AND. &
-                       smear%method == smear_fermi_dirac .AND. smear%electronic_temperature > 0.0_dp
+                       kpoint_ot_monotone_smearing(smear%method) .AND. &
+                       kpoint_ot_smearing_width(smear) > 0.0_dp
          DO local_channel = 1, SIZE(local_ot_env)
             local_ot_env(local_channel)%kpoint_density_stationarity_ready = .FALSE.
             local_ot_env(local_channel)%kpoint_density_stationarity_delta = -1.0_dp
             local_ot_env(local_channel)%kpoint_density_stationarity_max = -1.0_dp
             local_ot_env(local_channel)%kpoint_canonical_occupation_ready = .FALSE.
+            local_ot_env(local_channel)%kpoint_canonical_mu = 0.0_dp
             IF (ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)) &
                local_ot_env(local_channel)%kpoint_canonical_occupation(:) = 0.0_dp
+            IF (ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_eigenvalue)) &
+               local_ot_env(local_channel)%kpoint_canonical_eigenvalue(:) = 0.0_dp
          END DO
          IF (.NOT. audit_ready) RETURN
 
-         sigma = smear%electronic_temperature
+         sigma = kpoint_ot_smearing_width(smear)
          nmo = SIZE(trial_eigenvalues, 1)
          ALLOCATE (canonical_eigenvalues, MOLD=trial_eigenvalues)
          ALLOCATE (canonical_occupation, MOLD=trial_occupation)
@@ -7320,15 +7417,20 @@ CONTAINS
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc)
                CPASSERT(ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation))
                CPASSERT(SIZE(local_ot_env(local_channel)%kpoint_canonical_occupation) == nmo)
+               CPASSERT(ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_eigenvalue))
+               CPASSERT(SIZE(local_ot_env(local_channel)%kpoint_canonical_eigenvalue) == nmo)
                local_ot_env(local_channel)%kpoint_canonical_occupation(:) = &
                   canonical_occupation(:, ikpoint, ispin)
+               local_ot_env(local_channel)%kpoint_canonical_eigenvalue(:) = &
+                  canonical_eigenvalues(:, ikpoint, ispin)
+               local_ot_env(local_channel)%kpoint_canonical_mu = canonical_mu(ispin)
                local_ot_env(local_channel)%kpoint_canonical_occupation_ready = .TRUE.
                CALL qs_scf_kp_canonical_density_residual( &
                   channel_evec(:, :, local_channel), trial_occupation(:, ikpoint, ispin), &
                   canonical_occupation(:, ikpoint, ispin), sigma, maxocc, wkp(ikpoint), &
                   channel_metric, channel_weight, channel_max, channel_metric_diag, &
                   channel_metric_offdiag, &
-                  local_ot_env(local_channel)%kpoint_density_pair_residual)
+                  local_ot_env(local_channel)%kpoint_density_pair_residual, smear%method)
                channel_density_diag(ikpoint, ispin) = channel_metric_diag
                channel_density_max(ikpoint, ispin) = channel_max
                channel_density_metric(ikpoint, ispin) = channel_metric
@@ -10585,7 +10687,7 @@ CONTAINS
                   DO imo = 1, nmo
                      tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
                                                                            trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                                           sigma, maxocc)
+                                                                           sigma, maxocc, smear%method)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                                 ABS(channel_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
@@ -10595,13 +10697,13 @@ CONTAINS
                   DEALLOCATE (channel_diag)
                END IF
                DO imo = 1, nmo
-                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
-                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                sigma, maxocc, smear%method)
+                  gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                              trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                              sigma, maxocc, smear%method)
                   tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
-                                                                    mu, sigma, &
-                                                                    maxocc, wkp(ikpoint), tether_strength)
+                                                                    mu, sigma, maxocc, smear%method, &
+                                                                    wkp(ikpoint), tether_strength)
                   occ_curvature = wkp(ikpoint)*gvalue
                   curvature = occ_curvature + tether_weight
                   occ_curv_sum(group) = occ_curv_sum(group) + occ_curvature
@@ -10649,7 +10751,7 @@ CONTAINS
                   DO imo = 1, nmo
                      tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
                                                                            trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                                           sigma, maxocc)
+                                                                           sigma, maxocc, smear%method)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                                 ABS(channel_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
@@ -10659,13 +10761,13 @@ CONTAINS
                   DEALLOCATE (channel_diag)
                END IF
                DO imo = 1, nmo
-                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
-                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                sigma, maxocc, smear%method)
+                  gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                              trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                              sigma, maxocc, smear%method)
                   tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
-                                                                    mu, sigma, &
-                                                                    maxocc, wkp(ikpoint), tether_strength)
+                                                                    mu, sigma, maxocc, smear%method, &
+                                                                    wkp(ikpoint), tether_strength)
                   curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature > EPSILON(curvature)) THEN
                      IF (curvature < energy_curvature_floor(group)) THEN
@@ -10727,7 +10829,7 @@ CONTAINS
                   DO imo = 1, nmo
                      tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
                                                                            trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                                           sigma, maxocc)
+                                                                           sigma, maxocc, smear%method)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                                 ABS(channel_diag(imo) - local_ot_env(local_channel)%ener_x(imo)))
@@ -10737,13 +10839,13 @@ CONTAINS
                   DEALLOCATE (channel_diag)
                END IF
                DO imo = 1, nmo
-                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
-                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                sigma, maxocc, smear%method)
+                  gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                              trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                              sigma, maxocc, smear%method)
                   tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
-                                                                    mu, sigma, &
-                                                                    maxocc, wkp(ikpoint), tether_strength)
+                                                                    mu, sigma, maxocc, smear%method, &
+                                                                    wkp(ikpoint), tether_strength)
                   curvature = wkp(ikpoint)*gvalue + tether_weight
                   IF (curvature >= energy_curvature_floor(group) .AND. &
                       curvature > EPSILON(curvature)) &
@@ -11088,14 +11190,14 @@ CONTAINS
          canonical_density_tangent_alpha, canonical_density_tangent_cross, &
          canonical_density_tangent_gain, canonical_density_tangent_gdot, &
          canonical_density_tangent_norm, canonical_density_tangent_raw_norm, &
-         canonical_density_tangent_scalar_gain, channel_occ_curv_max, channel_projector_weight
-      REAL(KIND=dp) :: constrained_diag_shift_avg, constrained_direction_scale, &
-         constrained_expected_drop, constrained_expected_drop_ratio, constrained_gdot_energy, &
-         constrained_gdot_rotation, constrained_gdotp, constrained_model_calibrated_drop, &
-         constrained_model_drop, constrained_model_gap, constrained_model_gap_drop, &
-         constrained_model_gap_ratio, constrained_model_gap_trust, constrained_norm_energy, &
-         constrained_norm_ratio, constrained_norm_rotation, constrained_normp, &
-         constrained_occ_response_diag_avg, constrained_occgap_shadow_drop, &
+         canonical_density_tangent_scalar_gain, canonical_mu_channel, channel_occ_curv_max
+      REAL(KIND=dp) :: channel_projector_weight, constrained_diag_shift_avg, &
+         constrained_direction_scale, constrained_expected_drop, constrained_expected_drop_ratio, &
+         constrained_gdot_energy, constrained_gdot_rotation, constrained_gdotp, &
+         constrained_model_calibrated_drop, constrained_model_drop, constrained_model_gap, &
+         constrained_model_gap_drop, constrained_model_gap_ratio, constrained_model_gap_trust, &
+         constrained_norm_energy, constrained_norm_ratio, constrained_norm_rotation, &
+         constrained_normp, constrained_occ_response_diag_avg, constrained_occgap_shadow_drop, &
          constrained_occgap_shadow_gap_ratio
       REAL(KIND=dp) :: constrained_quality_for_selection, constrained_response_abs_step, &
          constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
@@ -11759,40 +11861,41 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: accepted_sol, accepted_z_e, &
          canonical_density_mode_alpha, canonical_density_mode_curvature, &
          canonical_density_mode_linear, canonical_density_tangent, &
-         canonical_density_trial_raw_rx_e, canonical_density_trial_sol, canonical_occ_curv, &
-         canonical_occ_curv_channel, canonical_occupation_channel, channel_maxocc, &
-         constrained_sol, constrained_z_e, curv, density_basis_selective_floor_weight, &
-         density_descent_rx_e, density_descent_z_e, density_full_global_rx_e, &
-         density_full_global_sol, density_full_rx_e, density_full_sol, density_full_z_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_gap_projected_e, density_gap_rx_e, &
-         density_gap_trial_basis_e, density_gap_trial_projected_e, density_plateau_rx_e, &
-         density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, energy_grad_metric_weight, &
-         energy_step_weight, grad_e, grad_rot, occ_curv, projector_inactive_offdiag_rx_e, &
-         projector_inactive_offdiag_sol, projector_inactive_offdiag_z_e, projector_offdiag_rx_e, &
-         projector_offdiag_sol, projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
-         projector_physical_direct_curv_eval, projector_physical_direct_density_rx_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_density_sol, &
-         projector_physical_direct_density_z_e, projector_physical_direct_diagref_rx_e, &
-         projector_physical_direct_effective_rx_e, projector_physical_direct_model_e, &
-         projector_physical_direct_response_rx_e, projector_physical_direct_rx_e, &
-         projector_physical_direct_schur_eval, projector_physical_direct_sol, &
-         projector_physical_direct_spectral_model_e, projector_physical_direct_spectral_rx_e, &
-         projector_physical_direct_spectral_sol, projector_physical_direct_spectral_z_e, &
-         projector_physical_direct_z_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_model_e, &
-         projector_physical_rx_e, projector_physical_sol, projector_physical_z_e, &
-         projector_response_rx_e, projector_response_sol, projector_response_z_e, rhs, rot_floor, &
-         row_floor_shift, rtd, rx_e, rx_model, sol, split_sol, split_z_e, tether_curv, &
-         var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
-         var_projector_response_weight, var_projector_weight, var_step_weight, &
-         var_thermal_activity, z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
-         z_density_basis_damped_audit_trial
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_density_basis_filtered_audit_trial, &
-         z_density_basis_selective_audit_trial, z_density_floor_audit_trial, &
-         z_density_floor_safe_audit_trial, z_density_full_audit_trial, &
-         z_density_full_global_trial, z_density_full_trial, z_density_plateau_trial, &
-         z_density_trial, z_e, z_exact_active_trial, z_exact_physical_trial, z_exact_raw_trial, &
-         z_exact_trial, z_multisecant, z_trial
+         canonical_density_trial_raw_rx_e, canonical_density_trial_sol, &
+         canonical_eigenvalue_channel, canonical_occ_curv, canonical_occ_curv_channel, &
+         canonical_occupation_channel, channel_maxocc, constrained_sol, constrained_z_e, curv, &
+         density_basis_selective_floor_weight, density_descent_rx_e, density_descent_z_e, &
+         density_full_global_rx_e, density_full_global_sol, density_full_rx_e, density_full_sol
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_full_z_e, density_gap_projected_e, &
+         density_gap_rx_e, density_gap_trial_basis_e, density_gap_trial_projected_e, &
+         density_plateau_rx_e, density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, &
+         energy_grad_metric_weight, energy_step_weight, grad_e, grad_rot, occ_curv, &
+         projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
+         projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
+         projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
+         projector_physical_direct_curv_eval
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_density_rx_e, &
+         projector_physical_direct_density_sol, projector_physical_direct_density_z_e, &
+         projector_physical_direct_diagref_rx_e, projector_physical_direct_effective_rx_e, &
+         projector_physical_direct_model_e, projector_physical_direct_response_rx_e, &
+         projector_physical_direct_rx_e, projector_physical_direct_schur_eval, &
+         projector_physical_direct_sol, projector_physical_direct_spectral_model_e, &
+         projector_physical_direct_spectral_rx_e, projector_physical_direct_spectral_sol, &
+         projector_physical_direct_spectral_z_e
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_z_e, &
+         projector_physical_model_e, projector_physical_rx_e, projector_physical_sol, &
+         projector_physical_z_e, projector_response_rx_e, projector_response_sol, &
+         projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, &
+         split_sol, split_z_e, tether_curv, var_grad_metric_weight, var_occ_gap_weight, &
+         var_projector_active_weight, var_projector_response_weight, var_projector_weight, &
+         var_step_weight, var_thermal_activity, z_density_basis_audit_trial, &
+         z_density_basis_curvfloor_audit_trial
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_density_basis_damped_audit_trial, &
+         z_density_basis_filtered_audit_trial, z_density_basis_selective_audit_trial, &
+         z_density_floor_audit_trial, z_density_floor_safe_audit_trial, &
+         z_density_full_audit_trial, z_density_full_global_trial, z_density_full_trial, &
+         z_density_plateau_trial, z_density_trial, z_e, z_exact_active_trial, &
+         z_exact_physical_trial, z_exact_raw_trial, z_exact_trial, z_multisecant, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: canonical_density_tangent_modes, &
          energy_cross, energy_cross_active, energy_cross_canonical, energy_cross_density, &
          energy_cross_density_basis_audit, energy_cross_density_basis_curvfloor_audit, &
@@ -13367,8 +13470,11 @@ CONTAINS
                CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
                mu = trial_mu(ispin)
                ALLOCATE (h_re(nmo, nmo), h_im(nmo, nmo), grad_re(nmo, nmo), grad_im(nmo, nmo), &
-                         canonical_occupation_channel(nmo), canonical_occ_curv_channel(nmo))
+                         canonical_eigenvalue_channel(nmo), canonical_occupation_channel(nmo), &
+                         canonical_occ_curv_channel(nmo))
+               canonical_eigenvalue_channel(:) = trial_eigenvalues(1:nmo, ikpoint, ispin)
                canonical_occupation_channel(:) = trial_occupation(1:nmo, ikpoint, ispin)
+               canonical_mu_channel = mu
                IF (local_ot_env(local_channel)%kpoint_canonical_occupation_ready) THEN
                   density_pair_shape_ok = &
                      ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)
@@ -13378,14 +13484,25 @@ CONTAINS
                   CPASSERT(density_pair_shape_ok)
                   canonical_occupation_channel(:) = &
                      local_ot_env(local_channel)%kpoint_canonical_occupation(:)
+                  density_pair_shape_ok = &
+                     ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_eigenvalue)
+                  CPASSERT(density_pair_shape_ok)
+                  density_pair_shape_ok = &
+                     SIZE(local_ot_env(local_channel)%kpoint_canonical_eigenvalue) == nmo
+                  CPASSERT(density_pair_shape_ok)
+                  canonical_eigenvalue_channel(:) = &
+                     local_ot_env(local_channel)%kpoint_canonical_eigenvalue(:)
+                  canonical_mu_channel = local_ot_env(local_channel)%kpoint_canonical_mu
                END IF
                canonical_occ_curv_channel(:) = 0.0_dp
-               IF (smear%method == smear_fermi_dirac .AND. sigma > EPSILON(sigma) .AND. &
+               IF (kpoint_ot_monotone_smearing(smear%method) .AND. sigma > EPSILON(sigma) .AND. &
                    maxocc > EPSILON(maxocc)) THEN
                   DO imo = 1, nmo
-                     canonical_occ_curv_channel(imo) = wkp(ikpoint)*maxocc* &
-                                                       (canonical_occupation_channel(imo)/maxocc)* &
-                                                       (1.0_dp - canonical_occupation_channel(imo)/maxocc)/sigma
+                     canonical_occ_curv_channel(imo) = wkp(ikpoint)* &
+                                                       SmearingDerivative(canonical_occupation_channel(imo), &
+                                                                          canonical_eigenvalue_channel(imo), &
+                                                                          canonical_mu_channel, sigma, maxocc, &
+                                                                          smear%method)
                   END DO
                END IF
                WHERE (canonical_occ_curv_channel <= &
@@ -13411,7 +13528,7 @@ CONTAINS
                   DO imo = 1, nmo
                      tether_response = kpoint_ot_canonical_tether_response(trial_occupation(imo, ikpoint, ispin), &
                                                                            trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                                           sigma, maxocc)
+                                                                           sigma, maxocc, smear%method)
                      IF (tether_response > 0.0_dp) &
                         rayleigh_edge_gap = MAX(rayleigh_edge_gap, &
                                                 ABS(h_re(imo, imo) - local_ot_env(local_channel)%ener_x(imo)))
@@ -13422,13 +13539,13 @@ CONTAINS
 
                DO imo = 1, nmo
                   ie = e_offset(global_channel) + imo - 1
-                  gvalue = kpoint_ot_smearing_g(trial_occupation(imo, ikpoint, ispin), &
-                                                trial_eigenvalues(imo, ikpoint, ispin), mu, &
-                                                sigma, maxocc, smear%method)
+                  gvalue = SmearingDerivative(trial_occupation(imo, ikpoint, ispin), &
+                                              trial_eigenvalues(imo, ikpoint, ispin), mu, &
+                                              sigma, maxocc, smear%method)
                   tether_weight = kpoint_ot_canonical_tether_weight(trial_occupation(imo, ikpoint, ispin), &
                                                                     trial_eigenvalues(imo, ikpoint, ispin), &
-                                                                    mu, sigma, &
-                                                                    maxocc, wkp(ikpoint), tether_strength)
+                                                                    mu, sigma, maxocc, smear%method, &
+                                                                    wkp(ikpoint), tether_strength)
                   occ_curv(ie) = wkp(ikpoint)*gvalue
                   tether_curv(ie) = tether_weight
                   curv(ie) = occ_curv(ie) + tether_curv(ie)
@@ -13472,11 +13589,12 @@ CONTAINS
                                             trial_occupation(jmo, ikpoint, ispin))/ &
                                         MAX(maxocc, EPSILON(maxocc)))
                      pair_thermal_activity = 0.0_dp
-                     IF (smear%method == smear_fermi_dirac .AND. sigma > EPSILON(sigma) .AND. &
+                     IF (kpoint_ot_monotone_smearing(smear%method) .AND. &
+                         sigma > EPSILON(sigma) .AND. &
                          wkp(ikpoint) > EPSILON(wkp(ikpoint)) .AND. maxocc > EPSILON(maxocc)) &
                         pair_thermal_activity = MIN(1.0_dp, MAX(0.0_dp, &
-                                                                4.0_dp*sigma*MAX(occ_curv(var_ei(ivar)), occ_curv(var_ej(ivar)))/ &
-                                                                (wkp(ikpoint)*maxocc)))
+                                                                MAX(occ_curv(var_ei(ivar)), occ_curv(var_ej(ivar)))/ &
+                                                      (wkp(ikpoint)*kpoint_ot_smearing_peak_response(sigma, maxocc, smear%method))))
                      var_projector_active_weight(ivar) = pair_projector_weight
                      var_projector_weight(ivar) = channel_projector_weight
                      var_occ_gap_weight(ivar) = pair_occ_gap
@@ -13549,8 +13667,8 @@ CONTAINS
                                                     channel_canonical_cauchy_used, failed)
                canonical_density_cauchy_channel(global_channel) = &
                   MERGE(1, 0, channel_canonical_cauchy_used)
-               DEALLOCATE (h_re, h_im, grad_re, grad_im, canonical_occupation_channel, &
-                           canonical_occ_curv_channel)
+               DEALLOCATE (h_re, h_im, grad_re, grad_im, canonical_eigenvalue_channel, &
+                           canonical_occupation_channel, canonical_occ_curv_channel)
             END DO
          END DO
 
@@ -15580,7 +15698,8 @@ CONTAINS
             local_ot_env(1)%schur_reduced_secant_quality_samples
 
          IF (sigma > EPSILON(sigma)) THEN
-            response_trust_base = schur_response_trust_factor*kpoint_ot_fermi_window_anchor(sigma)
+            response_trust_base = schur_response_trust_factor* &
+                                  kpoint_ot_fermi_window_anchor(sigma, smear%method)
             response_abs_trust = ot_kp_fermi_window_outer_factor*sigma
             DO local_channel = 1, SIZE(local_ot_env)
                IF (local_ot_env(local_channel)%ener_x_trust_radius <= 0.0_dp) CYCLE
@@ -18342,7 +18461,7 @@ CONTAINS
                       ot_kp_added_mos_auto_basis_signal_frac) THEN
                      projector_physical_direct_basis_signal = &
                         projector_phys_direct_lcomp_trial_frac*projector_phys_direct_comp_trial/ &
-                        MAX(kpoint_ot_fermi_window_anchor(sigma), EPSILON(1.0_dp))
+                        MAX(kpoint_ot_fermi_window_anchor(sigma, smear%method), EPSILON(1.0_dp))
                      local_ot_env(1)%added_mos_auto_basis_signal = &
                         MAX(local_ot_env(1)%added_mos_auto_basis_signal, &
                             projector_physical_direct_basis_signal)
@@ -18690,7 +18809,8 @@ CONTAINS
                   projector_physical_direct_curv_eval_max = 0.0_dp
                   IF (projector_physical_direct_spectral_enabled) THEN
                      IF (sigma > EPSILON(sigma)) &
-                        projector_physical_direct_curv_cap = kpoint_ot_fermi_window_anchor(sigma)
+                        projector_physical_direct_curv_cap = &
+                        kpoint_ot_fermi_window_anchor(sigma, smear%method)
                      DO r = 1, nrot
                         projected_term = projector_physical_direct_delta(r, r)
                         projector_physical_direct_curv_diag_max = &
@@ -27193,7 +27313,8 @@ CONTAINS
                      MAX(1.0_dp, ABS(row_diag), ABS(physical_diag))
          IF (sigma > EPSILON(sigma)) &
             row_floor = MAX(row_floor, &
-                            ot_kp_schur_response_trust_min_factor*kpoint_ot_fermi_window_anchor(sigma))
+                            ot_kp_schur_response_trust_min_factor* &
+                            kpoint_ot_fermi_window_anchor(sigma, smear%method))
          row_floor = MIN(frontier_floor, row_floor)
 
       END FUNCTION kpoint_ot_physical_rotation_floor
@@ -33000,48 +33121,6 @@ CONTAINS
          offset = 1
          IF (block_index > 1) offset = offset + SUM(block_size(1:block_index - 1))
       END FUNCTION dbcsr_block_offset
-
-! **************************************************************************************************
-!> \brief ...
-!> \param occupation ...
-!> \param eigenvalue ...
-!> \param mu ...
-!> \param sigma ...
-!> \param maxocc ...
-!> \param method ...
-!> \return ...
-! **************************************************************************************************
-      FUNCTION kpoint_ot_smearing_g(occupation, eigenvalue, mu, sigma, maxocc, method) RESULT(gvalue)
-      REAL(KIND=dp), INTENT(IN)                          :: occupation, eigenvalue, mu, sigma, maxocc
-      INTEGER, INTENT(IN)                                :: method
-      REAL(KIND=dp)                                      :: gvalue
-
-      REAL(KIND=dp)                                      :: expu2, expx2, fi_norm, u, x
-
-         IF (sigma <= 1.0E-14_dp .OR. maxocc <= EPSILON(maxocc)) THEN
-            gvalue = 0.0_dp
-            RETURN
-         END IF
-
-         x = (eigenvalue - mu)/sigma
-         SELECT CASE (method)
-         CASE (smear_fermi_dirac)
-            fi_norm = occupation/maxocc
-            gvalue = maxocc*fi_norm*(1.0_dp - fi_norm)/sigma
-         CASE (smear_gaussian)
-            expx2 = EXP(-x*x)
-            gvalue = maxocc/(sigma*rootpi)*expx2
-         CASE (smear_mp)
-            expx2 = EXP(-x*x)
-            gvalue = maxocc*(3.0_dp - 2.0_dp*x*x)/(2.0_dp*sigma*rootpi)*expx2
-         CASE (smear_mv)
-            u = x + sqrthalf
-            expu2 = EXP(-u*u)
-            gvalue = maxocc*(2.0_dp + sqrt2*x)/(sigma*rootpi)*expu2
-         CASE DEFAULT
-            gvalue = 0.0_dp
-         END SELECT
-      END FUNCTION kpoint_ot_smearing_g
 
    END SUBROUTINE qs_scf_loop_prepare_ot_kp_energy_gradient
 

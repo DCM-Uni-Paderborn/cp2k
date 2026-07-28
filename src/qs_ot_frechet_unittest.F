@@ -34,6 +34,10 @@ PROGRAM qs_ot_frechet_unittest
                                               cp_logger_release,&
                                               cp_logger_type,&
                                               cp_rm_default_logger
+   USE input_constants,                 ONLY: smear_fermi_dirac,&
+                                              smear_gaussian,&
+                                              smear_mp,&
+                                              smear_mv
    USE kinds,                           ONLY: dp
    USE kpoint_io,                       ONLY: kpoint_ot_restart_geometry_compatible
    USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets,&
@@ -85,6 +89,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_candidate_promoted, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
         qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+   USE smearing_utils,                  ONLY: SmearOcc,&
+                                              SmearingDerivative
 
    IMPLICIT NONE
 
@@ -126,6 +132,7 @@ PROGRAM qs_ot_frechet_unittest
                                               5.0E-11_dp, nfail, mp_comm)
    CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
                                              5.0E-7_dp, nfail)
+   CALL check_smearing_derivative("smearing occupation derivative", 2.0E-7_dp, nfail)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_symmetry_preconditioned_metric("k-point symmetry preconditioned metric", &
                                                     5.0E-14_dp, nfail)
@@ -632,6 +639,53 @@ PROGRAM qs_ot_frechet_unittest
    IF (nfail > 0) ERROR STOP "qs_ot_frechet_unittest failed"
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check the shared fixed-mu occupation response against finite differences.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_smearing_derivative(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, DIMENSION(4), PARAMETER :: &
+         methods = [smear_fermi_dirac, smear_gaussian, smear_mp, smear_mv]
+      REAL(KIND=dp), DIMENSION(4), PARAMETER :: scaled_energy = [-1.3_dp, 0.0_dp, 0.7_dp, 1.8_dp]
+
+      INTEGER                                            :: imethod, ipoint
+      REAL(KIND=dp)                                      :: derivative, error, h, kTS, maxocc, mu, &
+                                                            nel, sigma
+      REAL(KIND=dp), DIMENSION(1)                        :: e, f, fminus, fplus
+
+      maxocc = 2.0_dp
+      mu = 0.12_dp
+      sigma = 0.07_dp
+      h = 1.0E-6_dp*sigma
+      DO imethod = 1, SIZE(methods)
+         DO ipoint = 1, SIZE(scaled_energy)
+            e(1) = mu + sigma*scaled_energy(ipoint)
+            CALL SmearOcc(f, nel, kTS, e, mu, sigma, maxocc, methods(imethod))
+            e(1) = e(1) + h
+            CALL SmearOcc(fplus, nel, kTS, e, mu, sigma, maxocc, methods(imethod))
+            e(1) = e(1) - 2.0_dp*h
+            CALL SmearOcc(fminus, nel, kTS, e, mu, sigma, maxocc, methods(imethod))
+            e(1) = e(1) + h
+            derivative = SmearingDerivative(f(1), e(1), mu, sigma, maxocc, methods(imethod))
+            error = ABS(derivative + (fplus(1) - fminus(1))/(2.0_dp*h))
+            IF (error > tol*MAX(1.0_dp, ABS(derivative))) THEN
+               IF (io_unit >= 0) &
+                  WRITE (io_unit, '(A,1X,A,2(1X,I3),3(1X,ES16.8))') &
+                  "FAILED", TRIM(label), methods(imethod), ipoint, derivative, error, &
+                  tol*MAX(1.0_dp, ABS(derivative))
+               nfail = nfail + 1
+            END IF
+         END DO
+      END DO
+
+   END SUBROUTINE check_smearing_derivative
 
 ! **************************************************************************************************
 !> \brief Check L_exp(diag(-i*e1,-i*e2), E_12*z)
