@@ -46,10 +46,11 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path.  The current isolated references grow AUTO 4->8->16.
 # Fresh MPI-2 paths after replication of the distributed Rayleigh diagonal
-# converge in 66 reduced-grid and 44 full-grid OT steps at -8.15998714369319
-# and -8.15998700357003 Ha, respectively. Their endpoints agree within 1.5E-7 Ha.
-# No first/last-band, AUTO-exhausted,
-# MAX-ITER, or "Unsupported content type" signature is printed.
+# and residual-aware non-edge enrichment use 24/46/21 reduced-grid and
+# 34/80/21 full-grid OT stage steps at -8.15998707928325 and
+# -8.15998709461304 Ha, respectively. Their endpoints agree within 1.6E-8 Ha.
+# No first/last-band, AUTO-exhausted, MAX-ITER, or "Unsupported content type"
+# signature is printed.
 # Al_kp_ot_added_auto_sym3_force.inp is an unlisted EPS_SCF=1E-8 force
 # companion that reads the reduced-grid converged restart. Its force components
 # agree with matching diagonalization within 3.7E-7 Ha/bohr.

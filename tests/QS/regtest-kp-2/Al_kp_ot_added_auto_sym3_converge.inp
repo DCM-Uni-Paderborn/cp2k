@@ -3,9 +3,11 @@
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-07 reference after replication of the distributed Rayleigh
-! diagonal: AUTO grows from 4 to 8 and 16. A fresh MPI-2 calculation converges
-! in 66 OT steps at -8.15998714369319 Ha. It prints no first/last-band,
-! AUTO-exhausted, or unsupported-content warning.
+! diagonal and residual-aware non-edge enrichment: AUTO grows from 4 to 8 and
+! 16. Fresh serial growth stages use 24/52/23 OT steps and reach
+! -8.15998704653794 Ha; MPI-2 uses 24/46/21 and reaches -8.15998707928325 Ha.
+! Neither path prints a first/last-band, AUTO-exhausted, or unsupported-content
+! warning.
 ! Together with the full-grid companion this guards the weighted symmetry
 ! reduction.
 &GLOBAL

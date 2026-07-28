@@ -64,24 +64,24 @@ PROGRAM qs_ot_frechet_unittest
                                               qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
-        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
-        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
-        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_control_delta, &
-        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_canonical_density_blend, &
+        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_tether_tail_scale, &
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, &
+        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_candidate_promoted, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
         qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
@@ -182,6 +182,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fermi_guard_transition("k-point Fermi guard transition", nfail)
    CALL check_fermi_guard_release("k-point Fermi guard residual release", nfail)
    CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
+   CALL check_kpoint_added_mos_fractional_tail_gate("k-point ADDED_MOS fractional-tail gate", nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
@@ -4570,6 +4571,39 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_fermi_entropy_state
+
+! **************************************************************************************************
+!> \brief Check early edge/bootstrap growth and relaxed non-edge response enrichment.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_added_mos_fractional_tail_gate(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER                           :: edge_limit = 5.0E-3_dp, &
+                                                            eps_scf = 1.0E-6_dp
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_added_mos_fractional_tail_ready( &
+               2.0E-3_dp, eps_scf, edge_limit, .TRUE., .FALSE.) .OR. &
+               .NOT. qs_scf_kp_added_mos_fractional_tail_ready( &
+               2.0E-3_dp, eps_scf, edge_limit, .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_tail_ready( &
+               3.0E-4_dp, eps_scf, edge_limit, .FALSE., .FALSE.) .OR. &
+               qs_scf_kp_added_mos_fractional_tail_ready( &
+               2.0E-5_dp, eps_scf, edge_limit, .FALSE., .FALSE.) .OR. &
+               .NOT. qs_scf_kp_added_mos_fractional_tail_ready( &
+               5.0E-6_dp, eps_scf, edge_limit, .FALSE., .FALSE.)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_added_mos_fractional_tail_gate
 
 ! **************************************************************************************************
 !> \brief Check accepted-tail and high-residual stagnant collapsed-subspace recovery.
