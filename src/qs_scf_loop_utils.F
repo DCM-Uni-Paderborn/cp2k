@@ -5363,9 +5363,11 @@ CONTAINS
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth_im))
 
-      c_re => qs_ot_env%matrix_x
-      c_im => qs_ot_env%matrix_x_im
+      c_re => qs_ot_env%matrix_ref_orth
+      c_im => qs_ot_env%matrix_ref_orth_im
       chc_re => qs_ot_env%rot_mat_chc
       chc_im => qs_ot_env%rot_mat_chc_im
       b_re => qs_ot_env%matrix_buf1
@@ -5374,7 +5376,7 @@ CONTAINS
 
       CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
-      ! K = C_base(k)^H * H(k)C_current(k).
+      ! K = C_orth(k)^H * H(k)C_current(k).
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
       CALL dbcsr_add(chc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
@@ -5419,9 +5421,11 @@ CONTAINS
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth_im))
 
-      c_re => qs_ot_env%matrix_x
-      c_im => qs_ot_env%matrix_x_im
+      c_re => qs_ot_env%matrix_ref_orth
+      c_im => qs_ot_env%matrix_ref_orth_im
       chc_re => qs_ot_env%rot_mat_chc
       chc_im => qs_ot_env%rot_mat_chc_im
       b_re => qs_ot_env%matrix_buf1
@@ -5430,7 +5434,7 @@ CONTAINS
 
       CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
-      ! K = C_base(k)^H * H(k)C_current(k).
+      ! K = C_orth(k)^H * H(k)C_current(k).
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
       CALL dbcsr_add(chc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
@@ -6247,9 +6251,11 @@ CONTAINS
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_chc_im))
       CPASSERT(ASSOCIATED(qs_ot_env%rot_mat_u_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth_im))
 
-      c_re => qs_ot_env%matrix_x
-      c_im => qs_ot_env%matrix_x_im
+      c_re => qs_ot_env%matrix_ref_orth
+      c_im => qs_ot_env%matrix_ref_orth_im
       chc_re => qs_ot_env%rot_mat_chc
       chc_im => qs_ot_env%rot_mat_chc_im
       b_re => qs_ot_env%matrix_buf1
@@ -6260,7 +6266,7 @@ CONTAINS
 
       CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
-      ! K = C_base(k)^H * H(k)C_current(k).
+      ! K = C_orth(k)^H * H(k)C_current(k).
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, matrix_hc, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, matrix_hc_im, 0.0_dp, tmp)
       CALL dbcsr_add(chc_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
@@ -6414,7 +6420,7 @@ CONTAINS
       END IF
 
       CALL qs_ot_rot_mat_derivative_complex(qs_ot_env)
-      ! The k-point gradient is assembled for the C_base*U channel convention.
+      ! The k-point gradient is assembled for the C_orth*U channel convention.
       ! Convert the complex rotation adjoint to the minimizer variable convention.
       CALL dbcsr_scale(qs_ot_env%rot_mat_gx, -1.0_dp)
       CALL dbcsr_scale(qs_ot_env%rot_mat_gx_im, -1.0_dp)

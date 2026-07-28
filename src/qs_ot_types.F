@@ -168,6 +168,7 @@ MODULE qs_ot_types
       ! explicitly at all times
       TYPE(dbcsr_type), POINTER :: matrix_x => NULL(), matrix_sx => NULL(), matrix_gx => NULL()
       TYPE(dbcsr_type), POINTER :: matrix_x_im => NULL(), matrix_sx_im => NULL(), matrix_gx_im => NULL()
+      TYPE(dbcsr_type), POINTER :: matrix_ref_orth => NULL(), matrix_ref_orth_im => NULL()
       TYPE(dbcsr_type), POINTER :: matrix_dx => NULL(), matrix_gx_old => NULL()
       TYPE(dbcsr_type), POINTER :: matrix_dx_im => NULL(), matrix_gx_old_im => NULL()
 
@@ -1954,6 +1955,8 @@ CONTAINS
       NULLIFY (qs_ot_env%matrix_sx)
       NULLIFY (qs_ot_env%matrix_x_im)
       NULLIFY (qs_ot_env%matrix_sx_im)
+      NULLIFY (qs_ot_env%matrix_ref_orth)
+      NULLIFY (qs_ot_env%matrix_ref_orth_im)
       NULLIFY (qs_ot_env%matrix_gx)
       NULLIFY (qs_ot_env%matrix_gx_im)
       NULLIFY (qs_ot_env%matrix_gx_old)
@@ -2261,6 +2264,8 @@ CONTAINS
       IF (ASSOCIATED(qs_ot_env%matrix_sx)) CALL dbcsr_release_p(qs_ot_env%matrix_sx)
       IF (ASSOCIATED(qs_ot_env%matrix_x_im)) CALL dbcsr_release_p(qs_ot_env%matrix_x_im)
       IF (ASSOCIATED(qs_ot_env%matrix_sx_im)) CALL dbcsr_release_p(qs_ot_env%matrix_sx_im)
+      IF (ASSOCIATED(qs_ot_env%matrix_ref_orth)) CALL dbcsr_release_p(qs_ot_env%matrix_ref_orth)
+      IF (ASSOCIATED(qs_ot_env%matrix_ref_orth_im)) CALL dbcsr_release_p(qs_ot_env%matrix_ref_orth_im)
       IF (ASSOCIATED(qs_ot_env%matrix_gx)) CALL dbcsr_release_p(qs_ot_env%matrix_gx)
       IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) CALL dbcsr_release_p(qs_ot_env%matrix_gx_im)
       IF (ASSOCIATED(qs_ot_env%matrix_dx)) CALL dbcsr_release_p(qs_ot_env%matrix_dx)

@@ -24,6 +24,11 @@ PROGRAM qs_ot_frechet_unittest
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
+   USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_get_submatrix,&
+                                              cp_fm_release,&
+                                              cp_fm_set_submatrix,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_add_default_logger,&
                                               cp_logger_create,&
                                               cp_logger_release,&
@@ -56,6 +61,7 @@ PROGRAM qs_ot_frechet_unittest
                                               ot_kpoint_secant_geometry
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
+   USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_residual, &
         qs_scf_kp_canonical_density_multimode_blend, &
@@ -106,6 +112,8 @@ PROGRAM qs_ot_frechet_unittest
                    5.0E-8_dp, nfail)
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
+   CALL check_fm_complex_operator_hermitization("FM complex operator Hermitian projection", &
+                                                5.0E-14_dp, nfail, mp_comm)
    CALL check_complex_full_all_preconditioner("complex FULL_ALL phase covariance", &
                                               5.0E-11_dp, nfail, mp_comm)
    CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
@@ -896,6 +904,80 @@ CONTAINS
       DEALLOCATE (pgrid, row_dist, col_dist, row_blk_size, col_blk_size)
 
    END SUBROUTINE check_dbcsr_sparse_pattern
+
+! **************************************************************************************************
+!> \brief Check split-complex FM projection onto the Hermitian operator manifold.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+!> \param mp_comm ...
+! **************************************************************************************************
+   SUBROUTINE check_fm_complex_operator_hermitization(label, tol, nfail, mp_comm)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+      TYPE(mp_comm_type), INTENT(IN)                     :: mp_comm
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: expected, projected, raw
+      REAL(KIND=dp)                                      :: err
+      REAL(KIND=dp), DIMENSION(n, n)                     :: projected_im, projected_re, raw_im, raw_re
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
+      TYPE(cp_fm_type)                                   :: matrix_im, matrix_re, work
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      NULLIFY (blacs_env, fm_struct, para_env)
+      raw(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      raw(1, 1) = CMPLX(-0.7_dp, 0.03_dp, KIND=dp)
+      raw(2, 2) = CMPLX(0.4_dp, -0.02_dp, KIND=dp)
+      raw(3, 3) = CMPLX(1.1_dp, 0.01_dp, KIND=dp)
+      raw(4, 4) = CMPLX(-0.2_dp, -0.04_dp, KIND=dp)
+      raw(1, 2) = CMPLX(0.5_dp, 0.2_dp, KIND=dp)
+      raw(2, 1) = CMPLX(0.1_dp, -0.3_dp, KIND=dp)
+      raw(1, 4) = CMPLX(-0.4_dp, 0.6_dp, KIND=dp)
+      raw(4, 1) = CMPLX(-0.2_dp, -0.1_dp, KIND=dp)
+      raw(2, 3) = CMPLX(0.3_dp, -0.5_dp, KIND=dp)
+      raw(3, 2) = CMPLX(0.8_dp, 0.2_dp, KIND=dp)
+      raw(3, 4) = CMPLX(-0.1_dp, 0.4_dp, KIND=dp)
+      raw(4, 3) = CMPLX(0.2_dp, -0.7_dp, KIND=dp)
+      expected = 0.5_dp*(raw + CONJG(TRANSPOSE(raw)))
+      raw_re = REAL(raw, KIND=dp)
+      raw_im = AIMAG(raw)
+
+      ALLOCATE (para_env)
+      CALL para_env%from_dup(mp_comm)
+      CALL cp_blacs_env_create(blacs_env, para_env)
+      CALL cp_fm_struct_create(fm_struct, nrow_global=n, ncol_global=n, &
+                               context=blacs_env, para_env=para_env)
+      CALL cp_fm_create(matrix_re, fm_struct)
+      CALL cp_fm_create(matrix_im, fm_struct)
+      CALL cp_fm_create(work, fm_struct)
+      CALL cp_fm_set_submatrix(matrix_re, raw_re)
+      CALL cp_fm_set_submatrix(matrix_im, raw_im)
+
+      CALL qs_scf_hermitize_ot_kp_fm_operator(matrix_re, matrix_im, work)
+      CALL cp_fm_get_submatrix(matrix_re, projected_re)
+      CALL cp_fm_get_submatrix(matrix_im, projected_im)
+      projected = CMPLX(projected_re, projected_im, KIND=dp)
+      err = MAXVAL(ABS(projected - expected))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+      CALL cp_fm_release(matrix_re)
+      CALL cp_fm_release(matrix_im)
+      CALL cp_fm_release(work)
+      CALL cp_fm_struct_release(fm_struct)
+      CALL cp_blacs_env_release(blacs_env)
+      CALL mp_para_env_release(para_env)
+
+   END SUBROUTINE check_fm_complex_operator_hermitization
 
 ! **************************************************************************************************
 !> \brief Gather the fixed 2x2-block DBCSR Frechet fixture into a dense complex matrix.

@@ -64,8 +64,8 @@
 # reproduces the unconstrained spin populations 6.33333/5.66667.  A serial run
 # converges in 209 steps at -8.16155078904185 Ha and exchanges only the
 # equivalent spin labels.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.11587838877933},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11587838877933},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.11587929655525},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11587929655525},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.004898018E-5},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
@@ -75,21 +75,21 @@
 # Write/read remain short restart-I/O smokes.  The bounded continue job is the
 # converged 1E-6 physics anchor: it preserves the adaptive history,
 # allows one bounded reader step, and retains finite entropy.  Keep the early
-# one-k-point smoke references strict.  Continue converges in 73 MPI-2 steps at
-# -8.14585303716157 Ha and in 77 serial steps at -8.14585311610029 Ha; the
-# layout-dependent minimizer paths agree within 8E-8 Ha.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.11824759701397},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11824759701397},
-                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.77358623E-6},
+# one-k-point smoke references strict.  Continue converges in 70 MPI-2 steps at
+# -8.14585311907974 Ha and in 70 serial steps at -8.14585311966881 Ha; the
+# layout-dependent minimizer paths agree within 6E-10 Ha.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.11824844290978},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11824844290978},
+                                           {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.77426313E-6},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="SCF_guess_restart"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
                                            {matcher="NO_TEXT", text="K-point smearing includes the last band"},
                                            {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
-"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=5.0E-7, ref=-8.14585303716157},
-                                           {matcher="Mermin_free_energy", tol=5.0E-7, ref=-8.14585303716157},
-                                           {matcher="Electronic_entropic_energy", tol=2.5E-4, ref=-5.1870169520E-4},
+"Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=5.0E-7, ref=-8.14585311907974},
+                                           {matcher="Mermin_free_energy", tol=5.0E-7, ref=-8.14585311907974},
+                                           {matcher="Electronic_entropic_energy", tol=2.5E-4, ref=-5.1887080696E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="OT_SCF_convergence", tol=6.0E-1, ref=5.0E-7},
                                            {matcher="SCF_guess_restart"},
@@ -114,8 +114,8 @@
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 # Al_kp_ot_restart_converge.inp remains an unlisted HIGH-print diagnostic for
 # the converged endpoint.  A fresh OMP_NUM_THREADS=1 write/read/continue chain
-# reaches the finite-entropy 1E-6 branch in 73 MPI-2 or 77 serial continuation
-# iterations; both layouts agree within 8E-8 Ha.  An exhausted older
+# reaches the finite-entropy 1E-6 branch in 70 MPI-2 or serial continuation
+# iterations; both layouts agree within 6E-10 Ha.  An exhausted older
 # line-search payload is recovered without a fatal abort and can also converge;
 # no first/last-band, MAX-ITER, or "Unsupported content type" warning occurs.
 "H_sym.inp"                             = []

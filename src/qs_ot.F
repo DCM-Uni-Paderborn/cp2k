@@ -1035,6 +1035,8 @@ CONTAINS
       CPASSERT(qs_ot_env%has_complex_kpoint_state)
       CPASSERT(ASSOCIATED(matrix_s))
       CPASSERT(ASSOCIATED(matrix_s_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth_im))
 
       c_re => qs_ot_env%matrix_x
       c_im => qs_ot_env%matrix_x_im
@@ -1122,6 +1124,11 @@ CONTAINS
       CALL dbcsr_multiply('N', 'N', 1.0_dp, c_im, p_re, 0.0_dp, tmp)
       CALL dbcsr_add(matrix_c_im, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
 
+      ! Preserve the exact pre-rotation basis.  matrix_x is the unnormalized REF
+      ! variable and therefore cannot reconstruct C_current=C_orth*U when F/=I.
+      CALL dbcsr_copy(qs_ot_env%matrix_ref_orth, matrix_c)
+      CALL dbcsr_copy(qs_ot_env%matrix_ref_orth_im, matrix_c_im)
+
       IF (qs_ot_env%settings%do_rotation) THEN
          CALL qs_ot_generate_rotation_complex(qs_ot_env)
 
@@ -1156,6 +1163,8 @@ CONTAINS
             CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
             CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
          END IF
+         CALL dbcsr_copy(qs_ot_env%matrix_ref_orth, c_re)
+         CALL dbcsr_copy(qs_ot_env%matrix_ref_orth_im, c_im)
          CALL qs_ot_reset_ref_rotation_history(qs_ot_env)
       END IF
 
@@ -1335,9 +1344,11 @@ CONTAINS
       CPASSERT(qs_ot_env%has_complex_kpoint_state)
       CPASSERT(ASSOCIATED(matrix_hc))
       CPASSERT(ASSOCIATED(matrix_hc_im))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth))
+      CPASSERT(ASSOCIATED(qs_ot_env%matrix_ref_orth_im))
 
-      c_re => qs_ot_env%matrix_x
-      c_im => qs_ot_env%matrix_x_im
+      c_re => qs_ot_env%matrix_ref_orth
+      c_im => qs_ot_env%matrix_ref_orth_im
       sc_re => qs_ot_env%matrix_sx
       sc_im => qs_ot_env%matrix_sx_im
       hc_re => matrix_hc
@@ -1359,7 +1370,7 @@ CONTAINS
          CALL qs_ot_generate_rotation_complex(qs_ot_env)
       END IF
 
-      ! K = C_base^H * H*C_current.
+      ! K = C_orth^H * H*C_current, where C_current=C_orth*U.
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_re, hc_re, 0.0_dp, chc_re)
       CALL dbcsr_multiply('T', 'N', 1.0_dp, c_im, hc_im, 0.0_dp, tmp_kk)
       CALL dbcsr_add(chc_re, tmp_kk, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
@@ -1419,7 +1430,7 @@ CONTAINS
       CALL dbcsr_add(g_im, hc_im, alpha_scalar=-1.0_dp, beta_scalar=1.0_dp)
 
       IF (do_rotation) THEN
-         ! Convert dE/dC_current back to the base variables: dE/dC_base = dE/dC_current * U^H.
+         ! Convert dE/dC_current back to the pre-rotation variables.
          CALL dbcsr_copy(g_cur_re, g_re, name="g_cur_re")
          CALL dbcsr_copy(g_cur_im, g_im, name="g_cur_im")
 

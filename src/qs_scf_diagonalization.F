@@ -38,7 +38,9 @@ MODULE qs_scf_diagonalization
                                               cp_dbcsr_sm_fm_multiply,&
                                               dbcsr_allocate_matrix_set
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale,&
+                                              cp_fm_scale_and_add,&
                                               cp_fm_symm,&
+                                              cp_fm_transpose,&
                                               cp_fm_uplo_to_full
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_reduce,&
                                               cp_fm_cholesky_restore
@@ -140,7 +142,8 @@ MODULE qs_scf_diagonalization
    PUBLIC :: do_general_diag, do_general_diag_kp, do_roks_diag, &
              do_special_diag, do_ot_diag, do_block_davidson_diag, &
              do_block_krylov_diag, do_scf_diag_subspace, diag_subspace_allocate, &
-             general_eigenproblem, diag_kp_smat, diag_kp_basic
+             general_eigenproblem, diag_kp_smat, diag_kp_basic, &
+             qs_scf_hermitize_ot_kp_fm_operator
 
 CONTAINS
 
@@ -689,7 +692,12 @@ CONTAINS
                CALL get_mo_set(kp%mos(2, ispin), mo_coeff=imos)
                IF (my_store_ot_matrices) THEN
                   CALL cp_cfm_to_fm(cksmat, kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin))
-                  IF (ispin == 1) CALL cp_cfm_to_fm(csmat, kp%ot_smat(1), kp%ot_smat(2))
+                  CALL qs_scf_hermitize_ot_kp_fm_operator(kp%ot_hmat(1, ispin), &
+                                                          kp%ot_hmat(2, ispin), fmlocal)
+                  IF (ispin == 1) THEN
+                     CALL cp_cfm_to_fm(csmat, kp%ot_smat(1), kp%ot_smat(2))
+                     CALL qs_scf_hermitize_ot_kp_fm_operator(kp%ot_smat(1), kp%ot_smat(2), fmlocal)
+                  END IF
                END IF
                IF (scf_env%cholesky_method == cholesky_off) THEN
                   CALL cp_cfm_geeig_canon(cksmat, csmat, cmos, eigenvalues, cwork, &
@@ -753,7 +761,12 @@ CONTAINS
                   CALL get_mo_set(kp%mos(2, ispin), mo_coeff=imos)
                   IF (my_store_ot_matrices) THEN
                      CALL cp_cfm_to_fm(cksmat, kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin))
-                     IF (ispin == 1) CALL cp_cfm_to_fm(csmat, kp%ot_smat(1), kp%ot_smat(2))
+                     CALL qs_scf_hermitize_ot_kp_fm_operator(kp%ot_hmat(1, ispin), &
+                                                             kp%ot_hmat(2, ispin), fmlocal)
+                     IF (ispin == 1) THEN
+                        CALL cp_cfm_to_fm(csmat, kp%ot_smat(1), kp%ot_smat(2))
+                        CALL qs_scf_hermitize_ot_kp_fm_operator(kp%ot_smat(1), kp%ot_smat(2), fmlocal)
+                     END IF
                   END IF
                   IF (.NOT. my_transfer_only) THEN
                      IF (scf_env%cholesky_method == cholesky_off) THEN
@@ -845,6 +858,23 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE do_general_diag_kp
+
+! **************************************************************************************************
+!> \brief project split real/imaginary full matrices onto the Hermitian manifold
+!> \param matrix_re real operator component
+!> \param matrix_im imaginary operator component
+!> \param work full-matrix transpose workspace
+! **************************************************************************************************
+   SUBROUTINE qs_scf_hermitize_ot_kp_fm_operator(matrix_re, matrix_im, work)
+
+      TYPE(cp_fm_type), INTENT(IN)                       :: matrix_re, matrix_im, work
+
+      CALL cp_fm_transpose(matrix_re, work)
+      CALL cp_fm_scale_and_add(0.5_dp, matrix_re, 0.5_dp, work)
+      CALL cp_fm_transpose(matrix_im, work)
+      CALL cp_fm_scale_and_add(0.5_dp, matrix_im, -0.5_dp, work)
+
+   END SUBROUTINE qs_scf_hermitize_ot_kp_fm_operator
 
 ! **************************************************************************************************
 !> \brief Kpoint diagonalization routine

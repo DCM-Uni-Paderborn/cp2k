@@ -3874,6 +3874,12 @@ CONTAINS
       CALL dbcsr_init_p(qs_ot_env%matrix_sc0_im)
       CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_sc0_im, template=matrix_s, n=nmo_ortho, &
                                              sym=dbcsr_type_no_symmetry)
+      CALL dbcsr_init_p(qs_ot_env%matrix_ref_orth)
+      CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_ref_orth, template=matrix_s, n=nmo, &
+                                             sym=dbcsr_type_no_symmetry)
+      CALL dbcsr_init_p(qs_ot_env%matrix_ref_orth_im)
+      CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_ref_orth_im, template=matrix_s, n=nmo, &
+                                             sym=dbcsr_type_no_symmetry)
       CALL dbcsr_init_p(qs_ot_env%matrix_x_im)
       CALL cp_dbcsr_m_by_n_from_row_template(qs_ot_env%matrix_x_im, template=matrix_s, n=nmo, &
                                              sym=dbcsr_type_no_symmetry)
