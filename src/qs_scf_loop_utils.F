@@ -1924,6 +1924,7 @@ CONTAINS
 !> \param complex_state complex k-point channel rather than real/Gamma OT
 !> \param at_search_boundary current point can start a fresh search model
 !> \param closure_rejected current coupled search failed its residual closure
+!> \param closure_reference_safe rejected search returned to a stationary fixed-N tail reference
 !> \param residual_delta effective residual of the accepted reference state
 !> \param previous_active previous runtime state
 !> \param previous_samples consecutive bootstrap samples already collected
@@ -1933,10 +1934,12 @@ CONTAINS
 ! **************************************************************************************************
    PURE SUBROUTINE qs_scf_kp_occ_preconditioner_transition(requested, complex_state, &
                                                            at_search_boundary, closure_rejected, &
+                                                           closure_reference_safe, &
                                                            residual_delta, previous_active, &
                                                            previous_samples, active, samples, changed)
       LOGICAL, INTENT(IN)                                :: requested, complex_state, &
-                                                            at_search_boundary, closure_rejected
+                                                            at_search_boundary, closure_rejected, &
+                                                            closure_reference_safe
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       LOGICAL, INTENT(IN)                                :: previous_active
       INTEGER, INTENT(IN)                                :: previous_samples
@@ -1954,7 +1957,7 @@ CONTAINS
          active = .TRUE.
          samples = 0
       ELSE IF (active) THEN
-         IF (closure_rejected .OR. &
+         IF ((closure_rejected .AND. .NOT. closure_reference_safe) .OR. &
              (at_search_boundary .AND. residual_delta > ot_kp_occ_preconditioner_release_delta)) THEN
             active = .FALSE.
             samples = 0
@@ -3687,7 +3690,8 @@ CONTAINS
 
       INTEGER                                            :: local_channel, previous_samples, samples
       LOGICAL                                            :: active, at_search_boundary, changed, &
-                                                            complex_state, previous_active
+                                                            closure_reference_safe, complex_state, &
+                                                            previous_active
       TYPE(cp_logger_type), POINTER                      :: logger
 
       complex_state = .FALSE.
@@ -3698,11 +3702,20 @@ CONTAINS
       previous_samples = local_ot_env(1)%kpoint_occ_preconditioner_ready_samples
       at_search_boundary = local_ot_env(1)%line_search_count == 0 .OR. &
                            local_ot_env(1)%line_search_might_be_done
+      closure_reference_safe = at_search_boundary .AND. &
+                               local_ot_env(1)%mermin_ls_closure_rejected .AND. &
+                               local_ot_env(1)%kpoint_eps_scf > 0.0_dp .AND. &
+                               local_ot_env(1)%mermin_ls_reference_delta > 0.0_dp .AND. &
+                               local_ot_env(1)%mermin_ls_reference_delta <= &
+                               ot_kp_schur_projector_coupled_tail_delta .AND. &
+                               local_ot_env(1)%schur_model_density_stationarity_delta >= 0.0_dp .AND. &
+                               local_ot_env(1)%schur_model_density_stationarity_delta <= &
+                               local_ot_env(1)%kpoint_eps_scf
 
       CALL qs_scf_kp_occ_preconditioner_transition( &
          local_ot_env(1)%settings%occupation_preconditioner, complex_state, at_search_boundary, &
-         local_ot_env(1)%mermin_ls_closure_rejected, local_ot_env(1)%delta, previous_active, &
-         previous_samples, active, samples, changed)
+         local_ot_env(1)%mermin_ls_closure_rejected, closure_reference_safe, &
+         local_ot_env(1)%delta, previous_active, previous_samples, active, samples, changed)
 
       IF (changed) CALL qs_scf_loop_reset_ot_kp_guard_state(local_ot_env)
       DO local_channel = 1, SIZE(local_ot_env)

@@ -4628,37 +4628,40 @@ CONTAINS
       LOGICAL                                            :: active, changed, failed, previous_active
 
       failed = .FALSE.
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .FALSE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .FALSE., .FALSE., .FALSE., &
                                                    1.0E-2_dp, .FALSE., 0, active, samples, changed)
       failed = failed .OR. active .OR. changed .OR. samples /= 0
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., .FALSE., &
                                                    2.0E-2_dp, .FALSE., 0, active, samples, changed)
       failed = failed .OR. active .OR. changed .OR. samples /= 1
       previous_active = active
       previous_samples = samples
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., .FALSE., &
                                                    1.5E-2_dp, previous_active, previous_samples, &
                                                    active, samples, changed)
       failed = failed .OR. .NOT. active .OR. .NOT. changed .OR. samples /= 2
       previous_active = active
       previous_samples = samples
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., .FALSE., &
                                                    7.0E-2_dp, previous_active, previous_samples, &
                                                    active, samples, changed)
       failed = failed .OR. .NOT. active .OR. changed
       previous_active = active
       previous_samples = samples
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .FALSE., .FALSE., &
                                                    8.0E-2_dp, previous_active, previous_samples, &
                                                    active, samples, changed)
       failed = failed .OR. active .OR. .NOT. changed .OR. samples /= 0
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .FALSE., .TRUE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .FALSE., .TRUE., .FALSE., .FALSE., &
                                                    1.0_dp, .FALSE., 0, active, samples, changed)
       failed = failed .OR. .NOT. active .OR. .NOT. changed .OR. samples /= 0
-      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .FALSE., .TRUE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .FALSE., .TRUE., .FALSE., &
                                                    1.0E-2_dp, .TRUE., 2, active, samples, changed)
       failed = failed .OR. active .OR. .NOT. changed .OR. samples /= 0
-      CALL qs_scf_kp_occ_preconditioner_transition(.FALSE., .TRUE., .TRUE., .FALSE., &
+      CALL qs_scf_kp_occ_preconditioner_transition(.TRUE., .TRUE., .TRUE., .TRUE., .TRUE., &
+                                                   1.0E-2_dp, .TRUE., 2, active, samples, changed)
+      failed = failed .OR. .NOT. active .OR. changed .OR. samples /= 2
+      CALL qs_scf_kp_occ_preconditioner_transition(.FALSE., .TRUE., .TRUE., .FALSE., .FALSE., &
                                                    1.0E-2_dp, .TRUE., 2, active, samples, changed)
       failed = failed .OR. active .OR. .NOT. changed .OR. samples /= 0
 
