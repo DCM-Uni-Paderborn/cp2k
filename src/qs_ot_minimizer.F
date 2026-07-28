@@ -1757,6 +1757,8 @@ CONTAINS
          IF (has_rayleigh_target) THEN
             ALLOCATE (rayleigh_diag(SIZE(qs_ot_env(ispin)%ener_dx)))
             CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, rayleigh_diag)
+            IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) &
+               CALL qs_ot_env(ispin)%para_env%sum(rayleigh_diag)
          END IF
          DO i = 1, SIZE(qs_ot_env(ispin)%ener_dx)
             weight = MAX(0.0_dp, qs_ot_env(ispin)%ener_x_trust_weight(i))
@@ -1858,6 +1860,8 @@ CONTAINS
          shift = rayleigh_shift_sum(group)/response_sum(group)
          ALLOCATE (rayleigh_diag(SIZE(qs_ot_env(ispin)%ener_dx)))
          CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, rayleigh_diag)
+         IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) &
+            CALL qs_ot_env(ispin)%para_env%sum(rayleigh_diag)
          DO i = 1, SIZE(qs_ot_env(ispin)%ener_dx)
             weight = MAX(0.0_dp, qs_ot_env(ispin)%ener_x_trust_weight(i))
             IF (weight <= 0.0_dp) CYCLE

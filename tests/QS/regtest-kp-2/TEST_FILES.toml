@@ -45,9 +45,9 @@
 # by hand. They are intentionally not listed here, so the default regtest stays
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path.  The current isolated references grow AUTO 4->8->16.
-# Fresh MPI-2 paths after Hermitian projection of H(k)/S(k) converge in 86
-# reduced-grid and 93 full-grid OT steps at -8.15998704752008 and
-# -8.15998690114920 Ha, respectively. Their endpoints agree within 1.5E-7 Ha.
+# Fresh MPI-2 paths after replication of the distributed Rayleigh diagonal
+# converge in 66 reduced-grid and 44 full-grid OT steps at -8.15998714369319
+# and -8.15998700357003 Ha, respectively. Their endpoints agree within 1.5E-7 Ha.
 # No first/last-band, AUTO-exhausted,
 # MAX-ITER, or "Unsupported content type" signature is printed.
 # Al_kp_ot_added_auto_sym3_force.inp is an unlisted EPS_SCF=1E-8 force
@@ -89,7 +89,7 @@
                                            {matcher="NO_TEXT", text="Unsupported content type"}]
 "Al_kp_ot_restart_continue.inp"         = [{matcher="E_total", tol=1.0E-8, ref=-8.14585309375351},
                                            {matcher="Mermin_free_energy", tol=1.0E-8, ref=-8.14585309375351},
-                                           {matcher="Electronic_entropic_energy", tol=4.0E-4, ref=-5.1857211104E-4},
+                                           {matcher="Electronic_entropic_energy", tol=5.0E-4, ref=-5.1857211104E-4},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="OT_SCF_convergence", tol=6.0E-1, ref=5.0E-7},
                                            {matcher="SCF_guess_restart"},

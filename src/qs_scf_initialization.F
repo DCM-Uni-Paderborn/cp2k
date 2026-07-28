@@ -56,7 +56,7 @@ MODULE qs_scf_initialization
    USE input_constants,                 ONLY: &
         broy_mix, cholesky_dbcsr, cholesky_inverse, cholesky_off, diag_block_davidson, &
         diag_block_krylov, diag_filter_matrix, diag_ot, diag_standard, direct_p_mix, kerker_mix, &
-        modified_broy_mix, multisec_mix, new_pulay_mix, no_mix, ot2cdft, outer_scf_none, &
+        gfn2xtb, modified_broy_mix, multisec_mix, new_pulay_mix, no_mix, ot2cdft, outer_scf_none, &
         plus_u_lowdin, pulay_mix, smeagol_runtype_emtransport, smear_fermi_dirac, &
         wfi_frozen_method_nr, wfi_ps_method_nr, wfi_use_guess_method_nr
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
@@ -581,16 +581,19 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_last_converged
       TYPE(mo_set_type), DIMENSION(:, :), POINTER        :: mos_k
+      TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(xas_environment_type), POINTER                :: xas_env
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (ao_mo_fm_pools, dft_control, mos, xas_env, matrix_s, mos_last_converged, mo_coeff_last)
+      NULLIFY (ao_mo_fm_pools, dft_control, mos, xas_env, matrix_s, mos_last_converged, mo_coeff_last, &
+               scf_control)
 
       CALL get_qs_env(qs_env=qs_env, &
                       dft_control=dft_control, &
                       mos=mos, &
                       matrix_s_kp=matrix_s, &
+                      scf_control=scf_control, &
                       xas_env=xas_env)
       CALL mpools_get(qs_env%mpools, ao_mo_fm_pools=ao_mo_fm_pools)
       IF (dft_control%switch_surf_dip) THEN
@@ -657,9 +660,10 @@ CONTAINS
       IF (kpoints%nkp /= 0) THEN
          ! check for some incompatible options
          IF (qs_env%requires_mo_derivs) THEN
-            CPWARN("MO derivative methods flag has been switched off for kpoint calculation")
-            ! we switch it off to make band structure calculations
-            ! possible for OT gamma point calculations
+            IF (.NOT. scf_control%use_ot) THEN
+               CPWARN("MO derivative methods flag has been switched off for kpoint calculation")
+            END IF
+            ! K-point OT forms H(k)C(k) in its channel-local driver.
             qs_env%requires_mo_derivs = .FALSE.
          END IF
          IF (dft_control%do_xas_calculation) THEN
@@ -990,8 +994,14 @@ CONTAINS
       IF (dft_control%qs_control%xtb_control%do_tblite) THEN
          IF (scf_env%method == ot_method_nr) THEN
             CALL cp_warn(__LOCATION__, &
-                         "CP2K/tblite with OT is restricted to Gamma-point calculations without smearing. "// &
-                         "The tblite SCC variables are updated directly from the OT density; XTB/SCC_MIXER is ignored.")
+                         "CP2K/tblite with OT updates the tblite SCC variables directly from the OT density; "// &
+                         "XTB/SCC_MIXER is ignored.")
+            IF (scf_control%smear%do_smear .AND. &
+                dft_control%qs_control%xtb_control%tblite_method == gfn2xtb) THEN
+               CALL cp_warn(__LOCATION__, &
+                            "Direct GFN2/tblite OT can expose non-convex shell and multipole SCC modes "// &
+                            "with fractional occupations; verify the state against diagonalization.")
+            END IF
          END IF
       END IF
 

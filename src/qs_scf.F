@@ -2541,6 +2541,9 @@ CONTAINS
       CPASSERT(ASSOCIATED(matrix_s_kp))
       CPASSERT(ASSOCIATED(matrix_s_kp(1, 1)%matrix))
       CPASSERT(.NOT. dft_control%restricted .OR. nspin_ot == 1)
+      IF (scf_env%qs_ot_env(1)%settings%ot_algorithm /= "REF") THEN
+         CPABORT("K-point OT currently requires OT%ALGORITHM IRAC.")
+      END IF
 
       CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
 

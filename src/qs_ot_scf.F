@@ -202,6 +202,8 @@ CONTAINS
             IF (qs_ot_env(1)%settings%do_ener) THEN
                DO ispin = 1, SIZE(mo_array)
                   CALL dbcsr_get_diag(qs_ot_env(ispin)%rot_mat_chc, expectation_values(ispin)%array)
+                  IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) &
+                     CALL qs_ot_env(ispin)%para_env%sum(expectation_values(ispin)%array)
                   qs_ot_env(ispin)%ener_gx = expectation_values(ispin)%array
                   CALL set_mo_occupation(mo_set=mo_array(ispin), &
                                          smear=smear, eval_deriv=qs_ot_env(ispin)%ener_gx, &
@@ -237,6 +239,8 @@ CONTAINS
 
             ! subtract the current ener_x from the diagonal
             CALL dbcsr_get_diag(qs_ot_env(ispin)%matrix_buf2, expectation_values(ispin)%array)
+            IF (ASSOCIATED(qs_ot_env(ispin)%para_env)) &
+               CALL qs_ot_env(ispin)%para_env%sum(expectation_values(ispin)%array)
             expectation_values(ispin)%array = expectation_values(ispin)%array - qs_ot_env(ispin)%ener_x
             CALL dbcsr_set_diag(qs_ot_env(ispin)%matrix_buf2, expectation_values(ispin)%array)
 

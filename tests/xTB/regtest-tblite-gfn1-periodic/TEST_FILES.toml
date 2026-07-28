@@ -11,4 +11,17 @@
                                              {matcher="N_special_kpoints", tol=0.0, ref=4}]
 "Si_gfn1_kp_spglib_backend.inp"          = [{matcher="E_total", tol=1.0E-8, ref=-14.722697896033},
                                              {matcher="N_special_kpoints", tol=0.0, ref=4}]
+"Al_fcc_gfn1_kp_smear.inp"              = [{matcher="E_total", tol=1.0E-9, ref=-1.146918029277931},
+                                             {matcher="Mermin_free_energy", tol=1.0E-9, ref=-1.146918029277931},
+                                             {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
+                                             {matcher="N_special_kpoints", tol=0.0, ref=2}]
+"Al_fcc_gfn1_kp_ot_smear.inp"           = [{matcher="E_total", tol=1.0E-9, ref=-1.146918029277931},
+                                             {matcher="Mermin_free_energy", tol=1.0E-9, ref=-1.146918029277931},
+                                             {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-7.1232462562E-4},
+                                             {matcher="N_special_kpoints", tol=0.0, ref=2},
+                                             {matcher="OT_SCF_convergence", tol=5.0E-1, ref=2.3E-7},
+                                             {matcher="NO_TEXT", text="K-point smearing includes the first band"},
+                                             {matcher="NO_TEXT", text="K-point smearing includes the last band"},
+                                             {matcher="NO_TEXT", text="MAX ITER EXCEEDED"},
+                                             {matcher="NO_TEXT", text="Unsupported content type"}]
 #EOF

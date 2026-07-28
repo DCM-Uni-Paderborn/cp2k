@@ -2,10 +2,10 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 reference after Hermitian projection of H(k)/S(k): AUTO grows
-! from 4 to 8 and 16. A fresh MPI-2 calculation converges in 86 total OT steps
-! at -8.15998704752008 Ha. It prints no first/last-band, AUTO-exhausted, or
-! unsupported-content warning.
+! Local 2026-07 reference after replication of the distributed Rayleigh
+! diagonal: AUTO grows from 4 to 8 and 16. A fresh MPI-2 calculation converges
+! in 66 OT steps at -8.15998714369319 Ha. It prints no first/last-band,
+! AUTO-exhausted, or unsupported-content warning.
 ! Together with the full-grid companion this guards the weighted symmetry
 ! reduction.
 &GLOBAL
