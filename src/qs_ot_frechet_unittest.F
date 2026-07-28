@@ -70,15 +70,18 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
         qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, &
-        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_control_delta, &
+        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_candidate_promoted, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
         qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
@@ -567,6 +570,16 @@ PROGRAM qs_ot_frechet_unittest
       "canonical fixed-N occupation-projector derivative", 5.0E-7_dp, nfail)
    CALL check_canonical_projector_similarity_gauge( &
       "canonical projector similarity-gauge response", 5.0E-10_dp, nfail)
+   CALL check_density_replaced_response( &
+      "canonical density-response replacement", 5.0E-14_dp, nfail)
+   CALL check_density_candidate_residual_quality( &
+      "canonical density-candidate residual quality", 5.0E-14_dp, nfail)
+   CALL check_density_candidate_history_scale( &
+      "canonical density-candidate history scale", 5.0E-14_dp, nfail)
+   CALL check_density_candidate_residual_bad( &
+      "canonical density-candidate relative residual", nfail)
+   CALL check_density_mode_projected_floor( &
+      "canonical density-mode projected floor", 5.0E-13_dp, nfail)
    CALL check_canonical_density_rotation_tangent( &
       "canonical finite-generator density tangent", 2.0E-6_dp, nfail)
    CALL check_canonical_density_mermin_alignment( &
@@ -23176,6 +23189,219 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_canonical_projector_similarity_gauge
+
+! **************************************************************************************************
+!> \brief Check that an alternative density response replaces, rather than augments, the density
+!>        component already contained in the canonical fixed-N response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_density_replaced_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: fallback_err, replacement_err, &
+                                                            similarity_err
+      REAL(KIND=dp), DIMENSION(2, 2) :: active_cross, active_response, canonical_cross, &
+         canonical_response, density_cross, density_response, expected_cross, expected_response, &
+         model_cross, model_response
+
+      active_response(:, :) = RESHAPE([0.30_dp, -0.10_dp, 0.05_dp, 0.20_dp], [2, 2])
+      density_response(:, :) = RESHAPE([-0.08_dp, 0.04_dp, 0.11_dp, -0.06_dp], [2, 2])
+      active_cross(:, :) = RESHAPE([0.21_dp, -0.07_dp, 0.02_dp, 0.13_dp], [2, 2])
+      density_cross(:, :) = RESHAPE([-0.03_dp, 0.06_dp, 0.09_dp, -0.05_dp], [2, 2])
+      canonical_response(:, :) = active_response(:, :) + 0.4_dp*density_response(:, :)
+      canonical_cross(:, :) = active_cross(:, :) + 0.4_dp*density_cross(:, :)
+      expected_response(:, :) = active_response(:, :) + density_response(:, :)
+      expected_cross(:, :) = active_cross(:, :) + density_cross(:, :)
+
+      CALL qs_scf_kp_density_replaced_response( &
+         canonical_response, canonical_cross, active_response, active_cross, density_response, &
+         density_cross, .TRUE., model_response, model_cross)
+      replacement_err = MAX(MAXVAL(ABS(model_response - expected_response)), &
+                            MAXVAL(ABS(model_cross - expected_cross)))
+
+      CALL qs_scf_kp_density_replaced_response( &
+         canonical_response, canonical_cross, active_response, active_cross, density_response, &
+         density_cross, .FALSE., model_response, model_cross)
+      fallback_err = MAX(MAXVAL(ABS(model_response - canonical_response)), &
+                         MAXVAL(ABS(model_cross - canonical_cross)))
+
+      ! A pure projector similarity response has active = -density and must cancel exactly.
+      active_response(:, :) = -density_response(:, :)
+      active_cross(:, :) = -density_cross(:, :)
+      canonical_response(:, :) = 0.0_dp
+      canonical_cross(:, :) = 0.0_dp
+      CALL qs_scf_kp_density_replaced_response( &
+         canonical_response, canonical_cross, active_response, active_cross, density_response, &
+         density_cross, .TRUE., model_response, model_cross)
+      similarity_err = MAX(MAXVAL(ABS(model_response)), MAXVAL(ABS(model_cross)))
+
+      IF (replacement_err > tol .OR. fallback_err > tol .OR. similarity_err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with replacement/fallback/similarity", replacement_err, fallback_err, similarity_err
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with replacement/fallback/similarity", replacement_err, fallback_err, similarity_err
+      END IF
+
+   END SUBROUTINE check_density_replaced_response
+
+! **************************************************************************************************
+!> \brief Check that a density candidate uses canonical stationarity when available.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_density_candidate_residual_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: density_err, fallback_err, negative_err
+
+      density_err = ABS(qs_scf_kp_density_candidate_residual_quality( &
+                        0.0_dp, 0.18_dp, .TRUE.) - 0.18_dp)
+      fallback_err = ABS(qs_scf_kp_density_candidate_residual_quality( &
+                         0.27_dp, 0.18_dp, .FALSE.) - 0.27_dp)
+      negative_err = ABS(qs_scf_kp_density_candidate_residual_quality( &
+                         -0.4_dp, -0.2_dp, .TRUE.))
+
+      IF (density_err > tol .OR. fallback_err > tol .OR. negative_err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with density/fallback/negative", density_err, fallback_err, negative_err
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with density/fallback/negative", density_err, fallback_err, negative_err
+      END IF
+
+   END SUBROUTINE check_density_candidate_residual_quality
+
+! **************************************************************************************************
+!> \brief Check accepted Mermin-history scaling of the density candidate.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_density_candidate_history_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: cumulative_err, ema_err, floor_err, &
+                                                            no_history_err, upper_err
+
+      no_history_err = ABS(qs_scf_kp_density_candidate_history_scale( &
+                           0.0_dp, 0.0_dp, 0.0_dp, 0) - 1.0_dp)
+      cumulative_err = ABS(qs_scf_kp_density_candidate_history_scale( &
+                           2.0_dp, 1.28_dp, 0.80_dp, 2) - 0.8_dp)
+      ema_err = ABS(qs_scf_kp_density_candidate_history_scale( &
+                    1.0_dp, 0.9_dp, 0.49_dp, 2) - 0.7_dp)
+      floor_err = ABS(qs_scf_kp_density_candidate_history_scale( &
+                      1.0_dp, 0.01_dp, 0.02_dp, 2) - 0.5_dp)
+      upper_err = ABS(qs_scf_kp_density_candidate_history_scale( &
+                      1.0_dp, 2.0_dp, 1.5_dp, 2) - 1.0_dp)
+
+      IF (MAX(no_history_err, cumulative_err, ema_err, floor_err, upper_err) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "failed with empty/cumulative/ema/floor/upper", no_history_err, cumulative_err, &
+            ema_err, floor_err, upper_err
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES12.5))') TRIM(label), &
+            "OK with empty/cumulative/ema/floor/upper", no_history_err, cumulative_err, &
+            ema_err, floor_err, upper_err
+      END IF
+
+   END SUBROUTINE check_density_candidate_history_scale
+
+! **************************************************************************************************
+!> \brief Check the relative density-baseline test for mature candidate history.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_density_candidate_residual_bad(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: good_bad, immature_bad, weak_bad
+
+      immature_bad = qs_scf_kp_density_candidate_residual_bad( &
+                     0.0_dp, 0.0_dp, 3, 1.0_dp)
+      good_bad = qs_scf_kp_density_candidate_residual_bad( &
+                 0.018_dp, 0.032_dp, 4, 0.0025_dp)
+      weak_bad = qs_scf_kp_density_candidate_residual_bad( &
+                 0.0005_dp, 0.001_dp, 4, 0.01_dp)
+
+      IF (immature_bad .OR. good_bad .OR. .NOT. weak_bad) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "failed with immature/good/weak", immature_bad, good_bad, weak_bad
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "OK with immature/good/weak", immature_bad, good_bad, weak_bad
+      END IF
+
+   END SUBROUTINE check_density_candidate_residual_bad
+
+! **************************************************************************************************
+!> \brief Check that a diagonal floor remains PSD while vanishing on physical density modes.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_density_mode_projected_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: physical_rank, projected_rank
+      REAL(KIND=dp)                                      :: annihilation_err, fallback_err, &
+                                                            symmetry_err
+      REAL(KIND=dp), DIMENSION(4)                        :: diagonal_shift, eigenvalues
+      REAL(KIND=dp), DIMENSION(4, 3)                     :: density_modes
+      REAL(KIND=dp), DIMENSION(4, 4)                     :: floor_matrix, floor_reference
+
+      diagonal_shift(:) = [4.0_dp, 9.0_dp, 16.0_dp, 25.0_dp]
+      density_modes(:, 1) = [1.0_dp, 2.0_dp, 0.0_dp, 0.0_dp]
+      density_modes(:, 2) = [2.0_dp, 4.0_dp, 0.0_dp, 0.0_dp]
+      density_modes(:, 3) = [0.0_dp, 0.0_dp, 1.0_dp, -1.0_dp]
+      CALL qs_scf_kp_density_mode_projected_floor( &
+         diagonal_shift, density_modes, floor_matrix, projected_rank)
+      physical_rank = projected_rank
+      annihilation_err = MAXVAL(ABS(MATMUL(floor_matrix, density_modes)))
+      symmetry_err = MAXVAL(ABS(floor_matrix - TRANSPOSE(floor_matrix)))
+      floor_reference(:, :) = floor_matrix(:, :)
+      CALL diamat_all(floor_reference, eigenvalues)
+
+      density_modes(:, :) = 0.0_dp
+      CALL qs_scf_kp_density_mode_projected_floor( &
+         diagonal_shift, density_modes, floor_matrix, projected_rank)
+      floor_reference(:, :) = 0.0_dp
+      floor_reference(1, 1) = diagonal_shift(1)
+      floor_reference(2, 2) = diagonal_shift(2)
+      floor_reference(3, 3) = diagonal_shift(3)
+      floor_reference(4, 4) = diagonal_shift(4)
+      fallback_err = MAXVAL(ABS(floor_matrix - floor_reference))
+
+      IF (annihilation_err > tol .OR. symmetry_err > tol .OR. &
+          MINVAL(eigenvalues) < -tol .OR. fallback_err > tol .OR. &
+          physical_rank /= 2 .OR. projected_rank /= 0) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES12.5),2(1X,I3))') TRIM(label), &
+            "failed with annihilation/symmetry/emin/fallback/ranks", annihilation_err, &
+            symmetry_err, MINVAL(eigenvalues), fallback_err, physical_rank, projected_rank
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
+            "OK with annihilation/symmetry/emin/fallback", annihilation_err, &
+            symmetry_err, MINVAL(eigenvalues), fallback_err
+      END IF
+
+   END SUBROUTINE check_density_mode_projected_floor
 
 ! **************************************************************************************************
 !> \brief Check the regularized canonical density tangent in finite complex generator coordinates.

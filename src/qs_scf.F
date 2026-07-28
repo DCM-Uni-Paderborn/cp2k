@@ -3804,18 +3804,19 @@ CONTAINS
             CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 20 .AND. &
-             scf_env%qs_ot_restart%format_version < 28 .AND. &
+             scf_env%qs_ot_restart%format_version < 30 .AND. &
              qs_ot_env%has_complex_kpoint_state .AND. &
              qs_ot_env%settings%occupation_preconditioner .AND. &
              qs_ot_env%settings%do_rotation .AND. qs_ot_env%settings%do_ener .AND. &
              qs_ot_env%line_search_count > 0) THEN
             ! Version 27 adds the immutable projected residual at the start of
-            ! a Mermin line search.  Version 28 reconnects the regular
-            ! canonical-density Newton tangent to the exact Direct candidate.
-            ! An older open search therefore either lacks its trust reference
-            ! or belongs to an incompatible candidate model.  Accept its
-            ! current orbitals as a fresh point and discard only the open
-            ! direction.
+            ! a Mermin line search. Version 28 reconnects the regular
+            ! canonical-density Newton tangent. Version 29 replaces, rather
+            ! than duplicates, the density part of that response. Version 30
+            ! projects the rotation floor only in the separate density
+            ! candidate. An older open search therefore belongs to an
+            ! incompatible candidate model. Accept its current orbitals as a
+            ! fresh point and discard only the open direction.
             qs_ot_env%line_search_left = -1
             qs_ot_env%line_search_right = -1
             qs_ot_env%line_search_mid = -1
@@ -3845,12 +3846,11 @@ CONTAINS
             IF (ASSOCIATED(qs_ot_env%ener_gx_old)) qs_ot_env%ener_gx_old(:) = 0.0_dp
             qs_ot_env%ener_direction_linear = .FALSE.
          END IF
-         IF (scf_env%qs_ot_restart%format_version < 28) THEN
-            ! The v28 exact-density candidate has a different finite rotation
-            ! and must establish its own accepted Mermin/residual history.
-            ! Retain physical secants and minimizer coordinates, but do not
-            ! let calibration collected by the old Direct-only candidate veto
-            ! its first line-search probe.
+         IF (scf_env%qs_ot_restart%format_version < 30) THEN
+            ! The v30 exact-density candidate uses a modally projected floor
+            ! and calibrates residual quality against canonical density
+            ! stationarity. Retain physical secants and minimizer coordinates,
+            ! but relearn the incompatible accepted-candidate statistics.
             CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
          IF (scf_env%qs_ot_restart%format_version < 20) THEN
