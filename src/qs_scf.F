@@ -547,9 +547,9 @@ CONTAINS
 
          CALL qs_scf_set_loop_flags(scf_env, diis_step, &
                                     energy_only, just_energy, exit_inner_loop)
-         IF (post_ot_kp_subspace_refresh_steps > 0) then
-           scf_env%iter_count = ot_kp_subspace_refresh_iter_count
-         end if
+         IF (post_ot_kp_subspace_refresh_steps > 0) THEN
+            scf_env%iter_count = ot_kp_subspace_refresh_iter_count
+         END IF
 
          ! decide whether to switch off dipole correction for convergence purposes
          dft_control%surf_dip_correct_switch = dft_control%correct_surf_dip
@@ -620,9 +620,9 @@ CONTAINS
                CYCLE scf_outer_loop
             END IF
 
-            IF (post_ot_kp_subspace_refresh_steps > 0) then
-              post_ot_kp_subspace_refresh_steps = post_ot_kp_subspace_refresh_steps - 1
-            end if
+            IF (post_ot_kp_subspace_refresh_steps > 0) THEN
+               post_ot_kp_subspace_refresh_steps = post_ot_kp_subspace_refresh_steps - 1
+            END IF
 
             IF (added_mos_auto_grow) THEN
                IF (do_kpoints) THEN
@@ -1024,9 +1024,9 @@ CONTAINS
 
       IF (ASSOCIATED(qs_env%mo_derivs)) THEN
          DO ispin = 1, SIZE(qs_env%mo_derivs)
-            IF (ASSOCIATED(qs_env%mo_derivs(ispin)%matrix)) then
-              CALL dbcsr_release_p(qs_env%mo_derivs(ispin)%matrix)
-            end if
+            IF (ASSOCIATED(qs_env%mo_derivs(ispin)%matrix)) THEN
+               CALL dbcsr_release_p(qs_env%mo_derivs(ispin)%matrix)
+            END IF
          END DO
          DEALLOCATE (qs_env%mo_derivs)
          NULLIFY (qs_env%mo_derivs)
@@ -1081,10 +1081,10 @@ CONTAINS
       NULLIFY (kpoints)
       CALL get_qs_env(qs_env=qs_env, kpoints=kpoints)
 
-      IF (output_unit > 0) then
-        WRITE (UNIT=output_unit, FMT="(T2,A)") &
-         "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."
-      end if
+      IF (output_unit > 0) THEN
+         WRITE (UNIT=output_unit, FMT="(T2,A)") &
+            "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."
+      END IF
 
       ! The next outer-loop initialization performs do_general_diag_kp on the
       ! current Hamiltonian before allocating new channel-local OT state.  Old
@@ -1098,9 +1098,9 @@ CONTAINS
          NULLIFY (scf_env%qs_ot_env)
       END IF
       IF (ASSOCIATED(kpoints)) THEN
-         IF (ASSOCIATED(kpoints%scf_diis_buffer)) then
-           CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
-         end if
+         IF (ASSOCIATED(kpoints%scf_diis_buffer)) THEN
+            CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+         END IF
       END IF
       CALL qs_scf_ot_restart_clear(scf_env)
       CALL qs_scf_clear_kpoint_ot_density_calibration(scf_env)
@@ -1354,9 +1354,9 @@ CONTAINS
          ! MOs that were not reconstructed from the current k-point orbitals.
          ! A full diagonalization follows immediately, so seed a complete
          ! independent basis instead of preserving rank-deficient columns.
-         IF (.NOT. PRESENT(restart_target_nmo) .AND. .NOT. reseed_basis) then
-           CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
-         end if
+         IF (.NOT. PRESENT(restart_target_nmo) .AND. .NOT. reseed_basis) THEN
+            CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
+         END IF
          IF (has_unit_metric) THEN
             CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
          ELSE
@@ -1392,9 +1392,9 @@ CONTAINS
 
       IF (ASSOCIATED(mo_derivs)) THEN
          DO ispin = 1, SIZE(mo_derivs)
-            IF (ASSOCIATED(mo_derivs(ispin)%matrix)) then
-              CALL dbcsr_release_p(mo_derivs(ispin)%matrix)
-            end if
+            IF (ASSOCIATED(mo_derivs(ispin)%matrix)) THEN
+               CALL dbcsr_release_p(mo_derivs(ispin)%matrix)
+            END IF
          END DO
          DEALLOCATE (mo_derivs)
          NULLIFY (mo_derivs)
@@ -1437,9 +1437,9 @@ CONTAINS
       CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., diag_step, &
                               store_ot_matrices=.TRUE.)
 
-      IF (ASSOCIATED(kpoints%scf_diis_buffer)) then
-        CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
-      end if
+      IF (ASSOCIATED(kpoints%scf_diis_buffer)) THEN
+         CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+      END IF
 
       CALL qs_scf_save_kpoint_ot_density_calibration(scf_env)
 
@@ -2433,11 +2433,11 @@ CONTAINS
       IF (dft_control%restricted) THEN
          scf_env%qs_ot_env(:)%restricted = .TRUE.
          ! requires rotation
-         IF (.NOT. scf_env%qs_ot_env(1)%settings%do_rotation) then
-           CALL cp_abort(__LOCATION__, &
+         IF (.NOT. scf_env%qs_ot_env(1)%settings%do_rotation) THEN
+            CALL cp_abort(__LOCATION__, &
                           "Restricted calculation with OT requires orbital rotation. Please "// &
                           "activate the OT%ROTATION keyword!")
-         end if
+         END IF
       ELSE
          scf_env%qs_ot_env(:)%restricted = .FALSE.
       END IF
@@ -2447,16 +2447,16 @@ CONTAINS
       do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
       ! Only full all needs rotation.
       is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
-      IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) then
-        CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
-      end if
+      IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) THEN
+         CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
+      END IF
 
       DO ikpoint = 1, nkpoint
          local_kpoint = 0
          IF (do_kpoints) THEN
-            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) then
-              local_kpoint = ikpoint - kp_range(1) + 1
-            end if
+            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) THEN
+               local_kpoint = ikpoint - kp_range(1) + 1
+            END IF
          END IF
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
@@ -2468,9 +2468,9 @@ CONTAINS
                   IF (ASSOCIATED(kpoints)) THEN
                      IF (ASSOCIATED(kpoints%kp_sym)) THEN
                         IF (ikpoint <= SIZE(kpoints%kp_sym)) THEN
-                           IF (ASSOCIATED(kpoints%kp_sym(ikpoint)%kpoint_sym)) then
-                             kpoint_multiplicity = MAX(1, kpoints%kp_sym(ikpoint)%kpoint_sym%nwght)
-                           end if
+                           IF (ASSOCIATED(kpoints%kp_sym(ikpoint)%kpoint_sym)) THEN
+                              kpoint_multiplicity = MAX(1, kpoints%kp_sym(ikpoint)%kpoint_sym%nwght)
+                           END IF
                         END IF
                      END IF
                   END IF
@@ -3804,15 +3804,18 @@ CONTAINS
             CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 20 .AND. &
-             scf_env%qs_ot_restart%format_version < 27 .AND. &
+             scf_env%qs_ot_restart%format_version < 28 .AND. &
              qs_ot_env%has_complex_kpoint_state .AND. &
              qs_ot_env%settings%occupation_preconditioner .AND. &
              qs_ot_env%settings%do_rotation .AND. qs_ot_env%settings%do_ener .AND. &
              qs_ot_env%line_search_count > 0) THEN
             ! Version 27 adds the immutable projected residual at the start of
-            ! a Mermin line search.  An older open search cannot reconstruct
-            ! that trust reference, so accept its current orbitals as a fresh
-            ! point and discard only the incompatible open CG direction.
+            ! a Mermin line search.  Version 28 reconnects the regular
+            ! canonical-density Newton tangent to the exact Direct candidate.
+            ! An older open search therefore either lacks its trust reference
+            ! or belongs to an incompatible candidate model.  Accept its
+            ! current orbitals as a fresh point and discard only the open
+            ! direction.
             qs_ot_env%line_search_left = -1
             qs_ot_env%line_search_right = -1
             qs_ot_env%line_search_mid = -1
@@ -3841,6 +3844,14 @@ CONTAINS
             IF (ASSOCIATED(qs_ot_env%ener_dx)) qs_ot_env%ener_dx(:) = 0.0_dp
             IF (ASSOCIATED(qs_ot_env%ener_gx_old)) qs_ot_env%ener_gx_old(:) = 0.0_dp
             qs_ot_env%ener_direction_linear = .FALSE.
+         END IF
+         IF (scf_env%qs_ot_restart%format_version < 28) THEN
+            ! The v28 exact-density candidate has a different finite rotation
+            ! and must establish its own accepted Mermin/residual history.
+            ! Retain physical secants and minimizer coordinates, but do not
+            ! let calibration collected by the old Direct-only candidate veto
+            ! its first line-search probe.
+            CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
          IF (scf_env%qs_ot_restart%format_version < 20) THEN
             ! Version 20 keeps the structural CG direction flags invariant.

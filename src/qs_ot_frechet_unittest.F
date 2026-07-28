@@ -64,7 +64,8 @@ PROGRAM qs_ot_frechet_unittest
                                               qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
+        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
         qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
@@ -574,6 +575,10 @@ PROGRAM qs_ot_frechet_unittest
       "canonical density tangent Mermin Cauchy fallback", 2.0E-7_dp, nfail)
    CALL check_canonical_density_tangent_blend( &
       "canonical density tangent reduced Mermin blend", 2.0E-13_dp, nfail)
+   CALL check_canonical_density_candidate( &
+      "canonical density Direct candidate assembly", 2.0E-13_dp, nfail)
+   CALL check_canonical_density_probe_drop( &
+      "canonical density physical tail probe", 2.0E-13_dp, nfail)
    CALL check_accepted_model_calibration_reset( &
       "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
    CALL check_kpoint_ot_restart_geometry_signature( &
@@ -23618,6 +23623,95 @@ CONTAINS
    END SUBROUTINE check_canonical_density_tangent_blend
 
 ! **************************************************************************************************
+!> \brief Check additive Newton modes and complete channel-local Cauchy replacement.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_density_candidate(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nchannel = 2, nmode = 2, nrot = 3
+
+      INTEGER, DIMENSION(nchannel)                       :: cauchy_channel
+      INTEGER, DIMENSION(nrot)                           :: var_channel
+      REAL(KIND=dp)                                      :: error
+      REAL(KIND=dp), DIMENSION(nmode)                    :: mode_alpha
+      REAL(KIND=dp), DIMENSION(nrot)                     :: base_rot, candidate_rot, &
+                                                            density_tangent, expected
+      REAL(KIND=dp), DIMENSION(nrot, nmode)              :: tangent_modes
+
+      base_rot(:) = [0.1_dp, -0.2_dp, 0.3_dp]
+      tangent_modes(:, :) = 0.0_dp
+      tangent_modes(:, 1) = [0.4_dp, 0.0_dp, 0.1_dp]
+      tangent_modes(:, 2) = [0.0_dp, 0.4_dp, 0.0_dp]
+      mode_alpha(:) = [0.5_dp, 0.25_dp]
+      density_tangent(:) = [9.0_dp, -0.7_dp, 8.0_dp]
+      var_channel(:) = [1, 2, 1]
+
+      cauchy_channel(:) = 0
+      CALL qs_scf_kp_canonical_density_candidate( &
+         base_rot, tangent_modes, mode_alpha, density_tangent, cauchy_channel, var_channel, &
+         candidate_rot)
+      expected(:) = [0.3_dp, -0.1_dp, 0.35_dp]
+      error = MAXVAL(ABS(candidate_rot - expected))
+
+      cauchy_channel(:) = [0, 1]
+      CALL qs_scf_kp_canonical_density_candidate( &
+         base_rot, tangent_modes, mode_alpha, density_tangent, cauchy_channel, var_channel, &
+         candidate_rot)
+      expected(:) = [0.3_dp, -0.7_dp, 0.35_dp]
+      error = MAX(error, MAXVAL(ABS(candidate_rot - expected)))
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_canonical_density_candidate
+
+! **************************************************************************************************
+!> \brief Check that an uncalibrated density candidate is admitted only by a complete physical model.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_density_probe_drop(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: error, value
+
+      value = qs_scf_kp_canonical_density_probe_drop( &
+              0.4_dp, 0.1_dp, 2.0E-6_dp, 1.0E-6_dp, 0.2_dp, 0.3_dp)
+      error = ABS(value - 0.4_dp)
+      value = qs_scf_kp_canonical_density_probe_drop( &
+              0.4_dp, 0.1_dp, 0.5E-6_dp, 1.0E-6_dp, 0.2_dp, 0.3_dp)
+      error = MAX(error, ABS(value))
+      value = qs_scf_kp_canonical_density_probe_drop( &
+              0.4_dp, 0.0_dp, 2.0E-6_dp, 1.0E-6_dp, 0.2_dp, 0.3_dp)
+      error = MAX(error, ABS(value))
+      value = qs_scf_kp_canonical_density_probe_drop( &
+              0.4_dp, 0.1_dp, 2.0E-6_dp, 1.0E-6_dp, 1.1_dp, 0.3_dp)
+      error = MAX(error, ABS(value))
+      value = qs_scf_kp_canonical_density_probe_drop( &
+              0.4_dp, 0.1_dp, 2.0E-6_dp, 1.0E-6_dp, 0.2_dp, 1.1_dp)
+      error = MAX(error, ABS(value))
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_canonical_density_probe_drop
+
 !> \brief Check that restart migration drops unit-step calibration but retains physical history.
 !> \param label ...
 !> \param tol ...

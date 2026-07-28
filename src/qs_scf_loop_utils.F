@@ -263,7 +263,9 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_quadratic_position_drop, &
              qs_scf_kp_canonical_density_residual, &
              qs_scf_kp_canonical_density_blend, &
+             qs_scf_kp_canonical_density_candidate, &
              qs_scf_kp_canonical_density_multimode_blend, &
+             qs_scf_kp_canonical_density_probe_drop, &
              qs_scf_kp_response_corrected_step, &
              qs_scf_kp_canonical_density_tangent, &
              qs_scf_kp_canonical_tether_tail_scale, &
@@ -1105,6 +1107,79 @@ CONTAINS
                   mode_gdot, mode_response, reduced_mode_hessian)
 
    END SUBROUTINE qs_scf_kp_canonical_density_multimode_blend
+
+! **************************************************************************************************
+!> \brief Apply channel-resolved canonical-density Newton modes to a coupled rotation candidate.
+!>
+!>        Regular Newton modes are additive corrections selected in the final coupled Mermin
+!>        model.  A channel whose density Hessian is uphill instead supplies a complete
+!>        trust-region Cauchy replacement.
+!> \param base_rot coupled rotation candidate
+!> \param tangent_modes channel-resolved canonical-density Newton modes
+!> \param mode_alpha accepted coefficient of every Newton mode
+!> \param density_tangent complete channel tangent, including Cauchy replacements
+!> \param cauchy_channel nonzero for channels using a complete Cauchy replacement
+!> \param var_channel channel identity of every rotation coordinate
+!> \param candidate_rot resulting density-aware rotation candidate
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_canonical_density_candidate( &
+      base_rot, tangent_modes, mode_alpha, density_tangent, cauchy_channel, var_channel, candidate_rot)
+
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: base_rot
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: tangent_modes
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: mode_alpha, density_tangent
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: cauchy_channel, var_channel
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: candidate_rot
+
+      INTEGER                                            :: r
+
+      CPASSERT(SIZE(candidate_rot) == SIZE(base_rot))
+      CPASSERT(SIZE(density_tangent) == SIZE(base_rot))
+      CPASSERT(SIZE(var_channel) == SIZE(base_rot))
+      CPASSERT(SIZE(tangent_modes, 1) == SIZE(base_rot))
+      CPASSERT(SIZE(tangent_modes, 2) == SIZE(mode_alpha))
+
+      candidate_rot(:) = base_rot(:) + MATMUL(tangent_modes, mode_alpha)
+      DO r = 1, SIZE(candidate_rot)
+         CPASSERT(var_channel(r) >= 1 .AND. var_channel(r) <= SIZE(cauchy_channel))
+         IF (cauchy_channel(var_channel(r)) > 0) candidate_rot(r) = density_tangent(r)
+      END DO
+
+   END SUBROUTINE qs_scf_kp_canonical_density_candidate
+
+!> \brief Uncalibrated Mermin drop used for one canonical-density tail probe.
+!>
+!>        A density-aware candidate must first be accepted or rejected by the real line search
+!>        before it owns useful history.  Admit that first probe only when the final coupled
+!>        model predicts a positive density-mode gain, the independent density stationarity
+!>        condition is still open, and both response norms are inside their trust regions.
+!> \param model_drop predicted total Mermin decrease of the density-aware candidate
+!> \param tangent_gain predicted incremental decrease from canonical-density Newton modes
+!> \param density_delta independent canonical-density stationarity residual
+!> \param eps_scf requested SCF convergence threshold
+!> \param weighted_trust_ratio curvature-weighted response trust ratio
+!> \param abs_trust_ratio maximum-component response trust ratio
+!> \return uncalibrated drop admitted for a physical tail probe
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_canonical_density_probe_drop( &
+      model_drop, tangent_gain, density_delta, eps_scf, weighted_trust_ratio, abs_trust_ratio) &
+      RESULT(probe_drop)
+
+      REAL(KIND=dp), INTENT(IN)                          :: model_drop, tangent_gain, density_delta, &
+                                                            eps_scf, weighted_trust_ratio, &
+                                                            abs_trust_ratio
+      REAL(KIND=dp)                                      :: probe_drop
+
+      probe_drop = 0.0_dp
+      IF (eps_scf <= 0.0_dp .OR. density_delta <= eps_scf) RETURN
+      IF (model_drop <= ot_kp_schur_projector_density_full_min_drop) RETURN
+      IF (tangent_gain <= EPSILON(MAX(1.0_dp, ABS(tangent_gain)))) RETURN
+      IF (weighted_trust_ratio < 0.0_dp .OR. weighted_trust_ratio > 1.0_dp) RETURN
+      IF (abs_trust_ratio < 0.0_dp .OR. abs_trust_ratio > 1.0_dp) RETURN
+
+      probe_drop = model_drop
+
+   END FUNCTION qs_scf_kp_canonical_density_probe_drop
 
 ! **************************************************************************************************
 !> \brief Fractional reduction of the exact fixed-N canonical density residual.
@@ -19032,17 +19107,64 @@ CONTAINS
                      ! Its accepted step uses the same total physical+density
                      ! response that enters the Schur/RHS model.
                      IF (exact_density_direct_response_ready) THEN
-                        projector_physical_direct_density_sol(:) = &
-                           projector_physical_direct_sol(:)
-                        ! Keep the independently calibrated Direct-density
-                        ! candidate, but replace any channel whose exact
-                        ! density Newton mode is Mermin-uphill by its
-                        ! gradient-connected trust-region Cauchy step.
-                        DO r = 1, nrot
-                           IF (canonical_density_cauchy_channel(var_channel(r)) > 0) &
-                              projector_physical_direct_density_sol(r) = &
-                              canonical_density_tangent(r)
-                        END DO
+                        ! Re-evaluate the channel density modes against the
+                        ! final Direct Schur matrix.  The earlier blend belongs
+                        ! to the generic dense candidate; dropping it here made
+                        ! the exact-density candidate identical to the Direct
+                        ! step for every regular Newton channel.
+                        response_physical_model(:, :) = response_exact_physical(:, :) + &
+                                                        response_density_direct_exact(:, :)
+                        energy_cross_physical_model(:, :) = &
+                           MATMUL(energy_hessian_reference, response_physical_model)
+                        canonical_density_mode_alpha(:) = 0.0_dp
+                        canonical_density_mode_curvature(:) = 0.0_dp
+                        canonical_density_mode_linear(:) = 0.0_dp
+                        canonical_density_tangent_gain = 0.0_dp
+                        CALL qs_scf_kp_canonical_density_multimode_blend( &
+                           grad_rot, grad_e, projector_physical_direct_schur_mat, &
+                           energy_cross_physical_model, response_physical_model, &
+                           projector_physical_direct_sol, canonical_density_tangent_modes, &
+                           0.0_dp, canonical_density_mode_alpha, canonical_density_mode_linear, &
+                           canonical_density_mode_curvature, canonical_density_tangent_gain)
+                        canonical_density_tangent_scalar_gain = canonical_density_tangent_gain
+                        IF (canonical_density_tangent_gain > &
+                            EPSILON(MAX(1.0_dp, ABS(canonical_density_tangent_gain)))) THEN
+                           CALL qs_scf_kp_canonical_density_candidate( &
+                              projector_physical_direct_sol, canonical_density_tangent_modes, &
+                              canonical_density_mode_alpha, canonical_density_tangent, &
+                              canonical_density_cauchy_channel, var_channel, &
+                              projector_physical_direct_density_sol)
+                        ELSE
+                           ! If the Direct base cross term suppresses every
+                           ! density mode, retain the pure physical tangent as
+                           ! an independent candidate.  Its complete Mermin
+                           ! model below still has to beat the Direct step and
+                           ! its finite step still passes through line search.
+                           canonical_density_trial_sol(:) = 0.0_dp
+                           CALL qs_scf_kp_canonical_density_multimode_blend( &
+                              grad_rot, grad_e, projector_physical_direct_schur_mat, &
+                              energy_cross_physical_model, response_physical_model, &
+                              canonical_density_trial_sol, canonical_density_tangent_modes, &
+                              0.0_dp, canonical_density_mode_alpha, canonical_density_mode_linear, &
+                              canonical_density_mode_curvature, canonical_density_tangent_gain)
+                           CALL qs_scf_kp_canonical_density_candidate( &
+                              canonical_density_trial_sol, canonical_density_tangent_modes, &
+                              canonical_density_mode_alpha, canonical_density_tangent, &
+                              canonical_density_cauchy_channel, var_channel, &
+                              projector_physical_direct_density_sol)
+                        END IF
+                        canonical_density_tangent_norm = kpoint_ot_weighted_vector_dot( &
+                                                         projector_physical_direct_density_sol - projector_physical_direct_sol, &
+                                                         projector_physical_direct_density_sol - projector_physical_direct_sol, &
+                                                         var_step_weight)
+                        IF (logger%iter_info%print_level >= high_print_level .AND. &
+                            logger%para_env%is_source()) &
+                           WRITE (cp_logger_get_default_unit_nr(logger), &
+                                  '(A,1X,I3,4(1X,ES16.8))') &
+                           " OT Schur canonical density Direct blend group additive_gain gain max_alpha norm:", &
+                           target_group, canonical_density_tangent_scalar_gain, &
+                           canonical_density_tangent_gain, &
+                           MAXVAL(canonical_density_mode_alpha), canonical_density_tangent_norm
                         projector_physical_direct_density_rx_e(:) = &
                            MATMUL(response_exact_physical, projector_physical_direct_density_sol) + &
                            MATMUL(response_density_direct_exact, projector_physical_direct_density_sol)
@@ -19180,6 +19302,14 @@ CONTAINS
                               projector_physical_direct_density_shadow_expected_drop, &
                               projector_physical_direct_density_response_weighted_trust_ratio, &
                               projector_physical_direct_density_response_abs_trust_ratio)
+                           projector_physical_direct_density_probe_expected_drop = MAX( &
+                                                                            projector_physical_direct_density_probe_expected_drop, &
+                                                                                   qs_scf_kp_canonical_density_probe_drop( &
+                                                                          projector_physical_direct_density_model_calibrated_drop, &
+                                                                                   canonical_density_tangent_gain, &
+                                                               local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel, &
+                                                                  projector_physical_direct_density_response_weighted_trust_ratio, &
+                                                                        projector_physical_direct_density_response_abs_trust_ratio))
                            projector_physical_direct_density_tail_probe_ready = &
                               projector_physical_direct_density_probe_expected_drop > &
                               MAX(projector_physical_direct_density_expected_drop, &

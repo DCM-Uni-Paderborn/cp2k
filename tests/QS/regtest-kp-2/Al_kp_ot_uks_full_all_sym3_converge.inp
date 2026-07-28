@@ -5,10 +5,10 @@
 ! support through the complete fixed-N Mermin minimization.
 !
 ! Local 2026-07 OMP_NUM_THREADS=1, MPI-2 reference from a fresh directory:
-! the uninterrupted OT run converges in 84 steps at EPS_SCF 1E-6, with
-! Mermin F = -8.14036053963769 Ha and kTS = -0.00016922169984 Ha. A matching
+! the uninterrupted OT run converges in 78 steps at EPS_SCF 1E-6, with
+! Mermin F = -8.14036057654532 Ha and kTS = -0.00016931937184 Ha. A matching
 ! diagonalization run converges to -8.14036093712786 Ha, so the free-energy
-! difference is 4.0E-7 Ha. The weighted spin populations remain 7 and 5; there is no
+! difference is 3.6E-7 Ha. The weighted spin populations remain 7 and 5; there is no
 ! first/last-band warning or terminal integer-occupation branch.
 &GLOBAL
   PRINT_LEVEL HIGH
