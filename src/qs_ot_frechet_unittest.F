@@ -53,34 +53,34 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel,&
                                               qs_ot_ref_update_required
-   USE qs_ot_minimizer,                 ONLY: ot_kpoint_cg_residual_growth_guard,&
-                                              ot_kpoint_fermi_window_direction_scale,&
-                                              ot_kpoint_fermi_window_energy_coordinate,&
-                                              ot_kpoint_mermin_restart_step,&
-                                              ot_kpoint_mermin_search_stagnant,&
-                                              ot_kpoint_multiplicity_direction_scale,&
-                                              ot_kpoint_physical_residual_split,&
-                                              ot_kpoint_secant_geometry
+   USE qs_ot_minimizer,                 ONLY: &
+        ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
+        ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
+        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_recovery_deferred, &
+        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
+        ot_kpoint_secant_geometry
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_residual, &
-        qs_scf_kp_canonical_density_multimode_blend, &
-        qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_canonical_density_tangent, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
         qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_guard_control_delta, &
-        qs_scf_kp_fermi_guard_release_ready, qs_scf_kp_fermi_guard_transition, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_exit_residual, qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, &
+        qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
 
    IMPLICIT NONE
 
@@ -185,7 +185,17 @@ PROGRAM qs_ot_frechet_unittest
                                            5.0E-15_dp, nfail)
    CALL check_kpoint_residual_split("k-point OT model/exit residual split", 5.0E-15_dp, nfail)
    CALL check_kpoint_exit_residual("k-point OT exit-only physical residual", 5.0E-15_dp, nfail)
-   CALL check_kpoint_raw_exit_floor_ratio("k-point OT independent raw exit floor", 5.0E-15_dp, nfail)
+   CALL check_kpoint_raw_exit_floor("k-point OT raw exit floor completeness", 5.0E-15_dp, nfail)
+   CALL check_kpoint_raw_exit_floor_ratio("k-point OT bootstrap raw exit floor", 5.0E-15_dp, nfail)
+   CALL check_kpoint_canonical_tether_tail_scale("k-point OT canonical tether tail release", &
+                                                 5.0E-15_dp, nfail)
+   CALL check_kpoint_energy_curvature_floor("k-point OT relative energy-curvature floor", &
+                                            5.0E-14_dp, nfail)
+   CALL check_kpoint_energy_relative_metric_ready("k-point OT relative energy-metric release", nfail)
+   CALL check_kpoint_response_corrected_step("k-point OT response-only trust scaling", &
+                                             5.0E-15_dp, nfail)
+   CALL check_kpoint_energy_closure_ready("k-point OT fixed-N energy closure gate", nfail)
+   CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
    CALL check_kpoint_density_stationarity_history( &
@@ -196,9 +206,12 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-13_dp, nfail)
    CALL check_kpoint_cg_residual_growth_guard("k-point OT accepted residual growth guard", &
                                               5.0E-14_dp, nfail)
+   CALL check_kpoint_metric_history_reset("k-point OT metric-history tail reset", nfail)
+   CALL check_kpoint_tail_metric_tracking("k-point OT fallback tail-metric tracking", nfail)
    CALL check_kpoint_mermin_restart_step("k-point OT failed-search restart step", &
                                          5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_search_stagnant("k-point OT stagnant-search restart", nfail)
+   CALL check_kpoint_mermin_recovery_deferred("k-point OT pending residual closure", nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
@@ -928,7 +941,8 @@ CONTAINS
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: expected, projected, raw
       REAL(KIND=dp)                                      :: err
-      REAL(KIND=dp), DIMENSION(n, n)                     :: projected_im, projected_re, raw_im, raw_re
+      REAL(KIND=dp), DIMENSION(n, n)                     :: projected_im, projected_re, raw_im, &
+                                                            raw_re
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type)                                   :: matrix_im, matrix_re, work
@@ -4758,7 +4772,226 @@ CONTAINS
    END SUBROUTINE check_kpoint_exit_residual
 
 ! **************************************************************************************************
-!> \brief Check that Mermin-tail calibration cannot eliminate the independent raw exit guard.
+!> \brief Check that complete fixed-N residuals replace the gauge-dependent raw search floor.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_raw_exit_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: complete, density_missing, &
+                                                            physical_missing
+
+      physical_missing = qs_scf_kp_raw_exit_floor(4.0E-6_dp, 2.5E-1_dp, .FALSE., .TRUE.)
+      density_missing = qs_scf_kp_raw_exit_floor(4.0E-6_dp, 2.5E-1_dp, .TRUE., .FALSE.)
+      complete = qs_scf_kp_raw_exit_floor(4.0E-6_dp, 2.5E-1_dp, .TRUE., .TRUE.)
+      failed = ABS(physical_missing - 1.0E-6_dp) > tol .OR. &
+               ABS(density_missing - 1.0E-6_dp) > tol .OR. &
+               ABS(complete) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), "failed", &
+            physical_missing, density_missing, complete
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_raw_exit_floor
+
+! **************************************************************************************************
+!> \brief Check smooth removal of the nonvariational canonical tether in the exact Mermin tail.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_canonical_tether_tail_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: bootstrap, exact_tail, midpoint, &
+                                                            unavailable
+
+      unavailable = qs_scf_kp_canonical_tether_tail_scale(0.0_dp, .FALSE., 1.0E-6_dp)
+      bootstrap = qs_scf_kp_canonical_tether_tail_scale(1.0E-5_dp, .TRUE., 1.0E-6_dp)
+      midpoint = qs_scf_kp_canonical_tether_tail_scale(5.5E-6_dp, .TRUE., 1.0E-6_dp)
+      exact_tail = qs_scf_kp_canonical_tether_tail_scale(1.0E-6_dp, .TRUE., 1.0E-6_dp)
+      failed = ABS(unavailable - 1.0_dp) > tol .OR. ABS(bootstrap - 1.0_dp) > tol .OR. &
+               ABS(midpoint - 5.0E-1_dp) > tol .OR. ABS(exact_tail) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES16.8))') TRIM(label), "failed", &
+            unavailable, bootstrap, midpoint, exact_tail
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_canonical_tether_tail_scale
+
+! **************************************************************************************************
+!> \brief Check that weak metallic susceptibility scales are retained without losing broad-spectrum
+!>        or inactive-mode regularization.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_energy_curvature_floor(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp)                                      :: broad, inactive, weak
+
+      inactive = qs_scf_kp_energy_curvature_floor(0.0_dp)
+      weak = qs_scf_kp_energy_curvature_floor(2.0E-2_dp)
+      broad = qs_scf_kp_energy_curvature_floor(3.0E1_dp)
+      failed = ABS(inactive) > tol .OR. ABS(weak - 1.0E-3_dp) > tol .OR. &
+               ABS(broad - 1.0_dp) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), "failed", inactive, weak, broad
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_energy_curvature_floor
+
+! **************************************************************************************************
+!> \brief Check that relative energy curvature is confined to the complete fixed-N residual tail.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_energy_relative_metric_ready(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bootstrap, incomplete, tail
+
+      bootstrap = qs_scf_kp_energy_relative_metric_ready(.TRUE., 1.0E-3_dp, 1.0E-6_dp)
+      incomplete = qs_scf_kp_energy_relative_metric_ready(.FALSE., 5.0E-7_dp, 1.0E-6_dp)
+      tail = qs_scf_kp_energy_relative_metric_ready(.TRUE., 5.0E-7_dp, 1.0E-6_dp)
+
+      IF (bootstrap .OR. incomplete .OR. .NOT. tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "failed with bootstrap/incomplete/tail", bootstrap, incomplete, tail
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "OK with bootstrap/incomplete/tail", bootstrap, incomplete, tail
+      END IF
+
+   END SUBROUTINE check_kpoint_energy_relative_metric_ready
+
+! **************************************************************************************************
+!> \brief Check that response trust cannot erase the exact fixed-N auxiliary-energy base step.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_response_corrected_step(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+      REAL(KIND=dp), DIMENSION(3)                        :: base, correction, full, retained, zero
+
+      base = [2.0E-2_dp, -3.0E-2_dp, 1.0E-2_dp]
+      correction = [-2.0E-2_dp, 1.0E-2_dp, 4.0E-2_dp]
+      CALL qs_scf_kp_response_corrected_step(base, correction, 0.0_dp, zero)
+      CALL qs_scf_kp_response_corrected_step(base, correction, 2.5E-1_dp, retained)
+      CALL qs_scf_kp_response_corrected_step(base, correction, 1.0_dp, full)
+      failed = MAXVAL(ABS(zero - base)) > tol .OR. &
+               MAXVAL(ABS(retained - (base + 2.5E-1_dp*correction))) > tol .OR. &
+               MAXVAL(ABS(full - (base + correction))) > tol
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), "failed", &
+            MAXVAL(ABS(zero - base)), &
+            MAXVAL(ABS(retained - (base + 2.5E-1_dp*correction))), &
+            MAXVAL(ABS(full - (base + correction)))
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_response_corrected_step
+
+! **************************************************************************************************
+!> \brief Check that the energy closure is restricted to a complete density-only convergence tail.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_energy_closure_ready(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_energy_closure_ready(.TRUE., .TRUE., 8.0E-7_dp, &
+                                                    1.4E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready(.FALSE., .TRUE., 8.0E-7_dp, &
+                                                          1.4E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready(.TRUE., .FALSE., 8.0E-7_dp, &
+                                                          1.4E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready(.TRUE., .TRUE., 1.2E-6_dp, &
+                                                          1.4E-6_dp, 1.0E-6_dp)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready(.TRUE., .TRUE., 8.0E-7_dp, &
+                                                          9.0E-7_dp, 1.0E-6_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_energy_closure_ready
+
+! **************************************************************************************************
+!> \brief Check that stale history may be bypassed only by a trust-safe coupled closure model.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_density_closure_model_ready(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_density_closure_model_ready( &
+               .TRUE., .TRUE., 2.0E-11_dp, 2.0E-4_dp, 5.0E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_model_ready( &
+               .FALSE., .TRUE., 2.0E-11_dp, 2.0E-4_dp, 5.0E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_model_ready( &
+               .TRUE., .FALSE., 2.0E-11_dp, 2.0E-4_dp, 5.0E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_model_ready( &
+               .TRUE., .TRUE., 5.0E-13_dp, 2.0E-4_dp, 5.0E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_model_ready( &
+               .TRUE., .TRUE., 2.0E-11_dp, 1.1_dp, 5.0E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_model_ready( &
+               .TRUE., .TRUE., 2.0E-11_dp, 2.0E-4_dp, 1.1_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_density_closure_model_ready
+
+! **************************************************************************************************
+!> \brief Check the history calibration used by the bootstrap raw exit guard.
 !> \param label ...
 !> \param tol ...
 !> \param nfail ...
@@ -4963,7 +5196,7 @@ CONTAINS
    END SUBROUTINE check_kpoint_occ_metric_continuation
 
 ! **************************************************************************************************
-!> \brief Check accepted-step residual growth invalidates CG history without rejecting the state.
+!> \brief Check accepted-step residual growth invalidates the local response trust model.
 !> \param label ...
 !> \param tol ...
 !> \param nfail ...
@@ -4980,6 +5213,28 @@ CONTAINS
       CALL ot_kpoint_cg_residual_growth_guard(4.0E-6_dp, 8.0E-6_dp, 2.0E-5_dp, &
                                               1.0E-6_dp, reset, quality, catastrophic)
       failed = failed .OR. .NOT. reset .OR. catastrophic .OR. ABS(quality - 0.25_dp) > tol
+
+      ! Strict Al tail: a lower-Mermin endpoint must still leave the local
+      ! response trust region when its fixed-N residual grows by a large factor.
+      CALL ot_kpoint_cg_residual_growth_guard(4.34235433E-9_dp, 2.38294192E-8_dp, &
+                                              4.37374581E-11_dp, 1.0E-9_dp, &
+                                              reset, quality, catastrophic)
+      failed = failed .OR. .NOT. reset .OR. catastrophic .OR. &
+               ABS(quality - (4.34235433E-9_dp/2.38294192E-8_dp)**2) > tol
+      CALL ot_kpoint_cg_residual_growth_guard(4.34235433E-9_dp, 2.38294192E-8_dp, &
+                                              1.0E-14_dp, 1.0E-9_dp, &
+                                              reset, quality, catastrophic)
+      failed = failed .OR. .NOT. reset .OR. catastrophic
+
+      ! The EPS-scaled closure trust region must not become a global
+      ! monotonic-residual constraint.
+      CALL ot_kpoint_cg_residual_growth_guard(4.0E-8_dp, 8.0E-8_dp, 2.0E-9_dp, &
+                                              1.0E-9_dp, reset, quality, catastrophic)
+      failed = failed .OR. reset .OR. catastrophic .OR. ABS(quality - 1.0_dp) > tol
+
+      CALL ot_kpoint_cg_residual_growth_guard(4.0E-9_dp, 3.0E-4_dp, 2.0E-5_dp, &
+                                              1.0E-9_dp, reset, quality, catastrophic)
+      failed = failed .OR. reset .OR. catastrophic .OR. ABS(quality - 1.0_dp) > tol
 
       ! Crossing into the residual tail invalidates CG even if the old point was just below it.
       CALL ot_kpoint_cg_residual_growth_guard(1.45414674E-6_dp, 1.38067263E-5_dp, &
@@ -5013,6 +5268,62 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_cg_residual_growth_guard
+
+! **************************************************************************************************
+!> \brief Check that an incompatible Schur metric resets CG only in the physical residual tail.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_metric_history_reset(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 4.0E-6_dp, 3.0E-6_dp)
+      failed = failed .OR. ot_kpoint_cg_metric_history_reset(.FALSE., 0.8_dp, 4.0E-6_dp, 3.0E-6_dp)
+      failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.0_dp, 4.0E-6_dp, 3.0E-6_dp)
+      failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 5.0E-6_dp, 3.0E-6_dp)
+      failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 3.0E-6_dp, 3.0E-6_dp)
+      failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 1.0E-4_dp, 3.0E-6_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_metric_history_reset
+
+! **************************************************************************************************
+!> \brief Check that persistent dense fallbacks receive the same tail-history guard as named models.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_tail_metric_tracking(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. ot_kpoint_cg_tail_metric_tracked(3, 3, 35, 42, 1.0E-2_dp, 3.0E-9_dp)
+      failed = failed .OR. &
+               .NOT. ot_kpoint_cg_tail_metric_tracked(3, 3, -1, -1, 4.0E-9_dp, 3.0E-9_dp)
+      failed = failed .OR. ot_kpoint_cg_tail_metric_tracked(3, 3, -1, -1, 1.0E-2_dp, 3.0E-9_dp)
+      failed = failed .OR. ot_kpoint_cg_tail_metric_tracked(3, 3, -1, -1, 2.0E-9_dp, 3.0E-9_dp)
+      failed = failed .OR. ot_kpoint_cg_tail_metric_tracked(3, 3, -1, 35, 4.0E-9_dp, 3.0E-9_dp)
+      failed = failed .OR. ot_kpoint_cg_tail_metric_tracked(3, 3, 0, 0, 4.0E-9_dp, 3.0E-9_dp)
+      failed = failed .OR. ot_kpoint_cg_tail_metric_tracked(2, 3, 35, 35, 4.0E-9_dp, 3.0E-9_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_tail_metric_tracking
 
 ! **************************************************************************************************
 !> \brief Check failed Mermin searches inherit a contracted, nonzero restart step.
@@ -5083,6 +5394,41 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_search_stagnant
+
+! **************************************************************************************************
+!> \brief Check that collapsed-search recovery cannot discard an unevaluated physical endpoint.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_recovery_deferred(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: exhausted, moving_energy_sample, &
+                                                            pending_physical_endpoint, &
+                                                            stagnant_energy_sample
+
+      pending_physical_endpoint = ot_kpoint_mermin_recovery_deferred( &
+                                  .TRUE., .TRUE., .FALSE., .FALSE., .TRUE.)
+      stagnant_energy_sample = ot_kpoint_mermin_recovery_deferred( &
+                               .TRUE., .TRUE., .TRUE., .FALSE., .TRUE.)
+      moving_energy_sample = ot_kpoint_mermin_recovery_deferred( &
+                             .TRUE., .TRUE., .TRUE., .FALSE., .FALSE.)
+      exhausted = ot_kpoint_mermin_recovery_deferred(.TRUE., .TRUE., .FALSE., .TRUE., .TRUE.)
+
+      IF (.NOT. pending_physical_endpoint .OR. stagnant_energy_sample .OR. &
+          .NOT. moving_energy_sample .OR. exhausted) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
+            "failed with physical/stagnant/moving/exhausted", &
+            pending_physical_endpoint, stagnant_energy_sample, moving_energy_sample, exhausted
+      ELSE
+         WRITE (*, '(A,1X,A,4(1X,L1))') TRIM(label), &
+            "OK with physical/stagnant/moving/exhausted", &
+            pending_physical_endpoint, stagnant_energy_sample, moving_energy_sample, exhausted
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_recovery_deferred
 
 ! **************************************************************************************************
 !> \brief check vector secant alignment and orthogonal response decomposition
@@ -5406,18 +5752,12 @@ CONTAINS
 
       LOGICAL                                            :: ready, scaled_ready
       REAL(KIND=dp) :: eliminated_drop, eliminated_quadratic, eliminated_slope, error, &
-         expected_eliminated_quadratic, expected_eliminated_slope, model_drop, &
-         model_quadratic, model_slope, position_drop, scaled_model_drop, scaled_model_quadratic, &
-         scaled_model_slope
-      REAL(KIND=dp), DIMENSION(2)                        :: energy_gradient, energy_step, &
-                                                            independent_energy_step, &
-                                                            rotation_gradient, rotation_step, &
-                                                            scaled_energy_gradient, &
-                                                            scaled_energy_step
-      REAL(KIND=dp), DIMENSION(2, 2)                     :: energy_cross, energy_hessian, &
-                                                            energy_response, reduced_hessian, &
-                                                            rotation_hessian, scaled_energy_cross, &
-                                                            scaled_energy_hessian
+         expected_eliminated_quadratic, expected_eliminated_slope, model_drop, model_quadratic, &
+         model_slope, position_drop, scaled_model_drop, scaled_model_quadratic, scaled_model_slope
+      REAL(KIND=dp), DIMENSION(2) :: energy_gradient, energy_step, independent_energy_step, &
+         rotation_gradient, rotation_step, scaled_energy_gradient, scaled_energy_step
+      REAL(KIND=dp), DIMENSION(2, 2) :: energy_cross, energy_hessian, energy_response, &
+         reduced_hessian, rotation_hessian, scaled_energy_cross, scaled_energy_hessian
 
       rotation_gradient(:) = [1.0_dp, -0.5_dp]
       energy_gradient(:) = [0.3_dp, -0.1_dp]
@@ -22641,18 +22981,21 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4
       REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, fd_step = 1.0E-5_dp, &
-         gauge_gap = 1.0E-6_dp, maxocc = 1.0_dp, nel = 2.15_dp, &
-         projector_weight = 0.43_dp, sigma = 0.08_dp, wk = 1.0_dp
+         gauge_gap = 1.0E-6_dp, maxocc = 1.0_dp, nel = 2.15_dp, projector_weight = 0.43_dp, &
+         sigma = 0.08_dp, wk = 1.0_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n) :: chc, chc_rot, dchc, dchc_rot, docc_aux, &
-         docc_back, docc_canonical, docc_fd, docc_rot, evec, occ_mat_m, occ_mat_p, q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_rot, dchc, dchc_rot, docc_aux, &
+                                                            docc_back, docc_canonical, docc_fd, &
+                                                            docc_rot, evec, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp) :: cov_err, fd_err, kTS, model_gap, mu, trace_err
-      REAL(KIND=dp), DIMENSION(n) :: aux_curv, aux_occ, canonical_curv, canonical_scale, &
-         evals, evals_m, evals_p, occ_scale_m, occ_scale_p
+      REAL(KIND=dp)                                      :: cov_err, fd_err, kTS, model_gap, mu, &
+                                                            trace_err
+      REAL(KIND=dp), DIMENSION(1)                        :: weights
+      REAL(KIND=dp), DIMENSION(n)                        :: aux_curv, aux_occ, canonical_curv, &
+                                                            canonical_scale, evals, evals_m, &
+                                                            evals_p, occ_scale_m, occ_scale_p
       REAL(KIND=dp), DIMENSION(n, 1)                     :: eps, occ
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
-      REAL(KIND=dp), DIMENSION(1)                        :: weights
 
       weights(1) = wk
       evals(:) = [-0.31_dp, -0.06_dp, 0.04_dp, 0.29_dp]
@@ -22749,17 +23092,18 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 4
-      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, gauge_gap = 1.0E-6_dp, &
-         maxocc = 1.0_dp, nel = 2.15_dp, projector_weight = 0.43_dp, sigma = 0.08_dp, wk = 1.0_dp
+      REAL(KIND=dp), PARAMETER :: active_tol = 1.0E-4_dp, gauge_gap = 1.0E-6_dp, maxocc = 1.0_dp, &
+         nel = 2.15_dp, projector_weight = 0.43_dp, sigma = 0.08_dp, wk = 1.0_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n) :: chc, chc_eig, dchc, dchc_eig, docc, &
-         docc_eig, generator, q
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_eig, dchc, dchc_eig, docc, &
+                                                            docc_eig, generator, q
       INTEGER                                            :: i
-      REAL(KIND=dp) :: eig_diag, herm_err, kTS, mu, ref_diag, trace_err
+      REAL(KIND=dp)                                      :: eig_diag, herm_err, kTS, mu, ref_diag, &
+                                                            trace_err
+      REAL(KIND=dp), DIMENSION(1)                        :: weights
       REAL(KIND=dp), DIMENSION(n)                        :: canonical_curv, canonical_scale, evals
       REAL(KIND=dp), DIMENSION(n, 1)                     :: eps, occ
       REAL(KIND=dp), DIMENSION(n, n)                     :: x_im, x_re
-      REAL(KIND=dp), DIMENSION(1)                        :: weights
 
       weights(1) = wk
       evals(:) = [-0.31_dp, -0.06_dp, 0.04_dp, 0.29_dp]
@@ -22840,15 +23184,19 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: n = 4
-      REAL(KIND=dp), PARAMETER :: fd_step = 1.0E-6_dp, frechet_floor = 1.0E-10_dp, &
-         max_pair_rotation = 0.25_dp, occ_floor = 1.0E-8_dp
+      REAL(KIND=dp), PARAMETER                           :: fd_step = 1.0E-6_dp, &
+                                                            frechet_floor = 1.0E-10_dp, &
+                                                            max_pair_rotation = 0.25_dp, &
+                                                            occ_floor = 1.0E-8_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n) :: achieved_fd, density_0, density_m, density_p, evec, &
-         tangent, target_density, u_0, u_m, u_p, weighted
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: achieved_fd, density_0, density_m, &
+                                                            density_p, evec, tangent, &
+                                                            target_density, u_0, u_m, u_p, weighted
       INTEGER                                            :: i, j
-      REAL(KIND=dp) :: antiherm_err, fd_err, fd_linear_norm, linear_norm, reduction, tangent_norm, &
-         target_norm, trace_err
-      REAL(KIND=dp), DIMENSION(n) :: canonical_occ, current_occ
+      REAL(KIND=dp)                                      :: antiherm_err, fd_err, fd_linear_norm, &
+                                                            linear_norm, reduction, tangent_norm, &
+                                                            target_norm, trace_err
+      REAL(KIND=dp), DIMENSION(n)                        :: canonical_occ, current_occ
       REAL(KIND=dp), DIMENSION(n, n)                     :: tangent_im, tangent_re, x_im, x_re, &
                                                             xp_im, xp_re
 
@@ -22899,16 +23247,16 @@ CONTAINS
       CALL dense_rotation_u(xp_re, xp_im, u_m)
       density_p(:, :) = MATMUL(CONJG(TRANSPOSE(u_0)), &
                                MATMUL(u_p, MATMUL(density_0, &
-                                                MATMUL(CONJG(TRANSPOSE(u_p)), u_0))))
+                                                  MATMUL(CONJG(TRANSPOSE(u_p)), u_0))))
       density_m(:, :) = MATMUL(CONJG(TRANSPOSE(u_0)), &
                                MATMUL(u_m, MATMUL(density_0, &
-                                                MATMUL(CONJG(TRANSPOSE(u_m)), u_0))))
+                                                  MATMUL(CONJG(TRANSPOSE(u_m)), u_0))))
       achieved_fd(:, :) = (density_p(:, :) - density_m(:, :))/(2.0_dp*fd_step)
       fd_linear_norm = 0.0_dp
       DO j = 2, n
          DO i = 1, j - 1
             fd_linear_norm = fd_linear_norm + &
-               2.0_dp*ABS(target_density(i, j) - achieved_fd(i, j))**2
+                             2.0_dp*ABS(target_density(i, j) - achieved_fd(i, j))**2
          END DO
       END DO
       fd_linear_norm = SQRT(MAX(0.0_dp, fd_linear_norm))
@@ -22944,21 +23292,23 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: n = 4, nkp = 1
       REAL(KIND=dp), PARAMETER :: fd_step = 1.0E-6_dp, frechet_floor = 1.0E-10_dp, &
-         max_pair_rotation = 0.25_dp, maxocc = 2.0_dp, nel = 2.35_dp, &
-         occ_floor = 1.0E-8_dp, sigma = 0.035_dp
+         max_pair_rotation = 0.25_dp, maxocc = 2.0_dp, nel = 2.35_dp, occ_floor = 1.0E-8_dp, &
+         sigma = 0.035_dp
 
       COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base_channel, chc, evec, u
       COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
       INTEGER                                            :: i, j
-      REAL(KIND=dp) :: alignment, fd, fd_err, kTS, mu, tangent_linear_norm, tangent_norm, &
-         tangent_target_norm, value, value_m, value_p
+      REAL(KIND=dp)                                      :: alignment, fd, fd_err, kTS, mu, &
+                                                            tangent_linear_norm, tangent_norm, &
+                                                            tangent_target_norm, value, value_m, &
+                                                            value_p
       REAL(KIND=dp), DIMENSION(n)                        :: evals
-      REAL(KIND=dp), DIMENSION(n, nkp)                   :: canonical_occ, current_occ, eps, evals_kp, &
-                                                            grad_eps
-      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
       REAL(KIND=dp), DIMENSION(n, n)                     :: tangent_im, tangent_re
-      REAL(KIND=dp), DIMENSION(n, n, nkp) :: grad_im, grad_re, x_im, x_m_im, x_m_re, x_p_im, &
-         x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: canonical_occ, current_occ, eps, &
+                                                            evals_kp, grad_eps
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
 
       wk(:) = 1.0_dp
       chc(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
@@ -23065,18 +23415,20 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: frechet_floor = 1.0E-10_dp, max_pair_rotation = 0.25_dp, &
          maxocc = 2.0_dp, nel = 1.94555_dp, occ_floor = 1.0E-8_dp, sigma = 0.035_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n) :: cauchy_density, chc, density_0, evec, target_density, u, weighted
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: cauchy_density, chc, density_0, evec, &
+                                                            target_density, u, weighted
       COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
       INTEGER                                            :: i, r
-      INTEGER, DIMENSION(nrot) :: active_i, active_j, active_kind
+      INTEGER, DIMENSION(nrot)                           :: active_i, active_j, active_kind
       REAL(KIND=dp) :: cauchy_alignment, cauchy_density_norm, kTS, mu, newton_alignment, &
          newton_density_norm, tangent_linear_norm, tangent_norm, tangent_target_norm, value
       REAL(KIND=dp), DIMENSION(n)                        :: evals
-      REAL(KIND=dp), DIMENSION(n, nkp)                   :: canonical_occ, current_occ, eps, evals_kp, &
-                                                            grad_eps
-      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
-      REAL(KIND=dp), DIMENSION(n, n) :: cauchy_im, cauchy_re, tangent_im, tangent_re
+      REAL(KIND=dp), DIMENSION(n, n)                     :: cauchy_im, cauchy_re, tangent_im, &
+                                                            tangent_re
       REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_re
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: canonical_occ, current_occ, eps, &
+                                                            evals_kp, grad_eps
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
 
       active_i(:) = [1, 1, 2, 2, 2, 3]
       active_j(:) = [2, 3, 3, 3, 4, 4]
@@ -23147,11 +23499,11 @@ CONTAINS
          density_0(i, i) = CMPLX(current_occ(i, 1), 0.0_dp, KIND=dp)
       END DO
       newton_density_norm = SQRT(REAL(SUM(CONJG(density_0 - target_density)* &
-                                               (density_0 - target_density)), KIND=dp))
+                                          (density_0 - target_density)), KIND=dp))
       CALL dense_rotation_u(cauchy_re, cauchy_im, u)
       cauchy_density(:, :) = MATMUL(u, MATMUL(density_0, CONJG(TRANSPOSE(u))))
       cauchy_density_norm = SQRT(REAL(SUM(CONJG(cauchy_density - target_density)* &
-                                              (cauchy_density - target_density)), KIND=dp))
+                                          (cauchy_density - target_density)), KIND=dp))
 
       IF (newton_alignment <= tol .OR. cauchy_alignment >= -tol .OR. &
           cauchy_density_norm >= newton_density_norm .OR. tangent_norm <= 1.0E-4_dp) THEN
@@ -23179,14 +23531,16 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER, PARAMETER                                 :: ne = 2, nrot = 2
-      REAL(KIND=dp) :: alpha, curvature, cross, err, expected_alpha, expected_curvature, &
-         expected_cross, expected_gain, expected_gdot, gain, gdot, multimode_gain
+
+      REAL(KIND=dp) :: alpha, cross, curvature, err, expected_alpha, expected_cross, &
+         expected_curvature, expected_gain, expected_gdot, gain, gdot, multimode_gain
       REAL(KIND=dp), DIMENSION(ne)                       :: grad_e
-      REAL(KIND=dp), DIMENSION(nrot)                     :: base_rot, grad_rot, tangent_rot
-      REAL(KIND=dp), DIMENSION(nrot)                     :: mode_alpha, mode_curvature, mode_linear
       REAL(KIND=dp), DIMENSION(ne, nrot)                 :: energy_cross, energy_response
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: reduced_hessian, rot_hessian
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: tangent_modes
+      REAL(KIND=dp), DIMENSION(nrot)                     :: base_rot, grad_rot, mode_alpha, &
+                                                            mode_curvature, mode_linear, &
+                                                            tangent_rot
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: reduced_hessian, rot_hessian, &
+                                                            tangent_modes
 
       grad_rot(:) = [0.8_dp, -0.3_dp]
       grad_e(:) = [0.2_dp, 0.1_dp]
@@ -23204,7 +23558,7 @@ CONTAINS
       expected_cross = DOT_PRODUCT(tangent_rot, MATMUL(reduced_hessian, base_rot))
       expected_curvature = DOT_PRODUCT(tangent_rot, MATMUL(reduced_hessian, tangent_rot))
       expected_alpha = MIN(1.0_dp, MAX(0.0_dp, &
-                                      (expected_gdot - expected_cross)/expected_curvature))
+                                       (expected_gdot - expected_cross)/expected_curvature))
       expected_gain = expected_alpha*(expected_gdot - expected_cross) - &
                       0.5_dp*expected_alpha**2*expected_curvature
       CALL qs_scf_kp_canonical_density_blend( &

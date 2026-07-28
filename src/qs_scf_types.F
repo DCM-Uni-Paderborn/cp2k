@@ -133,6 +133,7 @@ MODULE qs_scf_types
       REAL(KIND=dp) :: etotal = 0.0_dp, gradient = 0.0_dp, ds_min = 0.0_dp
       REAL(KIND=dp) :: broyden_adaptive_sigma = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_reference_energy = 0.0_dp
+      REAL(KIND=dp) :: mermin_ls_reference_delta = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_best_sample_energy = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_best_sample_drop = 0.0_dp
       REAL(KIND=dp) :: mermin_ls_model_drop = 0.0_dp

@@ -62,8 +62,8 @@
 # four-channel anchor.  FULL_ALL converges in 146 MPI-2 steps to
 # -8.16155090574643 Ha, within 3.7E-9 Ha of diagonalization, and
 # reproduces the unconstrained spin populations 6.33333/5.66667.
-"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.11587929655525},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11587929655525},
+"Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.11587961821005},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11587961821005},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.004898018E-5},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="NO_TEXT", text="K-point smearing includes the first band"},
@@ -73,11 +73,12 @@
 # Write/read remain short restart-I/O smokes.  The bounded continue job is the
 # converged 1E-6 physics anchor: it preserves the adaptive history,
 # allows one bounded reader step, and retains finite entropy.  Keep the early
-# one-k-point smoke references strict.  Continue converges in 70 MPI-2 steps at
-# -8.14585311907974 Ha and in 70 serial steps at -8.14585311966881 Ha; the
-# layout-dependent minimizer paths agree within 6E-10 Ha.
-"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.11824844290978},
-                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11824844290978},
+# one-k-point smoke references strict.  Their current values include the
+# line-search-consistent adaptive canonical tether, which is fixed for all
+# trial points belonging to one accepted gradient.  Continue converges in
+# 70 MPI-2 steps at -8.14585307804561 Ha with a 5.4E-7 projected residual.
+"Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.11824884393091},
+                                           {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11824884393091},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.77426313E-6},
                                            {matcher="N_kpoints", tol=0.0, ref=1},
                                            {matcher="SCF_guess_restart"},

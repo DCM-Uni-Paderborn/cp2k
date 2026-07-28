@@ -71,7 +71,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 26
+   INTEGER, PARAMETER                   :: ot_restart_version = 27
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 
@@ -459,6 +459,8 @@ CONTAINS
 !> \param rst_unit ...
 !> \param natom_mismatch ...
 !> \param scf_env ...
+!> \param cell ...
+!> \param particle_set ...
 !> \par History
 !>      12.2007 created [MI]
 !> \author MI
@@ -599,7 +601,7 @@ CONTAINS
       LOGICAL, DIMENSION(qs_ot_restart_adaptive_nlog)    :: adaptive_log_payload
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: restart_positions
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
-      REAL(KIND=dp), DIMENSION(19)                       :: real_payload
+      REAL(KIND=dp), DIMENSION(20)                       :: real_payload
       REAL(KIND=dp), DIMENSION(53)                       :: ot_energy_payload, ot_grad_payload, &
                                                             ot_pos_payload
       REAL(KIND=dp), &
@@ -720,7 +722,8 @@ CONTAINS
                          qs_ot_env(ichannel)%mermin_ls_accepted_quality, &
                          qs_ot_env(ichannel)%mermin_ls_accepted_quality_ema, &
                          qs_ot_env(ichannel)%mermin_ls_accepted_gap, &
-                         qs_ot_env(ichannel)%mermin_ls_accepted_gap_ema]
+                         qs_ot_env(ichannel)%mermin_ls_accepted_gap_ema, &
+                         qs_ot_env(ichannel)%mermin_ls_reference_delta]
          schur_int_payload = [qs_ot_env(ichannel)%schur_projector_density_quality_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_audit_samples, &
                               qs_ot_env(ichannel)%schur_projector_density_descent_quality_samples, &
@@ -1145,13 +1148,15 @@ CONTAINS
          IF (has_matrix_history) THEN
             DO ihist = 1, ndiis
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%matrix_h_e(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%matrix_h_e(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%matrix_h_x(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%matrix_h_x(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
             END DO
@@ -1159,13 +1164,15 @@ CONTAINS
          IF (has_matrix_history_im) THEN
             DO ihist = 1, ndiis
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%matrix_h_e_im(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%matrix_h_e_im(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%matrix_h_x_im(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%matrix_h_x_im(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
             END DO
@@ -1173,13 +1180,15 @@ CONTAINS
          IF (has_rot_history) THEN
             DO ihist = 1, ndiis
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_e(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%rot_mat_h_e(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_x(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%rot_mat_h_x(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
             END DO
@@ -1187,13 +1196,15 @@ CONTAINS
          IF (has_rot_history_im) THEN
             DO ihist = 1, ndiis
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_e_im(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%rot_mat_h_e_im(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
                NULLIFY (restart_matrix)
-               IF (qs_ot_env(ichannel)%state_allocated) &
-                  restart_matrix => qs_ot_env(ichannel)%rot_mat_h_x_im(ihist)%matrix
+               IF (qs_ot_env(ichannel)%state_allocated) then
+                 restart_matrix => qs_ot_env(ichannel)%rot_mat_h_x_im(ihist)%matrix
+               end if
                CALL write_restart_dbcsr_matrix(restart_matrix, qs_ot_env(ichannel), channel_source, &
                                                fmat_template, ires)
             END DO
@@ -1405,8 +1416,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(126)                      :: schur_real_payload_v12
       REAL(KIND=dp), DIMENSION(133)                      :: schur_real_payload_v13
       REAL(KIND=dp), DIMENSION(139)                      :: schur_real_payload
-      REAL(KIND=dp), DIMENSION(19)                       :: real_payload
-      REAL(KIND=dp), DIMENSION(20)                       :: real_payload_v16
+      REAL(KIND=dp), DIMENSION(19)                       :: real_payload_v26
+      REAL(KIND=dp), DIMENSION(20)                       :: real_payload, real_payload_v16
       REAL(KIND=dp), DIMENSION(3, 3)                     :: restart_hmat
       REAL(KIND=dp), DIMENSION(51)                       :: schur_real_payload_v4
       REAL(KIND=dp), DIMENSION(58)                       :: schur_real_payload_v5
@@ -1500,30 +1511,38 @@ CONTAINS
          adaptive_int_payload(:) = 0
          adaptive_log_payload(:) = .FALSE.
          adaptive_real_payload(:) = 0.0_dp
+         real_payload(:) = 0.0_dp
          IF (para_env%is_source()) THEN
-            IF (version_read >= 19) THEN
+            IF (version_read >= 27) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload
                READ (rst_unit) real_payload
+            ELSE IF (version_read >= 19) THEN
+               READ (rst_unit) int_payload
+               READ (rst_unit) log_payload
+               READ (rst_unit) real_payload_v26
+               real_payload(1:19) = real_payload_v26
             ELSE IF (version_read >= 17) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload_v18
-               READ (rst_unit) real_payload
+               READ (rst_unit) real_payload_v26
                log_payload(:) = .FALSE.
                log_payload(1:28) = log_payload_v18
+               real_payload(1:19) = real_payload_v26
             ELSE IF (version_read == 16) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload_v18
                READ (rst_unit) real_payload_v16
                log_payload(:) = .FALSE.
                log_payload(1:28) = log_payload_v18
-               real_payload(:) = real_payload_v16(1:19)
+               real_payload(1:19) = real_payload_v16(1:19)
             ELSE IF (version_read >= 11) THEN
                READ (rst_unit) int_payload
                READ (rst_unit) log_payload_v18
-               READ (rst_unit) real_payload
+               READ (rst_unit) real_payload_v26
                log_payload(:) = .FALSE.
                log_payload(1:28) = log_payload_v18
+               real_payload(1:19) = real_payload_v26
             ELSE
                READ (rst_unit) int_payload_v10
                READ (rst_unit) log_payload_v10
@@ -1646,8 +1665,9 @@ CONTAINS
                   adaptive_real_payload(1:88) = adaptive_real_payload_v21
                ELSE
                   BACKSPACE (UNIT=rst_unit, IOSTAT=adaptive_ios)
-                  IF (adaptive_ios /= 0) &
-                     CALL cp_abort(__LOCATION__, "Failed to rewind a legacy version-20 k-point OT restart.")
+                  IF (adaptive_ios /= 0) then
+                    CALL cp_abort(__LOCATION__, "Failed to rewind a legacy version-20 k-point OT restart.")
+                  end if
                   READ (rst_unit, IOSTAT=adaptive_ios) adaptive_int_payload_v20
                   IF (adaptive_ios == 0) THEN
                      READ (rst_unit) adaptive_log_payload_v20
@@ -1657,8 +1677,9 @@ CONTAINS
                      adaptive_real_payload(1:75) = adaptive_real_payload_v20
                   ELSE
                      BACKSPACE (UNIT=rst_unit, IOSTAT=adaptive_ios)
-                     IF (adaptive_ios /= 0) &
-                        CALL cp_abort(__LOCATION__, "Failed to rewind a legacy version-20 k-point OT restart.")
+                     IF (adaptive_ios /= 0) then
+                       CALL cp_abort(__LOCATION__, "Failed to rewind a legacy version-20 k-point OT restart.")
+                     end if
                   END IF
                END IF
             END IF
@@ -1759,6 +1780,7 @@ CONTAINS
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_quality_ema = real_payload(17)
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_gap = real_payload(18)
          scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_accepted_gap_ema = real_payload(19)
+         scf_env%qs_ot_restart%channel(ichannel)%mermin_ls_reference_delta = real_payload(20)
          scf_env%qs_ot_restart%channel(ichannel)%density_quality_samples = schur_int_payload(1)
          scf_env%qs_ot_restart%channel(ichannel)%density_audit_samples = schur_int_payload(2)
          scf_env%qs_ot_restart%channel(ichannel)%density_descent_quality_samples = schur_int_payload(3)

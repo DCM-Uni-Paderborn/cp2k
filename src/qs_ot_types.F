@@ -192,6 +192,7 @@ MODULE qs_ot_types
       LOGICAL          :: mermin_ls_closure_rejected = .FALSE.
       INTEGER          :: mermin_ls_best_sample_index = 0
       REAL(KIND=dp)    :: mermin_ls_reference_energy = 0.0_dp, mermin_ls_best_sample_energy = 0.0_dp
+      REAL(KIND=dp)    :: mermin_ls_reference_delta = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_best_sample_drop = 0.0_dp, mermin_ls_model_drop = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_model_quality = 0.0_dp, mermin_ls_best_sample_pos = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_next_pos = 0.0_dp
@@ -814,8 +815,9 @@ CONTAINS
       LOGICAL                                            :: active
 
       active = qs_ot_env%settings%occupation_preconditioner
-      IF (active .AND. qs_ot_env%has_complex_kpoint_state) &
-         active = qs_ot_env%kpoint_occ_preconditioner_active
+      IF (active .AND. qs_ot_env%has_complex_kpoint_state) then
+        active = qs_ot_env%kpoint_occ_preconditioner_active
+      end if
 
    END FUNCTION qs_ot_occupation_preconditioner_active
 
@@ -886,8 +888,9 @@ CONTAINS
       IF (PRESENT(kpoint_index)) qs_ot_env%kpoint_index = kpoint_index
       IF (PRESENT(local_kpoint_index)) qs_ot_env%local_kpoint_index = local_kpoint_index
       IF (PRESENT(kpoint_weight)) qs_ot_env%kpoint_weight = kpoint_weight
-      IF (PRESENT(kpoint_multiplicity)) &
-         qs_ot_env%kpoint_multiplicity = MAX(1, kpoint_multiplicity)
+      IF (PRESENT(kpoint_multiplicity)) then
+        qs_ot_env%kpoint_multiplicity = MAX(1, kpoint_multiplicity)
+      end if
       qs_ot_env%has_kpoint_context = PRESENT(kpoint_index) .OR. PRESENT(local_kpoint_index)
 
    END SUBROUTINE qs_ot_set_context
@@ -993,8 +996,9 @@ CONTAINS
       DO ikpoint = 1, nkpoint_eff
          expected_local_kpoint = 0
          IF (PRESENT(kp_range)) THEN
-            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) &
-               expected_local_kpoint = ikpoint - kp_range(1) + 1
+            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) then
+              expected_local_kpoint = ikpoint - kp_range(1) + 1
+            end if
          END IF
          DO ispin = 1, nspin_eff
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_eff)
@@ -1042,6 +1046,7 @@ CONTAINS
       qs_ot_env%mermin_ls_closure_rejected = .FALSE.
       qs_ot_env%mermin_ls_best_sample_index = 0
       qs_ot_env%mermin_ls_reference_energy = 0.0_dp
+      qs_ot_env%mermin_ls_reference_delta = 0.0_dp
       qs_ot_env%mermin_ls_best_sample_energy = 0.0_dp
       qs_ot_env%mermin_ls_best_sample_drop = 0.0_dp
       qs_ot_env%mermin_ls_model_drop = 0.0_dp
@@ -1190,11 +1195,13 @@ CONTAINS
       qs_ot_env%kpoint_projected_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_delta = -1.0_dp
       qs_ot_env%kpoint_density_stationarity_max = -1.0_dp
-      IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) &
-         qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
+      IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) then
+        qs_ot_env%kpoint_density_pair_residual(:, :) = 0.0_dp
+      end if
       qs_ot_env%kpoint_canonical_occupation_ready = .FALSE.
-      IF (ALLOCATED(qs_ot_env%kpoint_canonical_occupation)) &
-         qs_ot_env%kpoint_canonical_occupation(:) = 0.0_dp
+      IF (ALLOCATED(qs_ot_env%kpoint_canonical_occupation)) then
+        qs_ot_env%kpoint_canonical_occupation(:) = 0.0_dp
+      end if
       qs_ot_env%kpoint_eps_scf = -1.0_dp
       qs_ot_env%kpoint_physical_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
@@ -1590,19 +1597,22 @@ CONTAINS
       qs_ot_env%schur_projector_spectral_emin_ema = 0.0_dp
 
       CALL dbcsr_set(qs_ot_env%matrix_gx, 0.0_dp)
-      IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) &
-         CALL dbcsr_set(qs_ot_env%matrix_gx_im, 0.0_dp)
+      IF (ASSOCIATED(qs_ot_env%matrix_gx_im)) then
+        CALL dbcsr_set(qs_ot_env%matrix_gx_im, 0.0_dp)
+      end if
 
       IF (qs_ot_env%use_dx) THEN
          CALL dbcsr_set(qs_ot_env%matrix_dx, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%matrix_dx_im)) &
-            CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%matrix_dx_im)) then
+           CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
+         end if
       END IF
 
       IF (qs_ot_env%use_gx_old) THEN
          CALL dbcsr_set(qs_ot_env%matrix_gx_old, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%matrix_gx_old_im)) &
-            CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%matrix_gx_old_im)) then
+           CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
+         end if
       END IF
 
       IF (qs_ot_env%settings%do_rotation) THEN
@@ -1610,25 +1620,32 @@ CONTAINS
          CALL dbcsr_add_on_diag(qs_ot_env%rot_mat_u, 1.0_dp)
          CALL dbcsr_set(qs_ot_env%rot_mat_x, 0.0_dp)
          CALL dbcsr_set(qs_ot_env%rot_mat_gx, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_u_im)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_x_im)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_gx_im, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_pgx, 0.0_dp)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) &
-            CALL dbcsr_set(qs_ot_env%rot_mat_pgx_im, 0.0_dp)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_u_im)) then
+           CALL dbcsr_set(qs_ot_env%rot_mat_u_im, 0.0_dp)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_x_im)) then
+           CALL dbcsr_set(qs_ot_env%rot_mat_x_im, 0.0_dp)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_gx_im)) then
+           CALL dbcsr_set(qs_ot_env%rot_mat_gx_im, 0.0_dp)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx)) then
+           CALL dbcsr_set(qs_ot_env%rot_mat_pgx, 0.0_dp)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) then
+           CALL dbcsr_set(qs_ot_env%rot_mat_pgx_im, 0.0_dp)
+         end if
          IF (qs_ot_env%use_dx) THEN
             CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
-            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
-               CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) then
+              CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
+            end if
          END IF
          IF (qs_ot_env%use_gx_old) THEN
             CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
-            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
-               CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) then
+              CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+            end if
          END IF
       END IF
       IF (qs_ot_env%settings%do_ener) THEN
@@ -1659,8 +1676,9 @@ CONTAINS
          qs_ot_env%canonical_tether_grad_max = 0.0_dp
          qs_ot_env%added_mos_auto_basis_signal = 0.0_dp
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) qs_ot_env%ener_x_trust_weight(:) = 0.0_dp
-         IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) &
-            qs_ot_env%matrix_occ_precond_scale(:) = 1.0_dp
+         IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) then
+           qs_ot_env%matrix_occ_precond_scale(:) = 1.0_dp
+         end if
          IF (qs_ot_env%use_dx) THEN
             qs_ot_env%ener_dx(:) = 0.0_dp
          END IF
@@ -1843,11 +1861,22 @@ CONTAINS
 
    CONTAINS
 
+! **************************************************************************************************
+!> \brief ...
+!> \param samples ...
+!> \param quality ...
+!> \param quality_ema ...
+!> \param residual_quality ...
+!> \param residual_quality_ema ...
+!> \param drop_sum ...
+!> \param measured_sum ...
+! **************************************************************************************************
       SUBROUTINE reset_selected_calibration(samples, quality, quality_ema, residual_quality, &
                                             residual_quality_ema, drop_sum, measured_sum)
-         INTEGER, INTENT(OUT)                            :: samples
-         REAL(KIND=dp), INTENT(OUT) :: quality, quality_ema, residual_quality, &
-            residual_quality_ema, drop_sum, measured_sum
+      INTEGER, INTENT(OUT)                               :: samples
+      REAL(KIND=dp), INTENT(OUT)                         :: quality, quality_ema, residual_quality, &
+                                                            residual_quality_ema, drop_sum, &
+                                                            measured_sum
 
          samples = 0
          quality = 0.0_dp
@@ -2333,21 +2362,26 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_im)
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y)
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_im)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_im)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous)) &
-            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_previous)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous_im)) &
-            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_previous_im)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous)) &
-            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_previous)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous_im)) &
-            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_previous_im)
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous)) then
+           CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_previous)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous_im)) then
+           CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_previous_im)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous)) then
+           CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_previous)
+         end if
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous_im)) then
+           CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_y_previous_im)
+         end if
       END IF
 
       IF (qs_ot_env%settings%do_ener) THEN
          IF (ASSOCIATED(qs_ot_env%ener_x)) DEALLOCATE (qs_ot_env%ener_x)
          IF (ASSOCIATED(qs_ot_env%ener_x_trust_weight)) DEALLOCATE (qs_ot_env%ener_x_trust_weight)
-         IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) &
-            DEALLOCATE (qs_ot_env%matrix_occ_precond_scale)
+         IF (ASSOCIATED(qs_ot_env%matrix_occ_precond_scale)) then
+           DEALLOCATE (qs_ot_env%matrix_occ_precond_scale)
+         end if
          IF (ASSOCIATED(qs_ot_env%ener_gx)) DEALLOCATE (qs_ot_env%ener_gx)
          IF (ASSOCIATED(qs_ot_env%ener_pgx)) DEALLOCATE (qs_ot_env%ener_pgx)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_g0)) DEALLOCATE (qs_ot_env%ener_mermin_g0)
@@ -2368,12 +2402,15 @@ CONTAINS
          END IF
       END IF
 
-      IF (ALLOCATED(qs_ot_env%orbital_schur_response_metric)) &
-         DEALLOCATE (qs_ot_env%orbital_schur_response_metric)
-      IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) &
-         DEALLOCATE (qs_ot_env%kpoint_density_pair_residual)
-      IF (ALLOCATED(qs_ot_env%kpoint_canonical_occupation)) &
-         DEALLOCATE (qs_ot_env%kpoint_canonical_occupation)
+      IF (ALLOCATED(qs_ot_env%orbital_schur_response_metric)) then
+        DEALLOCATE (qs_ot_env%orbital_schur_response_metric)
+      end if
+      IF (ALLOCATED(qs_ot_env%kpoint_density_pair_residual)) then
+        DEALLOCATE (qs_ot_env%kpoint_density_pair_residual)
+      end if
+      IF (ALLOCATED(qs_ot_env%kpoint_canonical_occupation)) then
+        DEALLOCATE (qs_ot_env%kpoint_canonical_occupation)
+      end if
 
       qs_ot_env%state_allocated = .FALSE.
       qs_ot_env%has_complex_kpoint_state = .FALSE.

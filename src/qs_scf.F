@@ -547,8 +547,9 @@ CONTAINS
 
          CALL qs_scf_set_loop_flags(scf_env, diis_step, &
                                     energy_only, just_energy, exit_inner_loop)
-         IF (post_ot_kp_subspace_refresh_steps > 0) &
-            scf_env%iter_count = ot_kp_subspace_refresh_iter_count
+         IF (post_ot_kp_subspace_refresh_steps > 0) then
+           scf_env%iter_count = ot_kp_subspace_refresh_iter_count
+         end if
 
          ! decide whether to switch off dipole correction for convergence purposes
          dft_control%surf_dip_correct_switch = dft_control%correct_surf_dip
@@ -619,8 +620,9 @@ CONTAINS
                CYCLE scf_outer_loop
             END IF
 
-            IF (post_ot_kp_subspace_refresh_steps > 0) &
-               post_ot_kp_subspace_refresh_steps = post_ot_kp_subspace_refresh_steps - 1
+            IF (post_ot_kp_subspace_refresh_steps > 0) then
+              post_ot_kp_subspace_refresh_steps = post_ot_kp_subspace_refresh_steps - 1
+            end if
 
             IF (added_mos_auto_grow) THEN
                IF (do_kpoints) THEN
@@ -1022,8 +1024,9 @@ CONTAINS
 
       IF (ASSOCIATED(qs_env%mo_derivs)) THEN
          DO ispin = 1, SIZE(qs_env%mo_derivs)
-            IF (ASSOCIATED(qs_env%mo_derivs(ispin)%matrix)) &
-               CALL dbcsr_release_p(qs_env%mo_derivs(ispin)%matrix)
+            IF (ASSOCIATED(qs_env%mo_derivs(ispin)%matrix)) then
+              CALL dbcsr_release_p(qs_env%mo_derivs(ispin)%matrix)
+            end if
          END DO
          DEALLOCATE (qs_env%mo_derivs)
          NULLIFY (qs_env%mo_derivs)
@@ -1078,9 +1081,10 @@ CONTAINS
       NULLIFY (kpoints)
       CALL get_qs_env(qs_env=qs_env, kpoints=kpoints)
 
-      IF (output_unit > 0) &
-         WRITE (UNIT=output_unit, FMT="(T2,A)") &
+      IF (output_unit > 0) then
+        WRITE (UNIT=output_unit, FMT="(T2,A)") &
          "K-point OT: rebuilding physical virtual subspace by full KS diagonalization."
+      end if
 
       ! The next outer-loop initialization performs do_general_diag_kp on the
       ! current Hamiltonian before allocating new channel-local OT state.  Old
@@ -1094,8 +1098,9 @@ CONTAINS
          NULLIFY (scf_env%qs_ot_env)
       END IF
       IF (ASSOCIATED(kpoints)) THEN
-         IF (ASSOCIATED(kpoints%scf_diis_buffer)) &
-            CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+         IF (ASSOCIATED(kpoints%scf_diis_buffer)) then
+           CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+         end if
       END IF
       CALL qs_scf_ot_restart_clear(scf_env)
       CALL qs_scf_clear_kpoint_ot_density_calibration(scf_env)
@@ -1349,8 +1354,9 @@ CONTAINS
          ! MOs that were not reconstructed from the current k-point orbitals.
          ! A full diagonalization follows immediately, so seed a complete
          ! independent basis instead of preserving rank-deficient columns.
-         IF (.NOT. PRESENT(restart_target_nmo) .AND. .NOT. reseed_basis) &
-            CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
+         IF (.NOT. PRESENT(restart_target_nmo) .AND. .NOT. reseed_basis) then
+           CALL cp_fm_to_fm(old_mo_coeff, mo_coeff, old_nmo)
+         end if
          IF (has_unit_metric) THEN
             CALL make_basis_simple(mo_coeff, mos(ispin)%nmo)
          ELSE
@@ -1386,8 +1392,9 @@ CONTAINS
 
       IF (ASSOCIATED(mo_derivs)) THEN
          DO ispin = 1, SIZE(mo_derivs)
-            IF (ASSOCIATED(mo_derivs(ispin)%matrix)) &
-               CALL dbcsr_release_p(mo_derivs(ispin)%matrix)
+            IF (ASSOCIATED(mo_derivs(ispin)%matrix)) then
+              CALL dbcsr_release_p(mo_derivs(ispin)%matrix)
+            end if
          END DO
          DEALLOCATE (mo_derivs)
          NULLIFY (mo_derivs)
@@ -1430,8 +1437,9 @@ CONTAINS
       CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., diag_step, &
                               store_ot_matrices=.TRUE.)
 
-      IF (ASSOCIATED(kpoints%scf_diis_buffer)) &
-         CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+      IF (ASSOCIATED(kpoints%scf_diis_buffer)) then
+        CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
+      end if
 
       CALL qs_scf_save_kpoint_ot_density_calibration(scf_env)
 
@@ -2425,10 +2433,11 @@ CONTAINS
       IF (dft_control%restricted) THEN
          scf_env%qs_ot_env(:)%restricted = .TRUE.
          ! requires rotation
-         IF (.NOT. scf_env%qs_ot_env(1)%settings%do_rotation) &
-            CALL cp_abort(__LOCATION__, &
+         IF (.NOT. scf_env%qs_ot_env(1)%settings%do_rotation) then
+           CALL cp_abort(__LOCATION__, &
                           "Restricted calculation with OT requires orbital rotation. Please "// &
                           "activate the OT%ROTATION keyword!")
+         end if
       ELSE
          scf_env%qs_ot_env(:)%restricted = .FALSE.
       END IF
@@ -2438,14 +2447,16 @@ CONTAINS
       do_rotation = scf_env%qs_ot_env(1)%settings%do_rotation
       ! Only full all needs rotation.
       is_full_all = scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
-      IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) &
-         CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
+      IF (do_rotation .AND. is_full_all .AND. .NOT. do_kpoints) then
+        CPABORT('PRECONDITIONER FULL_ALL is not compatible with ROTATION.')
+      end if
 
       DO ikpoint = 1, nkpoint
          local_kpoint = 0
          IF (do_kpoints) THEN
-            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) &
-               local_kpoint = ikpoint - kp_range(1) + 1
+            IF (ikpoint >= kp_range(1) .AND. ikpoint <= kp_range(2)) then
+              local_kpoint = ikpoint - kp_range(1) + 1
+            end if
          END IF
          DO ispin = 1, nspin_ot
             ot_channel = qs_ot_channel_index(ispin, ikpoint, nspin_ot)
@@ -2457,8 +2468,9 @@ CONTAINS
                   IF (ASSOCIATED(kpoints)) THEN
                      IF (ASSOCIATED(kpoints%kp_sym)) THEN
                         IF (ikpoint <= SIZE(kpoints%kp_sym)) THEN
-                           IF (ASSOCIATED(kpoints%kp_sym(ikpoint)%kpoint_sym)) &
-                              kpoint_multiplicity = MAX(1, kpoints%kp_sym(ikpoint)%kpoint_sym%nwght)
+                           IF (ASSOCIATED(kpoints%kp_sym(ikpoint)%kpoint_sym)) then
+                             kpoint_multiplicity = MAX(1, kpoints%kp_sym(ikpoint)%kpoint_sym%nwght)
+                           end if
                         END IF
                      END IF
                   END IF
@@ -3120,6 +3132,12 @@ CONTAINS
          qs_ot_env%line_search_might_be_done = &
             scf_env%qs_ot_restart%channel(shared_channel)%line_search_might_be_done
          qs_ot_env%delta = scf_env%qs_ot_restart%channel(shared_channel)%delta
+         IF (scf_env%qs_ot_restart%format_version >= 27) THEN
+            qs_ot_env%mermin_ls_reference_delta = &
+               scf_env%qs_ot_restart%channel(shared_channel)%mermin_ls_reference_delta
+         ELSE
+            qs_ot_env%mermin_ls_reference_delta = qs_ot_env%delta
+         END IF
          qs_ot_env%gnorm = scf_env%qs_ot_restart%channel(shared_channel)%gnorm
          qs_ot_env%gnorm_old = scf_env%qs_ot_restart%channel(shared_channel)%gnorm_old
          qs_ot_env%etotal = scf_env%qs_ot_restart%channel(shared_channel)%etotal
@@ -3784,6 +3802,45 @@ CONTAINS
             ! another coordinate.  Keep orbitals and minimizer history, but
             ! relearn only the incompatible accepted-direction statistics.
             CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
+         END IF
+         IF (scf_env%qs_ot_restart%format_version >= 20 .AND. &
+             scf_env%qs_ot_restart%format_version < 27 .AND. &
+             qs_ot_env%has_complex_kpoint_state .AND. &
+             qs_ot_env%settings%occupation_preconditioner .AND. &
+             qs_ot_env%settings%do_rotation .AND. qs_ot_env%settings%do_ener .AND. &
+             qs_ot_env%line_search_count > 0) THEN
+            ! Version 27 adds the immutable projected residual at the start of
+            ! a Mermin line search.  An older open search cannot reconstruct
+            ! that trust reference, so accept its current orbitals as a fresh
+            ! point and discard only the incompatible open CG direction.
+            qs_ot_env%line_search_left = -1
+            qs_ot_env%line_search_right = -1
+            qs_ot_env%line_search_mid = -1
+            qs_ot_env%line_search_count = 0
+            qs_ot_env%line_search_might_be_done = .FALSE.
+            qs_ot_env%energy_only = .FALSE.
+            qs_ot_env%mermin_ls_sample_pending = .FALSE.
+            qs_ot_env%mermin_ls_closure_rejected = .FALSE.
+            qs_ot_env%mermin_ls_best_sample_index = 0
+            qs_ot_env%mermin_ls_reference_delta = 0.0_dp
+            qs_ot_env%ot_pos(:) = -1.0_dp
+            qs_ot_env%ot_energy(:) = -1.0_dp
+            qs_ot_env%ot_grad(:) = -1.0_dp
+            qs_ot_env%gnorm = 0.0_dp
+            qs_ot_env%gnorm_old = 1.0_dp
+            qs_ot_env%gradient = 0.0_dp
+            qs_ot_env%ds_min = qs_ot_env%settings%ds_min
+            IF (ASSOCIATED(qs_ot_env%matrix_dx)) CALL dbcsr_set(qs_ot_env%matrix_dx, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%matrix_dx_im)) CALL dbcsr_set(qs_ot_env%matrix_dx_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%matrix_gx_old)) CALL dbcsr_set(qs_ot_env%matrix_gx_old, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%matrix_gx_old_im)) CALL dbcsr_set(qs_ot_env%matrix_gx_old_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_dx)) CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old)) CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+            IF (ASSOCIATED(qs_ot_env%ener_dx)) qs_ot_env%ener_dx(:) = 0.0_dp
+            IF (ASSOCIATED(qs_ot_env%ener_gx_old)) qs_ot_env%ener_gx_old(:) = 0.0_dp
+            qs_ot_env%ener_direction_linear = .FALSE.
          END IF
          IF (scf_env%qs_ot_restart%format_version < 20) THEN
             ! Version 20 keeps the structural CG direction flags invariant.
