@@ -1,14 +1,11 @@
-! Slow/manual companion for monotone Gaussian smearing with symmetry-reduced
-! metallic k-point OT. This input is intentionally not listed in
-! TEST_FILES.toml so the default regression remains inexpensive.
-! Isolated 2026-07 MPI-2 reference: ADDED_MOS AUTO grows 4->8->16, the final
-! stage converges in 26 OT steps, and reaches -8.15946101558581 Ha. The
-! smearing free-energy correction is -3.5733645376E-4 Ha and the physical
-! Fermi energy is -4.0103581578E-2 Ha. The corresponding diagonalization
-! reference differs by 1.3E-8 Ha.
+! Manual restart companion for Al_kp_ot_gaussian_sym3_converge.inp.
+! Run the source input first in the same directory. The converged MPI-2
+! reference is restored in one SCF step at -8.15946103806904 Ha with the same
+! -3.5733645376E-4 Ha smearing free-energy correction.
+! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL
   PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_gaussian_sym3_converge
+  PROJECT Al_kp_ot_gaussian_sym3_restart
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -17,6 +14,7 @@
   &DFT
     BASIS_SET_FILE_NAME BASIS_SET
     POTENTIAL_FILE_NAME POTENTIAL
+    WFN_RESTART_FILE_NAME Al_kp_ot_gaussian_sym3_converge-RESTART.kp
     &KPOINTS
       FULL_GRID OFF
       SCHEME MONKHORST-PACK 3 1 1
@@ -35,8 +33,8 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 220
-      SCF_GUESS ATOMIC
+      MAX_SCF 40
+      SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC
         ENERGIES

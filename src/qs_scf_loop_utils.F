@@ -258,6 +258,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_mode_projected_floor, &
              qs_scf_kp_density_replaced_response, &
              qs_scf_kp_fermi_entropy_state, &
+             qs_scf_kp_fermi_frontier_armed, &
              qs_scf_kp_fermi_guard_control_delta, &
              qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
@@ -284,12 +285,37 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_residual_split, &
              qs_scf_kp_symmetric_multisecant_update, &
              qs_scf_kp_symmetric_secant_update, &
+             qs_scf_kp_added_mos_basis_bootstrap_ready, &
              qs_scf_kp_added_mos_fractional_tail_ready, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief whether ADDED_MOS AUTO has physical support for rebuilding an integer subspace
+!>
+!>        A truncated subspace can hide a thermally active degenerate manifold and therefore
+!>        contain only integer occupations.  Permit an early rebuild when the independent
+!>        density-response basis audit detects that deficiency.  The caller supplies the
+!>        residual and small-subspace gates through basis_probe_limited and bootstrap.
+!> \param active_tail whether the current subspace already contains fractional occupations
+!> \param basis_probe_limited whether the density-response basis audit requests enrichment
+!> \param bootstrap whether this is the initial small AUTO subspace
+!> \param residual_spike whether model and physical residuals are inconsistent
+!> \return true if occupation or basis evidence supports rebuilding the MO subspace
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_added_mos_basis_bootstrap_ready( &
+      active_tail, basis_probe_limited, bootstrap, residual_spike) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: active_tail, basis_probe_limited, &
+                                                            bootstrap, residual_spike
+      LOGICAL                                            :: ready
+
+      ready = .NOT. residual_spike .AND. &
+              (active_tail .OR. (basis_probe_limited .AND. bootstrap))
+
+   END FUNCTION qs_scf_kp_added_mos_basis_bootstrap_ready
 
 ! **************************************************************************************************
 !> \brief residual gate for non-edge ADDED_MOS AUTO enrichment
@@ -2431,10 +2457,10 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_scf_new_mos_kp'
 
-      INTEGER                                            :: handle, ispin
+      INTEGER                                            :: canonical_mu_count, handle, ispin, ot_channel
       LOGICAL :: allow_subspace_refresh, disable_diis, has_unit_metric, my_added_mos_auto_grow, &
          my_ot_kp_subspace_refresh, settle_subspace
-      REAL(dp)                                           :: diis_error, old_kTS, saved_eps_diis
+      REAL(dp) :: canonical_mu_sum, diis_error, old_kTS, saved_eps_diis
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -2562,6 +2588,25 @@ CONTAINS
          energy%efermi = energy%efermi + mos(1, ispin)%mu
       END DO
       energy%efermi = energy%efermi/REAL(SIZE(mos, 2), KIND=dp)
+      IF (scf_env%method == ot_method_nr .AND. ASSOCIATED(scf_env%qs_ot_env)) THEN
+         ! ener_x has a fixed-N constant-shift gauge.  Keep that gauge inside
+         ! the minimizer, but report the chemical potential obtained from the
+         ! canonical C(k)^H H(k) C(k) spectrum when every spin has such an audit.
+         canonical_mu_sum = 0.0_dp
+         canonical_mu_count = 0
+         DO ispin = 1, SIZE(mos, 2)
+            DO ot_channel = 1, SIZE(scf_env%qs_ot_env)
+               IF (scf_env%qs_ot_env(ot_channel)%spin_index /= ispin) CYCLE
+               IF (.NOT. scf_env%qs_ot_env(ot_channel)%kpoint_canonical_occupation_ready) CYCLE
+               canonical_mu_sum = canonical_mu_sum + &
+                                  scf_env%qs_ot_env(ot_channel)%kpoint_canonical_mu
+               canonical_mu_count = canonical_mu_count + 1
+               EXIT
+            END DO
+         END DO
+         IF (canonical_mu_count == SIZE(mos, 2)) &
+            energy%efermi = canonical_mu_sum/REAL(canonical_mu_count, KIND=dp)
+      END IF
       energy%total = energy%total - old_kTS + energy%kTS
 
       CALL timestop(handle)
@@ -4172,8 +4217,8 @@ CONTAINS
       END IF
 
       IF (.NOT. expandable) RETURN
-      IF (.NOT. active_tail) RETURN
-      IF (residual_spike) RETURN
+      IF (.NOT. qs_scf_kp_added_mos_basis_bootstrap_ready( &
+          active_tail, basis_probe_limited, nonedge_bootstrap_probe, residual_spike)) RETURN
       IF (.NOT. residual_tail_limited .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited .AND. &
           .NOT. strong_tail_limited .AND. .NOT. fractional_tail_limited) THEN
          IF (.NOT. edge_limited) RETURN
@@ -4392,8 +4437,9 @@ CONTAINS
       REAL(KIND=dp)                                      :: anchor_window, distance_tol, eps, &
                                                             frontier_dist, maxocc, occ_tail, &
                                                             residual_delta, sigma
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: current_max_partial, frac_weight, lower_dist, &
-         max_partial, maxocc_group, min_abs_eps_mu, release_current, release_trial, upper_dist
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: canonical_max_partial, current_max_partial, &
+         frac_weight, lower_dist, max_partial, maxocc_group, min_abs_eps_mu, release_current, &
+         release_trial, upper_dist
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -4407,6 +4453,7 @@ CONTAINS
       ! minimization, including a legitimately gapped coarse k mesh.
       calibration_samples = local_ot_env(1)%mermin_ls_accepted_quality_samples
       CALL para_env_inter_kp%min(calibration_samples)
+      IF (smear%method == smear_gaussian .AND. calibration_samples <= 0) RETURN
       residual_delta = qs_scf_kp_fermi_guard_control_delta( &
                        local_ot_env(1)%delta, local_ot_env(1)%kpoint_raw_delta)
       DO local_channel = 2, SIZE(local_ot_env)
@@ -4427,11 +4474,12 @@ CONTAINS
       ! spin channel still needs finite local support for inter-spin charge
       ! transfer.  Do not let one fractional spin hide collapse of the other.
       ngroups = nspin_ot
-      ALLOCATE (frontier_armed(ngroups), current_max_partial(ngroups), frac_weight(ngroups), &
-                lower_dist(ngroups), &
+      ALLOCATE (frontier_armed(ngroups), canonical_max_partial(ngroups), &
+                current_max_partial(ngroups), frac_weight(ngroups), lower_dist(ngroups), &
                 max_partial(ngroups), maxocc_group(ngroups), min_abs_eps_mu(ngroups), &
                 release_current(ngroups), release_trial(ngroups), upper_dist(ngroups))
       frontier_armed(:) = 0
+      canonical_max_partial(:) = 0.0_dp
       current_max_partial(:) = 0.0_dp
       frac_weight(:) = 0.0_dp
       lower_dist(:) = HUGE(1.0_dp)
@@ -4442,9 +4490,10 @@ CONTAINS
       release_trial(:) = 0.0_dp
       upper_dist(:) = HUGE(1.0_dp)
 
-      ! Preserve an existing finite-temperature frontier, but never create one
-      ! from an initially integer state.  The latter changes the optimization
-      ! problem and repeatedly destroys otherwise valid minimizer history.
+      ! Preserve an existing finite-temperature frontier. An initially integer
+      ! auxiliary state may also be armed when the exact canonical audit
+      ! independently resolves fractional support; a genuinely gapped
+      ! canonical state remains untouched.
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          DO ispin = 1, nspin_ot
@@ -4460,14 +4509,33 @@ CONTAINS
                occ_tail = MAX(0.0_dp, MIN(occupation_numbers(imo), maxocc - occupation_numbers(imo)))
                current_max_partial(group) = MAX(current_max_partial(group), occ_tail)
             END DO
+            IF (local_ot_env(local_channel)%kpoint_canonical_occupation_ready .AND. &
+                ALLOCATED(local_ot_env(local_channel)%kpoint_canonical_occupation)) THEN
+               DO imo = 1, MIN(current_nmo, &
+                               SIZE(local_ot_env(local_channel)%kpoint_canonical_occupation))
+                  occ_tail = MAX(0.0_dp, &
+                                 MIN(local_ot_env(local_channel)%kpoint_canonical_occupation(imo), &
+                                     maxocc - local_ot_env(local_channel)%kpoint_canonical_occupation(imo)))
+                  canonical_max_partial(group) = MAX(canonical_max_partial(group), occ_tail)
+               END DO
+            END IF
          END DO
       END DO
       DO group = 1, ngroups
+         CALL para_env_inter_kp%max(canonical_max_partial(group))
          CALL para_env_inter_kp%max(current_max_partial(group))
          CALL para_env_inter_kp%max(maxocc_group(group))
          CALL para_env_inter_kp%max(frontier_armed(group))
-         IF (current_max_partial(group) >= &
-             maxocc_group(group)*ot_kp_fermi_window_min_frac) frontier_armed(group) = 1
+         IF (smear%method == smear_gaussian) THEN
+            IF (qs_scf_kp_fermi_frontier_armed(current_max_partial(group), &
+                                               canonical_max_partial(group), &
+                                               maxocc_group(group), frontier_armed(group) > 0, &
+                                               calibration_samples > 0)) &
+               frontier_armed(group) = 1
+         ELSE IF (current_max_partial(group) >= &
+                  maxocc_group(group)*ot_kp_fermi_window_min_frac) THEN
+            frontier_armed(group) = 1
+         END IF
       END DO
       DO local_channel = 1, SIZE(local_ot_env)
          group = MAX(1, MIN(ngroups, local_ot_env(local_channel)%spin_index))
@@ -4565,8 +4633,8 @@ CONTAINS
             MINVAL(release_current), MINVAL(release_trial), MINVAL(release_trial), adjusted
       END IF
 
-      DEALLOCATE (frontier_armed, current_max_partial, frac_weight, lower_dist, max_partial, &
-                  maxocc_group, &
+      DEALLOCATE (frontier_armed, canonical_max_partial, current_max_partial, frac_weight, &
+                  lower_dist, max_partial, maxocc_group, &
                   min_abs_eps_mu, release_current, release_trial, upper_dist)
 
    END SUBROUTINE qs_scf_loop_guard_ot_kp_trial_fermi_window
@@ -4705,6 +4773,35 @@ CONTAINS
       weight = weight*weight*(3.0_dp - 2.0_dp*weight)
 
    END FUNCTION kpoint_ot_fermi_window_release_weight
+
+! **************************************************************************************************
+!> \brief whether measured or canonical fractional support arms the frontier guard
+!> \param current_max_partial largest fractional support in the current auxiliary state
+!> \param canonical_max_partial largest fractional support in the canonical physical state
+!> \param maxocc maximum orbital occupation
+!> \param previously_armed optional persistent frontier state
+!> \param current_mature optional evidence that the current state has passed an OT step
+!> \return true when physical fractional support has been established
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_fermi_frontier_armed(current_max_partial, canonical_max_partial, &
+                                                maxocc, previously_armed, current_mature) RESULT(armed)
+      REAL(KIND=dp), INTENT(IN)                          :: current_max_partial, &
+                                                            canonical_max_partial, maxocc
+      LOGICAL, INTENT(IN), OPTIONAL                      :: previously_armed, current_mature
+      LOGICAL                                            :: armed, use_current
+
+      REAL(KIND=dp)                                      :: support_threshold
+
+      armed = .FALSE.
+      IF (maxocc <= EPSILON(1.0_dp)) RETURN
+      IF (PRESENT(previously_armed)) armed = previously_armed
+      use_current = .TRUE.
+      IF (PRESENT(current_mature)) use_current = current_mature
+      support_threshold = maxocc*ot_kp_fermi_window_min_frac
+      armed = armed .OR. (use_current .AND. current_max_partial >= support_threshold) .OR. &
+              canonical_max_partial >= support_threshold
+
+   END FUNCTION qs_scf_kp_fermi_frontier_armed
 
 ! **************************************************************************************************
 !> \brief whether a trial loses an already established finite-temperature occupation frontier
@@ -6589,7 +6686,8 @@ CONTAINS
       END DO
 
       IF (.NOT. local_ot_env(1)%settings%do_ener) RETURN
-      IF (.NOT. qs_ot_occupation_preconditioner_active(local_ot_env(1))) RETURN
+      IF (smear%method /= smear_gaussian .AND. &
+          .NOT. qs_ot_occupation_preconditioner_active(local_ot_env(1))) RETURN
       IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
 
       sigma = kpoint_ot_smearing_width(smear)
@@ -17192,6 +17290,14 @@ CONTAINS
             row_floor_avg = row_floor_avg/REAL(MAX(1, nrot), KIND=dp)
             diag_shift_fraction = diag_shift_fraction/REAL(MAX(1, nrot), KIND=dp)
             schur_metric(:, :) = 0.5_dp*(schur(:, :) + TRANSPOSE(schur(:, :)))
+            ! The finite-difference rotation block approximates the Hessian of
+            ! one scalar Mermin functional.  Use its symmetric part for both
+            ! the Gaussian model metric and solve; an antisymmetric remainder
+            ! from its finite occupation/projector response must not rotate
+            ! the complex Re/Im Newton direction. Keep the established
+            ! Fermi-Dirac solve until its response is transformed to the same
+            ! finite-coordinate metric.
+            IF (smear%method == smear_gaussian) schur(:, :) = schur_metric(:, :)
             IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,I6),8(1X,ES16.8))') &
                " OT Schur hypothetical row-floor audit group ne nrot att preavg premin premax "// &

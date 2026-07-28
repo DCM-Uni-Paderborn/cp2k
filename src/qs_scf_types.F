@@ -332,7 +332,11 @@ MODULE qs_scf_types
 
    TYPE qs_ot_schur_density_calibration_channel_type
       LOGICAL :: valid = .FALSE.
-      INTEGER :: spin_index = 0, kpoint_index = 0
+      LOGICAL :: ener_x_fermi_frontier_armed = .FALSE., &
+                 occupation_preconditioner_active = .FALSE.
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: ener_x
+      INTEGER :: spin_index = 0, kpoint_index = 0, &
+                 occupation_preconditioner_ready_samples = 0
       INTEGER :: density_quality_samples = 0, density_audit_samples = 0
       INTEGER :: density_descent_quality_samples = 0
       INTEGER :: physical_quality_samples = 0, physical_direct_quality_samples = 0

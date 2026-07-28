@@ -63,6 +63,13 @@
 # four-channel anchor.  FULL_ALL converges in 146 MPI-2 steps to
 # -8.16155090574643 Ha, within 3.7E-9 Ha of diagonalization, and
 # reproduces the unconstrained spin populations 6.33333/5.66667.
+# The unlisted Al_kp_ot_gaussian_sym3_converge.inp and its restart companion
+# provide the converged symmetry-reduced Gaussian path; the restart closes in
+# one step.  Al_kp_ot_gaussian_gamma_converge.inp is the complete-space Gamma
+# companion and converges in 281 MPI-2 steps.  Their matching unlisted
+# Al_kp_diag_gaussian_* inputs are independent diagonalization references.
+# Keep these physics checks manual so the registered restart/AUTO coverage
+# remains inexpensive.
 "Al_kp_ot_restart_write.inp"            = [{matcher="E_total", tol=1.0E-10, ref=-8.11587961821005},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11587961821005},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.004898018E-5},

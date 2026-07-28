@@ -27,7 +27,8 @@ MODULE qs_ot_scf
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
-   USE input_constants,                 ONLY: smear_fermi_dirac
+   USE input_constants,                 ONLY: smear_fermi_dirac,&
+                                              smear_gaussian
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type
@@ -62,6 +63,7 @@ MODULE qs_ot_scf
    PUBLIC :: ot_scf_mini
    PUBLIC :: ot_scf_destroy
    PUBLIC :: ot_scf_read_input
+   PUBLIC :: init_ot_smearing_frontier_energies
    PUBLIC :: init_ot_smearing_energies
 
 CONTAINS
@@ -600,6 +602,53 @@ CONTAINS
       mo_set%mu = 0.0_dp
 
    END SUBROUTINE init_ot_smearing_energies
+
+! **************************************************************************************************
+!> \brief seed a symmetric finite-temperature frontier for a direct OT minimization
+!>
+!>        A direct free-energy minimizer started from an integer atomic density can select one
+!>        side of a metallic HOMO/LUMO manifold before the self-consistent density restores its
+!>        degeneracy. Unlike density mixing, a descent-only minimizer cannot cross that artificial
+!>        integer branch. This seed changes only the initial auxiliary energies and preserves the
+!>        fixed electron number by making the two frontier variables degenerate.
+!> \param energies OT auxiliary orbital energies
+!> \param nelectron fixed electron target of this single spin/k-point channel
+!> \param maxocc maximum occupation per orbital
+!> \param smear smearing settings
+!> \param seeded whether a frontier pair was changed
+! **************************************************************************************************
+   SUBROUTINE init_ot_smearing_frontier_energies(energies, nelectron, maxocc, smear, seeded)
+
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: energies
+      INTEGER, INTENT(IN)                                :: nelectron
+      REAL(KIND=dp), INTENT(IN)                          :: maxocc
+      TYPE(smear_type), POINTER                          :: smear
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: seeded
+
+      INTEGER                                            :: frontier
+      REAL(KIND=dp)                                      :: electron_target, midpoint, target_tol
+      LOGICAL                                            :: changed
+
+      changed = .FALSE.
+      IF (PRESENT(seeded)) seeded = changed
+      IF (.NOT. ASSOCIATED(smear)) RETURN
+      IF (.NOT. smear%do_smear) RETURN
+      IF (smear%method /= smear_gaussian) RETURN
+      IF (smear%electronic_temperature <= 0.0_dp) RETURN
+      IF (maxocc <= EPSILON(1.0_dp)) RETURN
+
+      electron_target = REAL(nelectron, KIND=dp)
+      frontier = NINT(electron_target/maxocc)
+      target_tol = 100.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(electron_target))
+      IF (ABS(electron_target - maxocc*REAL(frontier, KIND=dp)) > target_tol) RETURN
+      IF (frontier < 1 .OR. frontier >= SIZE(energies)) RETURN
+
+      midpoint = 0.5_dp*(energies(frontier) + energies(frontier + 1))
+      energies(frontier:frontier + 1) = midpoint
+      changed = .TRUE.
+      IF (PRESENT(seeded)) seeded = changed
+
+   END SUBROUTINE init_ot_smearing_frontier_energies
 
 ! **************************************************************************************************
 !> \brief ...

@@ -1,14 +1,15 @@
-! Slow/manual companion for monotone Gaussian smearing with symmetry-reduced
-! metallic k-point OT. This input is intentionally not listed in
-! TEST_FILES.toml so the default regression remains inexpensive.
-! Isolated 2026-07 MPI-2 reference: ADDED_MOS AUTO grows 4->8->16, the final
-! stage converges in 26 OT steps, and reaches -8.15946101558581 Ha. The
-! smearing free-energy correction is -3.5733645376E-4 Ha and the physical
-! Fermi energy is -4.0103581578E-2 Ha. The corresponding diagonalization
-! reference differs by 1.3E-8 Ha.
+! Slow/manual companion for Gaussian-smearing OT at the explicit Gamma
+! k-point. This input is intentionally not listed in TEST_FILES.toml while
+! the common Gamma/k-point driver path is being validated.
+! Isolated 2026-07 MPI-2 reference: ADDED_MOS AUTO grows 4->8->16->32->46.
+! A fresh run converges in 281 steps to -8.14303707384991 Ha, with a
+! -1.07200936104E-3 Ha smearing correction and physical Fermi energy
+! -5.3869326075E-2 Ha. A 220-step prefix followed by a minimizer restart
+! converges in 61 further steps to -8.14303707400985 Ha. The complete-space
+! diagonalization reference is -8.14303708264791 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_gaussian_sym3_converge
+  PROJECT Al_kp_ot_gaussian_gamma_converge
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -19,7 +20,7 @@
     POTENTIAL_FILE_NAME POTENTIAL
     &KPOINTS
       FULL_GRID OFF
-      SCHEME MONKHORST-PACK 3 1 1
+      SCHEME MONKHORST-PACK 1 1 1
       SYMMETRY ON
     &END KPOINTS
     &MGRID
@@ -35,7 +36,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 220
+      MAX_SCF 320
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC

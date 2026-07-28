@@ -169,6 +169,7 @@ MODULE qs_scf
                                               qs_ot_get_p,&
                                               qs_ot_new_preconditioner
    USE qs_ot_scf,                       ONLY: init_ot_smearing_energies,&
+                                              init_ot_smearing_frontier_energies,&
                                               ot_scf_destroy,&
                                               ot_scf_init,&
                                               ot_scf_read_input
@@ -404,7 +405,8 @@ CONTAINS
       LOGICAL :: added_mos_auto_grow, density_full_step, diis_step, do_kpoints, energy_only, &
          exit_inner_loop, exit_outer_loop, inner_loop_converged, &
          internal_tblite_density_full_step, internal_tblite_mixer, just_energy, &
-         ot_kp_subspace_refresh, outer_loop_converged, tblite_native_mixer
+         ot_kp_subspace_refresh, outer_loop_converged, settle_added_mos_frontier, &
+         tblite_native_mixer
       REAL(KIND=dp)                                      :: t1, t2
       REAL(KIND=dp), DIMENSION(3)                        :: res_val_3
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -537,6 +539,7 @@ CONTAINS
       ot_kp_subspace_refresh_count = 0
       ot_kp_subspace_refresh_iter_count = 0
       post_ot_kp_subspace_refresh_steps = 0
+      settle_added_mos_frontier = .FALSE.
       total_steps = 0
       energy%tot_old = 0.0_dp
 
@@ -594,7 +597,11 @@ CONTAINS
                                          ot_kp_subspace_refresh=ot_kp_subspace_refresh, &
                                          allow_ot_kp_subspace_refresh= &
                                          ot_kp_subspace_refresh_count < max_ot_kp_subspace_refreshes, &
-                                         settle_ot_kp_subspace=post_ot_kp_subspace_refresh_steps > 0)
+                                         settle_ot_kp_subspace= &
+                                         post_ot_kp_subspace_refresh_steps > 0 .OR. &
+                                         (settle_added_mos_frontier .AND. &
+                                          post_added_mos_auto_resize_steps == &
+                                          qs_scf_kp_added_mos_auto_post_resize_steps()))
                END IF
             ELSE
                ! Gamma points only
@@ -628,7 +635,8 @@ CONTAINS
                IF (do_kpoints) THEN
                   CALL qs_scf_grow_added_mos_auto_kp( &
                      qs_env, scf_env, scf_control, output_unit, &
-                     reseed_global_basis=ot_kp_subspace_refresh_count > 0)
+                     reseed_global_basis=ot_kp_subspace_refresh_count > 0, &
+                     settle_frontier=settle_added_mos_frontier)
                ELSE
                   CALL qs_scf_grow_added_mos_auto(qs_env, scf_env, scf_control, output_unit)
                END IF
@@ -1191,9 +1199,10 @@ CONTAINS
 !> \param output_unit ...
 !> \param restart_target_nmo exact MO dimensions requested by an AUTO restart
 !> \param reseed_global_basis discard stale global placeholder orbitals after a k-point refresh
+!> \param settle_frontier whether the rebuilt density must settle after restoring a thermal frontier
 ! **************************************************************************************************
    SUBROUTINE qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit, &
-                                            restart_target_nmo, reseed_global_basis)
+                                            restart_target_nmo, reseed_global_basis, settle_frontier)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
@@ -1201,6 +1210,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: output_unit
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: restart_target_nmo
       LOGICAL, INTENT(IN), OPTIONAL                      :: reseed_global_basis
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: settle_frontier
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_grow_added_mos_auto_kp'
 
@@ -1208,10 +1218,12 @@ CONTAINS
                                                             handle, ic, ik, ispin, nmo_mat, &
                                                             nspins, old_nmo, target_nmo
       INTEGER, DIMENSION(2)                              :: new_added, new_nmo
-      LOGICAL                                            :: diag_step, has_unit_metric, need_resize, &
-                                                            reseed_basis
+      LOGICAL                                            :: diag_step, global_frontier_lost, &
+                                                            has_unit_metric, need_resize, reseed_basis
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: restore_ot_ener_x
       REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
                                                             maxocc, n_el_f
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: old_kpoint_kTS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation_numbers, &
                                                             old_eigenvalues, old_occupation_numbers
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -1227,6 +1239,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
+      IF (PRESENT(settle_frontier)) settle_frontier = .FALSE.
 
       NULLIFY (ao_mo_fm_pools, blacs_env, dft_control, eigenvalues, kpoints, matrix_ks, matrix_s, &
                mo_coeff, mo_derivs, mos, occupation_numbers, old_eigenvalues, old_mo_coeff, &
@@ -1326,7 +1339,15 @@ CONTAINS
       DO ispin = 1, nspins
          CALL duplicate_mo_set(old_mos(ispin), mos(ispin))
       END DO
-
+      ALLOCATE (old_kpoint_kTS(nspins, SIZE(kpoints%kp_env)))
+      DO ik = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(ik)%kpoint_env
+         CPASSERT(ASSOCIATED(kp))
+         CPASSERT(ASSOCIATED(kp%mos))
+         DO ispin = 1, nspins
+            old_kpoint_kTS(ispin, ik) = kp%mos(1, ispin)%kTS
+         END DO
+      END DO
       DO ispin = 1, nspins
          CALL get_mo_set(old_mos(ispin), maxocc=maxocc, n_el_f=n_el_f, &
                          flexible_electron_count=flexible_electron_count)
@@ -1436,12 +1457,17 @@ CONTAINS
       diag_step = .FALSE.
       CALL do_general_diag_kp(matrix_ks, matrix_s, kpoints, scf_env, scf_control, .FALSE., diag_step, &
                               store_ot_matrices=.TRUE.)
+      ALLOCATE (restore_ot_ener_x(SIZE(scf_env%qs_ot_env)))
+      CALL qs_scf_detect_kpoint_ot_frontier_loss( &
+         kpoints, scf_env%qs_ot_env, old_kpoint_kTS, restore_ot_ener_x, global_frontier_lost)
+      IF (PRESENT(settle_frontier)) settle_frontier = global_frontier_lost
 
       IF (ASSOCIATED(kpoints%scf_diis_buffer)) THEN
          CALL qs_diis_b_clear_kp(kpoints%scf_diis_buffer)
       END IF
 
-      CALL qs_scf_save_kpoint_ot_density_calibration(scf_env)
+      CALL qs_scf_save_kpoint_ot_density_calibration(scf_env, restore_ot_ener_x)
+      DEALLOCATE (restore_ot_ener_x)
 
       IF (ASSOCIATED(scf_env%qs_ot_env)) THEN
          DO ispin = 1, SIZE(scf_env%qs_ot_env)
@@ -1456,17 +1482,115 @@ CONTAINS
          CALL deallocate_mo_set(old_mos(ispin))
       END DO
       DEALLOCATE (old_mos)
+      DEALLOCATE (old_kpoint_kTS)
 
       CALL timestop(handle)
 
    END SUBROUTINE qs_scf_grow_added_mos_auto_kp
 
 ! **************************************************************************************************
-!> \brief cache accepted scalar density-response calibration across k-point ADDED_MOS AUTO rebuilds
-!> \param scf_env ...
+!> \brief detect loss of a protected metallic frontier during a k-point AUTO resize
+!>
+!>        The resize diagonalization supplies the enlarged canonical orbital basis and the
+!>        energies of newly added bands.  If it also removes established finite-temperature
+!>        support, the accepted auxiliary-energy prefix must survive the second initialization
+!>        diagonalization in the following outer SCF cycle.  Seed protected local channels before
+!>        that diagonalization to retain band ordering and gauge, and persist all channel prefixes
+!>        once a weighted thermal frontier has been established.  Request an additional
+!>        density-settling step only when the MPI-reduced entropy also collapses globally.
+!> \param kpoints resized k-point environment
+!> \param qs_ot_env accepted pre-resize OT channels
+!> \param old_kpoint_kTS entropy correction before the resize diagonalization
+!> \param restore_ener_x channels whose accepted auxiliary-energy prefix must be restored
+!> \param global_frontier_lost whether the weighted total entropy collapsed
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_save_kpoint_ot_density_calibration(scf_env)
+   SUBROUTINE qs_scf_detect_kpoint_ot_frontier_loss( &
+      kpoints, qs_ot_env, old_kpoint_kTS, restore_ener_x, global_frontier_lost)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: old_kpoint_kTS
+      LOGICAL, DIMENSION(:), INTENT(OUT)                 :: restore_ener_x
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: global_frontier_lost
+
+      INTEGER                                            :: ic, ispin, ikpoint_local, ncopy, nspin, &
+                                                            ot_channel
+      LOGICAL                                            :: global_collapse, lost_thermal_frontier, &
+                                                            thermal_frontier_established
+      REAL(KIND=dp)                                      :: new_weighted_kTS, old_weighted_kTS
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      NULLIFY (eigenvalues, kp)
+      restore_ener_x(:) = .FALSE.
+      IF (PRESENT(global_frontier_lost)) global_frontier_lost = .FALSE.
+      IF (.NOT. ASSOCIATED(qs_ot_env)) RETURN
+      CPASSERT(SIZE(restore_ener_x) == SIZE(qs_ot_env))
+      CPASSERT(SIZE(old_kpoint_kTS, 2) == SIZE(kpoints%kp_env))
+
+      old_weighted_kTS = 0.0_dp
+      new_weighted_kTS = 0.0_dp
+      DO ikpoint_local = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(ikpoint_local)%kpoint_env
+         CPASSERT(ASSOCIATED(kp))
+         CPASSERT(ASSOCIATED(kp%mos))
+         nspin = MIN(SIZE(old_kpoint_kTS, 1), SIZE(kp%mos, 2))
+         DO ispin = 1, nspin
+            old_weighted_kTS = old_weighted_kTS + &
+                               kp%wkp*ABS(old_kpoint_kTS(ispin, ikpoint_local))
+            new_weighted_kTS = new_weighted_kTS + &
+                               kp%wkp*ABS(kp%mos(1, ispin)%kTS)
+         END DO
+      END DO
+      CPASSERT(ASSOCIATED(kpoints%para_env_inter_kp))
+      CALL kpoints%para_env_inter_kp%sum(old_weighted_kTS)
+      CALL kpoints%para_env_inter_kp%sum(new_weighted_kTS)
+      global_collapse = old_weighted_kTS > 1.0E-12_dp .AND. &
+                        new_weighted_kTS < 0.25_dp*old_weighted_kTS
+      thermal_frontier_established = old_weighted_kTS > 1.0E-12_dp
+      IF (PRESENT(global_frontier_lost)) global_frontier_lost = global_collapse
+
+      DO ikpoint_local = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(ikpoint_local)%kpoint_env
+         CPASSERT(ASSOCIATED(kp))
+         CPASSERT(ASSOCIATED(kp%mos))
+         DO ot_channel = 1, SIZE(qs_ot_env)
+            IF (.NOT. qs_ot_env(ot_channel)%state_allocated) CYCLE
+            IF (.NOT. ASSOCIATED(qs_ot_env(ot_channel)%ener_x)) CYCLE
+            IF (qs_ot_env(ot_channel)%kpoint_index /= kp%nkpoint) CYCLE
+            IF (qs_ot_env(ot_channel)%spin_index < 1 .OR. &
+                qs_ot_env(ot_channel)%spin_index > SIZE(kp%mos, 2)) CYCLE
+            lost_thermal_frontier = &
+               ABS(old_kpoint_kTS(qs_ot_env(ot_channel)%spin_index, ikpoint_local)) > 1.0E-12_dp .AND. &
+               ABS(kp%mos(1, qs_ot_env(ot_channel)%spin_index)%kTS) < &
+               0.25_dp*ABS(old_kpoint_kTS(qs_ot_env(ot_channel)%spin_index, ikpoint_local))
+            IF (lost_thermal_frontier .OR. thermal_frontier_established) &
+               qs_ot_env(ot_channel)%ener_x_fermi_frontier_armed = .TRUE.
+            IF (.NOT. qs_ot_env(ot_channel)%ener_x_fermi_frontier_armed) CYCLE
+
+            ! Seed the second diagonalization with the accepted ordering and gauge.
+            ! A globally thermal reduced mesh is free to replace this seed with its
+            ! new canonical spectrum; a global collapse is restored afterwards.
+            DO ic = 1, SIZE(kp%mos, 1)
+               CALL get_mo_set(kp%mos(ic, qs_ot_env(ot_channel)%spin_index), &
+                               eigenvalues=eigenvalues)
+               ncopy = MIN(SIZE(eigenvalues), SIZE(qs_ot_env(ot_channel)%ener_x))
+               IF (ncopy > 0) &
+                  eigenvalues(1:ncopy) = qs_ot_env(ot_channel)%ener_x(1:ncopy)
+            END DO
+            restore_ener_x(ot_channel) = thermal_frontier_established
+         END DO
+      END DO
+
+   END SUBROUTINE qs_scf_detect_kpoint_ot_frontier_loss
+
+! **************************************************************************************************
+!> \brief cache accepted density-response calibration and energy coordinates across AUTO rebuilds
+!> \param scf_env ...
+!> \param restore_ener_x channels whose accepted auxiliary-energy prefix must be restored
+! **************************************************************************************************
+   SUBROUTINE qs_scf_save_kpoint_ot_density_calibration(scf_env, restore_ener_x)
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      LOGICAL, DIMENSION(:), INTENT(IN), OPTIONAL        :: restore_ener_x
 
       INTEGER                                            :: ot_channel
 
@@ -1478,6 +1602,9 @@ CONTAINS
       scf_env%qs_ot_schur_density_calibration%nchannel = 0
 
       IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) RETURN
+      IF (PRESENT(restore_ener_x)) THEN
+         CPASSERT(SIZE(restore_ener_x) == SIZE(scf_env%qs_ot_env))
+      END IF
 
       ALLOCATE (scf_env%qs_ot_schur_density_calibration%channel(SIZE(scf_env%qs_ot_env)))
       scf_env%qs_ot_schur_density_calibration%valid = .TRUE.
@@ -1487,7 +1614,8 @@ CONTAINS
          ASSOCIATE (cache => scf_env%qs_ot_schur_density_calibration%channel(ot_channel), &
                     ot_env => scf_env%qs_ot_env(ot_channel))
             cache%valid = ot_env%has_kpoint_context .AND. &
-                          (ot_env%schur_projector_density_quality_samples > 0 .OR. &
+                          (ot_env%ener_x_fermi_frontier_armed .OR. &
+                           ot_env%schur_projector_density_quality_samples > 0 .OR. &
                            ot_env%schur_projector_density_audit_samples > 0 .OR. &
                            ot_env%schur_projector_density_descent_quality_samples > 0 .OR. &
                            ot_env%schur_projector_physical_quality_samples > 0 .OR. &
@@ -1507,6 +1635,17 @@ CONTAINS
             IF (.NOT. cache%valid) CYCLE
             cache%spin_index = ot_env%spin_index
             cache%kpoint_index = ot_env%kpoint_index
+            cache%ener_x_fermi_frontier_armed = ot_env%ener_x_fermi_frontier_armed
+            cache%occupation_preconditioner_active = &
+               ot_env%kpoint_occ_preconditioner_active
+            cache%occupation_preconditioner_ready_samples = &
+               ot_env%kpoint_occ_preconditioner_ready_samples
+            IF (PRESENT(restore_ener_x)) THEN
+               IF (restore_ener_x(ot_channel) .AND. ASSOCIATED(ot_env%ener_x)) THEN
+                  ALLOCATE (cache%ener_x(SIZE(ot_env%ener_x)))
+                  cache%ener_x(:) = ot_env%ener_x(:)
+               END IF
+            END IF
             cache%density_quality_samples = ot_env%schur_projector_density_quality_samples
             cache%density_audit_samples = ot_env%schur_projector_density_audit_samples
             cache%density_descent_quality_samples = &
@@ -2045,11 +2184,56 @@ CONTAINS
             qs_ot_env%mermin_ls_accepted_quality_ema = cache%mermin_ls_accepted_quality_ema
             qs_ot_env%mermin_ls_accepted_gap = cache%mermin_ls_accepted_gap
             qs_ot_env%mermin_ls_accepted_gap_ema = cache%mermin_ls_accepted_gap_ema
+            qs_ot_env%ener_x_fermi_frontier_armed = cache%ener_x_fermi_frontier_armed
+            IF (cache%ener_x_fermi_frontier_armed) THEN
+               qs_ot_env%kpoint_occ_preconditioner_active = &
+                  cache%occupation_preconditioner_active
+               qs_ot_env%kpoint_occ_preconditioner_ready_samples = &
+                  cache%occupation_preconditioner_ready_samples
+            END IF
             EXIT
          END ASSOCIATE
       END DO
 
    END SUBROUTINE qs_scf_restore_kpoint_ot_density_calibration
+
+! **************************************************************************************************
+!> \brief restore a protected auxiliary-energy prefix in the enlarged canonical energy gauge
+!> \param qs_ot_env allocated k-point OT channel
+!> \param scf_env SCF environment holding the transient AUTO-resize cache
+! **************************************************************************************************
+   SUBROUTINE qs_scf_restore_kpoint_ot_frontier_energies(qs_ot_env, scf_env)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+
+      INTEGER                                            :: ncopy, ot_channel
+      REAL(KIND=dp)                                      :: prefix_shift
+
+      IF (.NOT. scf_env%qs_ot_schur_density_calibration%valid) RETURN
+      IF (.NOT. ASSOCIATED(scf_env%qs_ot_schur_density_calibration%channel)) RETURN
+      IF (.NOT. ASSOCIATED(qs_ot_env%ener_x)) RETURN
+      IF (.NOT. qs_ot_env%has_kpoint_context) RETURN
+
+      DO ot_channel = 1, SIZE(scf_env%qs_ot_schur_density_calibration%channel)
+         ASSOCIATE (cache => scf_env%qs_ot_schur_density_calibration%channel(ot_channel))
+            IF (.NOT. cache%valid) CYCLE
+            IF (cache%spin_index /= qs_ot_env%spin_index) CYCLE
+            IF (cache%kpoint_index /= qs_ot_env%kpoint_index) CYCLE
+            IF (.NOT. ALLOCATED(cache%ener_x)) RETURN
+            ncopy = MIN(SIZE(cache%ener_x), SIZE(qs_ot_env%ener_x))
+            IF (ncopy > 0) THEN
+               ! A uniform shift of all auxiliary energies is a fixed-N gauge.
+               ! Preserve the accepted prefix spacings, but anchor that prefix
+               ! to the freshly diagonalized canonical tail so the reported
+               ! chemical potential retains the physical KS energy reference.
+               prefix_shift = qs_ot_env%ener_x(ncopy) - cache%ener_x(ncopy)
+               qs_ot_env%ener_x(1:ncopy) = cache%ener_x(1:ncopy) + prefix_shift
+            END IF
+            RETURN
+         END ASSOCIATE
+      END DO
+
+   END SUBROUTINE qs_scf_restore_kpoint_ot_frontier_energies
 
 ! **************************************************************************************************
 !> \brief clear cached scalar density-response calibration
@@ -2519,9 +2703,10 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_qs_ot_kpoint_state'
 
       INTEGER                                            :: handle, ikpoint, ikpoint_local, ispin, &
-                                                            nao, nmo, ot_channel, &
+                                                            nao, nelectron, nkpoint, nmo, ot_channel, &
                                                             restart_compatible_int
       LOGICAL                                            :: restart_compatible, use_real_wfn
+      REAL(KIND=dp)                                      :: maxocc
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cp_fm_type)                                   :: sc_coeff, sc_coeff_im
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_im
@@ -2545,7 +2730,7 @@ CONTAINS
          CPABORT("K-point OT currently requires OT%ALGORITHM IRAC.")
       END IF
 
-      CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
+      CALL get_kpoint_info(kpoints, nkp=nkpoint, use_real_wfn=use_real_wfn)
 
       ! A distributed minimizer restart is meaningful only if every channel can
       ! restore the same accepted-step state.  Reject the payload globally
@@ -2603,7 +2788,7 @@ CONTAINS
             NULLIFY (eigenvalues, mo_coeff, mo_coeff_im, mo_set_im)
             mo_set => kp%mos(1, ispin)
             CALL get_mo_set(mo_set=mo_set, mo_coeff=mo_coeff, eigenvalues=eigenvalues, &
-                            nao=nao, nmo=nmo)
+                            maxocc=maxocc, nao=nao, nelectron=nelectron, nmo=nmo)
             CPASSERT(ASSOCIATED(mo_coeff))
             CPASSERT(nao > 0)
             CPASSERT(nmo > 0)
@@ -2662,10 +2847,17 @@ CONTAINS
                IF (ASSOCIATED(eigenvalues)) THEN
                   CPASSERT(SIZE(scf_env%qs_ot_env(ot_channel)%ener_x) == SIZE(eigenvalues))
                   scf_env%qs_ot_env(ot_channel)%ener_x = eigenvalues
+                  IF (nkpoint == 1 .AND. scf_env%iter_count <= 1 .AND. &
+                      .NOT. scf_env%qs_ot_restart%valid) THEN
+                     CALL init_ot_smearing_frontier_energies( &
+                        scf_env%qs_ot_env(ot_channel)%ener_x, nelectron, maxocc, scf_control%smear)
+                  END IF
                ELSE
                   scf_env%qs_ot_env(ot_channel)%ener_x = 0.0_dp
                END IF
             END IF
+            CALL qs_scf_restore_kpoint_ot_frontier_energies( &
+               scf_env%qs_ot_env(ot_channel), scf_env)
             SELECT CASE (scf_env%qs_ot_env(ot_channel)%settings%ot_algorithm)
             CASE ("TOD")
                CALL qs_ot_get_p(scf_env%qs_ot_env(ot_channel)%matrix_x, &

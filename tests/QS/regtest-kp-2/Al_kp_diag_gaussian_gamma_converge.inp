@@ -1,14 +1,12 @@
-! Slow/manual companion for monotone Gaussian smearing with symmetry-reduced
-! metallic k-point OT. This input is intentionally not listed in
-! TEST_FILES.toml so the default regression remains inexpensive.
-! Isolated 2026-07 MPI-2 reference: ADDED_MOS AUTO grows 4->8->16, the final
-! stage converges in 26 OT steps, and reaches -8.15946101558581 Ha. The
-! smearing free-energy correction is -3.5733645376E-4 Ha and the physical
-! Fermi energy is -4.0103581578E-2 Ha. The corresponding diagonalization
-! reference differs by 1.3E-8 Ha.
+! Slow/manual complete-space diagonalization reference for the explicit-Gamma
+! Gaussian-smearing OT companion. This input is intentionally not listed in
+! TEST_FILES.toml.
+! Isolated 2026-07 MPI-2 reference: converged in 35 steps at
+! -8.14303708264791 Ha with a -1.07200936124E-3 Ha smearing free-energy
+! correction and physical Fermi energy -5.3869866854E-2 Ha.
 &GLOBAL
-  PRINT_LEVEL HIGH
-  PROJECT Al_kp_ot_gaussian_sym3_converge
+  PRINT_LEVEL MEDIUM
+  PROJECT Al_kp_diag_gaussian_gamma_converge
   RUN_TYPE ENERGY
 &END GLOBAL
 
@@ -19,33 +17,29 @@
     POTENTIAL_FILE_NAME POTENTIAL
     &KPOINTS
       FULL_GRID OFF
-      SCHEME MONKHORST-PACK 3 1 1
+      SCHEME MONKHORST-PACK 1 1 1
       SYMMETRY ON
     &END KPOINTS
     &MGRID
       CUTOFF 40
     &END MGRID
-    &PRINT
-      &KPOINTS ON
-      &END KPOINTS
-    &END PRINT
     &QS
       EPS_DEFAULT 1.0E-8
     &END QS
     &SCF
-      ADDED_MOS AUTO
-      EPS_SCF 1.0E-6
+      ADDED_MOS 46
+      EPS_SCF 1.0E-8
       MAX_SCF 220
       SCF_GUESS ATOMIC
-      &OT
-        ALGORITHM IRAC
-        ENERGIES
-        LINESEARCH 2PNT
-        MINIMIZER CG
-        OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_SINGLE_INVERSE
-        ROTATION
-      &END OT
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.2
+        BETA 1.5
+        METHOD BROYDEN_MIXING
+        NBUFFER 8
+      &END MIXING
       &SMEAR
         METHOD GAUSSIAN
         SIGMA [eV] 0.025852
