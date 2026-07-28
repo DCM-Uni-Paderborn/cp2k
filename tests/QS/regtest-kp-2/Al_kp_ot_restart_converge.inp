@@ -5,10 +5,11 @@
 ! The fresh write/read/continue chain now reaches the physical finite-entropy
 ! branch after one residual-tail subspace refresh and converges below 1E-6.
 ! Keep this HIGH-print input as a manual diagnostic/restart guard for that
-! endpoint.  A fresh OMP_NUM_THREADS=1 write/read/continue chain converges in
-! 80 continuation calls with Mermin free energy -8.14585342401305 Ha serially
-! and -8.14585342402785 Ha with MPI-2.  No first/last-band warning or
-! "Unsupported content type" signature occurred.
+! endpoint. A fresh OMP_NUM_THREADS=1 write/read/continue chain converges in
+! 77 continuation steps with Mermin free energy -8.14585311819770 Ha serially
+! and -8.14585310253720 Ha with MPI-2. Both are within 2.5E-8 Ha of the
+! tightly converged diagonalization reference -8.14585309375351 Ha. No
+! first/last-band warning or "Unsupported content type" signature occurred.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_restart
