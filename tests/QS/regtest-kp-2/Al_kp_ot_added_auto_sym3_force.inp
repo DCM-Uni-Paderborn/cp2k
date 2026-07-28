@@ -1,17 +1,15 @@
-! Slow/manual companion to the cheap symmetry-weighted ADDED_MOS AUTO k-point
-! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
-! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
-! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 reference after Hermitian projection of H(k)/S(k): AUTO grows
-! from 4 to 8 and 16. A fresh MPI-2 calculation converges in 86 total OT steps
-! at -8.15998704752008 Ha. It prints no first/last-band, AUTO-exhausted, or
-! unsupported-content warning.
-! Together with the full-grid companion this guards the weighted symmetry
-! reduction.
+! Slow/manual force companion for the converged symmetry-reduced metallic
+! k-point OT path. Run Al_kp_ot_added_auto_sym3_converge.inp first so that its
+! project restart is available. This input is intentionally not listed in
+! TEST_FILES.toml and therefore does not make the default regtest expensive.
+!
+! The 2026-07 MPI-2 reference converges at EPS_SCF 1E-8 to Mermin
+! F = -8.15998707989847 Ha. The largest force-component difference from a
+! matching diagonalization calculation is 3.7E-7 Ha/bohr.
 &GLOBAL
-  PRINT_LEVEL HIGH
+  PRINT_LEVEL MEDIUM
   PROJECT Al_kp_ot_added_auto_sym3_converge
-  RUN_TYPE ENERGY
+  RUN_TYPE ENERGY_FORCE
 &END GLOBAL
 
 &FORCE_EVAL
@@ -35,10 +33,10 @@
       EPS_DEFAULT 1.0E-8
     &END QS
     &SCF
-      ADDED_MOS AUTO
-      EPS_SCF 1.0E-6
-      MAX_SCF 220
-      SCF_GUESS ATOMIC
+      ADDED_MOS 16
+      EPS_SCF 1.0E-8
+      MAX_SCF 240
+      SCF_GUESS RESTART
       &OT
         ALGORITHM IRAC
         ENERGIES
@@ -58,6 +56,10 @@
       &END XC_FUNCTIONAL
     &END XC
   &END DFT
+  &PRINT
+    &FORCES ON
+    &END FORCES
+  &END PRINT
   &SUBSYS
     &CELL
       ABC 6.0 6.0 6.0

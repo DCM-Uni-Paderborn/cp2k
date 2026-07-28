@@ -97,6 +97,7 @@ CONTAINS
                                matrix_s_kp=matrix_s_kp, &
                                sab_orb=sab_nl, &
                                mos=mos, &
+                               scf_control=scf_control, &
                                kpoints=kpoints)
 
                CALL get_mo_set(mos(1), mo_coeff=mo_coeff, nao=nao)
@@ -109,7 +110,8 @@ CONTAINS
                CALL cp_fm_struct_release(ao_ao_fmstruct)
 
                ! energy weighted density matrices in k-space
-               CALL kpoint_density_matrices(kpoints, energy_weighted=.TRUE.)
+               CALL kpoint_density_matrices(kpoints, energy_weighted=.TRUE., &
+                                            use_ot=scf_control%use_ot)
                ! energy weighted density matrices in real space
                CALL kpoint_density_transform(kpoints, matrix_w_kp, .TRUE., &
                                              matrix_s_kp(1, 1)%matrix, sab_nl, fmwork)

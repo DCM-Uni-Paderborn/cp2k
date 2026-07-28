@@ -4,12 +4,11 @@
 ! channels share one fixed-N Mermin constraint and can exchange population.
 ! It also covers the complex FULL_ALL preconditioner endpoint.
 !
-! Local 2026-07 OMP_NUM_THREADS=1 references from fresh directories: OT
-! converges in 310 MPI-2 and 209 serial steps at EPS_SCF 1E-6. The MPI-2
-! reference has Mermin F = -8.16155080018708 Ha, 1.1E-7 Ha above matching
-! diagonalization at -8.16155090938556 Ha. Serial and MPI-2 differ by
-! 1.1E-8 Ha and exchange the physically equivalent spin labels; both give
-! weighted spin populations 6.33333 and 5.66667. The residual-aware per-spin
+! Local 2026-07 OMP_NUM_THREADS=1 reference from a fresh directory after
+! Hermitian projection of H(k)/S(k): OT converges in 146 MPI-2 steps at
+! EPS_SCF 1E-6. Mermin F = -8.16155090574643 Ha, within 3.7E-9 Ha of matching
+! diagonalization at -8.16155090938556 Ha. The weighted spin populations are
+! 6.33333 and 5.66667. The residual-aware per-spin
 ! frontier guard is exercised during startup and preserves an established
 ! thermal frontier across gradual accepted-step erosion. Model and outer-exit
 ! residuals remain separate in the final calibrated physical-response tail.

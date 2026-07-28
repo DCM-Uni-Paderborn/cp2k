@@ -19,6 +19,10 @@ MODULE kpoint_methods
                                               real_to_scaled
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_type
+   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_column_scale,&
+                                              cp_cfm_gemm,&
+                                              cp_cfm_scale_and_add,&
+                                              cp_cfm_transpose
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_info,&
                                               cp_cfm_release,&
@@ -36,7 +40,9 @@ MODULE kpoint_methods
    USE cp_dbcsr_contrib,                ONLY: dbcsr_dot
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_fm_to_dbcsr
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale,&
+                                              cp_fm_scale_and_add,&
+                                              cp_fm_transpose
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
                                               fm_pool_create_fm,&
                                               fm_pool_give_back_fm
@@ -109,6 +115,7 @@ MODULE kpoint_methods
    PUBLIC :: kpoint_initialize, kpoint_env_initialize, kpoint_initialize_mos, kpoint_initialize_mo_set
    PUBLIC :: kpoint_init_cell_index, kpoint_set_mo_occupation
    PUBLIC :: kpoint_density_matrices, kpoint_density_transform
+   PUBLIC :: kpoint_ot_energy_weighted_density
    PUBLIC :: kpoint_fixed_spin_targets
    PUBLIC :: rskp_transform, lowdin_kp_trans, lowdin_kp_mo_coeff
 
@@ -1743,18 +1750,19 @@ CONTAINS
 !> \param kpoint    kpoint environment
 !> \param energy_weighted  calculate energy weighted density matrix
 !> \param for_aux_fit ...
+!> \param use_ot use the noncanonical OT Lagrange multipliers for energy weighting
 ! **************************************************************************************************
-   SUBROUTINE kpoint_density_matrices(kpoint, energy_weighted, for_aux_fit)
+   SUBROUTINE kpoint_density_matrices(kpoint, energy_weighted, for_aux_fit, use_ot)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
-      LOGICAL, OPTIONAL                                  :: energy_weighted, for_aux_fit
+      LOGICAL, OPTIONAL                                  :: energy_weighted, for_aux_fit, use_ot
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_density_matrices'
 
       INTEGER                                            :: handle, ikpgr, ispin, kplocal, nao, nmo, &
                                                             nspin
       INTEGER, DIMENSION(2)                              :: kp_range
-      LOGICAL                                            :: aux_fit, wtype
+      LOGICAL                                            :: aux_fit, ot_wtype, use_ot_loc, wtype
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type)                                   :: fwork
@@ -1776,9 +1784,13 @@ CONTAINS
       ELSE
          aux_fit = .FALSE.
       END IF
+      use_ot_loc = .FALSE.
+      IF (PRESENT(use_ot)) use_ot_loc = use_ot
+      ot_wtype = wtype .AND. use_ot_loc
 
       IF (aux_fit) THEN
          CPASSERT(ASSOCIATED(kpoint%kp_aux_env))
+         CPASSERT(.NOT. ot_wtype)
       END IF
 
       ! work matrix
@@ -1802,7 +1814,19 @@ CONTAINS
          nspin = SIZE(kp%mos, 2)
          DO ispin = 1, nspin
             mo_set => kp%mos(1, ispin)
-            IF (wtype) THEN
+            CALL get_mo_set(mo_set, occupation_numbers=occupation)
+            IF (ot_wtype) THEN
+               CPASSERT(ASSOCIATED(kp%ot_hmat))
+               IF (kpoint%use_real_wfn) THEN
+                  CALL kpoint_ot_energy_weighted_density( &
+                     kp%ot_hmat(1, ispin), mo_set%mo_coeff, occupation, kp%wmat(1, ispin))
+               ELSE
+                  CALL kpoint_ot_energy_weighted_density( &
+                     kp%ot_hmat(1, ispin), mo_set%mo_coeff, occupation, kp%wmat(1, ispin), &
+                     kp%ot_hmat(2, ispin), kp%mos(2, ispin)%mo_coeff, kp%wmat(2, ispin))
+               END IF
+               CYCLE
+            ELSE IF (wtype) THEN
                CALL get_mo_set(mo_set, eigenvalues=eigenvalues)
             END IF
             IF (kpoint%use_real_wfn) THEN
@@ -1811,7 +1835,6 @@ CONTAINS
                ELSE
                   pmat => kp%pmat(1, ispin)
                END IF
-               CALL get_mo_set(mo_set, occupation_numbers=occupation)
                CALL cp_fm_to_fm(mo_set%mo_coeff, fwork)
                CALL cp_fm_column_scale(fwork, occupation)
                IF (wtype) THEN
@@ -1826,7 +1849,6 @@ CONTAINS
                   rpmat => kp%pmat(1, ispin)
                   cpmat => kp%pmat(2, ispin)
                END IF
-               CALL get_mo_set(mo_set, occupation_numbers=occupation)
                CALL cp_fm_to_fm(mo_set%mo_coeff, fwork)
                CALL cp_fm_column_scale(fwork, occupation)
                IF (wtype) THEN
@@ -1855,6 +1877,107 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_density_matrices
+
+! **************************************************************************************************
+!> \brief Build the energy-weighted density from noncanonical k-point OT orbitals.
+!>        The orbital Lagrange multiplier is the Hermitian part of
+!>        (C^H H C) f, which reduces to the usual eigenvalue-weighted expression
+!>        for canonical orbitals.
+!> \param hmat_re real part of H(k)
+!> \param coeff_re real part of C(k)
+!> \param occupation orbital occupations
+!> \param wmat_re real part of W(k)
+!> \param hmat_im optional imaginary part of H(k)
+!> \param coeff_im optional imaginary part of C(k)
+!> \param wmat_im optional imaginary part of W(k)
+! **************************************************************************************************
+   SUBROUTINE kpoint_ot_energy_weighted_density(hmat_re, coeff_re, occupation, wmat_re, &
+                                                hmat_im, coeff_im, wmat_im)
+
+      TYPE(cp_fm_type), INTENT(IN)                       :: hmat_re, coeff_re
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation
+      TYPE(cp_fm_type), INTENT(IN)                       :: wmat_re
+      TYPE(cp_fm_type), INTENT(IN), OPTIONAL             :: hmat_im, coeff_im, wmat_im
+
+      COMPLEX(KIND=dp), PARAMETER                        :: zhalf = (0.5_dp, 0.0_dp), &
+                                                            zone = (1.0_dp, 0.0_dp), &
+                                                            zzero = (0.0_dp, 0.0_dp)
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: occupation_complex
+      INTEGER                                            :: nao, nmo
+      LOGICAL                                            :: complex_case
+      TYPE(cp_cfm_type)                                  :: coeff_c, hblock_c, hblock_h_c, hc_c, &
+                                                            hmat_c, weighted_c, wmat_c
+      TYPE(cp_fm_type)                                   :: hblock, hblock_t, hc, weighted
+
+      complex_case = PRESENT(hmat_im) .OR. PRESENT(coeff_im) .OR. PRESENT(wmat_im)
+      IF (complex_case) THEN
+         CPASSERT(PRESENT(hmat_im))
+         CPASSERT(PRESENT(coeff_im))
+         CPASSERT(PRESENT(wmat_im))
+      END IF
+
+      CALL cp_fm_get_info(coeff_re, nrow_global=nao, ncol_global=nmo)
+      CPASSERT(SIZE(occupation) >= nmo)
+
+      IF (complex_case) THEN
+         CALL cp_cfm_create(hmat_c, hmat_re%matrix_struct)
+         CALL cp_cfm_create(coeff_c, coeff_re%matrix_struct)
+         CALL cp_cfm_create(hc_c, coeff_re%matrix_struct)
+         CALL cp_cfm_create(weighted_c, coeff_re%matrix_struct)
+         CALL cp_cfm_create(hblock_c, coeff_re%matrix_struct, nrow=nmo, ncol=nmo)
+         CALL cp_cfm_create(hblock_h_c, coeff_re%matrix_struct, nrow=nmo, ncol=nmo)
+         CALL cp_cfm_create(wmat_c, hmat_re%matrix_struct)
+
+         CALL cp_fm_to_cfm(hmat_re, hmat_im, hmat_c)
+         CALL cp_fm_to_cfm(coeff_re, coeff_im, coeff_c)
+         CALL cp_cfm_gemm("N", "N", nao, nmo, nao, zone, hmat_c, coeff_c, zzero, hc_c)
+         CALL cp_cfm_gemm("C", "N", nmo, nmo, nao, zone, coeff_c, hc_c, zzero, hblock_c)
+
+         ALLOCATE (occupation_complex(nmo))
+         occupation_complex = CMPLX(occupation(1:nmo), 0.0_dp, KIND=dp)
+         CALL cp_cfm_column_scale(hblock_c, occupation_complex)
+         DEALLOCATE (occupation_complex)
+         CALL cp_cfm_transpose(hblock_c, "C", hblock_h_c)
+         CALL cp_cfm_scale_and_add(zhalf, hblock_c, zhalf, hblock_h_c)
+
+         CALL cp_cfm_gemm("N", "N", nao, nmo, nmo, zone, coeff_c, hblock_c, &
+                          zzero, weighted_c)
+         CALL cp_cfm_gemm("N", "C", nao, nao, nmo, zone, weighted_c, coeff_c, &
+                          zzero, wmat_c)
+         CALL cp_cfm_to_fm(wmat_c, wmat_re, wmat_im)
+
+         CALL cp_cfm_release(wmat_c)
+         CALL cp_cfm_release(hblock_h_c)
+         CALL cp_cfm_release(hblock_c)
+         CALL cp_cfm_release(weighted_c)
+         CALL cp_cfm_release(hc_c)
+         CALL cp_cfm_release(coeff_c)
+         CALL cp_cfm_release(hmat_c)
+      ELSE
+         CALL cp_fm_create(hc, coeff_re%matrix_struct)
+         CALL cp_fm_create(weighted, coeff_re%matrix_struct)
+         CALL cp_fm_create(hblock, coeff_re%matrix_struct, nrow=nmo, ncol=nmo)
+         CALL cp_fm_create(hblock_t, coeff_re%matrix_struct, nrow=nmo, ncol=nmo)
+
+         CALL parallel_gemm("N", "N", nao, nmo, nao, 1.0_dp, hmat_re, coeff_re, 0.0_dp, hc)
+         CALL parallel_gemm("T", "N", nmo, nmo, nao, 1.0_dp, coeff_re, hc, 0.0_dp, hblock)
+         CALL cp_fm_column_scale(hblock, occupation(1:nmo))
+         CALL cp_fm_transpose(hblock, hblock_t)
+         CALL cp_fm_scale_and_add(0.5_dp, hblock, 0.5_dp, hblock_t)
+
+         CALL parallel_gemm("N", "N", nao, nmo, nmo, 1.0_dp, coeff_re, hblock, &
+                            0.0_dp, weighted)
+         CALL parallel_gemm("N", "T", nao, nao, nmo, 1.0_dp, weighted, coeff_re, &
+                            0.0_dp, wmat_re)
+
+         CALL cp_fm_release(hblock_t)
+         CALL cp_fm_release(hblock)
+         CALL cp_fm_release(weighted)
+         CALL cp_fm_release(hc)
+      END IF
+
+   END SUBROUTINE kpoint_ot_energy_weighted_density
 
 ! **************************************************************************************************
 !> \brief Calculate Lowdin transformation of density matrix S^1/2 P S^1/2

@@ -35,7 +35,8 @@ PROGRAM qs_ot_frechet_unittest
                                               cp_logger_type,&
                                               cp_rm_default_logger
    USE kinds,                           ONLY: dp
-   USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets
+   USE kpoint_methods,                  ONLY: kpoint_fixed_spin_targets,&
+                                              kpoint_ot_energy_weighted_density
    USE machine,                         ONLY: default_output_unit
    USE mathlib,                         ONLY: diag_complex,&
                                               diamat_all
@@ -114,6 +115,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
    CALL check_fm_complex_operator_hermitization("FM complex operator Hermitian projection", &
                                                 5.0E-14_dp, nfail, mp_comm)
+   CALL check_kpoint_ot_energy_weighted_density("noncanonical k-point OT force density", &
+                                                5.0E-12_dp, nfail, mp_comm)
    CALL check_complex_full_all_preconditioner("complex FULL_ALL phase covariance", &
                                               5.0E-11_dp, nfail, mp_comm)
    CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
@@ -978,6 +981,135 @@ CONTAINS
       CALL mp_para_env_release(para_env)
 
    END SUBROUTINE check_fm_complex_operator_hermitization
+
+! **************************************************************************************************
+!> \brief Check the real and split-complex noncanonical OT energy-weighted density.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+!> \param mp_comm ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_ot_energy_weighted_density(label, tol, nfail, mp_comm)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+      TYPE(mp_comm_type), INTENT(IN)                     :: mp_comm
+
+      INTEGER, PARAMETER                                 :: n = 4, nmo = 3
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: actual, expected, hmat
+      COMPLEX(KIND=dp), DIMENSION(n, nmo)                :: coeff
+      COMPLEX(KIND=dp), DIMENSION(nmo, nmo)              :: hblock, lagrange
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: err, phase, pi
+      REAL(KIND=dp), DIMENSION(n, n)                     :: actual_im, actual_re, expected_real, &
+                                                            hmat_im, hmat_re
+      REAL(KIND=dp), DIMENSION(n, nmo)                   :: coeff_im, coeff_re, coeff_real
+      REAL(KIND=dp), DIMENSION(nmo)                      :: occupation
+      REAL(KIND=dp), DIMENSION(nmo, nmo)                 :: hblock_real, lagrange_real
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: coeff_struct, hmat_struct
+      TYPE(cp_fm_type)                                   :: coeff_im_fm, coeff_re_fm, hmat_im_fm, &
+                                                            hmat_re_fm, wmat_im_fm, wmat_re_fm
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+
+      NULLIFY (blacs_env, coeff_struct, hmat_struct, para_env)
+      pi = ACOS(-1.0_dp)
+      hmat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      hmat(1, 1) = CMPLX(-0.8_dp, 0.0_dp, KIND=dp)
+      hmat(2, 2) = CMPLX(0.1_dp, 0.0_dp, KIND=dp)
+      hmat(3, 3) = CMPLX(0.7_dp, 0.0_dp, KIND=dp)
+      hmat(4, 4) = CMPLX(1.4_dp, 0.0_dp, KIND=dp)
+      hmat(1, 2) = CMPLX(0.21_dp, 0.13_dp, KIND=dp)
+      hmat(1, 3) = CMPLX(-0.17_dp, 0.09_dp, KIND=dp)
+      hmat(1, 4) = CMPLX(0.08_dp, -0.14_dp, KIND=dp)
+      hmat(2, 3) = CMPLX(0.31_dp, -0.11_dp, KIND=dp)
+      hmat(2, 4) = CMPLX(-0.19_dp, -0.07_dp, KIND=dp)
+      hmat(3, 4) = CMPLX(0.27_dp, 0.16_dp, KIND=dp)
+      DO i = 1, n
+         DO j = i + 1, n
+            hmat(j, i) = CONJG(hmat(i, j))
+         END DO
+      END DO
+      DO j = 1, nmo
+         DO i = 1, n
+            phase = 2.0_dp*pi*REAL((i - 1)*(j - 1), KIND=dp)/REAL(n, KIND=dp)
+            coeff(i, j) = CMPLX(COS(phase), SIN(phase), KIND=dp)/SQRT(REAL(n, KIND=dp))
+         END DO
+      END DO
+      occupation = [1.0_dp, 0.63_dp, 0.11_dp]
+
+      hblock = MATMUL(CONJG(TRANSPOSE(coeff)), MATMUL(hmat, coeff))
+      DO j = 1, nmo
+         lagrange(:, j) = hblock(:, j)*occupation(j)
+      END DO
+      lagrange = 0.5_dp*(lagrange + CONJG(TRANSPOSE(lagrange)))
+      expected = MATMUL(MATMUL(coeff, lagrange), CONJG(TRANSPOSE(coeff)))
+      hmat_re = REAL(hmat, KIND=dp)
+      hmat_im = AIMAG(hmat)
+      coeff_re = REAL(coeff, KIND=dp)
+      coeff_im = AIMAG(coeff)
+
+      ALLOCATE (para_env)
+      CALL para_env%from_dup(mp_comm)
+      CALL cp_blacs_env_create(blacs_env, para_env)
+      CALL cp_fm_struct_create(hmat_struct, nrow_global=n, ncol_global=n, &
+                               context=blacs_env, para_env=para_env)
+      CALL cp_fm_struct_create(coeff_struct, nrow_global=n, ncol_global=nmo, &
+                               context=blacs_env, para_env=para_env)
+      CALL cp_fm_create(hmat_re_fm, hmat_struct)
+      CALL cp_fm_create(hmat_im_fm, hmat_struct)
+      CALL cp_fm_create(wmat_re_fm, hmat_struct)
+      CALL cp_fm_create(wmat_im_fm, hmat_struct)
+      CALL cp_fm_create(coeff_re_fm, coeff_struct)
+      CALL cp_fm_create(coeff_im_fm, coeff_struct)
+      CALL cp_fm_set_submatrix(hmat_re_fm, hmat_re)
+      CALL cp_fm_set_submatrix(hmat_im_fm, hmat_im)
+      CALL cp_fm_set_submatrix(coeff_re_fm, coeff_re)
+      CALL cp_fm_set_submatrix(coeff_im_fm, coeff_im)
+
+      CALL kpoint_ot_energy_weighted_density( &
+         hmat_re_fm, coeff_re_fm, occupation, wmat_re_fm, &
+         hmat_im_fm, coeff_im_fm, wmat_im_fm)
+      CALL cp_fm_get_submatrix(wmat_re_fm, actual_re)
+      CALL cp_fm_get_submatrix(wmat_im_fm, actual_im)
+      actual = CMPLX(actual_re, actual_im, KIND=dp)
+      err = MAXVAL(ABS(actual - expected))
+
+      coeff_real(:, 1) = [1.0_dp/SQRT(2.0_dp), 1.0_dp/SQRT(2.0_dp), 0.0_dp, 0.0_dp]
+      coeff_real(:, 2) = [-0.5_dp, 0.5_dp, 1.0_dp/SQRT(2.0_dp), 0.0_dp]
+      coeff_real(:, 3) = [0.5_dp, -0.5_dp, 1.0_dp/SQRT(2.0_dp), 0.0_dp]
+      hblock_real = MATMUL(TRANSPOSE(coeff_real), MATMUL(hmat_re, coeff_real))
+      DO j = 1, nmo
+         lagrange_real(:, j) = hblock_real(:, j)*occupation(j)
+      END DO
+      lagrange_real = 0.5_dp*(lagrange_real + TRANSPOSE(lagrange_real))
+      expected_real = MATMUL(MATMUL(coeff_real, lagrange_real), TRANSPOSE(coeff_real))
+      CALL cp_fm_set_submatrix(coeff_re_fm, coeff_real)
+      CALL kpoint_ot_energy_weighted_density( &
+         hmat_re_fm, coeff_re_fm, occupation, wmat_re_fm)
+      CALL cp_fm_get_submatrix(wmat_re_fm, actual_re)
+      err = MAX(err, MAXVAL(ABS(actual_re - expected_real)))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", err
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", err
+      END IF
+
+      CALL cp_fm_release(coeff_im_fm)
+      CALL cp_fm_release(coeff_re_fm)
+      CALL cp_fm_release(wmat_im_fm)
+      CALL cp_fm_release(wmat_re_fm)
+      CALL cp_fm_release(hmat_im_fm)
+      CALL cp_fm_release(hmat_re_fm)
+      CALL cp_fm_struct_release(coeff_struct)
+      CALL cp_fm_struct_release(hmat_struct)
+      CALL cp_blacs_env_release(blacs_env)
+      CALL mp_para_env_release(para_env)
+
+   END SUBROUTINE check_kpoint_ot_energy_weighted_density
 
 ! **************************************************************************************************
 !> \brief Gather the fixed 2x2-block DBCSR Frechet fixture into a dense complex matrix.

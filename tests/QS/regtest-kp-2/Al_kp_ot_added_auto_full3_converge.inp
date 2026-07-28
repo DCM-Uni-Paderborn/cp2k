@@ -3,12 +3,12 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-07 reference after the physical-subspace and complex-preconditioner
-! fixes: AUTO grows from 4 to 8 and 16.  It converges in 70 final-stage MPI-2
-! OT steps at -8.15998701209416 Ha with a 3.4E-7 canonical-density residual.
-! It prints no first/last-band, AUTO-exhausted, or unsupported-content warning.
-! The endpoint agrees with the symmetry-reduced MPI-2 companion within 6.8E-8
-! Ha and therefore guards explicit-grid versus irreducible-weight consistency.
+! Local 2026-07 reference after Hermitian projection of H(k)/S(k): AUTO grows
+! from 4 to 8 and 16. A fresh MPI-2 calculation converges in 93 total OT steps
+! at -8.15998690114920 Ha. It prints no first/last-band, AUTO-exhausted, or
+! unsupported-content warning. The endpoint agrees with the fresh
+! symmetry-reduced companion within 1.5E-7 Ha and therefore guards
+! explicit-grid versus irreducible-weight consistency.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_full3_converge
