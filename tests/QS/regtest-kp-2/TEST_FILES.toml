@@ -55,8 +55,8 @@
 # MAX-ITER, or "Unsupported content type" signature is printed.
 # Al_kp_ot_uks_full_all_sym3_converge.inp is the unlisted four-channel UKS
 # physics companion.  With two spins, two irreducible k-points, and fixed
-# magnetization it converges in 153 uninterrupted MPI-2 OT steps to
-# -8.14036040968823 Ha, within 5.3E-7 Ha of diagonalization while retaining
+# magnetization it converges in 84 uninterrupted MPI-2 OT steps to
+# -8.14036053963769 Ha, within 4.0E-7 Ha of diagonalization while retaining
 # weighted spin populations 7/5 and finite entropy.
 # Al_kp_ot_uks_common_mu_sym3_converge.inp is the complementary shared-mu
 # four-channel anchor.  FULL_ALL converges in 310 MPI-2 steps to
