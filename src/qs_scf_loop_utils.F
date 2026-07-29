@@ -263,6 +263,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_fermi_guard_control_delta, &
              qs_scf_kp_fermi_guard_release_ready, &
              qs_scf_kp_fermi_guard_transition, &
+             qs_scf_kp_fixed_n_response_mu_shift, &
              qs_scf_kp_full_all_spin_normalization, &
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
@@ -296,6 +297,36 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief chemical-potential response for a fixed-N spin/k-point group
+!>
+!>        A perturbation may be local to one irreducible k-point, but the chemical potential
+!>        enforces the electron count over the complete fixed-N group.  Therefore its numerator
+!>        contains the local weighted energy response while its denominator contains the global
+!>        occupation susceptibility.
+!> \param weighted_energy_response local sum_i (-df_i/de_i) de_i
+!> \param local_curvature_sum local sum_i (-df_i/de_i), used as a serial fallback
+!> \param fixed_n_curvature_sum global susceptibility of the fixed-N spin/k-point group
+!> \return fixed-N chemical-potential response
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_fixed_n_response_mu_shift( &
+      weighted_energy_response, local_curvature_sum, fixed_n_curvature_sum) RESULT(mu_shift)
+      REAL(KIND=dp), INTENT(IN)                          :: weighted_energy_response, &
+                                                            local_curvature_sum, &
+                                                            fixed_n_curvature_sum
+      REAL(KIND=dp)                                      :: mu_shift
+
+      REAL(KIND=dp)                                      :: response_denominator
+
+      response_denominator = MAX(0.0_dp, fixed_n_curvature_sum)
+      IF (response_denominator <= EPSILON(response_denominator)) &
+         response_denominator = MAX(0.0_dp, local_curvature_sum)
+      mu_shift = 0.0_dp
+      IF (response_denominator > EPSILON(response_denominator)) &
+         mu_shift = weighted_energy_response/response_denominator
+
+   END FUNCTION qs_scf_kp_fixed_n_response_mu_shift
 
 ! **************************************************************************************************
 !> \brief whether ADDED_MOS AUTO has physical support for rebuilding an integer subspace
@@ -26978,7 +27009,9 @@ CONTAINS
                   response_shift = DOT_PRODUCT(occ_curv, response_vec)
                   IF (.NOT. global_schur_replicated) &
                      CALL para_env_inter_kp%sum(response_shift)
-                  response_vec(:) = response_vec(:) - response_shift/occ_curv_sum
+                  response_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                                   response_shift, SUM(occ_curv), occ_curv_sum)
+                  response_vec(:) = response_vec(:) - response_shift
                END IF
                DO local_channel = 1, SIZE(channel_nmo)
                   nmo = channel_nmo(local_channel)
@@ -27431,8 +27464,10 @@ CONTAINS
                response_shift = DOT_PRODUCT(occ_curv, response_occ(:, r))
                IF (.NOT. global_schur_replicated) &
                   CALL para_env_inter_kp%sum(response_shift)
+               response_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                                response_shift, SUM(occ_curv), occ_sum)
                energy_cross(:, r) = energy_cross(:, r) + &
-                                    occ_curv(:)*(response_occ(:, r) - response_shift/occ_sum)
+                                    occ_curv(:)*(response_occ(:, r) - response_shift)
             END DO
          END IF
 

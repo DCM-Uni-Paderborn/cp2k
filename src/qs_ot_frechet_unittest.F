@@ -89,10 +89,11 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
         qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_candidate_promoted, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
         qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
@@ -141,6 +142,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_complex_full_all_orbital_schur("complex FULL_ALL orbital Schur correction", &
                                              5.0E-7_dp, nfail)
    CALL check_smearing_derivative("smearing occupation derivative", 2.0E-7_dp, nfail)
+   CALL check_global_fixed_n_mu_response("global fixed-N k-point mu response", 2.0E-7_dp, nfail)
    CALL check_weighted_kpoint_mermin_gradient("weighted k-point Mermin gradient", 1.0E-7_dp, nfail)
    CALL check_kpoint_symmetry_preconditioned_metric("k-point symmetry preconditioned metric", &
                                                     5.0E-14_dp, nfail)
@@ -710,6 +712,80 @@ CONTAINS
       END DO
 
    END SUBROUTINE check_smearing_derivative
+
+! **************************************************************************************************
+!> \brief Check that a local k-point perturbation uses the global fixed-N mu response.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_global_fixed_n_mu_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: i, iside, iter
+      REAL(KIND=dp) :: closure_error, electron_error, fd_mu_shift, global_curv_sum, h, kTS, &
+         local_curv_sum, local_weighted_response, maxocc, mu, mu_shift, nel, response_sum, &
+         serial_mu_shift, sigma, target_electrons, test_error
+      REAL(KIND=dp), DIMENSION(2)                        :: displaced_mu
+      REAL(KIND=dp), DIMENSION(6)                        :: curv, direction, energies, occupations, &
+                                                            trial_energies, trial_occupations, &
+                                                            weights
+
+      energies = [-0.08_dp, 0.01_dp, 0.11_dp, -0.03_dp, 0.07_dp, 0.16_dp]
+      direction = [0.35_dp, -0.20_dp, 0.10_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      weights = [0.4_dp, 0.4_dp, 0.4_dp, 0.6_dp, 0.6_dp, 0.6_dp]
+      maxocc = 2.0_dp
+      mu = 0.04_dp
+      sigma = 0.06_dp
+      h = 1.0E-6_dp
+
+      CALL SmearOcc(occupations, nel, kTS, energies, mu, sigma, maxocc, smear_fermi_dirac)
+      target_electrons = DOT_PRODUCT(weights, occupations)
+      DO i = 1, SIZE(energies)
+         curv(i) = weights(i)*SmearingDerivative(occupations(i), energies(i), mu, sigma, &
+                                                 maxocc, smear_fermi_dirac)
+      END DO
+      local_curv_sum = SUM(curv(1:3))
+      global_curv_sum = SUM(curv)
+      local_weighted_response = DOT_PRODUCT(curv(1:3), direction(1:3))
+      mu_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                 local_weighted_response, local_curv_sum, global_curv_sum)
+      serial_mu_shift = qs_scf_kp_fixed_n_response_mu_shift( &
+                        local_weighted_response, local_curv_sum, 0.0_dp)
+
+      DO iside = 1, 2
+         trial_energies(:) = energies(:)
+         trial_energies(1:3) = trial_energies(1:3) + REAL(2*iside - 3, KIND=dp)*h*direction(1:3)
+         displaced_mu(iside) = mu
+         DO iter = 1, 20
+            CALL SmearOcc(trial_occupations, nel, kTS, trial_energies, displaced_mu(iside), &
+                          sigma, maxocc, smear_fermi_dirac)
+            electron_error = target_electrons - DOT_PRODUCT(weights, trial_occupations)
+            response_sum = 0.0_dp
+            DO i = 1, SIZE(trial_energies)
+               response_sum = response_sum + weights(i)* &
+                              SmearingDerivative(trial_occupations(i), trial_energies(i), &
+                                                 displaced_mu(iside), sigma, maxocc, smear_fermi_dirac)
+            END DO
+            IF (ABS(electron_error) <= 10.0_dp*EPSILON(target_electrons)) EXIT
+            displaced_mu(iside) = displaced_mu(iside) + electron_error/response_sum
+         END DO
+      END DO
+
+      fd_mu_shift = (displaced_mu(2) - displaced_mu(1))/(2.0_dp*h)
+      closure_error = ABS(-local_weighted_response + global_curv_sum*mu_shift)
+      test_error = MAX(ABS(fd_mu_shift - mu_shift), closure_error)
+      test_error = MAX(test_error, ABS(serial_mu_shift - local_weighted_response/local_curv_sum))
+      IF (test_error > tol*MAX(1.0_dp, ABS(fd_mu_shift))) THEN
+         IF (io_unit >= 0) &
+            WRITE (io_unit, '(A,1X,A,5(1X,ES16.8))') &
+            "FAILED", TRIM(label), fd_mu_shift, mu_shift, closure_error, serial_mu_shift, test_error
+         nfail = nfail + 1
+      END IF
+
+   END SUBROUTINE check_global_fixed_n_mu_response
 
 ! **************************************************************************************************
 !> \brief Check L_exp(diag(-i*e1,-i*e2), E_12*z)
