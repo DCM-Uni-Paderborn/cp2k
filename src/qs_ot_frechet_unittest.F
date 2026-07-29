@@ -83,11 +83,12 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
         qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
         qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
@@ -622,6 +623,8 @@ PROGRAM qs_ot_frechet_unittest
       "canonical density tangent reduced Mermin blend", 2.0E-13_dp, nfail)
    CALL check_canonical_density_candidate( &
       "canonical density Direct candidate assembly", 2.0E-13_dp, nfail)
+   CALL check_density_descent_candidate( &
+      "canonical density-descent candidate consistency", 2.0E-13_dp, nfail)
    CALL check_canonical_density_probe_drop( &
       "canonical density physical tail probe", 2.0E-13_dp, nfail)
    CALL check_mermin_closure_response_quality( &
@@ -23686,12 +23689,13 @@ CONTAINS
          gauge_gap = 1.0E-6_dp, maxocc = 1.0_dp, nel = 2.15_dp, projector_weight = 0.43_dp, &
          sigma = 0.08_dp, wk = 1.0_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: chc, chc_rot, dchc, dchc_rot, docc_aux, &
-                                                            docc_back, docc_canonical, docc_fd, &
-                                                            docc_rot, evec, occ_mat_m, occ_mat_p, q
+      COMPLEX(KIND=dp), DIMENSION(n, n) :: chc, chc_rot, dchc, dchc_rot, docc_aux, docc_back, &
+         docc_canonical, docc_fd, docc_fixed, docc_fixed_back, docc_fixed_fd, docc_fixed_rot, &
+         docc_occ, docc_rot, evec, occ_mat_m, occ_mat_p, q
       INTEGER                                            :: i
-      REAL(KIND=dp)                                      :: cov_err, fd_err, kTS, model_gap, mu, &
-                                                            trace_err
+      REAL(KIND=dp)                                      :: cov_err, fd_err, fixed_cov_err, &
+                                                            fixed_fd_err, kTS, model_gap, mu, &
+                                                            occ_active, occ_offdiag, trace_err
       REAL(KIND=dp), DIMENSION(1)                        :: weights
       REAL(KIND=dp), DIMENSION(n)                        :: aux_curv, aux_occ, canonical_curv, &
                                                             canonical_scale, evals, evals_m, &
@@ -23725,6 +23729,13 @@ CONTAINS
       canonical_curv(:) = wk*maxocc*(occ(:, 1)/maxocc)*(1.0_dp - occ(:, 1)/maxocc)/sigma
       CALL dense_history_safe_occ_projector_derivative_chc( &
          chc, dchc, canonical_scale, projector_weight, docc_canonical, canonical_curv, gauge_gap)
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc, dchc, canonical_scale, projector_weight, docc_fixed)
+
+      CALL dense_spectral_occ_projector_from_chc(chc + fd_step*dchc, canonical_scale, occ_mat_p)
+      CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, canonical_scale, occ_mat_m)
+      docc_fixed_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
+      fixed_fd_err = MAXVAL(ABS(docc_fixed(:, :) - docc_fixed_fd(:, :)))
 
       CALL diag_complex(chc + fd_step*dchc, evec, evals_p)
       eps(:, 1) = evals_p(:)
@@ -23738,6 +23749,13 @@ CONTAINS
       CALL dense_spectral_occ_projector_from_chc(chc - fd_step*dchc, occ_scale_m, occ_mat_m)
       docc_fd(:, :) = projector_weight*(occ_mat_p(:, :) - occ_mat_m(:, :))/(2.0_dp*fd_step)
       fd_err = MAXVAL(ABS(docc_canonical(:, :) - docc_fd(:, :)))
+      docc_occ(:, :) = docc_canonical(:, :) - docc_fixed(:, :)
+      occ_active = MAXVAL(ABS(docc_occ(:, :)))
+      occ_offdiag = 0.0_dp
+      DO i = 1, n
+         occ_offdiag = MAX(occ_offdiag, MAXVAL(ABS(docc_occ(i, 1:i - 1))))
+         IF (i < n) occ_offdiag = MAX(occ_offdiag, MAXVAL(ABS(docc_occ(i, i + 1:n))))
+      END DO
 
       aux_occ(:) = [0.96_dp, 0.81_dp, 0.31_dp, 0.07_dp]
       aux_curv(:) = wk*maxocc*(aux_occ(:)/maxocc)*(1.0_dp - aux_occ(:)/maxocc)/sigma
@@ -23767,16 +23785,23 @@ CONTAINS
       CALL dense_history_safe_occ_projector_derivative_chc( &
          chc_rot, dchc_rot, canonical_scale, projector_weight, docc_rot, canonical_curv, gauge_gap)
       docc_back(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc_rot, q))
+      CALL dense_history_safe_occ_projector_derivative_chc( &
+         chc_rot, dchc_rot, canonical_scale, projector_weight, docc_fixed_rot)
+      docc_fixed_back(:, :) = MATMUL(CONJG(TRANSPOSE(q)), MATMUL(docc_fixed_rot, q))
       cov_err = MAXVAL(ABS(docc_back(:, :) - docc_canonical(:, :)))
+      fixed_cov_err = MAXVAL(ABS(docc_fixed_back(:, :) - docc_fixed(:, :)))
       trace_err = ABS(REAL(SUM([(docc_canonical(i, i), i=1, n)]), KIND=dp))
 
-      IF (fd_err > tol .OR. cov_err > tol .OR. trace_err > tol .OR. model_gap < active_tol) THEN
+      IF (fd_err > tol .OR. fixed_fd_err > tol .OR. cov_err > tol .OR. fixed_cov_err > tol .OR. &
+          trace_err > tol .OR. occ_offdiag > tol .OR. occ_active < active_tol .OR. model_gap < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "failed with fd/cov/trace/model-gap", fd_err, cov_err, trace_err, model_gap
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "failed with fd/fixed-fd/cov/fixed-cov/trace/occ-offdiag/occ-active/model-gap", &
+            fd_err, fixed_fd_err, cov_err, fixed_cov_err, trace_err, occ_offdiag, occ_active, model_gap
       ELSE
-         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), &
-            "OK with fd/cov/trace/model-gap", fd_err, cov_err, trace_err, model_gap
+         WRITE (*, '(A,1X,A,8(1X,ES12.5))') TRIM(label), &
+            "OK with fd/fixed-fd/cov/fixed-cov/trace/occ-offdiag/occ-active/model-gap", &
+            fd_err, fixed_fd_err, cov_err, fixed_cov_err, trace_err, occ_offdiag, occ_active, model_gap
       END IF
 
    END SUBROUTINE check_canonical_fixed_n_occ_projector_derivative
@@ -24583,6 +24608,44 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_canonical_density_candidate
+
+! **************************************************************************************************
+!> \brief Check that an enriched density response retains its density-corrected rotation model.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_density_descent_candidate(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: ne = 4, nrot = 3
+
+      REAL(KIND=dp)                                      :: candidate_gdot_rotation, &
+                                                            candidate_norm_rotation, error
+      REAL(KIND=dp), DIMENSION(ne)                       :: base_response, candidate_response, &
+                                                            response_correction
+      REAL(KIND=dp), DIMENSION(nrot)                     :: base_sol, candidate_sol
+
+      base_sol(:) = [0.31_dp, -0.27_dp, 0.19_dp]
+      base_response(:) = [0.12_dp, -0.08_dp, 0.03_dp, -0.01_dp]
+      response_correction(:) = [-0.02_dp, 0.04_dp, -0.01_dp, 0.03_dp]
+      CALL qs_scf_kp_density_descent_candidate( &
+         base_sol, base_response, response_correction, -0.37_dp, 0.83_dp, &
+         candidate_sol, candidate_response, candidate_gdot_rotation, candidate_norm_rotation)
+
+      error = MAX(MAXVAL(ABS(candidate_sol - base_sol)), &
+                  MAXVAL(ABS(candidate_response - base_response - response_correction)), &
+                  ABS(candidate_gdot_rotation + 0.37_dp), ABS(candidate_norm_rotation - 0.83_dp))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_density_descent_candidate
 
 ! **************************************************************************************************
 !> \brief Check that an uncalibrated density candidate is admitted only by a complete physical model.

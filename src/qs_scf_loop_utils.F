@@ -274,6 +274,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_canonical_density_candidate, &
              qs_scf_kp_canonical_density_multimode_blend, &
              qs_scf_kp_canonical_density_probe_drop, &
+             qs_scf_kp_density_descent_candidate, &
              qs_scf_kp_response_corrected_step, &
              qs_scf_kp_canonical_density_tangent, &
              qs_scf_kp_canonical_tether_tail_scale, &
@@ -1528,6 +1529,44 @@ CONTAINS
       END DO
 
    END SUBROUTINE qs_scf_kp_canonical_density_candidate
+
+! **************************************************************************************************
+!> \brief Couple a density-corrected rotation to its enriched auxiliary-energy response.
+!>
+!>        The response correction changes only the auxiliary-energy block.  The rotation block,
+!>        its gradient contraction, and its norm must remain those of the density-corrected base
+!>        candidate used to construct base_response.
+!> \param base_sol density-corrected rotation candidate
+!> \param base_response auxiliary-energy response of base_sol
+!> \param response_correction projected full-density response correction
+!> \param base_gdot_rotation rotation-gradient contraction of base_sol
+!> \param base_norm_rotation rotation norm of base_sol
+!> \param candidate_sol coupled density-descent rotation
+!> \param candidate_response coupled density-descent auxiliary-energy response
+!> \param candidate_gdot_rotation coupled rotation-gradient contraction
+!> \param candidate_norm_rotation coupled rotation norm
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_density_descent_candidate( &
+      base_sol, base_response, response_correction, base_gdot_rotation, base_norm_rotation, &
+      candidate_sol, candidate_response, candidate_gdot_rotation, candidate_norm_rotation)
+
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: base_sol, base_response, &
+                                                            response_correction
+      REAL(KIND=dp), INTENT(IN)                          :: base_gdot_rotation, base_norm_rotation
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: candidate_sol, candidate_response
+      REAL(KIND=dp), INTENT(OUT)                         :: candidate_gdot_rotation, &
+                                                            candidate_norm_rotation
+
+      CPASSERT(SIZE(candidate_sol) == SIZE(base_sol))
+      CPASSERT(SIZE(candidate_response) == SIZE(base_response))
+      CPASSERT(SIZE(response_correction) == SIZE(base_response))
+
+      candidate_sol(:) = base_sol(:)
+      candidate_response(:) = base_response(:) + response_correction(:)
+      candidate_gdot_rotation = base_gdot_rotation
+      candidate_norm_rotation = base_norm_rotation
+
+   END SUBROUTINE qs_scf_kp_density_descent_candidate
 
 !> \brief Uncalibrated Mermin drop used for one canonical-density tail probe.
 !>
@@ -12157,13 +12196,13 @@ CONTAINS
          canonical_density_trial_raw_rx_e, canonical_density_trial_sol, &
          canonical_eigenvalue_channel, canonical_occ_curv, canonical_occ_curv_channel, &
          canonical_occupation_channel, channel_maxocc, constrained_sol, constrained_z_e, curv, &
-         density_basis_selective_floor_weight, density_descent_rx_e, density_descent_z_e, &
-         density_full_global_rx_e, density_full_global_sol, density_full_rx_e, density_full_sol
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_full_z_e, density_gap_projected_e, &
-         density_gap_rx_e, density_gap_trial_basis_e, density_gap_trial_projected_e, &
-         density_plateau_rx_e, density_plateau_z_e, direct_pg_base_e, direct_pg_rx_e, &
-         energy_grad_metric_weight, energy_step_weight, grad_e, grad_rot, occ_curv, &
-         projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
+         density_basis_selective_floor_weight, density_descent_rx_e, density_descent_sol, &
+         density_descent_z_e, density_full_global_rx_e, density_full_global_sol, density_full_rx_e
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_full_sol, density_full_z_e, &
+         density_gap_projected_e, density_gap_rx_e, density_gap_trial_basis_e, &
+         density_gap_trial_projected_e, density_plateau_rx_e, density_plateau_z_e, &
+         direct_pg_base_e, direct_pg_rx_e, energy_grad_metric_weight, energy_step_weight, grad_e, &
+         grad_rot, occ_curv, projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
          projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
          projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
          projector_physical_direct_curv_eval
@@ -12526,6 +12565,7 @@ CONTAINS
                    projector_physical_direct_density_sol(nrot), &
                    projector_physical_direct_density_z_e(ne), &
                    density_descent_rx_e(ne), &
+                   density_descent_sol(nrot), &
                    density_descent_z_e(ne), &
                    density_full_rx_e(ne), &
                    density_full_global_rx_e(ne), &
@@ -12661,6 +12701,7 @@ CONTAINS
          projector_physical_direct_density_rx_e(:) = 0.0_dp
          projector_physical_direct_density_z_e(:) = 0.0_dp
          density_descent_rx_e(:) = 0.0_dp
+         density_descent_sol(:) = 0.0_dp
          density_descent_z_e(:) = 0.0_dp
          density_full_rx_e(:) = 0.0_dp
          density_full_global_rx_e(:) = 0.0_dp
@@ -14214,6 +14255,7 @@ CONTAINS
                         projector_physical_direct_density_rx_e, &
                         projector_physical_direct_density_z_e, &
                         density_descent_rx_e, &
+                        density_descent_sol, &
                         density_descent_z_e, &
                         density_full_rx_e, &
                         density_full_global_rx_e, &
@@ -20960,30 +21002,23 @@ CONTAINS
                               density_descent_gap_denom = density_descent_gap_trial_denom
                            END IF
                         END IF
-                        density_descent_rx_e(:) = projector_physical_direct_density_rx_e(:) + &
-                                                  density_gap_projected_e(:)
+                        CALL qs_scf_kp_density_descent_candidate( &
+                           projector_physical_direct_density_sol, &
+                           projector_physical_direct_density_rx_e, density_gap_projected_e, &
+                           projector_physical_direct_density_gdot_rotation, &
+                           projector_physical_direct_density_norm_rotation, &
+                           density_descent_sol, density_descent_rx_e, &
+                           density_descent_gdot_rotation, density_descent_norm_rotation)
                         CALL project_kpoint_ot_schur_response(density_descent_rx_e, &
                                                               occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, e_offset)
                         density_descent_z_e(:) = z_exact_physical_trial(:) + density_descent_rx_e(:)
                         density_descent_gdot_energy = DOT_PRODUCT(grad_e, density_descent_z_e)
-                        density_descent_gdot_rotation = &
-                           DOT_PRODUCT(grad_rot, projector_physical_direct_sol)
                         density_descent_gdotp = density_descent_gdot_energy + &
                                                 density_descent_gdot_rotation
                         CALL kpoint_ot_mixed_projected_term(density_descent_z_e, &
                                                             density_descent_z_e, occ_curv, tether_curv, occ_curv_projection_sum, &
                                                             channel_nmo, e_offset, density_descent_norm_energy)
                         density_descent_norm_energy = MAX(0.0_dp, density_descent_norm_energy)
-                        density_descent_norm_rotation = &
-                           ABS(kpoint_ot_symmetric_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_sol))
-                        IF (density_descent_norm_rotation <= EPSILON(density_descent_norm_rotation)) &
-                           density_descent_norm_rotation = ABS(DOT_PRODUCT(rtd, projector_physical_direct_sol))
-                        IF (density_descent_norm_rotation <= EPSILON(density_descent_norm_rotation)) &
-                           density_descent_norm_rotation = &
-                           kpoint_ot_symmetric_abs_quad(projector_physical_direct_schur_mat, &
-                                                        projector_physical_direct_sol, &
-                                                        var_step_weight)
                         density_descent_normp = density_descent_norm_energy + &
                                                 density_descent_norm_rotation
                         IF (density_descent_gdotp > 0.0_dp .AND. &
@@ -22660,7 +22695,7 @@ CONTAINS
                   density_full_global_candidate_selected = .FALSE.
                   projector_response_candidate_selected = .FALSE.
                   z_e(:) = density_descent_direction_scale*density_descent_z_e(:)
-                  sol(:) = density_descent_direction_scale*projector_physical_direct_sol(:)
+                  sol(:) = density_descent_direction_scale*density_descent_sol(:)
                   direction_scale = density_descent_direction_scale
                   gdotp = density_descent_gdotp
                   gdot_energy = density_descent_gdot_energy
@@ -23309,7 +23344,7 @@ CONTAINS
                   density_full_global_candidate_selected = .FALSE.
                   projector_response_candidate_selected = .FALSE.
                   z_e(:) = density_descent_direction_scale*density_descent_z_e(:)
-                  sol(:) = density_descent_direction_scale*projector_physical_direct_sol(:)
+                  sol(:) = density_descent_direction_scale*density_descent_sol(:)
                   direction_scale = density_descent_direction_scale
                   gdotp = density_descent_gdotp
                   gdot_energy = density_descent_gdot_energy
@@ -26355,6 +26390,7 @@ CONTAINS
                      projector_physical_direct_effective_rx_e, &
                      projector_physical_direct_density_z_e, &
                      density_descent_rx_e, &
+                     density_descent_sol, &
                      density_descent_z_e, &
                      density_full_rx_e, &
                      density_full_global_rx_e, &
