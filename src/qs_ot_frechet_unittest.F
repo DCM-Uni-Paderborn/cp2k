@@ -66,7 +66,8 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
         ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
         ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
-        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_response_scale, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -2167,6 +2168,18 @@ CONTAINS
                                                            0.99_dp, 0.0_dp) - 1.0_dp))
       err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(16.0_dp, 4.0_dp, 8.0_dp, &
                                                            0.75_dp, 0.0_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
+                         [4.0_dp], [1.0_dp], [3.0_dp], 1) - 2.6_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
+                         [4.0_dp], [1.0_dp], [3.0_dp], 2) - 7.4_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
+                         [4.0_dp, 2.0_dp], [1.0_dp, 3.0_dp], [3.0_dp, 1.0_dp], 1) - 1.8_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
+                         [4.0_dp, 2.0_dp], [1.0_dp, 3.0_dp], [3.0_dp, 1.0_dp], 2) - 4.2_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
+                         [4.0_dp], [1.0_dp, 3.0_dp], [3.0_dp], 1) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_model_factor( &
+                         [4.0_dp], [1.0_dp], [3.0_dp], 0) - 1.0_dp))
 
       IF (err > tol) THEN
          nfail = nfail + 1

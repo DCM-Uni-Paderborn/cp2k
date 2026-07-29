@@ -56,6 +56,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_mermin_restart_step, &
               ot_kpoint_mermin_shared_spin_group, &
               ot_kpoint_mermin_tail_energy_stagnant, &
+              ot_kpoint_rayleigh_model_factor, &
               ot_kpoint_rayleigh_response_scale, &
               ot_kpoint_secant_geometry, &
               ot_mini
@@ -513,6 +514,36 @@ CONTAINS
                   MAX(ot_cg_kp_rayleigh_response_min_scale, scale))
 
    END FUNCTION ot_kpoint_rayleigh_response_scale
+
+! **************************************************************************************************
+!> \brief transform one directional model component after groupwise Rayleigh response scaling
+!> \param energy_slope nonnegative directional slopes in the auxiliary-energy channel
+!> \param orbital_slope nonnegative directional slopes in all unscaled orbital channels
+!> \param response_scale groupwise auxiliary-energy response scales
+!> \param power one for the linear model and two for its asymptotic quadratic model
+!> \return weighted model factor, or one for inconsistent/inactive input
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_rayleigh_model_factor(energy_slope, orbital_slope, response_scale, power) &
+      RESULT(factor)
+      REAL(KIND=dp), INTENT(IN)                          :: energy_slope(:), orbital_slope(:), &
+                                                            response_scale(:)
+      INTEGER, INTENT(IN)                                :: power
+      REAL(KIND=dp)                                      :: factor
+
+      REAL(KIND=dp)                                      :: denominator
+
+      factor = 1.0_dp
+      IF (SIZE(energy_slope) /= SIZE(orbital_slope) .OR. &
+          SIZE(energy_slope) /= SIZE(response_scale)) RETURN
+      IF (power < 1 .OR. SIZE(energy_slope) == 0) RETURN
+      IF (ANY(energy_slope < 0.0_dp) .OR. ANY(orbital_slope < 0.0_dp) .OR. &
+          ANY(response_scale <= 0.0_dp)) RETURN
+
+      denominator = SUM(energy_slope + orbital_slope)
+      IF (denominator <= 0.0_dp) RETURN
+      factor = SUM(orbital_slope + response_scale**power*energy_slope)/denominator
+
+   END FUNCTION ot_kpoint_rayleigh_model_factor
 
 ! **************************************************************************************************
 !> \brief retain a smaller trust radius after a line search returned to its reference point
@@ -1978,11 +2009,16 @@ CONTAINS
 !> \param qs_ot_env ...
 !> \param para_env_inter_kp ...
 !> \param fresh_response replace CG energy history by the newly coupled Schur response
+!> \param model_slope_factor factor for the executed directional model slope
+!> \param model_quadratic_factor factor for the executed directional model curvature
 ! **************************************************************************************************
-   SUBROUTINE prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, fresh_response)
+   SUBROUTINE prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, fresh_response, &
+                                                     model_slope_factor, model_quadratic_factor)
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
       LOGICAL, INTENT(IN)                                :: fresh_response
+      REAL(KIND=dp), INTENT(OUT)                         :: model_slope_factor, &
+                                                            model_quadratic_factor
 
       INTEGER                                            :: active_all, frontier_spin, group, i, &
                                                             ispin, ngroups, nspins
@@ -1999,6 +2035,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: frontier_scale
       TYPE(cp_logger_type), POINTER                      :: logger
 
+      model_slope_factor = 1.0_dp
+      model_quadratic_factor = 1.0_dp
       active = .FALSE.
       DO ispin = 1, SIZE(qs_ot_env)
          qs_ot_env(ispin)%ener_direction_linear = .FALSE.
@@ -2265,6 +2303,10 @@ CONTAINS
             qs_ot_env(ispin)%ener_dx(:) = rayleigh_response_scale(group)* &
                                           qs_ot_env(ispin)%ener_dx(:)
          END DO
+         model_slope_factor = ot_kpoint_rayleigh_model_factor( &
+                              energy_slope, orbital_slope, rayleigh_response_scale, 1)
+         model_quadratic_factor = ot_kpoint_rayleigh_model_factor( &
+                                  energy_slope, orbital_slope, rayleigh_response_scale, 2)
       END IF
 
       DO ispin = 1, SIZE(qs_ot_env)
@@ -3325,10 +3367,11 @@ CONTAINS
          physical_delta, physical_gnorm_metric, physical_tail_delta, previous_delta, &
          raw_channel_rms, raw_delta, raw_guard_delta, raw_matrix_gnorm_im, &
          raw_matrix_gnorm_metric_im, raw_matrix_gnorm_metric_re, raw_matrix_gnorm_re, &
-         residual_growth_delta, residual_spike_quality
-      REAL(KIND=dp) :: residual_tail_min, residual_trust_quality, residual_trust_scale, &
-         sample_accepted_drop, sample_gap, sample_guard_drop, sample_quality, &
-         sample_residual_growth_ratio, search_channel_rms, search_direction_rms, test_down, tmp
+         rayleigh_model_quadratic_factor
+      REAL(KIND=dp) :: rayleigh_model_slope_factor, residual_growth_delta, residual_spike_quality, &
+         residual_tail_min, residual_trust_quality, residual_trust_scale, sample_accepted_drop, &
+         sample_gap, sample_guard_drop, sample_quality, sample_residual_growth_ratio, &
+         search_channel_rms, search_direction_rms, test_down, tmp
       TYPE(ot_cg_history_snapshot_type), ALLOCATABLE, &
          DIMENSION(:)                                    :: history_snapshot
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -3352,6 +3395,8 @@ CONTAINS
       IF (preflight_only) CALL capture_ot_cg_history(qs_ot_env, history_snapshot)
       complex_kpoint_history = .FALSE.
       kpoint_preconditioned_direction = .FALSE.
+      rayleigh_model_slope_factor = 1.0_dp
+      rayleigh_model_quadratic_factor = 1.0_dp
       gnorm_metric = 0.0_dp
       DO ispin = 1, nspin
          complex_kpoint_history = complex_kpoint_history .OR. qs_ot_env(ispin)%has_complex_kpoint_state
@@ -4048,7 +4093,9 @@ CONTAINS
          END DO
          IF (complex_kpoint_history) THEN
             CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, &
-                                                        kpoint_preconditioned_direction)
+                                                        kpoint_preconditioned_direction, &
+                                                        rayleigh_model_slope_factor, &
+                                                        rayleigh_model_quadratic_factor)
          END IF
          DO ispin = 1, nspin
             tmp = DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, qs_ot_env(ispin)%ener_dx)
@@ -4084,7 +4131,9 @@ CONTAINS
             END DO
             IF (complex_kpoint_history) THEN
                CALL prepare_linear_kpoint_energy_direction(qs_ot_env, para_env_inter_kp, &
-                                                           kpoint_preconditioned_direction)
+                                                           kpoint_preconditioned_direction, &
+                                                           rayleigh_model_slope_factor, &
+                                                           rayleigh_model_quadratic_factor)
             END IF
          END IF
          test_down = 0.0_dp
@@ -4113,6 +4162,12 @@ CONTAINS
             END DO
          END IF
          CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, test_down)
+      END IF
+      IF (complex_kpoint_history .AND. qs_ot_env(1)%schur_model_pending) THEN
+         qs_ot_env(1)%schur_model_slope = rayleigh_model_slope_factor* &
+                                          qs_ot_env(1)%schur_model_slope
+         qs_ot_env(1)%schur_model_quadratic = rayleigh_model_quadratic_factor* &
+                                              qs_ot_env(1)%schur_model_quadratic
       END IF
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
       qs_ot_env(1)%schur_history_mixed = schur_history_mixed
