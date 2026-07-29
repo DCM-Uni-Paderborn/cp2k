@@ -45,6 +45,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_cg_tail_metric_tracked, &
               ot_kpoint_fermi_window_energy_coordinate, &
               ot_kpoint_fermi_window_direction_scale, &
+              ot_kpoint_mermin_closure_response_quality, &
               ot_kpoint_mermin_current_guard_delta, &
               ot_kpoint_multiplicity_direction_scale, &
               ot_kpoint_physical_residual_split, &
@@ -107,6 +108,7 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
                                         ot_cg_kp_residual_spike_quality_ceiling = 0.0_dp, &
+                                        ot_cg_kp_closure_response_ema_alpha = 2.5E-1_dp, &
                                         ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp
 
    TYPE, PRIVATE :: ot_cg_history_snapshot_type
@@ -885,6 +887,9 @@ CONTAINS
       END IF
       CALL recover_stagnant_mermin_preflight(qs_ot_env, residual_closure_rejected)
 
+      CALL update_kpoint_mermin_closure_response(qs_ot_env, para_env_inter_kp, &
+                                                 residual_closure_rejected)
+
       current_state_converged = .FALSE.
       current_exit_delta = HUGE(1.0_dp)
       IF (use_three_point_mermin_search(qs_ot_env) .AND. &
@@ -984,6 +989,97 @@ CONTAINS
    END SUBROUTINE ot_mini
 
 ! **************************************************************************************************
+!> \brief Return the bounded signed residual reduction between a model and its closed endpoint.
+!> \param model_delta residual retained with the accepted line-search model
+!> \param current_delta residual after density/Hamiltonian closure
+!> \return signed reduction in [-1, 1]
+! **************************************************************************************************
+   FUNCTION ot_kpoint_mermin_closure_response_quality(model_delta, current_delta) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: model_delta, current_delta
+      REAL(KIND=dp)                                      :: quality
+
+      quality = 0.0_dp
+      IF (model_delta <= EPSILON(model_delta) .OR. current_delta < 0.0_dp) RETURN
+      quality = (model_delta - current_delta)/model_delta
+      quality = MAX(-1.0_dp, MIN(1.0_dp, quality))
+
+   END FUNCTION ot_kpoint_mermin_closure_response_quality
+
+! **************************************************************************************************
+!> \brief Audit response quality only after the accepted endpoint has completed residual closure.
+!> \param qs_ot_env local OT channels
+!> \param para_env_inter_kp communicator connecting k-point groups
+!> \param residual_closure_rejected whether the endpoint failed the residual preflight
+! **************************************************************************************************
+   SUBROUTINE update_kpoint_mermin_closure_response(qs_ot_env, para_env_inter_kp, &
+                                                    residual_closure_rejected)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+      LOGICAL, INTENT(IN)                                :: residual_closure_rejected
+
+      INTEGER                                            :: samples
+      REAL(KIND=dp)                                      :: current_delta, density_current_delta, &
+                                                            density_quality, quality
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+      IF (.NOT. qs_ot_env(1)%schur_closure_response_pending) RETURN
+      IF (residual_closure_rejected .OR. qs_ot_env(1)%mermin_ls_closure_rejected) THEN
+         qs_ot_env(1)%schur_closure_response_pending = .FALSE.
+         RETURN
+      END IF
+      IF (.NOT. qs_ot_env(1)%mermin_ls_sample_pending) RETURN
+      IF (.NOT. qs_ot_env(1)%line_search_might_be_done) RETURN
+      IF (qs_ot_env(1)%line_search_count < 3) RETURN
+      IF (.NOT. current_point_is_fine(qs_ot_env)) RETURN
+
+      current_delta = MAX(0.0_dp, qs_ot_env(1)%delta)
+      CALL ot_mini_max_kpoint_scalar(qs_ot_env, para_env_inter_kp, current_delta)
+      quality = ot_kpoint_mermin_closure_response_quality( &
+                qs_ot_env(1)%schur_closure_response_model_delta, current_delta)
+
+      density_current_delta = -1.0_dp
+      density_quality = 0.0_dp
+      IF (qs_ot_env(1)%kpoint_density_stationarity_ready .AND. &
+          qs_ot_env(1)%schur_closure_response_model_density_delta > EPSILON(1.0_dp)) THEN
+         density_current_delta = MAX(0.0_dp, qs_ot_env(1)%kpoint_density_stationarity_delta)
+         CALL ot_mini_max_kpoint_scalar(qs_ot_env, para_env_inter_kp, density_current_delta)
+         density_quality = ot_kpoint_mermin_closure_response_quality( &
+                           qs_ot_env(1)%schur_closure_response_model_density_delta, &
+                           density_current_delta)
+      END IF
+
+      samples = MIN(qs_ot_env(1)%schur_closure_response_samples + 1, HUGE(samples) - 1)
+      qs_ot_env(1)%schur_closure_response_samples = samples
+      qs_ot_env(1)%schur_closure_response_quality = quality
+      qs_ot_env(1)%schur_closure_response_density_quality = density_quality
+      IF (samples == 1) THEN
+         qs_ot_env(1)%schur_closure_response_quality_ema = quality
+         qs_ot_env(1)%schur_closure_response_density_quality_ema = density_quality
+      ELSE
+         qs_ot_env(1)%schur_closure_response_quality_ema = &
+            (1.0_dp - ot_cg_kp_closure_response_ema_alpha)* &
+            qs_ot_env(1)%schur_closure_response_quality_ema + &
+            ot_cg_kp_closure_response_ema_alpha*quality
+         qs_ot_env(1)%schur_closure_response_density_quality_ema = &
+            (1.0_dp - ot_cg_kp_closure_response_ema_alpha)* &
+            qs_ot_env(1)%schur_closure_response_density_quality_ema + &
+            ot_cg_kp_closure_response_ema_alpha*density_quality
+      END IF
+
+      logger => cp_get_default_logger()
+      IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,8(1X,ES16.8))') &
+            " OT Mermin closed-response audit n model current q qema dmodel dcurrent dq dqema:", &
+            samples, qs_ot_env(1)%schur_closure_response_model_delta, current_delta, &
+            quality, qs_ot_env(1)%schur_closure_response_quality_ema, &
+            qs_ot_env(1)%schur_closure_response_model_density_delta, density_current_delta, &
+            density_quality, qs_ot_env(1)%schur_closure_response_density_quality_ema
+      END IF
+      qs_ot_env(1)%schur_closure_response_pending = .FALSE.
+
+   END SUBROUTINE update_kpoint_mermin_closure_response
+
+! **************************************************************************************************
 !> \brief synchronize the scalar minimizer state shared by distributed k-point channels
 !> \param qs_ot_env local OT channels
 !> \param para_env_inter_kp communicator connecting k-point groups
@@ -1060,6 +1156,14 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%schur_density_stationarity_quality_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_density_stationarity_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_density_stationarity_quality_ema)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_pending)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_samples)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_model_delta)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_model_density_delta)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_quality)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_quality_ema)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_density_quality)
+      CALL para_env%bcast(qs_ot_env(1)%schur_closure_response_density_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%schur_projector_density_full_selected_stationarity_samples)
       CALL para_env%bcast(qs_ot_env(1)%schur_projector_density_full_selected_stationarity_quality)
       CALL para_env%bcast(qs_ot_env(1)%schur_projector_density_full_selected_stationarity_quality_ema)
@@ -1518,6 +1622,24 @@ CONTAINS
    END SUBROUTINE ot_mini_max_kpoint_integer
 
 ! **************************************************************************************************
+!> \brief reduce a k-point scalar with MAX when a distributed communicator is present
+!> \param qs_ot_env local OT channels
+!> \param para_env_inter_kp ...
+!> \param value ...
+! **************************************************************************************************
+   SUBROUTINE ot_mini_max_kpoint_scalar(qs_ot_env, para_env_inter_kp, value)
+      TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
+      TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
+      REAL(KIND=dp), INTENT(INOUT)                       :: value
+
+      IF (ASSOCIATED(qs_ot_env(1)%para_env)) CALL qs_ot_env(1)%para_env%max(value)
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) CALL para_env_inter_kp%max(value)
+      END IF
+
+   END SUBROUTINE ot_mini_max_kpoint_scalar
+
+! **************************************************************************************************
 !> \brief reduce a k-point scalar with MIN when a distributed communicator is present
 !> \param qs_ot_env local OT channels
 !> \param para_env_inter_kp ...
@@ -1858,6 +1980,9 @@ CONTAINS
       qs_ot_env(1)%energy_only = .FALSE.
       qs_ot_env(1)%mermin_ls_sample_pending = .FALSE.
       qs_ot_env(1)%mermin_ls_closure_rejected = .FALSE.
+      qs_ot_env(1)%schur_closure_response_pending = .FALSE.
+      qs_ot_env(1)%schur_closure_response_model_delta = 0.0_dp
+      qs_ot_env(1)%schur_closure_response_model_density_delta = -1.0_dp
       qs_ot_env(1)%ds_min = restart_step
 
    END SUBROUTINE reset_kpoint_mermin_search

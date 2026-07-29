@@ -61,13 +61,13 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
-        ot_kpoint_mermin_current_guard_delta, ot_kpoint_mermin_recovery_active_tail, &
-        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
-        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
-        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
-        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_secant_geometry
+        ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
+        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
+        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
+        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_shared_spin_group, &
+        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
+        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -622,6 +622,8 @@ PROGRAM qs_ot_frechet_unittest
       "canonical density Direct candidate assembly", 2.0E-13_dp, nfail)
    CALL check_canonical_density_probe_drop( &
       "canonical density physical tail probe", 2.0E-13_dp, nfail)
+   CALL check_mermin_closure_response_quality( &
+      "accepted Mermin closure-response quality", 2.0E-13_dp, nfail)
    CALL check_accepted_model_calibration_reset( &
       "accepted model restart-calibration reset", 2.0E-13_dp, nfail)
    CALL check_kpoint_ot_restart_geometry_signature( &
@@ -24544,6 +24546,33 @@ CONTAINS
 
    END SUBROUTINE check_canonical_density_probe_drop
 
+! **************************************************************************************************
+!> \brief Check the signed and bounded accepted-endpoint response quality.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_mermin_closure_response_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: error
+
+      error = ABS(ot_kpoint_mermin_closure_response_quality(4.0_dp, 1.0_dp) - 0.75_dp)
+      error = MAX(error, ABS(ot_kpoint_mermin_closure_response_quality(4.0_dp, 5.0_dp) + 0.25_dp))
+      error = MAX(error, ABS(ot_kpoint_mermin_closure_response_quality(4.0_dp, 12.0_dp) + 1.0_dp))
+      error = MAX(error, ABS(ot_kpoint_mermin_closure_response_quality(0.0_dp, 1.0_dp)))
+      error = MAX(error, ABS(ot_kpoint_mermin_closure_response_quality(4.0_dp, -1.0_dp)))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_mermin_closure_response_quality
+
 !> \brief Check that restart migration drops unit-step calibration but retains physical history.
 !> \param label ...
 !> \param tol ...
@@ -24570,6 +24599,9 @@ CONTAINS
       ot_env%schur_projector_physical_selected_drop_sum = 1.5_dp
       ot_env%schur_projector_physical_selected_measured_sum = 0.2_dp
       ot_env%schur_projector_physical_selected_quality_line_ema = 0.1_dp
+      ot_env%schur_closure_response_pending = .TRUE.
+      ot_env%schur_closure_response_samples = 3
+      ot_env%schur_closure_response_quality_ema = 0.4_dp
       CALL qs_ot_reset_accepted_model_calibration(ot_env)
 
       error = ABS(ot_env%gnorm - 3.0_dp) + &
@@ -24582,11 +24614,14 @@ CONTAINS
               ABS(REAL(ot_env%schur_projector_physical_selected_quality_samples, KIND=dp)) + &
               ABS(ot_env%schur_projector_physical_selected_drop_sum) + &
               ABS(ot_env%schur_projector_physical_selected_measured_sum) + &
-              ABS(ot_env%schur_projector_physical_selected_quality_line_ema)
-      IF (ot_env%schur_model_pending .OR. error > tol) THEN
+              ABS(ot_env%schur_projector_physical_selected_quality_line_ema) + &
+              ABS(REAL(ot_env%schur_closure_response_samples, KIND=dp)) + &
+              ABS(ot_env%schur_closure_response_quality_ema)
+      IF (ot_env%schur_model_pending .OR. ot_env%schur_closure_response_pending .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,1X,L1,1X,ES12.5)') TRIM(label), &
-            "failed with pending/error", ot_env%schur_model_pending, error
+         WRITE (*, '(A,1X,A,2(1X,L1),1X,ES12.5)') TRIM(label), &
+            "failed with pending/pending-closure/error", ot_env%schur_model_pending, &
+            ot_env%schur_closure_response_pending, error
       ELSE
          WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
       END IF

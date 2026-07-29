@@ -4010,6 +4010,9 @@ CONTAINS
       local_ot_env(1)%schur_model_quadratic = 0.0_dp
       local_ot_env(1)%schur_model_gap_ratio = 0.0_dp
       local_ot_env(1)%schur_model_control_delta = 0.0_dp
+      local_ot_env(1)%schur_closure_response_pending = .FALSE.
+      local_ot_env(1)%schur_closure_response_model_delta = 0.0_dp
+      local_ot_env(1)%schur_closure_response_model_density_delta = -1.0_dp
       local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
       local_ot_env(1)%schur_residual_history_quality = 1.0_dp
       local_ot_env(1)%gnorm = 0.0_dp
@@ -8013,6 +8016,16 @@ CONTAINS
                      sample_accepted_drop, sample_reference_drop
                END IF
             END IF
+         END IF
+         IF (mermin_search .AND. .NOT. local_ot_env(1)%schur_history_mixed .AND. &
+             sample_reference_drop > EPSILON(sample_reference_drop) .AND. &
+             measured_drop > 0.0_dp .AND. &
+             local_ot_env(1)%schur_model_delta > EPSILON(local_ot_env(1)%schur_model_delta)) THEN
+            local_ot_env(1)%schur_closure_response_pending = .TRUE.
+            local_ot_env(1)%schur_closure_response_model_delta = &
+               local_ot_env(1)%schur_model_delta
+            local_ot_env(1)%schur_closure_response_model_density_delta = &
+               local_ot_env(1)%schur_model_density_stationarity_delta
          END IF
          IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
              residual_quality_ratio <= EPSILON(1.0_dp) .AND. &
