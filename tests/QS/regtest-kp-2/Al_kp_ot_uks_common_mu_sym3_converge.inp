@@ -5,13 +5,13 @@
 ! It also covers the complex FULL_ALL preconditioner endpoint.
 !
 ! Local 2026-07 OMP_NUM_THREADS=1 reference from a fresh directory after
-! Hermitian projection of H(k)/S(k): OT converges in 146 MPI-2 steps at
-! EPS_SCF 1E-6. Mermin F = -8.16155090574643 Ha, within 3.7E-9 Ha of matching
+! Hermitian projection of H(k)/S(k): OT converges in 115 MPI-2 steps at
+! EPS_SCF 1E-6. Mermin F = -8.16155091568467 Ha, within 6.3E-9 Ha of matching
 ! diagonalization at -8.16155090938556 Ha. The weighted spin populations are
-! 6.33333 and 5.66667. The residual-aware per-spin
-! frontier guard is exercised during startup and preserves an established
-! thermal frontier across gradual accepted-step erosion. Model and outer-exit
-! residuals remain separate in the final calibrated physical-response tail.
+! 6.33333 and 5.66667. The residual-aware per-spin frontier guard is exercised
+! during startup, while the mature common-mu tail compares projected fixed-N
+! residuals in one norm and exits only from a fully evaluated accepted
+! endpoint.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_uks_common_mu_sym3_converge

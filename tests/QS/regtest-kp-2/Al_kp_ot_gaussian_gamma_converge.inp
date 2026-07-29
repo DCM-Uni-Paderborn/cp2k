@@ -2,11 +2,12 @@
 ! k-point. This input is intentionally not listed in TEST_FILES.toml while
 ! the common Gamma/k-point driver path is being validated.
 ! Isolated 2026-07 MPI-2 reference: ADDED_MOS AUTO grows 4->8->16->32->46.
-! A fresh run converges in 281 steps to -8.14303707384991 Ha, with a
-! -1.07200936104E-3 Ha smearing correction and physical Fermi energy
-! -5.3869326075E-2 Ha. A 220-step prefix followed by a minimizer restart
-! converges in 61 further steps to -8.14303707400985 Ha. The complete-space
-! diagonalization reference is -8.14303708264791 Ha.
+! Growth stages use 105/48/22/22 OT steps; the final complete-space stage
+! converges in 121 steps at an accepted endpoint without flat-tail recovery.
+! Mermin F = -8.14303707487464 Ha, the smearing correction is
+! -1.07200934298E-3 Ha, and the physical Fermi energy is
+! -5.3869300009E-2 Ha. The complete-space diagonalization reference is
+! -8.14303708264791 Ha, a difference of 7.8E-9 Ha.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_gaussian_gamma_converge

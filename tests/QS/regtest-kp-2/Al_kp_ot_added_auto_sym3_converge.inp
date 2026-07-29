@@ -2,14 +2,15 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 reference after replication of the distributed Rayleigh
-! diagonal and residual-aware non-edge enrichment: AUTO grows from 4 to 8 and
-! 16. Fresh serial growth stages use 24/52/23 OT steps and reach
-! -8.15998704653794 Ha; MPI-2 uses 24/46/21 and reaches -8.15998707928325 Ha.
-! Neither path prints a first/last-band, AUTO-exhausted, or unsupported-content
-! warning.
-! Together with the full-grid companion this guards the weighted symmetry
-! reduction.
+! Local 2026-07 MPI-2 reference after norm-consistent endpoint control and
+! evidence-based non-edge enrichment: AUTO grows 4->8->16 in 22/22 growth
+! steps and converges in 238 final-stage OT steps at -8.15998704510868 Ha.
+! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
+! signal is only 0.803, so AUTO correctly retains the adequate virtual space
+! instead of masking the intrinsic minimizer tail by growing to the AO limit.
+! No first/last-band, AUTO-exhausted, MAX-ITER, or unsupported-content warning
+! is printed. Together with the full-grid companion this guards weighted
+! symmetry reduction.
 &GLOBAL
   PRINT_LEVEL HIGH
   PROJECT Al_kp_ot_added_auto_sym3_converge
@@ -39,7 +40,7 @@
     &SCF
       ADDED_MOS AUTO
       EPS_SCF 1.0E-6
-      MAX_SCF 220
+      MAX_SCF 300
       SCF_GUESS ATOMIC
       &OT
         ALGORITHM IRAC

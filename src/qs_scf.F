@@ -1219,7 +1219,8 @@ CONTAINS
                                                             nspins, old_nmo, target_nmo
       INTEGER, DIMENSION(2)                              :: new_added, new_nmo
       LOGICAL                                            :: diag_step, global_frontier_lost, &
-                                                            has_unit_metric, need_resize, reseed_basis
+                                                            has_unit_metric, need_resize, &
+                                                            reseed_basis
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: restore_ot_ener_x
       REAL(KIND=dp)                                      :: energy_step, flexible_electron_count, &
                                                             maxocc, n_el_f
@@ -1512,7 +1513,7 @@ CONTAINS
       LOGICAL, DIMENSION(:), INTENT(OUT)                 :: restore_ener_x
       LOGICAL, INTENT(OUT), OPTIONAL                     :: global_frontier_lost
 
-      INTEGER                                            :: ic, ispin, ikpoint_local, ncopy, nspin, &
+      INTEGER                                            :: ic, ikpoint_local, ispin, ncopy, nspin, &
                                                             ot_channel
       LOGICAL                                            :: global_collapse, lost_thermal_frontier, &
                                                             thermal_frontier_established
@@ -1563,8 +1564,9 @@ CONTAINS
                ABS(old_kpoint_kTS(qs_ot_env(ot_channel)%spin_index, ikpoint_local)) > 1.0E-12_dp .AND. &
                ABS(kp%mos(1, qs_ot_env(ot_channel)%spin_index)%kTS) < &
                0.25_dp*ABS(old_kpoint_kTS(qs_ot_env(ot_channel)%spin_index, ikpoint_local))
-            IF (lost_thermal_frontier .OR. thermal_frontier_established) &
+            IF (lost_thermal_frontier .OR. thermal_frontier_established) THEN
                qs_ot_env(ot_channel)%ener_x_fermi_frontier_armed = .TRUE.
+            END IF
             IF (.NOT. qs_ot_env(ot_channel)%ener_x_fermi_frontier_armed) CYCLE
 
             ! Seed the second diagonalization with the accepted ordering and gauge.
@@ -1574,8 +1576,9 @@ CONTAINS
                CALL get_mo_set(kp%mos(ic, qs_ot_env(ot_channel)%spin_index), &
                                eigenvalues=eigenvalues)
                ncopy = MIN(SIZE(eigenvalues), SIZE(qs_ot_env(ot_channel)%ener_x))
-               IF (ncopy > 0) &
+               IF (ncopy > 0) THEN
                   eigenvalues(1:ncopy) = qs_ot_env(ot_channel)%ener_x(1:ncopy)
+               END IF
             END DO
             restore_ener_x(ot_channel) = thermal_frontier_established
          END DO
@@ -2703,8 +2706,8 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_qs_ot_kpoint_state'
 
       INTEGER                                            :: handle, ikpoint, ikpoint_local, ispin, &
-                                                            nao, nelectron, nkpoint, nmo, ot_channel, &
-                                                            restart_compatible_int
+                                                            nao, nelectron, nkpoint, nmo, &
+                                                            ot_channel, restart_compatible_int
       LOGICAL                                            :: restart_compatible, use_real_wfn
       REAL(KIND=dp)                                      :: maxocc
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
@@ -3999,7 +4002,7 @@ CONTAINS
             CALL qs_ot_reset_accepted_model_calibration(qs_ot_env)
          END IF
          IF (scf_env%qs_ot_restart%format_version >= 20 .AND. &
-             scf_env%qs_ot_restart%format_version < 30 .AND. &
+             scf_env%qs_ot_restart%format_version < 31 .AND. &
              qs_ot_env%has_complex_kpoint_state .AND. &
              qs_ot_env%settings%occupation_preconditioner .AND. &
              qs_ot_env%settings%do_rotation .AND. qs_ot_env%settings%do_ener .AND. &
@@ -4009,9 +4012,11 @@ CONTAINS
             ! canonical-density Newton tangent. Version 29 replaces, rather
             ! than duplicates, the density part of that response. Version 30
             ! projects the rotation floor only in the separate density
-            ! candidate. An older open search therefore belongs to an
-            ! incompatible candidate model. Accept its current orbitals as a
-            ! fresh point and discard only the open direction.
+            ! candidate. Version 31 distinguishes a complete projected
+            ! reference from the bootstrap search residual. An older open
+            ! search therefore belongs to an incompatible candidate model.
+            ! Accept its current orbitals as a fresh point and discard only
+            ! the open direction.
             qs_ot_env%line_search_left = -1
             qs_ot_env%line_search_right = -1
             qs_ot_env%line_search_mid = -1

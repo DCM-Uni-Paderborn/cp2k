@@ -71,7 +71,7 @@ MODULE kpoint_io
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_io'
 
    INTEGER, PARAMETER                   :: version = 1
-   INTEGER, PARAMETER                   :: ot_restart_version = 30
+   INTEGER, PARAMETER                   :: ot_restart_version = 31
    REAL(KIND=dp), PARAMETER             :: ot_restart_geometry_tolerance = 1.0E-10_dp
    CHARACTER(LEN=*), PARAMETER          :: ot_restart_marker = "CP2K_KPOINT_OT_RESTART"
 

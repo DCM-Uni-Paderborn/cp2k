@@ -1,6 +1,6 @@
 ! Manual restart companion for Al_kp_ot_gaussian_sym3_converge.inp.
 ! Run the source input first in the same directory. The converged MPI-2
-! reference is restored in one SCF step at -8.15946103806904 Ha with the same
+! reference is restored in one SCF step at -8.15946101558580 Ha with the same
 ! -3.5733645376E-4 Ha smearing free-energy correction.
 ! This input is intentionally not listed in TEST_FILES.toml.
 &GLOBAL

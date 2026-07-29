@@ -60,16 +60,20 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_ot_minimizer,                 ONLY: &
         ot_kpoint_cg_metric_history_reset, ot_kpoint_cg_residual_growth_guard, &
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
-        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_recovery_deferred, &
+        ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
+        ot_kpoint_mermin_current_guard_delta, ot_kpoint_mermin_recovery_active_tail, &
+        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
         ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
         ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
         ot_kpoint_secant_geometry
+   USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
-   USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_tail_ready, &
+        qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
+        qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
         qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
         qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
         qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
@@ -80,9 +84,9 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
         qs_scf_kp_density_control_delta, qs_scf_kp_density_mode_projected_floor, &
         qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, &
-        qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_full_all_spin_normalization, &
         qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
@@ -195,6 +199,9 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_fermi_entropy_state("k-point spin-resolved Fermi entropy", 5.0E-15_dp, nfail)
    CALL check_ot_smearing_frontier_seed("OT smearing symmetric frontier seed", nfail)
    CALL check_kpoint_added_mos_basis_bootstrap("k-point ADDED_MOS integer-basis bootstrap", nfail)
+   CALL check_kpoint_added_mos_fractional_density( &
+      "k-point ADDED_MOS fractional-density bootstrap", nfail)
+   CALL check_kpoint_added_mos_integer_density("k-point ADDED_MOS integer-density bootstrap", nfail)
    CALL check_kpoint_added_mos_fractional_tail_gate("k-point ADDED_MOS fractional-tail gate", nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
@@ -213,6 +220,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_response_corrected_step("k-point OT response-only trust scaling", &
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_energy_closure_ready("k-point OT fixed-N energy closure gate", nfail)
+   CALL check_kpoint_energy_closure_preferred("k-point OT fixed-N energy closure competition", nfail)
    CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
@@ -224,11 +232,17 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-13_dp, nfail)
    CALL check_kpoint_cg_residual_growth_guard("k-point OT accepted residual growth guard", &
                                               5.0E-14_dp, nfail)
+   CALL check_kpoint_mermin_residual_guard_delta( &
+      "k-point OT fixed-N endpoint residual selection", 5.0E-14_dp, nfail)
    CALL check_kpoint_metric_history_reset("k-point OT metric-history tail reset", nfail)
    CALL check_kpoint_tail_metric_tracking("k-point OT fallback tail-metric tracking", nfail)
    CALL check_kpoint_mermin_restart_step("k-point OT failed-search restart step", &
                                          5.0E-14_dp, nfail)
+   CALL check_kpoint_mermin_candidate_restart_step( &
+      "k-point OT finite-response candidate restart step", 5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_search_stagnant("k-point OT stagnant-search restart", nfail)
+   CALL check_kpoint_mermin_tail_energy_stagnant("k-point OT flat-energy tail restart", nfail)
+   CALL check_kpoint_mermin_recovery_active_tail("k-point OT dual-residual recovery tail", nfail)
    CALL check_kpoint_mermin_recovery_deferred("k-point OT pending residual closure", nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
@@ -4671,10 +4685,10 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      REAL(KIND=dp), DIMENSION(5)                        :: energies
-      TYPE(smear_type), TARGET                           :: smear
-      TYPE(smear_type), POINTER                          :: smear_p
       LOGICAL                                            :: failed, seeded
+      REAL(KIND=dp), DIMENSION(5)                        :: energies
+      TYPE(smear_type), POINTER                          :: smear_p
+      TYPE(smear_type), TARGET                           :: smear
 
       smear_p => smear
       smear%do_smear = .TRUE.
@@ -4733,6 +4747,94 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_added_mos_basis_bootstrap
+
+! **************************************************************************************************
+!> \brief Check density-response enrichment before a small thermal frontier collapses.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_added_mos_fractional_density(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: density_delta = 6.8861656972E-4_dp, density_limit = 5.0E-3_dp, &
+         eps_scf = 1.0E-6_dp, search_delta = 6.4151610081E-3_dp, search_limit = 2.0E-2_dp
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               4.1552265738E-2_dp, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, 3.9126229863E-8_dp, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, density_delta, eps_scf, search_limit, density_limit, &
+               .FALSE., .TRUE., .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .FALSE., .TRUE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE., .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE., .TRUE., .FALSE.)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_added_mos_fractional_density
+
+! **************************************************************************************************
+!> \brief Check the canonical-density escape from a converged integer AUTO subspace.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_added_mos_integer_density(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: density_delta = 7.53066715E-4_dp, density_limit = 5.0E-3_dp, &
+         eps_scf = 1.0E-6_dp, search_limit = 5.0E-4_dp
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_added_mos_integer_density_ready( &
+               4.59882891E-4_dp, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .FALSE.) .OR. &
+               .NOT. qs_scf_kp_added_mos_integer_density_ready( &
+               4.26025581E-4_dp, 6.36406622E-4_dp, eps_scf, search_limit, density_limit, &
+               .TRUE., .FALSE.) .OR. &
+               qs_scf_kp_added_mos_integer_density_ready( &
+               5.04753044E-4_dp, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .FALSE.) .OR. &
+               qs_scf_kp_added_mos_integer_density_ready( &
+               4.0E-4_dp, 5.0E-7_dp, eps_scf, search_limit, density_limit, &
+               .TRUE., .FALSE.) .OR. &
+               qs_scf_kp_added_mos_integer_density_ready( &
+               4.0E-4_dp, 8.0E-3_dp, eps_scf, search_limit, density_limit, &
+               .TRUE., .FALSE.) .OR. &
+               qs_scf_kp_added_mos_integer_density_ready( &
+               4.0E-4_dp, density_delta, eps_scf, search_limit, density_limit, &
+               .FALSE., .FALSE.) .OR. &
+               qs_scf_kp_added_mos_integer_density_ready( &
+               4.0E-4_dp, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE.)
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_added_mos_integer_density
 
 ! **************************************************************************************************
 !> \brief Check early edge/bootstrap growth and relaxed non-edge response enrichment.
@@ -5175,6 +5277,31 @@ CONTAINS
    END SUBROUTINE check_kpoint_energy_closure_ready
 
 ! **************************************************************************************************
+!> \brief Check that energy-only closure cannot displace a better coupled density candidate.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_energy_closure_preferred(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_energy_closure_preferred(4.0E-10_dp, 0.0_dp, .FALSE.)
+      failed = failed .OR. .NOT. qs_scf_kp_energy_closure_preferred(8.0E-8_dp, 6.0E-8_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_preferred(4.0E-10_dp, 6.0E-8_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_preferred(0.0_dp, 0.0_dp, .FALSE.)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_energy_closure_preferred
+
+! **************************************************************************************************
 !> \brief Check that stale history may be bypassed only by a trust-safe coupled closure model.
 !> \param label ...
 !> \param nfail ...
@@ -5487,6 +5614,67 @@ CONTAINS
    END SUBROUTINE check_kpoint_cg_residual_growth_guard
 
 ! **************************************************************************************************
+!> \brief Check norm-consistent endpoint residuals and common-mu spin coupling.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_residual_guard_delta(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: common_group(2), fixed_groups(2), &
+                                                            rks_spins(2), uks_spins(2)
+      LOGICAL                                            :: catastrophic, failed, reset
+      REAL(KIND=dp)                                      :: bootstrap_current, bootstrap_reference, &
+                                                            projected_current, &
+                                                            projected_reference, quality
+
+      uks_spins = [1, 2]
+      rks_spins = [1, 1]
+      common_group = [1, 1]
+      fixed_groups = [1, 2]
+      bootstrap_reference = ot_kpoint_mermin_reference_guard_delta( &
+                            2.0E-2_dp, -6.92278329E-3_dp)
+      projected_reference = ot_kpoint_mermin_reference_guard_delta( &
+                            2.0E-2_dp, 1.66958285E-2_dp)
+      bootstrap_current = ot_kpoint_mermin_current_guard_delta( &
+                          9.05411220E-3_dp, 3.07731735E-2_dp, -6.92278329E-3_dp)
+      projected_current = ot_kpoint_mermin_current_guard_delta( &
+                          9.05411220E-3_dp, 3.07731735E-2_dp, 1.66958285E-2_dp)
+      failed = ABS(bootstrap_current - 9.05411220E-3_dp) > tol .OR. &
+               ABS(projected_current - 3.07731735E-2_dp) > tol .OR. &
+               ABS(bootstrap_reference - 6.92278329E-3_dp) > tol .OR. &
+               ABS(projected_reference - 1.66958285E-2_dp) > tol .OR. &
+               .NOT. ot_kpoint_mermin_shared_spin_group(uks_spins, common_group) .OR. &
+               ot_kpoint_mermin_shared_spin_group(uks_spins, fixed_groups) .OR. &
+               ot_kpoint_mermin_shared_spin_group(rks_spins, common_group)
+
+      ! Regression from the common-chemical-potential Al path: the raw search
+      ! residual remains in trust, while the mature projected fixed-N residual
+      ! requires a strict same-norm bootstrap reset.
+      CALL ot_kpoint_cg_residual_growth_guard(projected_reference, projected_current, &
+                                              1.02387881E-2_dp, 1.0E-6_dp, &
+                                              reset, quality, catastrophic, strict_growth=.TRUE.)
+      failed = failed .OR. .NOT. reset .OR. catastrophic .OR. &
+               ABS(quality - (projected_reference/projected_current)**2) > tol
+      CALL ot_kpoint_cg_residual_growth_guard(bootstrap_reference, bootstrap_current, &
+                                              1.02387881E-2_dp, 1.0E-6_dp, &
+                                              reset, quality, catastrophic)
+      failed = failed .OR. reset .OR. catastrophic
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,4(1X,ES16.8))') TRIM(label), "failed", &
+            bootstrap_current, projected_current, bootstrap_reference, projected_reference
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_residual_guard_delta
+
+! **************************************************************************************************
 !> \brief Check that an incompatible Schur metric resets CG only in the physical residual tail.
 !> \param label ...
 !> \param nfail ...
@@ -5579,6 +5767,34 @@ CONTAINS
    END SUBROUTINE check_kpoint_mermin_restart_step
 
 ! **************************************************************************************************
+!> \brief Check a new Direct-density response does not inherit another model's collapsed search.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_candidate_restart_step(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: entered, other, repeated
+
+      entered = ot_kpoint_mermin_candidate_restart_step(8.0E-2_dp, 6.0E-3_dp, 43, 32)
+      repeated = ot_kpoint_mermin_candidate_restart_step(8.0E-2_dp, 6.0E-3_dp, 32, 32)
+      other = ot_kpoint_mermin_candidate_restart_step(8.0E-2_dp, 6.0E-3_dp, 32, 43)
+      IF (ABS(entered - 8.0E-2_dp) > tol .OR. ABS(repeated - 6.0E-3_dp) > tol .OR. &
+          ABS(other - 6.0E-3_dp) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), "failed with entered/repeated/other", &
+            entered, repeated, other
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES16.8))') TRIM(label), "OK with entered/repeated/other", &
+            entered, repeated, other
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_candidate_restart_step
+
+! **************************************************************************************************
 !> \brief Check restart detection for repeated Mermin energies at an unchanged next point.
 !> \param label ...
 !> \param nfail ...
@@ -5611,6 +5827,66 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_search_stagnant
+
+! **************************************************************************************************
+!> \brief Check that an active tail can leave a numerically flat search with moving positions.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_tail_energy_stagnant(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: energy_moves, short_history, stagnant
+      REAL(KIND=dp), DIMENSION(6)                        :: energy
+
+      energy(:) = [-8.0_dp, -8.2_dp, -8.2_dp, -8.2_dp, -8.2_dp, -8.2_dp]
+      stagnant = ot_kpoint_mermin_tail_energy_stagnant(energy, 6)
+      short_history = ot_kpoint_mermin_tail_energy_stagnant(energy, 4)
+
+      energy(6) = energy(5) - 1.0E-10_dp
+      energy_moves = ot_kpoint_mermin_tail_energy_stagnant(energy, 6)
+
+      IF (.NOT. stagnant .OR. short_history .OR. energy_moves) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "failed with stagnant/short/energy-moves", stagnant, short_history, energy_moves
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "OK with stagnant/short/energy-moves", stagnant, short_history, energy_moves
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_tail_energy_stagnant
+
+! **************************************************************************************************
+!> \brief Check that projected and effective residuals independently arm tail recovery.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_recovery_active_tail(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: above_tail, effective_tail, &
+                                                            projected_tail
+
+      projected_tail = ot_kpoint_mermin_recovery_active_tail( &
+                       8.0E-6_dp, 2.5E-4_dp, 1.0E-6_dp)
+      effective_tail = ot_kpoint_mermin_recovery_active_tail( &
+                       2.5E-4_dp, 8.0E-6_dp, 1.0E-6_dp)
+      above_tail = ot_kpoint_mermin_recovery_active_tail( &
+                   2.5E-4_dp, 1.5E-4_dp, 1.0E-6_dp)
+
+      IF (.NOT. projected_tail .OR. .NOT. effective_tail .OR. above_tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "failed with projected/effective/above", projected_tail, effective_tail, above_tail
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,L1))') TRIM(label), &
+            "OK with projected/effective/above", projected_tail, effective_tail, above_tail
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_recovery_active_tail
 
 ! **************************************************************************************************
 !> \brief Check that collapsed-search recovery cannot discard an unevaluated physical endpoint.
@@ -14013,59 +14289,72 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: low_drop, low_quality, low_samples, ready, selected_bad, selected_bootstrap, &
-         selected_bootstrap_bad, selected_floor, selected_ok, selected_recent_bad, &
-         stale_interval_veto, stale_refresh, tail_veto, weak_drop
+      LOGICAL :: active_recovery, inactive_recovery, low_drop, low_quality, low_samples, ready, &
+         selected_bad, selected_bootstrap, selected_bootstrap_bad, selected_floor, selected_ok, &
+         selected_recent_bad, selected_sparse_bootstrap, stale_interval_veto, stale_refresh, &
+         tail_veto, weak_drop
       REAL(KIND=dp)                                      :: err
 
       ready = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                   0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                   0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
       tail_veto = dense_density_full_direct_tail_probe(2.0E-4_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
       low_samples = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.20_dp, 7, 0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                         0.20_dp, 7, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
       low_quality = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.09_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                         0.09_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
       low_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 1.0E-13_dp, 1.0E-7_dp, &
-                                                      0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                      0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
       weak_drop = dense_density_full_direct_tail_probe(5.0E-5_dp, 7.9E-8_dp, 1.0E-7_dp, &
-                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, 0.40_dp)
+                                                       0.20_dp, 8, 0.0_dp, 0.0_dp, 0, .TRUE., 0.40_dp)
       selected_ok = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                         0.20_dp, 8, 0.40_dp, 0.40_dp, 4, 0.40_dp)
+                                                         0.20_dp, 8, 0.40_dp, 0.40_dp, 4, .TRUE., 0.40_dp)
       selected_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                          0.20_dp, 8, 0.40_dp, 0.20_dp, 4, 0.70_dp)
+                                                          0.20_dp, 8, 0.40_dp, 0.20_dp, 4, .TRUE., 0.70_dp)
       selected_recent_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                                 0.20_dp, 8, 0.05_dp, 0.40_dp, 4, 0.40_dp)
+                                                                 0.20_dp, 8, 0.05_dp, 0.40_dp, 4, .TRUE., 0.40_dp)
       selected_floor = dense_density_full_direct_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
-                                                            0.20_dp, 8, 0.21_dp, 0.21_dp, 4, 0.0_dp)
+                                                            0.20_dp, 8, 0.21_dp, 0.21_dp, 4, .TRUE., 0.0_dp)
       selected_bootstrap = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
-                                                                0.20_dp, 8, 0.30_dp, 0.50_dp, 1, 0.70_dp)
+                                                                0.20_dp, 8, 0.30_dp, 0.50_dp, 1, .TRUE., 0.70_dp)
       selected_bootstrap_bad = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
-                                                                    0.20_dp, 8, 0.10_dp, 0.10_dp, 1, 0.70_dp)
+                                                                    0.20_dp, 8, 0.10_dp, 0.10_dp, 1, .TRUE., 0.70_dp)
+      selected_sparse_bootstrap = dense_density_full_direct_tail_probe( &
+                                  5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
+                                  0.25_dp, 1, 0.30_dp, 0.50_dp, 2, .TRUE., 0.70_dp)
       stale_refresh = dense_density_full_direct_tail_probe(5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, &
-                                                           0.25_dp, 8, 0.05_dp, 0.10_dp, 4, 0.25_dp)
+                                                           0.25_dp, 8, 0.05_dp, 0.10_dp, 4, .TRUE., 0.25_dp)
       stale_interval_veto = dense_density_full_direct_tail_probe(5.0E-5_dp, 2.5E-8_dp, 1.0E-7_dp, &
-                                                                 0.25_dp, 9, 0.05_dp, 0.10_dp, 4, 0.25_dp)
+                                                                 0.25_dp, 9, 0.05_dp, 0.10_dp, 4, .TRUE., 0.25_dp)
+      active_recovery = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
+                                                             0.25_dp, 8, 0.15_dp, 0.60_dp, 4, .TRUE., 0.25_dp)
+      inactive_recovery = dense_density_full_direct_tail_probe(5.0E-5_dp, 3.6E-8_dp, 1.0E-7_dp, &
+                                                               0.25_dp, 8, 0.15_dp, 0.60_dp, 4, .FALSE., 0.25_dp)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_samples .OR. low_quality .OR. low_drop .OR. &
           weak_drop .OR. .NOT. selected_ok .OR. selected_bad .OR. selected_recent_bad .OR. &
           .NOT. selected_floor .OR. .NOT. selected_bootstrap .OR. selected_bootstrap_bad .OR. &
-          .NOT. stale_refresh .OR. stale_interval_veto) err = 1.0_dp
+          .NOT. selected_sparse_bootstrap .OR. .NOT. stale_refresh .OR. stale_interval_veto .OR. &
+          .NOT. active_recovery .OR. inactive_recovery) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,14(1X,L1))') TRIM(label), &
-            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/boot/bbad/stale/int", ready, &
+         WRITE (*, '(A,1X,A,17(1X,L1))') TRIM(label), &
+            "failed with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/boot/bbad/sboot/stale/int/ "// &
+            "active/inactive", ready, &
             tail_veto, &
             low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
-            selected_floor, selected_bootstrap, selected_bootstrap_bad, stale_refresh, stale_interval_veto
+            selected_floor, selected_bootstrap, selected_bootstrap_bad, selected_sparse_bootstrap, &
+            stale_refresh, stale_interval_veto, active_recovery, inactive_recovery
       ELSE
-         WRITE (*, '(A,1X,A,14(1X,L1))') TRIM(label), &
-            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/boot/bbad/stale/int", ready, &
+         WRITE (*, '(A,1X,A,17(1X,L1))') TRIM(label), &
+            "OK with ready/tail/samples/quality/drop/weak/sel/bad/recent/floor/boot/bbad/sboot/stale/int/ "// &
+            "active/inactive", ready, &
             tail_veto, &
             low_samples, low_quality, low_drop, weak_drop, selected_ok, selected_bad, selected_recent_bad, &
-            selected_floor, selected_bootstrap, selected_bootstrap_bad, stale_refresh, stale_interval_veto
+            selected_floor, selected_bootstrap, selected_bootstrap_bad, selected_sparse_bootstrap, &
+            stale_refresh, stale_interval_veto, active_recovery, inactive_recovery
       END IF
 
    END SUBROUTINE check_projector_density_full_direct_tail_probe
@@ -14081,8 +14370,9 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: advantage_veto, direct_not_selected, global_not_prefer, low_drop, ready, &
-         residual_bad, tail_veto, trust_veto, weak_direct
+      LOGICAL :: advantage_veto, direct_not_selected, global_not_prefer, history_inactive, &
+         history_model_active, history_no_probe, history_protect, low_drop, ready, residual_bad, &
+         tail_veto, trust_veto, weak_direct
       REAL(KIND=dp)                                      :: err
 
       ready = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
@@ -14112,22 +14402,34 @@ CONTAINS
       trust_veto = dense_direct_density_fshadow_tail_protect(5.0E-5_dp, .TRUE., .TRUE., .FALSE., &
                                                              1.05E-8_dp, 1.0E-8_dp, .TRUE., &
                                                              1.01_dp, 1.0E-3_dp)
+      history_protect = dense_direct_density_selected_probe_protect( &
+                        5.0E-7_dp, .TRUE., .TRUE., .TRUE., .TRUE., .FALSE., 1.0E-3_dp, 1.0E-3_dp)
+      history_model_active = dense_direct_density_selected_probe_protect( &
+                             5.0E-5_dp, .FALSE., .TRUE., .TRUE., .TRUE., .FALSE., &
+                             1.0E-3_dp, 1.0E-3_dp)
+      history_inactive = dense_direct_density_selected_probe_protect( &
+                         5.0E-7_dp, .TRUE., .FALSE., .TRUE., .TRUE., .FALSE., 1.0E-3_dp, 1.0E-3_dp)
+      history_no_probe = dense_direct_density_selected_probe_protect( &
+                         5.0E-7_dp, .TRUE., .TRUE., .TRUE., .FALSE., .FALSE., 1.0E-3_dp, 1.0E-3_dp)
 
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. global_not_prefer .OR. direct_not_selected .OR. &
-          residual_bad .OR. low_drop .OR. weak_direct .OR. advantage_veto .OR. trust_veto) err = 1.0_dp
+          residual_bad .OR. low_drop .OR. weak_direct .OR. advantage_veto .OR. trust_veto .OR. &
+          .NOT. history_protect .OR. history_model_active .OR. history_inactive .OR. history_no_probe) err = 1.0_dp
 
       IF (err > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "failed with ready/tail/gpref/dsel/res/drop/weak/adv/trust", ready, tail_veto, &
+         WRITE (*, '(A,1X,A,13(1X,L1))') TRIM(label), &
+            "failed with ready/tail/gpref/dsel/res/drop/weak/adv/trust/hprotect/hmodel/hinactive/hnoprobe", &
+            ready, tail_veto, &
             global_not_prefer, direct_not_selected, residual_bad, low_drop, weak_direct, &
-            advantage_veto, trust_veto
+            advantage_veto, trust_veto, history_protect, history_model_active, history_inactive, history_no_probe
       ELSE
-         WRITE (*, '(A,1X,A,9(1X,L1))') TRIM(label), &
-            "OK with ready/tail/gpref/dsel/res/drop/weak/adv/trust", ready, tail_veto, &
+         WRITE (*, '(A,1X,A,13(1X,L1))') TRIM(label), &
+            "OK with ready/tail/gpref/dsel/res/drop/weak/adv/trust/hprotect/hmodel/hinactive/hnoprobe", &
+            ready, tail_veto, &
             global_not_prefer, direct_not_selected, residual_bad, low_drop, weak_direct, &
-            advantage_veto, trust_veto
+            advantage_veto, trust_veto, history_protect, history_model_active, history_inactive, history_no_probe
       END IF
 
    END SUBROUTINE check_projector_direct_density_fshadow_tail_protect
@@ -18826,6 +19128,7 @@ CONTAINS
 !> \param selected_residual_quality ...
 !> \param selected_residual_quality_ema ...
 !> \param selected_samples ...
+!> \param density_tail_active ...
 !> \param dense_residual_quality ...
 !> \return true if the candidate is a calibrated residual-tail close call
 ! **************************************************************************************************
@@ -18833,6 +19136,7 @@ CONTAINS
                                                  reference_expected_drop, quality_ema, samples, &
                                                  selected_residual_quality, selected_residual_quality_ema, &
                                                  selected_samples, &
+                                                 density_tail_active, &
                                                  dense_residual_quality) RESULT(do_probe)
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, candidate_expected_drop, &
                                                             reference_expected_drop, quality_ema
@@ -18840,23 +19144,29 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: selected_residual_quality, &
                                                             selected_residual_quality_ema
       INTEGER, INTENT(IN)                                :: selected_samples
+      LOGICAL, INTENT(IN)                                :: density_tail_active
       REAL(KIND=dp), INTENT(IN)                          :: dense_residual_quality
       LOGICAL                                            :: do_probe
 
-      LOGICAL                                            :: selected_bootstrap_probe, &
+      LOGICAL                                            :: residual_recovery_probe, &
+                                                            selected_bootstrap_probe, &
                                                             stale_residual_probe
       REAL(KIND=dp)                                      :: required_drop_ratio, residual_reference
 
       do_probe = .FALSE.
       IF (residual_delta > 1.0E-4_dp) RETURN
-      IF (samples < 8) RETURN
+      IF (samples < 8 .AND. selected_samples <= 0) RETURN
       IF (quality_ema < 1.0E-1_dp) RETURN
       IF (candidate_expected_drop <= 1.0E-12_dp) RETURN
 
       residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
+      residual_recovery_probe = .FALSE.
       selected_bootstrap_probe = .FALSE.
       stale_residual_probe = .FALSE.
       IF (selected_samples >= 4) THEN
+         residual_recovery_probe = density_tail_active .AND. &
+                                   selected_residual_quality_ema >= 1.6_dp*residual_reference .AND. &
+                                   selected_residual_quality >= 4.0E-1_dp*residual_reference
          stale_residual_probe = dense_residual_quality <= 5.0E-1_dp .AND. &
                                 selected_residual_quality_ema < 8.0E-1_dp* &
                                 residual_reference .AND. &
@@ -18870,6 +19180,7 @@ CONTAINS
       required_drop_ratio = 8.0E-1_dp
       IF (stale_residual_probe) required_drop_ratio = MIN(required_drop_ratio, 2.0E-1_dp)
       IF (selected_bootstrap_probe) required_drop_ratio = MIN(required_drop_ratio, 3.5E-1_dp)
+      IF (residual_recovery_probe) required_drop_ratio = MIN(required_drop_ratio, 3.5E-1_dp)
       IF (candidate_expected_drop < required_drop_ratio*MAX(reference_expected_drop, 1.0E-12_dp)) RETURN
 
       IF (selected_samples >= 4) THEN
@@ -18884,6 +19195,44 @@ CONTAINS
       do_probe = .TRUE.
 
    END FUNCTION dense_density_full_direct_tail_probe
+
+! **************************************************************************************************
+!> \brief Dense mirror of selected Direct-density tail-probe override protection.
+!> \param residual_delta ...
+!> \param model_tail_converged ...
+!> \param density_tail_active ...
+!> \param direct_selected ...
+!> \param selected_probe_ready ...
+!> \param direct_residual_bad ...
+!> \param direct_weighted_trust_ratio ...
+!> \param direct_abs_trust_ratio ...
+!> \return true if the qualified probe must reach the Mermin line search
+! **************************************************************************************************
+   FUNCTION dense_direct_density_selected_probe_protect( &
+      residual_delta, model_tail_converged, density_tail_active, direct_selected, selected_probe_ready, &
+      direct_residual_bad, direct_weighted_trust_ratio, direct_abs_trust_ratio) RESULT(protect)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta
+      LOGICAL, INTENT(IN)                                :: model_tail_converged, &
+                                                            density_tail_active, direct_selected, &
+                                                            selected_probe_ready, &
+                                                            direct_residual_bad
+      REAL(KIND=dp), INTENT(IN)                          :: direct_weighted_trust_ratio, &
+                                                            direct_abs_trust_ratio
+      LOGICAL                                            :: protect
+
+      protect = .FALSE.
+      IF (residual_delta > 1.0E-4_dp) RETURN
+      IF (.NOT. model_tail_converged) RETURN
+      IF (.NOT. density_tail_active) RETURN
+      IF (.NOT. direct_selected) RETURN
+      IF (.NOT. selected_probe_ready) RETURN
+      IF (direct_residual_bad) RETURN
+      IF (direct_weighted_trust_ratio > 1.0_dp) RETURN
+      IF (direct_abs_trust_ratio > 1.0_dp) RETURN
+
+      protect = .TRUE.
+
+   END FUNCTION dense_direct_density_selected_probe_protect
 
 ! **************************************************************************************************
 !> \brief Dense mirror of the Direct-density fshadow global-tail-prefer protection.
