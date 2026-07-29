@@ -247,6 +247,7 @@ MODULE qs_scf_loop_utils
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
              qs_scf_kp_added_mos_auto_post_resize_steps, &
              qs_scf_kp_coupled_multisecant_update, &
+             qs_scf_kp_coupled_reduced_multisecant_update, &
              qs_scf_kp_coupled_schur_transport, &
              qs_scf_kp_coupled_secant_model, &
              qs_scf_kp_coupled_step_model, &
@@ -1993,6 +1994,126 @@ CONTAINS
       DEALLOCATE (coordinate_scale, full_hessian, full_steps, full_targets, updated_full_hessian)
 
    END SUBROUTINE qs_scf_kp_coupled_multisecant_update
+
+! **************************************************************************************************
+!> \brief Update the reduced rotation Schur block directly from coupled fixed-N secants.
+!>
+!>        For H=[A,-B^T;-B,E], an accepted coupled secant (s_R,s_e)->(y_R,y_e)
+!>        implies (A-B^T E^-1 B)s_R = y_R+B^T E^-1 y_e.  Applying the multisecant update to this
+!>        reduced relation avoids fitting a poorly conditioned full cross block before eliminating
+!>        the fixed-N auxiliary-energy variables.
+!> \param rotation_hessian ...
+!> \param energy_hessian ...
+!> \param energy_cross ...
+!> \param rotation_steps ...
+!> \param rotation_targets ...
+!> \param energy_targets ...
+!> \param weight ...
+!> \param updated_rotation_hessian ...
+!> \param ready ...
+!> \param independence ...
+!> \param compatibility ...
+!> \param correction_norm ...
+!> \param residual_norm ...
+!> \param updated_residual_norm ...
+!> \param correction_ratio ...
+!> \param energy_response optional already projected E^-1 B response defining the fixed-N gauge
+!> \param response_metric optional fixed-N metric Gram matrix R^T M R for energy_response R
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_reduced_multisecant_update( &
+      rotation_hessian, energy_hessian, energy_cross, rotation_steps, rotation_targets, &
+      energy_targets, weight, updated_rotation_hessian, ready, independence, compatibility, &
+      correction_norm, residual_norm, updated_residual_norm, correction_ratio, energy_response, &
+      response_metric)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian, &
+                                                            energy_cross, rotation_steps, &
+                                                            rotation_targets, energy_targets
+      REAL(KIND=dp), INTENT(IN)                          :: weight
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_rotation_hessian
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT)                         :: independence, compatibility, &
+                                                            correction_norm, residual_norm, &
+                                                            updated_residual_norm, correction_ratio
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
+         OPTIONAL                                        :: energy_response, response_metric
+
+      INTEGER                                            :: info, nener, nrot, nsec
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv
+      REAL(KIND=dp)                                      :: reference_norm
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: analytic_cross, analytic_energy, &
+         analytic_metric, analytic_response, analytic_schur, reduced_targets, rhs, updated_schur
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      nsec = SIZE(rotation_steps, 2)
+      CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
+      CPASSERT(SIZE(rotation_steps, 1) == nrot)
+      CPASSERT(ALL(SHAPE(rotation_targets) == [nrot, nsec]))
+      CPASSERT(ALL(SHAPE(energy_targets) == [nener, nsec]))
+      CPASSERT(ALL(SHAPE(updated_rotation_hessian) == [nrot, nrot]))
+      IF (PRESENT(energy_response)) THEN
+         CPASSERT(ALL(SHAPE(energy_response) == [nener, nrot]))
+      END IF
+      IF (PRESENT(response_metric)) THEN
+         CPASSERT(PRESENT(energy_response))
+         CPASSERT(ALL(SHAPE(response_metric) == [nrot, nrot]))
+      END IF
+
+      updated_rotation_hessian(:, :) = rotation_hessian(:, :)
+      ready = .FALSE.
+      independence = 0.0_dp
+      compatibility = 0.0_dp
+      correction_norm = 0.0_dp
+      residual_norm = 0.0_dp
+      updated_residual_norm = 0.0_dp
+      correction_ratio = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0 .OR. nsec <= 0) RETURN
+
+      ALLOCATE (ipiv(nener), analytic_cross(nener, nrot), analytic_energy(nener, nener), &
+                analytic_metric(nrot, nrot), analytic_response(nener, nrot), &
+                analytic_schur(nrot, nrot), reduced_targets(nrot, nsec), &
+                rhs(nener, nrot), updated_schur(nrot, nrot))
+      analytic_energy(:, :) = 0.5_dp*(energy_hessian + TRANSPOSE(energy_hessian))
+      analytic_cross(:, :) = energy_cross(:, :)
+      info = 0
+      IF (PRESENT(energy_response)) THEN
+         analytic_response(:, :) = energy_response
+         analytic_cross(:, :) = MATMUL(analytic_energy, energy_response)
+      ELSE
+         rhs(:, :) = analytic_cross(:, :)
+         CALL dgesv(nener, nrot, analytic_energy, nener, ipiv, rhs, nener, info)
+         IF (info == 0) analytic_response(:, :) = rhs(:, :)
+      END IF
+      IF (info == 0) THEN
+         analytic_metric(:, :) = MATMUL(TRANSPOSE(analytic_cross), analytic_response)
+         analytic_metric(:, :) = 0.5_dp*(analytic_metric + TRANSPOSE(analytic_metric))
+         IF (PRESENT(response_metric)) &
+            analytic_metric(:, :) = 0.5_dp*(response_metric + TRANSPOSE(response_metric))
+         analytic_schur(:, :) = rotation_hessian - analytic_metric
+         analytic_schur(:, :) = 0.5_dp*(analytic_schur + TRANSPOSE(analytic_schur))
+         reduced_targets(:, :) = rotation_targets + &
+                                 MATMUL(TRANSPOSE(analytic_response), energy_targets)
+         CALL qs_scf_kp_symmetric_multisecant_update( &
+            analytic_schur, rotation_steps, reduced_targets, weight, updated_schur, ready, &
+            independence, compatibility, correction_norm, residual_norm, updated_residual_norm)
+         reference_norm = SQRT(MAX(0.0_dp, SUM(analytic_schur**2)))
+         correction_ratio = correction_norm/MAX(reference_norm, EPSILON(1.0_dp))
+         IF (ready) THEN
+            updated_rotation_hessian(:, :) = updated_schur + analytic_metric
+            updated_rotation_hessian(:, :) = 0.5_dp* &
+                                             (updated_rotation_hessian + &
+                                              TRANSPOSE(updated_rotation_hessian))
+            ready = ALL(updated_rotation_hessian == updated_rotation_hessian) .AND. &
+                    correction_ratio == correction_ratio
+         END IF
+      END IF
+      IF (.NOT. ready) updated_rotation_hessian(:, :) = rotation_hessian(:, :)
+      DEALLOCATE (ipiv, analytic_cross, analytic_energy, analytic_metric, analytic_response, &
+                  analytic_schur, reduced_targets, rhs, updated_schur)
+
+   END SUBROUTINE qs_scf_kp_coupled_reduced_multisecant_update
 
 ! **************************************************************************************************
 !> \brief Transport a full coupled response into the reduced rotation Schur block.
@@ -11482,12 +11603,13 @@ CONTAINS
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
-         projector_response_candidate_selected, reduced_secant_update_eligible, &
-         relative_energy_metric_ready, response_model_available, schur_active_subspace, solved, &
-         split_candidate_diagnostic
-      LOGICAL :: split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
-         split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
-         vector_secant_update_ready, vector_secant_update_used
+         projector_response_candidate_selected, reduced_secant_candidate_enabled, &
+         reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
+         reduced_secant_update_eligible
+      LOGICAL :: relative_energy_metric_ready, response_model_available, schur_active_subspace, &
+         solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
+         split_candidate_selected, split_residual_competitive, trust_rejected, &
+         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
                                                             channel_density_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
@@ -12155,28 +12277,35 @@ CONTAINS
          projector_step_gap_norm, projector_step_gauge_norm
       REAL(KIND=dp) :: projector_step_gauge_quality, projector_step_gauge_ratio, &
          projector_tail_active_delta_diag_avg, projector_tail_active_delta_weight, &
-         projector_tail_delta_diag_avg, rayleigh_edge_gap, residual_delta, &
-         residual_reference_quality, response_abs_step, response_abs_trust, &
-         response_abs_trust_ratio, response_mixed_diag_avg, response_penalty_diag_sum, &
-         response_penalty_term, response_shift, response_step_max, response_trust, &
-         response_trust_base, response_trust_factor, response_trust_ratio, response_weighted_step, &
-         response_weighted_trust_ratio, rot_diag_sum, rot_floor_min
-      REAL(KIND=dp) :: rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
-         rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, rot_grad_energy_norm, &
-         rot_grad_fermi_weight, rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, &
-         rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
-         rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
-         rot_grad_inactive_weight_sum, rot_grad_norm_weight, rot_grad_pair_fraction, &
-         rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq, &
-         rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg
-      REAL(KIND=dp) :: row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
-         row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, rx_shift, &
-         rx_weight, scale_quality, schur_active_occ_min, schur_diag_min, schur_energy_window, &
-         spectral_resp_correction_drop, spectral_resp_correction_negative, &
-         spectral_resp_cross_drop, spectral_resp_negative_coeff, spectral_resp_negative_drop, &
-         spectral_resp_positive_coeff, spectral_resp_positive_drop, &
-         spectral_resp_raw_negative_fraction, spectral_resp_weight, split_curvature_scale, &
-         split_dense_expected_ratio, split_density_projector_fraction
+         projector_tail_delta_diag_avg, rayleigh_edge_gap, reduced_secant_direction_scale, &
+         reduced_secant_expected_drop, reduced_secant_history_quality, &
+         reduced_secant_model_calibrated_drop, reduced_secant_model_drop, &
+         reduced_secant_model_gap, reduced_secant_model_gap_drop, reduced_secant_model_gap_ratio, &
+         reduced_secant_model_quadratic, reduced_secant_model_slope, &
+         reduced_secant_reference_drop, reduced_secant_response_abs_step
+      REAL(KIND=dp) :: reduced_secant_response_abs_trust_ratio, &
+         reduced_secant_response_weighted_step, reduced_secant_response_weighted_trust_ratio, &
+         reduced_secant_trust_quality, residual_delta, residual_reference_quality, &
+         response_abs_step, response_abs_trust, response_abs_trust_ratio, response_mixed_diag_avg, &
+         response_penalty_diag_sum, response_penalty_term, response_shift, response_step_max, &
+         response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
+         response_weighted_step, response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, &
+         rot_grad_active_fraction_avg
+      REAL(KIND=dp) :: rot_grad_active_fraction_max, rot_grad_active_im, rot_grad_active_re, &
+         rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, &
+         rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
+         rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, rot_grad_gauge_weight, &
+         rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
+         rot_grad_norm_weight, rot_grad_pair_fraction, rot_grad_physical_norm, &
+         rot_grad_rest_fraction, rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, &
+         row_floor_avg, row_floor_max
+      REAL(KIND=dp) :: row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
+         row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
+         schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
+         spectral_resp_correction_negative, spectral_resp_cross_drop, &
+         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff, &
+         spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, spectral_resp_weight, &
+         split_curvature_scale, split_dense_expected_ratio, split_density_projector_fraction
       REAL(KIND=dp) :: split_diag_shift_max, split_diag_shift_sum, split_direction_scale, &
          split_expected_drop, split_gdot_energy, split_gdot_rotation, split_gdotp, &
          split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, split_norm_energy, &
@@ -12217,12 +12346,13 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_z_e, &
          projector_physical_model_e, projector_physical_rx_e, projector_physical_sol, &
          projector_physical_z_e, projector_response_rx_e, projector_response_sol, &
-         projector_response_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, &
-         split_sol, split_z_e, tether_curv, var_grad_metric_weight, var_occ_gap_weight, &
+         projector_response_z_e, reduced_secant_response_step, reduced_secant_sol, &
+         reduced_secant_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, split_sol, &
+         split_z_e, tether_curv, var_grad_metric_weight, var_occ_gap_weight, &
          var_projector_active_weight, var_projector_response_weight, var_projector_weight, &
-         var_step_weight, var_thermal_activity, z_density_basis_audit_trial, &
-         z_density_basis_curvfloor_audit_trial
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_density_basis_damped_audit_trial, &
+         var_step_weight, var_thermal_activity
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: z_density_basis_audit_trial, &
+         z_density_basis_curvfloor_audit_trial, z_density_basis_damped_audit_trial, &
          z_density_basis_filtered_audit_trial, z_density_basis_selective_audit_trial, &
          z_density_floor_audit_trial, z_density_floor_safe_audit_trial, &
          z_density_full_audit_trial, z_density_full_global_trial, z_density_full_trial, &
@@ -12242,7 +12372,7 @@ CONTAINS
          projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
          projector_physical_direct_curv_vec, projector_physical_direct_delta, &
          projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
-         projector_physical_direct_schur_vec, response, response_coupled, &
+         projector_physical_direct_schur_vec, reduced_response_metric, response, response_coupled, &
          response_density_basis_audit, response_density_basis_audit_exact
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_basis_curvfloor_audit_exact, &
          response_density_basis_damped_audit, response_density_basis_damped_audit_exact, &
@@ -12595,13 +12725,14 @@ CONTAINS
                    projector_inactive_offdiag_z_e(ne), &
                    projector_physical_model_e(ne), projector_physical_rx_e(ne), &
                    projector_physical_z_e(ne), projector_response_rx_e(ne), &
-                   projector_response_z_e(ne), split_z_e(ne))
+                   projector_response_z_e(ne), reduced_secant_response_step(ne), &
+                   reduced_secant_z_e(ne), split_z_e(ne))
          ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), accepted_sol(nrot), &
                    canonical_density_tangent(nrot), canonical_density_trial_sol(nrot), constrained_sol(nrot), &
                    projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
                    projector_physical_direct_spectral_sol(nrot), &
                    projector_offdiag_sol(nrot), projector_inactive_offdiag_sol(nrot), &
-                   projector_response_sol(nrot), split_sol(nrot), &
+                   projector_response_sol(nrot), reduced_secant_sol(nrot), split_sol(nrot), &
                    var_grad_metric_weight(nrot), var_occ_gap_weight(nrot), &
                    var_projector_active_weight(nrot), var_projector_response_weight(nrot), &
                    var_projector_weight(nrot), var_step_weight(nrot), var_thermal_activity(nrot))
@@ -12655,6 +12786,7 @@ CONTAINS
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
                    rot_hessian_multisecant(nrot, nrot), &
+                   reduced_response_metric(nrot, nrot), &
                    rot_hessian_reduced_secant(nrot, nrot), &
                    rot_hessian_secant(nrot, nrot), &
                    rot_hessian_orbital_schur(nrot, nrot), &
@@ -12743,6 +12875,9 @@ CONTAINS
          projector_physical_z_e(:) = 0.0_dp
          projector_response_rx_e(:) = 0.0_dp
          projector_response_z_e(:) = 0.0_dp
+         reduced_secant_response_step(:) = 0.0_dp
+         reduced_secant_sol(:) = 0.0_dp
+         reduced_secant_z_e(:) = 0.0_dp
          energy_grad_metric_weight(:) = 0.0_dp
          energy_step_weight(:) = 0.0_dp
          var_grad_metric_weight(:) = 0.0_dp
@@ -12827,6 +12962,7 @@ CONTAINS
          rot_hessian(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
          rot_hessian_multisecant(:, :) = 0.0_dp
+         reduced_response_metric(:, :) = 0.0_dp
          rot_hessian_reduced_secant(:, :) = 0.0_dp
          rot_hessian_secant(:, :) = 0.0_dp
          rot_hessian_orbital_schur(:, :) = 0.0_dp
@@ -13153,6 +13289,22 @@ CONTAINS
          accepted_reduced_secant_shadow_quadratic = 0.0_dp
          accepted_reduced_secant_shadow_ratio = 0.0_dp
          accepted_reduced_secant_shadow_slope = 0.0_dp
+         reduced_secant_direction_scale = 0.0_dp
+         reduced_secant_expected_drop = 0.0_dp
+         reduced_secant_history_quality = 1.0_dp
+         reduced_secant_model_calibrated_drop = 0.0_dp
+         reduced_secant_model_drop = 0.0_dp
+         reduced_secant_model_gap = 0.0_dp
+         reduced_secant_model_gap_drop = 0.0_dp
+         reduced_secant_model_gap_ratio = 0.0_dp
+         reduced_secant_model_quadratic = 0.0_dp
+         reduced_secant_model_slope = 0.0_dp
+         reduced_secant_reference_drop = 0.0_dp
+         reduced_secant_response_abs_step = 0.0_dp
+         reduced_secant_response_abs_trust_ratio = 0.0_dp
+         reduced_secant_response_weighted_step = 0.0_dp
+         reduced_secant_response_weighted_trust_ratio = 0.0_dp
+         reduced_secant_trust_quality = 1.0_dp
          accepted_projector_coupled_weight = 0.0_dp
          accepted_projector_mode_drop = 0.0_dp
          accepted_projector_mode_response_drop = 0.0_dp
@@ -13252,6 +13404,9 @@ CONTAINS
          multisecant_update_used = .FALSE.
          multisecant_response_ready = .FALSE.
          accepted_reduced_secant_shadow_ready = .FALSE.
+         reduced_secant_candidate_enabled = .FALSE.
+         reduced_secant_candidate_ready = .FALSE.
+         reduced_secant_candidate_selected = .FALSE.
          reduced_secant_update_eligible = .FALSE.
          vector_secant_update_eligible = .FALSE.
          vector_secant_update_ready = .FALSE.
@@ -14274,14 +14429,16 @@ CONTAINS
                         projector_inactive_offdiag_rx_e, &
                         projector_inactive_offdiag_z_e, &
                         projector_physical_rx_e, projector_physical_z_e, &
-                        projector_response_rx_e, projector_response_z_e, split_z_e)
+                        projector_response_rx_e, projector_response_z_e, &
+                        reduced_secant_z_e, split_z_e)
             DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
                         canonical_density_mode_alpha, canonical_density_mode_curvature, &
                         canonical_density_mode_linear, canonical_density_tangent_modes, &
                         canonical_density_trial_sol, constrained_sol, &
                         projector_physical_direct_sol, &
                         projector_physical_sol, projector_offdiag_sol, &
-                        projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
+                        projector_inactive_offdiag_sol, projector_response_sol, &
+                        reduced_secant_sol, split_sol, &
                         var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
                         var_projector_response_weight, var_projector_weight, var_step_weight, &
                         var_thermal_activity)
@@ -15973,6 +16130,16 @@ CONTAINS
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
             CALL project_kpoint_ot_schur_response(z_exact_raw_trial, occ_curv, tether_curv, &
                                                   occ_curv_projection_sum, channel_nmo, e_offset)
+            DO s = 1, nrot
+               DO r = 1, nrot
+                  CALL kpoint_ot_mixed_projected_term( &
+                     response_exact(:, r), response_exact(:, s), occ_curv, tether_curv, &
+                     occ_curv_projection_sum, channel_nmo, e_offset, reduced_response_metric(r, s))
+               END DO
+            END DO
+            reduced_response_metric(:, :) = 0.5_dp* &
+                                            (reduced_response_metric + &
+                                             TRANSPOSE(reduced_response_metric))
             DO r = 1, nrot
                exact_response_diag_avg = exact_response_diag_avg + &
                                          DOT_PRODUCT(energy_cross(:, r), response_exact(:, r))
@@ -15987,7 +16154,8 @@ CONTAINS
             CALL audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rot_hessian_coupled, &
-                                                     energy_hessian_reference, energy_cross, &
+                                                     energy_hessian_reference, energy_cross, response_exact, &
+                                                     reduced_response_metric, &
                                                      residual_delta, schur_active_subspace, &
                                                      rot_hessian_secant, rot_hessian_multisecant, &
                                                      rot_hessian_reduced_secant, &
@@ -16064,6 +16232,57 @@ CONTAINS
             END IF
             response_trust = response_trust_base*response_trust_factor
          END IF
+         reduced_secant_candidate_enabled = reduced_secant_update_eligible .AND. &
+                                            exact_energy_model_ready .AND. &
+                                            local_ot_env(1)%schur_reduced_secant_shadow_validated
+         IF (reduced_secant_candidate_enabled) THEN
+            CALL build_kpoint_ot_reduced_secant_candidate( &
+               rot_hessian_reduced_secant, reduced_response_metric, response_exact, &
+               response_exact_raw, grad_rot, grad_e, &
+               z_exact_trial, occ_curv, tether_curv, occ_curv_projection_sum, channel_nmo, &
+               e_offset, rot_floor, curv, curv_projection_sum, response_trust, &
+               response_abs_trust, schur_model_gap_factor, reduced_secant_sol, reduced_secant_z_e, &
+               reduced_secant_direction_scale, reduced_secant_model_slope, &
+               reduced_secant_model_quadratic, reduced_secant_model_drop, &
+               reduced_secant_model_calibrated_drop, reduced_secant_model_gap, &
+               reduced_secant_model_gap_drop, reduced_secant_model_gap_ratio, &
+               reduced_secant_response_weighted_step, reduced_secant_response_abs_step, &
+               reduced_secant_candidate_ready)
+            reduced_secant_response_weighted_trust_ratio = 0.0_dp
+            IF (response_trust > EPSILON(response_trust)) &
+               reduced_secant_response_weighted_trust_ratio = &
+               reduced_secant_response_weighted_step/response_trust
+            reduced_secant_response_abs_trust_ratio = 0.0_dp
+            IF (response_abs_trust > EPSILON(response_abs_trust)) &
+               reduced_secant_response_abs_trust_ratio = &
+               reduced_secant_response_abs_step/response_abs_trust
+            reduced_secant_history_quality = kpoint_ot_schur_history_quality( &
+                                             local_ot_env(1)%schur_reduced_secant_drop_sum, &
+                                             local_ot_env(1)%schur_reduced_secant_measured_sum, &
+                                             local_ot_env(1)%schur_reduced_secant_quality_ema, &
+                                             local_ot_env(1)%schur_reduced_secant_quality_samples, &
+                                             ot_kp_schur_calibration_min_samples, 1.0_dp, &
+                                             ot_kp_schur_calibration_floor, 1.0_dp)
+            reduced_secant_trust_quality = kpoint_ot_schur_trust_quality( &
+                                           reduced_secant_response_weighted_trust_ratio, &
+                                           reduced_secant_response_abs_trust_ratio, &
+                                           reduced_secant_model_gap_ratio)
+            reduced_secant_expected_drop = kpoint_ot_schur_expected_drop( &
+                                           reduced_secant_model_calibrated_drop, &
+                                           reduced_secant_history_quality, &
+                                           reduced_secant_trust_quality)
+         END IF
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),11(1X,ES16.8))') &
+            " OT Schur reduced-secant independent candidate group enabled ready slope quad scale "// &
+            "drop cdrop expected hq tq wtrust atrust gapratio:", &
+            target_group, reduced_secant_candidate_enabled, reduced_secant_candidate_ready, &
+            reduced_secant_model_slope, reduced_secant_model_quadratic, &
+            reduced_secant_direction_scale, reduced_secant_model_drop, &
+            reduced_secant_model_calibrated_drop, reduced_secant_expected_drop, &
+            reduced_secant_history_quality, reduced_secant_trust_quality, &
+            reduced_secant_response_weighted_trust_ratio, &
+            reduced_secant_response_abs_trust_ratio, reduced_secant_model_gap_ratio
          solved = .FALSE.
          trust_rejected = .FALSE.
          schur_used_attempt = 0
@@ -23772,6 +23991,74 @@ CONTAINS
                END IF
             END IF
 
+            IF (schur_attempt == 3 .AND. reduced_secant_candidate_ready) THEN
+               reduced_secant_reference_drop = 0.0_dp
+               IF (.NOT. attempt_failed) THEN
+                  reduced_secant_reference_drop = dense_expected_drop
+                  IF (split_candidate_selected) &
+                     reduced_secant_reference_drop = split_expected_drop
+               END IF
+               reduced_secant_candidate_selected = &
+                  reduced_secant_expected_drop > EPSILON(reduced_secant_expected_drop) .AND. &
+                  (attempt_failed .OR. reduced_secant_expected_drop >= &
+                   ot_kp_schur_projector_response_advantage_ratio* &
+                   MAX(reduced_secant_reference_drop, EPSILON(reduced_secant_reference_drop)))
+               IF (reduced_secant_candidate_selected) THEN
+                  attempt_failed = .FALSE.
+                  split_candidate_selected = .FALSE.
+                  projector_coupled_weight = 0.0_dp
+                  inactive_gauge_projection_used = .FALSE.
+                  vector_secant_update_used = .FALSE.
+                  multisecant_update_used = .FALSE.
+                  projector_offdiag_candidate_selected = .FALSE.
+                  projector_physical_candidate_selected = .FALSE.
+                  projector_physical_direct_candidate_selected = .FALSE.
+                  projector_physical_direct_density_candidate_selected = .FALSE.
+                  projector_physical_direct_spectral_candidate_selected = .FALSE.
+                  projector_physical_direct_spectral_probe_selected = .FALSE.
+                  projector_response_candidate_selected = .FALSE.
+                  density_descent_candidate_selected = .FALSE.
+                  density_full_candidate_selected = .FALSE.
+                  density_full_direct_candidate_selected = .FALSE.
+                  density_full_global_candidate_selected = .FALSE.
+                  sol(:) = reduced_secant_sol(:)
+                  z_e(:) = reduced_secant_z_e(:)
+                  direction_scale = reduced_secant_direction_scale
+                  gdot_rotation = DOT_PRODUCT(grad_rot, sol)
+                  gdot_energy = DOT_PRODUCT(grad_e, z_e)
+                  gdotp = gdot_rotation + gdot_energy
+                  norm_rotation = kpoint_ot_weighted_vector_dot(sol, sol, var_step_weight)
+                  norm_energy = kpoint_ot_weighted_vector_dot(z_e, z_e, energy_step_weight)
+                  normp = norm_rotation + norm_energy
+                  gnorm = kpoint_ot_weighted_vector_dot(grad_e, grad_e, energy_grad_metric_weight) + &
+                          kpoint_ot_weighted_vector_dot(grad_rot, grad_rot, var_grad_metric_weight)
+                  norm_ratio = normp/MAX(gnorm, EPSILON(1.0_dp))
+                  scale_quality = kpoint_ot_schur_scale_quality(direction_scale, &
+                                                                schur_min_coupled_scale)
+                  model_drop = reduced_secant_model_drop
+                  model_calibrated_drop = reduced_secant_model_calibrated_drop
+                  model_gap = reduced_secant_model_gap
+                  model_gap_drop = reduced_secant_model_gap_drop
+                  model_gap_ratio = reduced_secant_model_gap_ratio
+                  model_gap_trust = schur_model_gap_factor*response_trust
+                  response_weighted_step = reduced_secant_response_weighted_step
+                  response_weighted_trust_ratio = &
+                     reduced_secant_response_weighted_trust_ratio
+                  response_abs_step = reduced_secant_response_abs_step
+                  response_abs_trust_ratio = reduced_secant_response_abs_trust_ratio
+                  response_step_max = response_abs_step
+                  dense_expected_drop = reduced_secant_expected_drop
+               END IF
+               IF (logger%iter_info%print_level >= high_print_level .AND. &
+                   logger%para_env%is_source()) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), &
+                         '(A,1X,I3,1X,L1,3(1X,ES16.8))') &
+                  " OT Schur reduced-secant independent selection group selected expected reference ratio:", &
+                  target_group, reduced_secant_candidate_selected, reduced_secant_expected_drop, &
+                  reduced_secant_reference_drop, reduced_secant_expected_drop/ &
+                  MAX(reduced_secant_reference_drop, EPSILON(1.0_dp))
+            END IF
+
             ! Once the projected Mermin residual is converged, a remaining canonical-density
             ! residual is an auxiliary-energy closure problem.  Solve that fixed-N block in its
             ! own Hessian metric instead of shrinking it with the orbital Euclidean norm.  The
@@ -23874,6 +24161,8 @@ CONTAINS
                       .NOT. inactive_gauge_projection_used) selected_flavor = 43
                   IF (selected_attempt == 3 .AND. multisecant_update_used .AND. &
                       .NOT. inactive_gauge_projection_used) selected_flavor = 44
+                  IF (selected_attempt == 3 .AND. reduced_secant_candidate_selected) &
+                     selected_flavor = 46
                   ! Projector/density candidates are built by the exact-response
                   ! dense attempt and may be selected later while comparing
                   ! against the raw fallback.  Preserve their sub-flavor so the
@@ -23943,9 +24232,14 @@ CONTAINS
                   END IF
                END IF
                IF (reduced_secant_update_eligible) THEN
-                  CALL qs_scf_kp_coupled_step_model( &
-                     grad_rot, grad_e, rot_hessian_reduced_secant, energy_hessian_reference, &
-                     energy_cross, accepted_sol, accepted_z_e, &
+                  reduced_secant_response_step(:) = MATMUL(response_exact, accepted_sol)
+                  CALL project_kpoint_ot_schur_response( &
+                     reduced_secant_response_step, occ_curv, tether_curv, occ_curv_projection_sum, &
+                     channel_nmo, e_offset)
+                  CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+                     grad_rot, grad_e, rot_hessian_reduced_secant, accepted_sol, accepted_z_e, &
+                     reduced_secant_response_step, occ_curv, tether_curv, &
+                     occ_curv_projection_sum, channel_nmo, e_offset, &
                      accepted_reduced_secant_shadow_slope, &
                      accepted_reduced_secant_shadow_quadratic, &
                      accepted_reduced_secant_shadow_drop, &
@@ -24121,9 +24415,14 @@ CONTAINS
                local_ot_env(1)%schur_multisecant_drop = &
                   local_ot_env(1)%schur_multisecant_drop + accepted_model_calibrated_drop
             END IF
-            IF (accepted_reduced_secant_shadow_ready .AND. &
-                accepted_reduced_secant_shadow_drop > &
-                EPSILON(accepted_reduced_secant_shadow_drop)) THEN
+            IF (selected_flavor == 46 .AND. &
+                accepted_model_calibrated_drop > EPSILON(accepted_model_calibrated_drop)) THEN
+               local_ot_env(1)%schur_reduced_secant_pending = .TRUE.
+               local_ot_env(1)%schur_reduced_secant_drop = &
+                  local_ot_env(1)%schur_reduced_secant_drop + accepted_model_calibrated_drop
+            ELSE IF (accepted_reduced_secant_shadow_ready .AND. &
+                     accepted_reduced_secant_shadow_drop > &
+                     EPSILON(accepted_reduced_secant_shadow_drop)) THEN
                local_ot_env(1)%schur_reduced_secant_pending = .TRUE.
                local_ot_env(1)%schur_reduced_secant_drop = &
                   local_ot_env(1)%schur_reduced_secant_drop + &
@@ -26416,7 +26715,8 @@ CONTAINS
                      projector_inactive_offdiag_z_e, &
                      projector_physical_model_e, projector_physical_rx_e, &
                      projector_physical_z_e, &
-                     projector_response_rx_e, projector_response_z_e, split_z_e)
+                     projector_response_rx_e, projector_response_z_e, &
+                     reduced_secant_response_step, reduced_secant_z_e, split_z_e)
          DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
                      canonical_density_mode_alpha, canonical_density_mode_curvature, &
                      canonical_density_mode_linear, canonical_density_tangent_modes, &
@@ -26424,7 +26724,8 @@ CONTAINS
                      projector_physical_direct_sol, &
                      projector_physical_direct_spectral_sol, &
                      projector_physical_sol, projector_offdiag_sol, &
-                     projector_inactive_offdiag_sol, projector_response_sol, split_sol, &
+                     projector_inactive_offdiag_sol, projector_response_sol, &
+                     reduced_secant_sol, split_sol, &
                      var_grad_metric_weight, var_occ_gap_weight, var_projector_active_weight, &
                      var_projector_response_weight, var_projector_weight, var_step_weight, &
                      var_thermal_activity)
@@ -26462,7 +26763,7 @@ CONTAINS
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
                      rot_hessian_coupled, rot_hessian_multisecant, &
-                     rot_hessian_reduced_secant, rot_hessian_secant, &
+                     reduced_response_metric, rot_hessian_reduced_secant, rot_hessian_secant, &
                      rot_hessian_orbital_schur, &
                      rot_hessian_projector, &
                      projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
@@ -26481,6 +26782,277 @@ CONTAINS
       END SUBROUTINE precondition_kpoint_ot_schur_group
 
 ! **************************************************************************************************
+!> \brief Build an independent finite coupled-secant direction in the analytic fixed-N energy gauge.
+!>
+!>        The transported rotation block reproduces the Schur complement of the accepted coupled
+!>        multisecants.  This routine keeps it separate from the established projector/density
+!>        candidates, solves it with the analytic energy response, and applies the same response
+!>        trust before the caller compares predicted Mermin decreases.
+!> \param rotation_hessian ...
+!> \param response_metric ...
+!> \param response ...
+!> \param response_raw ...
+!> \param rotation_gradient ...
+!> \param energy_gradient ...
+!> \param energy_base_step ...
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param occ_curv_sum ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param rotation_floor ...
+!> \param response_curv ...
+!> \param response_curv_sum ...
+!> \param response_trust ...
+!> \param response_abs_trust ...
+!> \param model_gap_factor ...
+!> \param rotation_step ...
+!> \param energy_step ...
+!> \param direction_scale ...
+!> \param model_slope ...
+!> \param model_quadratic ...
+!> \param model_drop ...
+!> \param model_calibrated_drop ...
+!> \param model_gap ...
+!> \param model_gap_drop ...
+!> \param model_gap_ratio ...
+!> \param response_weighted_step ...
+!> \param response_abs_step ...
+!> \param ready ...
+! **************************************************************************************************
+      SUBROUTINE build_kpoint_ot_reduced_secant_candidate( &
+         rotation_hessian, response_metric, response, response_raw, &
+         rotation_gradient, energy_gradient, energy_base_step, occ_curv, tether_curv, occ_curv_sum, &
+         channel_nmo, e_offset, rotation_floor, response_curv, response_curv_sum, response_trust, &
+         response_abs_trust, model_gap_factor, rotation_step, energy_step, direction_scale, model_slope, &
+         model_quadratic, model_drop, model_calibrated_drop, model_gap, model_gap_drop, &
+         model_gap_ratio, response_weighted_step, response_abs_step, ready)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, response_metric, &
+                                                            response, response_raw
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_gradient, energy_gradient, &
+                                                            energy_base_step, occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_floor, response_curv
+      REAL(KIND=dp), INTENT(IN)                          :: response_curv_sum, response_trust, &
+                                                            response_abs_trust, model_gap_factor
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: rotation_step, energy_step
+      REAL(KIND=dp), INTENT(OUT) :: direction_scale, model_slope, model_quadratic, model_drop, &
+         model_calibrated_drop, model_gap, model_gap_drop, model_gap_ratio, &
+         response_weighted_step, response_abs_step
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      INTEGER                                            :: info, nener, nrot, r
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv_local
+      LOGICAL                                            :: model_ready
+      REAL(KIND=dp) :: energy_base_quadratic, energy_base_ratio, energy_base_slope, &
+         floor_quadratic, response_abs_unit, response_weighted_unit, row_floor_local, &
+         schur_model_residual, schur_rhs_norm
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: model_response, raw_response, rhs_local, &
+                                                            row_shift
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: schur_local, schur_reference
+
+         nrot = SIZE(rotation_gradient)
+         nener = SIZE(energy_gradient)
+         CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+         CPASSERT(ALL(SHAPE(response_metric) == [nrot, nrot]))
+         CPASSERT(ALL(SHAPE(response) == [nener, nrot]))
+         CPASSERT(ALL(SHAPE(response_raw) == [nener, nrot]))
+         CPASSERT(SIZE(energy_base_step) == nener)
+         CPASSERT(SIZE(rotation_floor) == nrot)
+         CPASSERT(SIZE(rotation_step) == nrot)
+         CPASSERT(SIZE(energy_step) == nener)
+
+         rotation_step(:) = 0.0_dp
+         energy_step(:) = 0.0_dp
+         direction_scale = 0.0_dp
+         model_slope = 0.0_dp
+         model_quadratic = 0.0_dp
+         model_drop = 0.0_dp
+         model_calibrated_drop = 0.0_dp
+         model_gap = 0.0_dp
+         model_gap_drop = 0.0_dp
+         model_gap_ratio = 0.0_dp
+         response_weighted_step = 0.0_dp
+         response_abs_step = 0.0_dp
+         ready = .FALSE.
+         IF (nrot <= 0 .OR. nener <= 0) RETURN
+
+         ALLOCATE (ipiv_local(nrot), model_response(nener), raw_response(nener), &
+                   rhs_local(nrot), row_shift(nrot), schur_local(nrot, nrot), &
+                   schur_reference(nrot, nrot))
+         schur_local(:, :) = 0.5_dp*(rotation_hessian + TRANSPOSE(rotation_hessian)) - &
+                             0.5_dp*(response_metric + TRANSPOSE(response_metric))
+         schur_local(:, :) = 0.5_dp*(schur_local + TRANSPOSE(schur_local))
+         schur_reference(:, :) = schur_local(:, :)
+         rhs_local(:) = rotation_gradient + MATMUL(TRANSPOSE(response), energy_gradient)
+         row_shift(:) = 0.0_dp
+         DO r = 1, nrot
+            row_floor_local = MAX(0.0_dp, rotation_floor(r))
+            row_shift(r) = MAX(0.0_dp, row_floor_local - schur_local(r, r))
+            schur_local(r, r) = schur_local(r, r) + row_shift(r)
+         END DO
+         rotation_step(:) = rhs_local(:)
+         CALL dgesv(nrot, 1, schur_local, nrot, ipiv_local, rotation_step, nrot, info)
+         IF (info /= 0 .OR. ANY(rotation_step /= rotation_step)) THEN
+            DEALLOCATE (ipiv_local, model_response, raw_response, rhs_local, row_shift, &
+                        schur_local, schur_reference)
+            RETURN
+         END IF
+
+         raw_response(:) = MATMUL(response_raw, rotation_step)
+         model_response(:) = MATMUL(response, rotation_step)
+         CALL project_kpoint_ot_schur_response(raw_response, occ_curv, tether_curv, &
+                                               occ_curv_sum, channel_nmo, e_offset)
+         CALL project_kpoint_ot_schur_response(model_response, occ_curv, tether_curv, &
+                                               occ_curv_sum, channel_nmo, e_offset)
+         energy_step(:) = energy_base_step(:) + model_response(:)
+         CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+            rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
+            model_response, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+            model_slope, model_quadratic, model_drop, model_ready)
+         energy_base_slope = DOT_PRODUCT(energy_gradient, energy_base_step)
+         CALL kpoint_ot_mixed_projected_term( &
+            energy_base_step, energy_base_step, occ_curv, tether_curv, occ_curv_sum, &
+            channel_nmo, e_offset, energy_base_quadratic)
+         energy_base_ratio = energy_base_slope/MAX(energy_base_quadratic, EPSILON(1.0_dp))
+         schur_rhs_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(rhs_local, rhs_local)))
+         schur_model_residual = SQRT(MAX(0.0_dp, &
+                                         SUM((MATMUL(schur_reference, rotation_step) - rhs_local)**2)))/ &
+                                MAX(schur_rhs_norm, EPSILON(1.0_dp))
+         floor_quadratic = DOT_PRODUCT(row_shift*rotation_step, rotation_step)
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,8(1X,ES16.8))') &
+            " OT Schur reduced-secant KKT base-ratio sres floor slope quad ratio rnorm enorm:", &
+            energy_base_ratio, schur_model_residual, floor_quadratic, model_slope, &
+            model_quadratic, model_slope/MAX(model_quadratic, EPSILON(1.0_dp)), &
+            SQRT(MAX(0.0_dp, DOT_PRODUCT(rotation_step, rotation_step))), &
+            SQRT(MAX(0.0_dp, DOT_PRODUCT(energy_step, energy_step)))
+         IF (.NOT. model_ready .OR. model_slope <= EPSILON(model_slope) .OR. &
+             model_quadratic <= EPSILON(model_quadratic)) THEN
+            rotation_step(:) = 0.0_dp
+            energy_step(:) = 0.0_dp
+            model_slope = 0.0_dp
+            model_quadratic = 0.0_dp
+            model_drop = 0.0_dp
+            DEALLOCATE (ipiv_local, model_response, raw_response, rhs_local, row_shift, &
+                        schur_local, schur_reference)
+            RETURN
+         END IF
+
+         direction_scale = MIN(1.0_dp, model_slope/model_quadratic)
+         response_abs_unit = MAXVAL(ABS(model_response))
+         IF (.NOT. global_schur_replicated) CALL para_env_inter_kp%max(response_abs_unit)
+         response_weighted_unit = &
+            kpoint_ot_weighted_response_step(model_response, response_curv, response_curv_sum)
+         IF (response_trust > EPSILON(response_trust) .AND. &
+             response_weighted_unit > EPSILON(response_weighted_unit)) &
+            direction_scale = MIN(direction_scale, 0.8_dp*response_trust/response_weighted_unit)
+         IF (response_abs_trust > EPSILON(response_abs_trust) .AND. &
+             response_abs_unit > EPSILON(response_abs_unit)) &
+            direction_scale = MIN(direction_scale, 0.8_dp*response_abs_trust/response_abs_unit)
+         IF (direction_scale <= EPSILON(direction_scale)) THEN
+            rotation_step(:) = 0.0_dp
+            energy_step(:) = 0.0_dp
+            DEALLOCATE (ipiv_local, model_response, raw_response, rhs_local, row_shift, &
+                        schur_local, schur_reference)
+            RETURN
+         END IF
+
+         model_gap = direction_scale*MAXVAL(ABS(model_response - raw_response))
+         IF (.NOT. global_schur_replicated) CALL para_env_inter_kp%max(model_gap)
+         model_gap_drop = kpoint_ot_response_mismatch_drop(raw_response, model_response, &
+                                                           response_curv, direction_scale)
+         response_abs_step = direction_scale*response_abs_unit
+         response_weighted_step = direction_scale*response_weighted_unit
+         rotation_step(:) = direction_scale*rotation_step(:)
+         energy_step(:) = direction_scale*energy_step(:)
+         model_response(:) = direction_scale*model_response(:)
+         CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+            rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
+            model_response, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+            model_slope, model_quadratic, model_drop, model_ready)
+         model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+         IF (model_gap_factor*response_trust > EPSILON(response_trust)) &
+            model_gap_ratio = model_gap/(model_gap_factor*response_trust)
+         ready = model_ready .AND. model_calibrated_drop > EPSILON(model_drop)
+         IF (response_trust > EPSILON(response_trust)) &
+            ready = ready .AND. response_weighted_step <= response_trust
+         IF (response_abs_trust > EPSILON(response_abs_trust)) &
+            ready = ready .AND. response_abs_step <= response_abs_trust
+         IF (.NOT. ready) THEN
+            rotation_step(:) = 0.0_dp
+            energy_step(:) = 0.0_dp
+         END IF
+         DEALLOCATE (ipiv_local, model_response, raw_response, rhs_local, row_shift, &
+                     schur_local, schur_reference)
+
+      END SUBROUTINE build_kpoint_ot_reduced_secant_candidate
+
+! **************************************************************************************************
+!> \brief Evaluate the coupled quadratic model in the projected fixed-N energy tangent space.
+!> \param rotation_gradient ...
+!> \param energy_gradient ...
+!> \param rotation_hessian ...
+!> \param rotation_step ...
+!> \param energy_step ...
+!> \param response_step R times rotation_step in the projected energy tangent space
+!> \param occ_curv ...
+!> \param tether_curv ...
+!> \param occ_curv_sum ...
+!> \param channel_nmo ...
+!> \param e_offset ...
+!> \param model_slope ...
+!> \param model_quadratic ...
+!> \param model_drop ...
+!> \param ready ...
+! **************************************************************************************************
+      SUBROUTINE evaluate_kpoint_ot_projected_coupled_step_model( &
+         rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
+         response_step, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+         model_slope, model_quadratic, model_drop, ready)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_gradient, energy_gradient
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_step, energy_step, &
+                                                            response_step, occ_curv, tether_curv
+      REAL(KIND=dp), INTENT(IN)                          :: occ_curv_sum
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset
+      REAL(KIND=dp), INTENT(OUT)                         :: model_slope, model_quadratic, model_drop
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      INTEGER                                            :: nener, nrot
+      REAL(KIND=dp)                                      :: energy_quadratic, response_cross
+
+         nrot = SIZE(rotation_step)
+         nener = SIZE(energy_step)
+         CPASSERT(SIZE(rotation_gradient) == nrot)
+         CPASSERT(SIZE(energy_gradient) == nener)
+         CPASSERT(SIZE(response_step) == nener)
+         CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+
+         model_slope = DOT_PRODUCT(rotation_gradient, rotation_step) + &
+                       DOT_PRODUCT(energy_gradient, energy_step)
+         CALL kpoint_ot_mixed_projected_term( &
+            energy_step, energy_step, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+            energy_quadratic)
+         CALL kpoint_ot_mixed_projected_term( &
+            energy_step, response_step, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+            response_cross)
+         model_quadratic = DOT_PRODUCT(rotation_step, MATMUL(rotation_hessian, rotation_step)) + &
+                           energy_quadratic - 2.0_dp*response_cross
+         model_drop = MAX(0.0_dp, model_slope - 0.5_dp*model_quadratic)
+         ready = model_slope == model_slope .AND. model_quadratic == model_quadratic .AND. &
+                 model_drop == model_drop .AND. ABS(model_slope) < HUGE(model_slope) .AND. &
+                 ABS(model_quadratic) < HUGE(model_quadratic) .AND. model_drop < HUGE(model_drop)
+         IF (.NOT. ready) THEN
+            model_slope = 0.0_dp
+            model_quadratic = 0.0_dp
+            model_drop = 0.0_dp
+         END IF
+
+      END SUBROUTINE evaluate_kpoint_ot_projected_coupled_step_model
+
+! **************************************************************************************************
 !> \brief Compare the finite coupled Hessian with the last accepted complex OT vector secant.
 !> \param target_group fixed-N spin group
 !> \param channel_nmo number of local MOs for every global channel
@@ -26494,11 +27066,13 @@ CONTAINS
 !> \param rotation_hessian finite complex rotation block
 !> \param energy_hessian dense fixed-N auxiliary-energy block
 !> \param energy_cross signed rotation/energy cross block
+!> \param energy_response projected fixed-N E^-1 B response used by the active energy solve
+!> \param response_metric fixed-N metric Gram matrix of energy_response
 !> \param residual_delta current fixed-N Mermin residual
 !> \param active_subspace rotations were restricted to the thermal Fermi subspace
 !> \param rotation_hessian_secant accepted-secant rotation candidate
 !> \param rotation_hessian_multisecant compatible two-secant rotation candidate
-!> \param rotation_hessian_reduced_secant full coupled response transported into the analytic Schur block
+!> \param rotation_hessian_reduced_secant direct coupled fixed-N multisecant in the analytic Schur block
 !> \param energy_hessian_multisecant analytic energy block carried by the active candidate
 !> \param energy_cross_multisecant analytic signed cross block carried by the active candidate
 !> \param update_ready whether the candidate passed the physical trust gate
@@ -26508,7 +27082,8 @@ CONTAINS
       SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rotation_hessian, &
-                                                     energy_hessian, energy_cross, residual_delta, &
+                                                     energy_hessian, energy_cross, energy_response, &
+                                                     response_metric, residual_delta, &
                                                      active_subspace, rotation_hessian_secant, &
                                                      rotation_hessian_multisecant, &
                                                      rotation_hessian_reduced_secant, &
@@ -26521,7 +27096,8 @@ CONTAINS
                                                             var_i, var_j, var_kind
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian, &
-                                                            energy_cross
+                                                            energy_cross, energy_response, &
+                                                            response_metric
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta
       LOGICAL, INTENT(IN)                                :: active_subspace
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT) :: rotation_hessian_secant, &
@@ -26535,7 +27111,8 @@ CONTAINS
                                                             local_channel, nener, nmo, nrot, r, &
                                                             valid_i
       LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, coupled_schur_eligible, &
-         coupled_schur_finite, multisecant_finite, previous_valid, update_finite, valid
+         coupled_schur_finite, multisecant_finite, previous_valid, reduced_multisecant_eligible, &
+         reduced_multisecant_finite, update_finite, valid
       REAL(KIND=dp) :: alignment, base_hessian_norm, correction_norm, correction_ratio, &
          coupled_multisecant_compatibility, coupled_multisecant_correction_norm, &
          coupled_multisecant_correction_ratio, coupled_multisecant_cross_correction_ratio, &
@@ -26546,10 +27123,14 @@ CONTAINS
          multisecant_correction_norm
       REAL(KIND=dp) :: multisecant_correction_ratio, multisecant_independence, &
          multisecant_residual_norm, multisecant_updated_residual_norm, orthogonal_fraction, &
+         reduced_multisecant_compatibility, reduced_multisecant_correction_norm, &
+         reduced_multisecant_correction_ratio, reduced_multisecant_independence, &
+         reduced_multisecant_residual_norm, reduced_multisecant_updated_residual_norm, &
          residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
          rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
-         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
-         updated_rotation_residual_norm, y_norm, ynorm
+         rotation_sty, rotation_y_norm, snorm
+      REAL(KIND=dp) :: step_norm, sths, stored_sty, sty, updated_rotation_residual_norm, y_norm, &
+         ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: model_energy, model_rotation, &
          previous_secant_energy, previous_secant_rotation, previous_step_energy, &
          previous_step_rotation, secant_energy, secant_rotation, step_energy, step_rotation, &
@@ -26557,7 +27138,8 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: coupled_energy_cross, coupled_energy_hessian, &
          coupled_rotation_hessian, coupled_rotation_targets, coupled_schur_rotation_hessian, &
          dense_im, dense_re, multisecant_energy_steps, multisecant_energy_targets, &
-         multisecant_rotation_steps, multisecant_rotation_targets, updated_rotation_hessian
+         multisecant_rotation_steps, multisecant_rotation_targets, &
+         reduced_multisecant_rotation_hessian, updated_rotation_hessian
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
@@ -26566,6 +27148,8 @@ CONTAINS
          CPASSERT(ALL(SHAPE(rotation_hessian_reduced_secant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(energy_hessian_multisecant) == SHAPE(energy_hessian)))
          CPASSERT(ALL(SHAPE(energy_cross_multisecant) == SHAPE(energy_cross)))
+         CPASSERT(ALL(SHAPE(energy_response) == SHAPE(energy_cross)))
+         CPASSERT(ALL(SHAPE(response_metric) == SHAPE(rotation_hessian)))
          rotation_hessian_secant(:, :) = rotation_hessian(:, :)
          rotation_hessian_multisecant(:, :) = rotation_hessian(:, :)
          rotation_hessian_reduced_secant(:, :) = rotation_hessian(:, :)
@@ -26814,11 +27398,20 @@ CONTAINS
          coupled_schur_finite = .FALSE.
          coupled_schur_eligible = .FALSE.
          coupled_schur_correction_ratio = 0.0_dp
+         reduced_multisecant_finite = .FALSE.
+         reduced_multisecant_eligible = .FALSE.
+         reduced_multisecant_independence = 0.0_dp
+         reduced_multisecant_compatibility = 0.0_dp
+         reduced_multisecant_correction_norm = 0.0_dp
+         reduced_multisecant_residual_norm = 0.0_dp
+         reduced_multisecant_updated_residual_norm = 0.0_dp
+         reduced_multisecant_correction_ratio = 0.0_dp
          IF (previous_valid) THEN
             ALLOCATE (multisecant_rotation_steps(nrot, 2), multisecant_energy_steps(nener, 2), &
                       multisecant_rotation_targets(nrot, 2), multisecant_energy_targets(nener, 2), &
                       coupled_rotation_targets(nrot, 2), coupled_rotation_hessian(nrot, nrot), &
                       coupled_schur_rotation_hessian(nrot, nrot), &
+                      reduced_multisecant_rotation_hessian(nrot, nrot), &
                       coupled_energy_hessian(nener, nener), coupled_energy_cross(nener, nrot))
             multisecant_rotation_steps(:, 1) = previous_step_rotation(:)
             multisecant_rotation_steps(:, 2) = step_rotation(:)
@@ -26831,6 +27424,27 @@ CONTAINS
                                                         multisecant_energy_steps)
             multisecant_energy_targets(:, 1) = previous_secant_energy(:)
             multisecant_energy_targets(:, 2) = secant_energy(:)
+
+            CALL qs_scf_kp_coupled_reduced_multisecant_update( &
+               rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+               coupled_rotation_targets, multisecant_energy_targets, 1.0_dp, &
+               reduced_multisecant_rotation_hessian, reduced_multisecant_finite, &
+               reduced_multisecant_independence, reduced_multisecant_compatibility, &
+               reduced_multisecant_correction_norm, reduced_multisecant_residual_norm, &
+               reduced_multisecant_updated_residual_norm, reduced_multisecant_correction_ratio, &
+               energy_response, response_metric)
+            reduced_multisecant_eligible = reduced_multisecant_finite .AND. active_subspace .AND. &
+                                           residual_delta <= &
+                                           ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                           reduced_multisecant_independence >= 5.0E-2_dp .AND. &
+                                           reduced_multisecant_compatibility <= 1.0E-1_dp .AND. &
+                                           reduced_multisecant_correction_ratio <= 0.35_dp .AND. &
+                                           local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                           ot_kp_schur_calibration_min_samples .AND. &
+                                           local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
+            reduced_secant_shadow_ready = reduced_multisecant_eligible
+            IF (reduced_secant_shadow_ready) &
+               rotation_hessian_reduced_secant(:, :) = reduced_multisecant_rotation_hessian(:, :)
 
             ! Retain the previously calibrated rotation-only candidate as the
             ! active fallback.  The coupled block below remains a separate
@@ -26877,9 +27491,6 @@ CONTAINS
                                      local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
                                      ot_kp_schur_calibration_min_samples .AND. &
                                      local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
-            reduced_secant_shadow_ready = coupled_schur_eligible
-            IF (reduced_secant_shadow_ready) &
-               rotation_hessian_reduced_secant(:, :) = coupled_schur_rotation_hessian(:, :)
             coupled_multisecant_ready = coupled_multisecant_finite .AND. active_subspace .AND. &
                                         residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
                                         coupled_multisecant_independence >= 5.0E-2_dp .AND. &
@@ -26928,6 +27539,13 @@ CONTAINS
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),1X,ES16.8)') &
             " OT Schur coupled reduced shadow group finite eligible correction ratio:", &
             target_group, coupled_schur_finite, coupled_schur_eligible, coupled_schur_correction_ratio
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),6(1X,ES16.8))') &
+            " OT Schur direct reduced multisecant group finite eligible indep compat rnorm unorm corr cratio:", &
+            target_group, reduced_multisecant_finite, reduced_multisecant_eligible, &
+            reduced_multisecant_independence, reduced_multisecant_compatibility, &
+            reduced_multisecant_residual_norm, reduced_multisecant_updated_residual_norm, &
+            reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio
 
          DEALLOCATE (step_rotation, secant_rotation, model_rotation, &
                      step_energy, secant_energy, model_energy, previous_step_rotation, &
@@ -26937,7 +27555,8 @@ CONTAINS
             DEALLOCATE (multisecant_rotation_steps, multisecant_energy_steps, &
                         multisecant_rotation_targets, multisecant_energy_targets, &
                         coupled_rotation_targets, coupled_rotation_hessian, &
-                        coupled_schur_rotation_hessian, coupled_energy_hessian, coupled_energy_cross)
+                        coupled_schur_rotation_hessian, reduced_multisecant_rotation_hessian, &
+                        coupled_energy_hessian, coupled_energy_cross)
 
       END SUBROUTINE audit_kpoint_ot_vector_secant_model
 
