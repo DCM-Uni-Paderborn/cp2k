@@ -66,7 +66,7 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
         ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
         ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
-        ot_kpoint_secant_geometry
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -149,6 +149,7 @@ PROGRAM qs_ot_frechet_unittest
                                                           5.0E-14_dp, nfail)
    CALL check_linear_energy_direction_projection("linear fixed-N energy direction", &
                                                  5.0E-15_dp, nfail)
+   CALL check_rayleigh_response_scale("fixed-N Rayleigh response scale", 5.0E-15_dp, nfail)
    CALL check_fermi_window_energy_direction("fixed-N Fermi-window energy direction", &
                                             5.0E-13_dp, nfail)
    CALL check_fermi_window_energy_coordinate("independent Fermi-window energy coordinate", &
@@ -2131,6 +2132,50 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_linear_energy_direction_projection
+
+! **************************************************************************************************
+!> \brief Check bounded Rayleigh calibration without imposing an absolute residual floor.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_rayleigh_response_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: err
+
+      err = ABS(ot_kpoint_rayleigh_response_scale(16.0_dp, 4.0_dp, 8.0_dp, 0.999_dp, 0.0_dp) - 2.0_dp)
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(4.0_dp, 16.0_dp, 8.0_dp, &
+                                                           0.999_dp, 0.0_dp) - 0.5_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(64.0_dp, 1.0_dp, 8.0_dp, &
+                                                           0.999_dp, 0.0_dp) - 4.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(1.0_dp, 64.0_dp, 8.0_dp, &
+                                                           0.999_dp, 0.0_dp) - 0.25_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(1.0_dp, 1.0_dp, 0.8_dp, &
+                                                           0.999_dp, 0.0_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(1.0_dp, 1.0_dp, -1.0_dp, &
+                                                           0.999_dp, 0.0_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(0.0_dp, 1.0_dp, 0.0_dp, &
+                                                           0.999_dp, 0.0_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(4.0E-280_dp, 1.0E-280_dp, &
+                                                           2.0E-280_dp, 0.999_dp, 0.0_dp) - 2.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(4.0E-280_dp, 1.0E-280_dp, &
+                                                           2.0E-280_dp, 0.999_dp, 1.0E-279_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(16.0_dp, 4.0_dp, 8.0_dp, &
+                                                           0.99_dp, 0.0_dp) - 1.0_dp))
+      err = MAX(err, ABS(ot_kpoint_rayleigh_response_scale(16.0_dp, 4.0_dp, 8.0_dp, &
+                                                           0.75_dp, 0.0_dp) - 1.0_dp))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (default_output_unit, '(A,1X,ES16.8)') TRIM(label)//" FAILED", err
+      ELSE
+         WRITE (default_output_unit, '(A,1X,ES16.8)') TRIM(label)//" OK with error", err
+      END IF
+
+   END SUBROUTINE check_rayleigh_response_scale
 
 ! **************************************************************************************************
 !> \brief Check affine frontier preservation before a k-point OT line-search direction is sampled.

@@ -56,6 +56,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_mermin_restart_step, &
               ot_kpoint_mermin_shared_spin_group, &
               ot_kpoint_mermin_tail_energy_stagnant, &
+              ot_kpoint_rayleigh_response_scale, &
               ot_kpoint_secant_geometry, &
               ot_mini
 
@@ -97,6 +98,10 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_physical_control_quality = 8.0E-1_dp, &
                                         ot_cg_kp_physical_control_gap = 5.0E-2_dp, &
                                         ot_cg_kp_fermi_line_search_span = 4.0_dp, &
+                                        ot_cg_kp_rayleigh_response_min_alignment = 9.0E-1_dp, &
+                                        ot_cg_kp_rayleigh_response_min_energy_fraction = 9.95E-1_dp, &
+                                        ot_cg_kp_rayleigh_response_min_scale = 2.5E-1_dp, &
+                                        ot_cg_kp_rayleigh_response_max_scale = 4.0_dp, &
                                         ot_cg_kp_residual_trust_min_scale = 1.0E-1_dp, &
                                         ot_cg_kp_residual_trust_quality_floor = 1.0E-4_dp, &
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
@@ -471,6 +476,43 @@ CONTAINS
       END DO
 
    END FUNCTION ot_kpoint_mermin_shared_spin_group
+
+! **************************************************************************************************
+!> \brief calibrate a fixed-N Schur energy response against the exact fixed-orbital Rayleigh target
+!> \param target_norm2 weighted squared norm of the Rayleigh energy correction
+!> \param response_norm2 weighted squared norm of the finite Schur response over the LS span
+!> \param target_response_dot weighted scalar product of target and response
+!> \param energy_fraction fraction of the directional Mermin slope in the energy channel
+!> \param minimum_target_norm2 dimensionally scaled floor for a thermally inactive target
+!> \return bounded least-squares response scale, or one for a non-collinear/invalid response
+! **************************************************************************************************
+   PURE FUNCTION ot_kpoint_rayleigh_response_scale( &
+      target_norm2, response_norm2, target_response_dot, energy_fraction, &
+      minimum_target_norm2) RESULT(scale)
+      REAL(KIND=dp), INTENT(IN)                          :: target_norm2, response_norm2, &
+                                                            target_response_dot, energy_fraction, &
+                                                            minimum_target_norm2
+      REAL(KIND=dp)                                      :: scale
+
+      REAL(KIND=dp)                                      :: alignment, norm_product
+
+      scale = 1.0_dp
+      IF (energy_fraction < ot_cg_kp_rayleigh_response_min_energy_fraction) RETURN
+      IF (target_norm2 <= MAX(0.0_dp, minimum_target_norm2) .OR. response_norm2 <= 0.0_dp) RETURN
+      IF (target_response_dot <= 0.0_dp) RETURN
+      ! Form the product after taking both square roots.  The weighted residual
+      ! norms are dimensionful and can legitimately be far below machine
+      ! epsilon in a tight SCF tail; multiplying them first can also underflow.
+      norm_product = SQRT(target_norm2)*SQRT(response_norm2)
+      IF (norm_product <= 0.0_dp) RETURN
+      alignment = target_response_dot/norm_product
+      IF (alignment < ot_cg_kp_rayleigh_response_min_alignment) RETURN
+
+      scale = target_response_dot/response_norm2
+      scale = MIN(ot_cg_kp_rayleigh_response_max_scale, &
+                  MAX(ot_cg_kp_rayleigh_response_min_scale, scale))
+
+   END FUNCTION ot_kpoint_rayleigh_response_scale
 
 ! **************************************************************************************************
 !> \brief retain a smaller trust radius after a line search returned to its reference point
@@ -1948,9 +1990,11 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: frontier_found
       LOGICAL                                            :: active, has_rayleigh_target
       REAL(KIND=dp) :: alignment, combined_probe_max, coupled_probe, coupled_rms, &
-         frontier_candidate, probe_pos, rayleigh_correction, scale, shift, target_rms, weight
+         frontier_candidate, minimum_target_norm2, norm_product, probe_pos, rayleigh_correction, &
+         scale, shift, slope, target_rms, weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coupled_norm2, direction_max, direction_scale, &
-         frontier_group_scale, frontier_position_max, radius, rayleigh_diag, rayleigh_shift_sum, &
+         energy_slope, fixed_orbital_fraction, frontier_group_scale, frontier_position_max, &
+         orbital_slope, radius, rayleigh_diag, rayleigh_response_scale, rayleigh_shift_sum, &
          rayleigh_target_max, response_sum, target_coupled_dot, target_norm2, weighted_direction
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: frontier_scale
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -1979,15 +2023,19 @@ CONTAINS
          END IF
       END IF
       ALLOCATE (coupled_norm2(ngroups), direction_max(ngroups), direction_scale(ngroups), &
+                energy_slope(ngroups), fixed_orbital_fraction(ngroups), orbital_slope(ngroups), &
                 frontier_group_found(ngroups), frontier_group_scale(ngroups), &
                 frontier_position_max(ngroups), frontier_found(ngroups, nspins), &
                 frontier_scale(ngroups, nspins), &
                 radius(ngroups), rayleigh_shift_sum(ngroups), rayleigh_target_max(ngroups), &
-                response_sum(ngroups), target_coupled_dot(ngroups), target_norm2(ngroups), &
-                weighted_direction(ngroups))
+                rayleigh_response_scale(ngroups), response_sum(ngroups), &
+                target_coupled_dot(ngroups), target_norm2(ngroups), weighted_direction(ngroups))
       coupled_norm2(:) = 0.0_dp
       direction_max(:) = 0.0_dp
       direction_scale(:) = 1.0_dp
+      energy_slope(:) = 0.0_dp
+      fixed_orbital_fraction(:) = 0.0_dp
+      orbital_slope(:) = 0.0_dp
       radius(:) = HUGE(1.0_dp)
       frontier_group_found(:) = 0
       frontier_group_scale(:) = 1.0_dp
@@ -1995,6 +2043,7 @@ CONTAINS
       frontier_found(:, :) = 0
       frontier_scale(:, :) = 0.0_dp
       rayleigh_shift_sum(:) = 0.0_dp
+      rayleigh_response_scale(:) = 1.0_dp
       rayleigh_target_max(:) = 0.0_dp
       response_sum(:) = 0.0_dp
       target_coupled_dot(:) = 0.0_dp
@@ -2056,6 +2105,49 @@ CONTAINS
             shift = weighted_direction(group)/response_sum(group)
          END IF
          qs_ot_env(ispin)%ener_dx(:) = qs_ot_env(ispin)%ener_dx(:) - shift
+      END DO
+
+      ! The Rayleigh target is exact only for fixed orbitals.  Measure that
+      ! asymptotic condition with directional Mermin slopes in the common
+      ! physical energy unit, including both complex rotation channels.
+      DO ispin = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+         group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+         IF (ASSOCIATED(qs_ot_env(ispin)%matrix_gx) .AND. &
+             ASSOCIATED(qs_ot_env(ispin)%matrix_dx)) THEN
+            CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx, qs_ot_env(ispin)%matrix_dx, slope)
+            orbital_slope(group) = orbital_slope(group) + ABS(slope)
+         END IF
+         IF (ASSOCIATED(qs_ot_env(ispin)%matrix_gx_im) .AND. &
+             ASSOCIATED(qs_ot_env(ispin)%matrix_dx_im)) THEN
+            CALL dbcsr_dot(qs_ot_env(ispin)%matrix_gx_im, qs_ot_env(ispin)%matrix_dx_im, slope)
+            orbital_slope(group) = orbital_slope(group) + ABS(slope)
+         END IF
+         IF (ASSOCIATED(qs_ot_env(ispin)%rot_mat_gx) .AND. &
+             ASSOCIATED(qs_ot_env(ispin)%rot_mat_dx)) THEN
+            CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx, qs_ot_env(ispin)%rot_mat_dx, slope)
+            orbital_slope(group) = orbital_slope(group) + 0.5_dp*ABS(slope)
+         END IF
+         IF (ASSOCIATED(qs_ot_env(ispin)%rot_mat_gx_im) .AND. &
+             ASSOCIATED(qs_ot_env(ispin)%rot_mat_dx_im)) THEN
+            CALL dbcsr_dot(qs_ot_env(ispin)%rot_mat_gx_im, qs_ot_env(ispin)%rot_mat_dx_im, slope)
+            orbital_slope(group) = orbital_slope(group) + 0.5_dp*ABS(slope)
+         END IF
+         energy_slope(group) = energy_slope(group) + &
+                               ABS(DOT_PRODUCT(qs_ot_env(ispin)%ener_gx, &
+                                               qs_ot_env(ispin)%ener_dx))
+      END DO
+      IF (PRESENT(para_env_inter_kp)) THEN
+         IF (ASSOCIATED(para_env_inter_kp)) THEN
+            CALL para_env_inter_kp%sum(energy_slope)
+            CALL para_env_inter_kp%sum(orbital_slope)
+         END IF
+      END IF
+      DO group = 1, ngroups
+         IF (energy_slope(group) + orbital_slope(group) > 0.0_dp) THEN
+            fixed_orbital_fraction(group) = energy_slope(group)/ &
+                                            (energy_slope(group) + orbital_slope(group))
+         END IF
       END DO
 
       ! The 2PNT interpolation may place its final sample up to four times
@@ -2150,6 +2242,31 @@ CONTAINS
          END IF
       END IF
 
+      ! The coupled response already has the correct finite-complex direction in
+      ! the fixed-orbital tail. Calibrate only its amplitude so that the complete
+      ! 2PNT search interval reaches the exact fixed-N Rayleigh target. This
+      ! leaves the REF basis and nonlinear-CG history untouched; the ordinary
+      ! Mermin line search still accepts or rejects the resulting direction.
+      IF (fresh_response) THEN
+         DO group = 1, ngroups
+            minimum_target_norm2 = 0.0_dp
+            IF (radius(group) < HUGE(1.0_dp) .AND. response_sum(group) > 0.0_dp) THEN
+               minimum_target_norm2 = response_sum(group)* &
+                                      (SQRT(EPSILON(1.0_dp))*radius(group))**2
+            END IF
+            rayleigh_response_scale(group) = ot_kpoint_rayleigh_response_scale( &
+                                             target_norm2(group), coupled_norm2(group), &
+                                             target_coupled_dot(group), &
+                                             fixed_orbital_fraction(group), minimum_target_norm2)
+         END DO
+         DO ispin = 1, SIZE(qs_ot_env)
+            IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
+            group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
+            qs_ot_env(ispin)%ener_dx(:) = rayleigh_response_scale(group)* &
+                                          qs_ot_env(ispin)%ener_dx(:)
+         END DO
+      END IF
+
       DO ispin = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ispin)%has_complex_kpoint_state) CYCLE
          group = MAX(1, MIN(ngroups, qs_ot_env(ispin)%occupation_group_index))
@@ -2191,23 +2308,27 @@ CONTAINS
             coupled_rms = SQRT(MAX(0.0_dp, coupled_norm2(group))/ &
                                MAX(response_sum(group), EPSILON(response_sum(group))))
             alignment = 0.0_dp
-            IF (target_norm2(group) > EPSILON(target_norm2(group)) .AND. &
-                coupled_norm2(group) > EPSILON(coupled_norm2(group))) THEN
-               alignment = target_coupled_dot(group)/ &
-                           SQRT(target_norm2(group)*coupled_norm2(group))
+            norm_product = SQRT(MAX(0.0_dp, target_norm2(group)))* &
+                           SQRT(MAX(0.0_dp, coupled_norm2(group)))
+            IF (norm_product > 0.0_dp) THEN
+               alignment = target_coupled_dot(group)/norm_product
             END IF
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,10(1X,ES16.8))') &
-               " OT fixed-N Rayleigh response audit group tmax trms srms align smax radius probe response fscale pmax:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,12(1X,ES16.8))') &
+               " OT fixed-N Rayleigh response audit group tmax trms srms align efrac rscale "// &
+               "smax radius probe response fscale pmax:", &
                group, rayleigh_target_max(group), target_rms, coupled_rms, alignment, &
-               combined_probe_max, radius(group), probe_pos, response_sum(group), &
-               frontier_group_scale(group), frontier_position_max(group)
+               fixed_orbital_fraction(group), rayleigh_response_scale(group), combined_probe_max, &
+               radius(group), probe_pos, response_sum(group), frontier_group_scale(group), &
+               frontier_position_max(group)
          END DO
       END IF
 
-      DEALLOCATE (coupled_norm2, direction_max, direction_scale, frontier_found, &
+      DEALLOCATE (coupled_norm2, direction_max, direction_scale, energy_slope, &
+                  fixed_orbital_fraction, frontier_found, &
                   frontier_group_found, frontier_group_scale, frontier_position_max, &
-                  frontier_scale, radius, rayleigh_shift_sum, rayleigh_target_max, response_sum, &
-                  target_coupled_dot, target_norm2, weighted_direction)
+                  frontier_scale, orbital_slope, radius, rayleigh_response_scale, rayleigh_shift_sum, &
+                  rayleigh_target_max, response_sum, target_coupled_dot, target_norm2, &
+                  weighted_direction)
 
    END SUBROUTINE prepare_linear_kpoint_energy_direction
 

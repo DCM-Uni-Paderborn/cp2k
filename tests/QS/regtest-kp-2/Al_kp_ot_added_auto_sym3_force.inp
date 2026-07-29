@@ -4,8 +4,8 @@
 ! TEST_FILES.toml and therefore does not make the default regtest expensive.
 !
 ! The 2026-07 MPI-2 reference converges at EPS_SCF 1E-8 to Mermin
-! F = -8.15998707989847 Ha. The largest force-component difference from a
-! matching diagonalization calculation is 3.7E-7 Ha/bohr.
+! F = -8.15998707537008 Ha. The largest force-component difference from a
+! matching diagonalization calculation is 7.1E-7 Ha/bohr.
 &GLOBAL
   PRINT_LEVEL MEDIUM
   PROJECT Al_kp_ot_added_auto_sym3_converge
