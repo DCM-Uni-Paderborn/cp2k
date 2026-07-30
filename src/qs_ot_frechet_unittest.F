@@ -75,29 +75,33 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
         qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
-        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
-        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
-        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
-        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_affine_correction_model, qs_scf_kp_canonical_density_blend, &
+        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_tether_tail_scale, &
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_measured_residual_subspace_step, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
         qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -256,6 +260,16 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-13_dp, nfail)
    CALL check_kpoint_coupled_multisecant_update("k-point OT coupled multisecant update", &
                                                 5.0E-13_dp, nfail)
+   CALL check_kpoint_reduced_subspace_step("k-point OT reduced secant subspace step", &
+                                           5.0E-13_dp, nfail)
+   CALL check_kpoint_residual_compatible_scale("k-point OT residual-compatible affine scale", &
+                                               5.0E-14_dp, nfail)
+   CALL check_kpoint_affine_correction_model("k-point OT affine correction model", &
+                                             5.0E-15_dp, nfail)
+   CALL check_kpoint_measured_residual_subspace_step( &
+      "k-point OT measured residual subspace step", 5.0E-14_dp, nfail)
+   CALL check_kpoint_mermin_residual_pareto_scale( &
+      "k-point OT Mermin-residual Pareto scale", 5.0E-14_dp, nfail)
    CALL check_kpoint_coupled_step_model("k-point OT coupled accepted-step model", &
                                         5.0E-14_dp, nfail)
    CALL check_kpoint_secant_candidate_promotion("k-point OT secant candidate promotion", nfail)
@@ -6441,6 +6455,272 @@ CONTAINS
    END SUBROUTINE check_kpoint_coupled_multisecant_update
 
 ! **************************************************************************************************
+!> \brief check that the reduced secant solve remains in the measured rotation span
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_reduced_subspace_step(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: rank, shifted_rank
+      LOGICAL                                            :: ready, shifted_ready
+      REAL(KIND=dp) :: error, gradient_fraction, modal_shift, projected_residual, &
+         shifted_gradient_fraction, shifted_modal_curvature, shifted_modal_shift, &
+         shifted_projected_residual
+      REAL(KIND=dp), DIMENSION(4)                        :: coordinate_floor, expected_step, &
+                                                            gradient, shifted_step, step
+      REAL(KIND=dp), DIMENSION(4, 2)                     :: modes
+      REAL(KIND=dp), DIMENSION(4, 4)                     :: hessian, shifted_hessian
+
+      hessian(:, :) = 0.0_dp
+      hessian(1, 1) = 2.0_dp
+      hessian(2, 2) = 2.0_dp
+      hessian(3, 3) = 4.0_dp
+      hessian(4, 4) = 4.0_dp
+      gradient(:) = [2.0_dp, 0.0_dp, 3.0_dp, 4.0_dp]
+      modes(:, 1) = [1.0_dp, 1.0_dp, 0.0_dp, 0.0_dp]
+      modes(:, 2) = [0.0_dp, 0.0_dp, 3.0_dp, 4.0_dp]
+      coordinate_floor(:) = 0.2_dp
+      expected_step(:) = [0.5_dp, 0.5_dp, 0.75_dp, 1.0_dp]
+
+      CALL qs_scf_kp_reduced_subspace_step( &
+         hessian, gradient, modes, coordinate_floor, step, ready, rank, modal_shift, &
+         projected_residual, gradient_fraction)
+      error = MAXVAL(ABS(step - expected_step)) + ABS(modal_shift) + projected_residual + &
+              ABS(gradient_fraction - SQRT(27.0_dp/29.0_dp))
+
+      shifted_hessian(:, :) = hessian(:, :)
+      shifted_hessian(3, 3) = -1.0_dp
+      shifted_hessian(4, 4) = -1.0_dp
+      CALL qs_scf_kp_reduced_subspace_step( &
+         shifted_hessian, gradient, modes, coordinate_floor, shifted_step, shifted_ready, &
+         shifted_rank, shifted_modal_shift, shifted_projected_residual, shifted_gradient_fraction)
+      shifted_modal_curvature = DOT_PRODUCT(modes(:, 2), &
+                                            MATMUL(shifted_hessian, modes(:, 2)))/ &
+                                DOT_PRODUCT(modes(:, 2), modes(:, 2)) + shifted_modal_shift
+      error = error + MAX(0.0_dp, 0.2_dp - shifted_modal_curvature) + &
+              ABS(shifted_gradient_fraction - gradient_fraction) + shifted_projected_residual
+
+      IF (.NOT. ready .OR. .NOT. shifted_ready .OR. rank /= 2 .OR. shifted_rank /= 2 .OR. &
+          shifted_modal_shift <= 0.0_dp .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),2(1X,I3),6(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/shifted/rank/srank/error/shift/gfrac/res/sres/curv", &
+            ready, shifted_ready, rank, shifted_rank, error, shifted_modal_shift, &
+            gradient_fraction, projected_residual, shifted_projected_residual, &
+            shifted_modal_curvature
+      ELSE
+         WRITE (*, '(A,6(1X,ES16.8))') TRIM(label)// &
+            " OK with error/shift/gfrac/res/sres/curv", error, shifted_modal_shift, &
+            gradient_fraction, projected_residual, shifted_projected_residual, &
+            shifted_modal_curvature
+      END IF
+
+   END SUBROUTINE check_kpoint_reduced_subspace_step
+
+! **************************************************************************************************
+!> \brief check the common energy/residual affine correction interval
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_residual_compatible_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: capped_ready, incompatible_ready, ready
+      REAL(KIND=dp) :: capped_optimal, capped_ratio, capped_scale, error, incompatible_optimal, &
+         incompatible_ratio, incompatible_scale, optimal, ratio, scale
+      REAL(KIND=dp), DIMENSION(2)                        :: base_residual, delta_residual
+
+      base_residual(:) = [3.0_dp, 4.0_dp]
+      delta_residual(:) = [-1.0_dp, -2.0_dp]
+      CALL qs_scf_kp_residual_compatible_scale( &
+         base_residual, delta_residual, 3.0_dp, scale, optimal, ratio, ready)
+      CALL qs_scf_kp_residual_compatible_scale( &
+         base_residual, delta_residual, 1.0_dp, capped_scale, capped_optimal, capped_ratio, &
+         capped_ready)
+      CALL qs_scf_kp_residual_compatible_scale( &
+         base_residual, -delta_residual, 1.0_dp, incompatible_scale, incompatible_optimal, &
+         incompatible_ratio, incompatible_ready)
+
+      error = ABS(optimal - 2.2_dp) + ABS(scale - 2.2_dp) + &
+              ABS(ratio - SQRT(0.8_dp)/5.0_dp) + ABS(capped_optimal - 2.2_dp) + &
+              ABS(capped_scale - 1.0_dp) + ABS(capped_ratio - SQRT(8.0_dp)/5.0_dp) + &
+              ABS(incompatible_optimal + 2.2_dp) + ABS(incompatible_scale) + &
+              ABS(incompatible_ratio - 1.0_dp)
+      IF (.NOT. ready .OR. .NOT. capped_ready .OR. incompatible_ready .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,3(1X,L1),10(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/capped/incompatible/error/scale/optimal/ratio/"// &
+            " cscale/coptimal/cratio/iscale/ioptimal/iratio", &
+            ready, capped_ready, incompatible_ready, error, scale, optimal, ratio, capped_scale, &
+            capped_optimal, capped_ratio, incompatible_scale, incompatible_optimal, &
+            incompatible_ratio
+      ELSE
+         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
+            " OK with error/scale/optimal/ratio/cscale/cratio/ioptimal", &
+            error, scale, optimal, ratio, capped_scale, capped_ratio, incompatible_optimal
+      END IF
+
+   END SUBROUTINE check_kpoint_residual_compatible_scale
+
+! **************************************************************************************************
+!> \brief check that a reduced correction preserves the established quadratic base model
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_affine_correction_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: ready, rejected, zero_ready
+      REAL(KIND=dp) :: drop, error, increment, quadratic, rejected_drop, rejected_increment, &
+         rejected_quadratic, rejected_slope, slope, zero_drop, zero_increment, zero_quadratic, &
+         zero_slope
+
+      CALL qs_scf_kp_affine_correction_model( &
+         5.0_dp, 2.0_dp, 1.5_dp, 0.8_dp, -0.25_dp, 0.4_dp, &
+         slope, quadratic, drop, increment, ready)
+      CALL qs_scf_kp_affine_correction_model( &
+         5.0_dp, 2.0_dp, 1.5_dp, 0.8_dp, -0.25_dp, 0.0_dp, &
+         zero_slope, zero_quadratic, zero_drop, zero_increment, zero_ready)
+      CALL qs_scf_kp_affine_correction_model( &
+         5.0_dp, 2.0_dp, 1.5_dp, 0.8_dp, -0.25_dp, -0.1_dp, &
+         rejected_slope, rejected_quadratic, rejected_drop, rejected_increment, rejected)
+      error = ABS(slope - 5.6_dp) + ABS(quadratic - 1.928_dp) + &
+              ABS(drop - 4.636_dp) + ABS(increment - 0.636_dp) + &
+              ABS(zero_slope - 5.0_dp) + ABS(zero_quadratic - 2.0_dp) + &
+              ABS(zero_drop - 4.0_dp) + ABS(zero_increment) + ABS(rejected_slope) + &
+              ABS(rejected_quadratic) + ABS(rejected_drop) + ABS(rejected_increment)
+      IF (.NOT. ready .OR. .NOT. zero_ready .OR. rejected .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,3(1X,L1),5(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/zero/rejected/error/slope/quad/drop/increment", &
+            ready, zero_ready, rejected, error, slope, quadratic, drop, increment
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
+            " OK with error/slope/quad/drop/increment", error, slope, quadratic, drop, increment
+      END IF
+
+   END SUBROUTINE check_kpoint_affine_correction_model
+
+! **************************************************************************************************
+!> \brief check that measured response targets define the residual-minimizing coordinate step
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_measured_residual_subspace_step(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: rank, singular_rank, weighted_rank
+      LOGICAL                                            :: ready, singular_ready, weighted_ready
+      REAL(KIND=dp)                                      :: captured, error, ratio, &
+                                                            singular_capture, singular_ratio, &
+                                                            weighted_capture, weighted_ratio
+      REAL(KIND=dp), DIMENSION(3) :: expected_step, reduction, residual, singular_reduction, &
+         singular_step, step, weighted_expected_step, weighted_reduction, weighted_residual, &
+         weighted_step, weights
+      REAL(KIND=dp), DIMENSION(3, 2)                     :: modes, singular_targets, targets, &
+                                                            weighted_modes, weighted_targets
+
+      residual(:) = [3.0_dp, 4.0_dp, 5.0_dp]
+      weights(:) = 1.0_dp
+      modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp]
+      modes(:, 2) = [0.0_dp, 0.5_dp, 0.0_dp]
+      targets(:, 1) = [1.0_dp, 0.0_dp, 0.0_dp]
+      targets(:, 2) = [0.0_dp, 2.0_dp, 0.0_dp]
+      expected_step(:) = [6.0_dp, 1.0_dp, 0.0_dp]
+      CALL qs_scf_kp_measured_residual_subspace_step( &
+         residual, modes, targets, weights, step, reduction, ready, rank, ratio, captured)
+
+      singular_targets(:, 1) = targets(:, 1)
+      singular_targets(:, 2) = 2.0_dp*targets(:, 1)
+      CALL qs_scf_kp_measured_residual_subspace_step( &
+         residual, modes, singular_targets, weights, singular_step, singular_reduction, &
+         singular_ready, singular_rank, singular_ratio, singular_capture)
+
+      weighted_residual(:) = [10.0_dp, 1.0_dp, 0.0_dp]
+      weights(:) = [0.01_dp, 1.0_dp, 1.0_dp]
+      weighted_modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp]
+      weighted_modes(:, 2) = 0.0_dp
+      weighted_targets(:, 1) = [1.0_dp, 1.0_dp, 0.0_dp]
+      weighted_targets(:, 2) = 0.0_dp
+      weighted_expected_step(:) = [220.0_dp/101.0_dp, 0.0_dp, 0.0_dp]
+      CALL qs_scf_kp_measured_residual_subspace_step( &
+         weighted_residual, weighted_modes, weighted_targets, weights, weighted_step, &
+         weighted_reduction, weighted_ready, weighted_rank, weighted_ratio, weighted_capture)
+      error = MAXVAL(ABS(step - expected_step)) + ABS(ratio - 1.0_dp/SQRT(2.0_dp)) + &
+              ABS(captured - 1.0_dp/SQRT(2.0_dp)) + &
+              MAXVAL(ABS(reduction - [3.0_dp, 4.0_dp, 0.0_dp])) + &
+              MAXVAL(ABS(singular_step)) + MAXVAL(ABS(singular_reduction)) + &
+              ABS(singular_ratio - 1.0_dp) + ABS(singular_capture) + &
+              MAXVAL(ABS(weighted_step - weighted_expected_step)) + &
+              MAXVAL(ABS(weighted_reduction - [110.0_dp/101.0_dp, &
+                                               110.0_dp/101.0_dp, 0.0_dp])) + &
+              ABS(weighted_ratio - SQRT(8181.0_dp/20402.0_dp)) + &
+              ABS(weighted_capture - SQRT(1.0_dp - 8181.0_dp/20402.0_dp))
+      IF (.NOT. ready .OR. singular_ready .OR. .NOT. weighted_ready .OR. rank /= 2 .OR. &
+          weighted_rank /= 1 .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,3(1X,L1),3(1X,I3),7(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/singular/weighted/rank/srank/wrank/error/ratio/captured/ "// &
+            "sratio/scaptured/wratio/wcaptured", &
+            ready, singular_ready, weighted_ready, rank, singular_rank, weighted_rank, error, ratio, &
+            captured, singular_ratio, singular_capture, weighted_ratio, weighted_capture
+      ELSE
+         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
+            " OK with error/ratio/captured/sratio/scaptured/wratio/wcaptured", &
+            error, ratio, captured, singular_ratio, singular_capture, weighted_ratio, weighted_capture
+      END IF
+
+   END SUBROUTINE check_kpoint_measured_residual_subspace_step
+
+! **************************************************************************************************
+!> \brief check the constrained residual scale at a prescribed retained Mermin decrease
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_residual_pareto_scale(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: capped_ready, ready
+      REAL(KIND=dp)                                      :: capped_drop, capped_scale, drop, error, &
+                                                            expected_scale, scale
+
+      expected_scale = (0.2_dp + SQRT(0.44_dp))/2.0_dp
+      CALL qs_scf_kp_mermin_residual_pareto_scale( &
+         1.0_dp, 0.2_dp, 2.0_dp, 1.0_dp, 0.9_dp, scale, drop, ready)
+      CALL qs_scf_kp_mermin_residual_pareto_scale( &
+         1.0_dp, 0.2_dp, 2.0_dp, 0.1_dp, 0.9_dp, capped_scale, capped_drop, capped_ready)
+      error = ABS(scale - expected_scale) + ABS(drop - 0.9_dp) + &
+              ABS(capped_scale - 0.1_dp) + ABS(capped_drop - 1.01_dp)
+      IF (.NOT. ready .OR. .NOT. capped_ready .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),5(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/capped/error/scale/drop/cscale/cdrop", &
+            ready, capped_ready, error, scale, drop, capped_scale, capped_drop
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
+            " OK with error/scale/drop/cscale/cdrop", &
+            error, scale, drop, capped_scale, capped_drop
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_residual_pareto_scale
+
+! **************************************************************************************************
 !> \brief check the fixed-N coupled quadratic model on an accepted rotation/energy step
 !> \param label ...
 !> \param tol ...
@@ -6536,8 +6816,8 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: bad_drop, bad_recent, bad_residual, &
-                                                            good, young, zero_drop
+      LOGICAL :: bad_drop, bad_recent, bad_residual, good, probe, probe_bad_drop, &
+         probe_bad_residual, probe_bad_sample, probe_bad_trust, young, zero_drop
 
       good = qs_scf_kp_secant_candidate_promoted(3, 3, 4.0_dp, 3.0_dp, &
                                                  0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
@@ -6551,10 +6831,21 @@ CONTAINS
                                                          0.75_dp, 0.80_dp, 0.10_dp, 0.25_dp)
       zero_drop = qs_scf_kp_secant_candidate_promoted(3, 3, 0.0_dp, 0.0_dp, &
                                                       0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
+      probe = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.95_dp, 0.85_dp, 1.1_dp, 1.0_dp)
+      probe_bad_sample = qs_scf_kp_secant_bootstrap_probe(1, .TRUE., 0.95_dp, 0.85_dp, 1.1_dp, 1.0_dp)
+      probe_bad_trust = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.85_dp, 0.85_dp, 1.1_dp, 1.0_dp)
+      probe_bad_residual = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.95_dp, 0.91_dp, 1.1_dp, 1.0_dp)
+      probe_bad_drop = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.95_dp, 0.85_dp, 0.9_dp, 1.0_dp)
       IF (.NOT. good .OR. young .OR. bad_drop .OR. bad_recent .OR. bad_residual .OR. zero_drop) THEN
          nfail = nfail + 1
          WRITE (*, '(A,6(1X,L1))') TRIM(label)//" FAILED with good/young/drop/recent/residual/zero", &
             good, young, bad_drop, bad_recent, bad_residual, zero_drop
+      ELSE IF (.NOT. probe .OR. probe_bad_sample .OR. probe_bad_trust .OR. &
+               probe_bad_residual .OR. probe_bad_drop) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,5(1X,L1))') TRIM(label)// &
+            " FAILED with probe/sample/trust/residual/drop", probe, probe_bad_sample, &
+            probe_bad_trust, probe_bad_residual, probe_bad_drop
       ELSE
          WRITE (*, '(A)') TRIM(label)//" OK"
       END IF
