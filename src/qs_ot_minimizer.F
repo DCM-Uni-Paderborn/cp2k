@@ -1141,10 +1141,9 @@ CONTAINS
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_quality_ema)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_gap)
       CALL para_env%bcast(qs_ot_env(1)%mermin_ls_accepted_gap_ema)
-      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_component_slope_valid)
-      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_matrix_slope)
-      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_rotation_slope)
-      CALL para_env%bcast(qs_ot_env(1)%mermin_ls_energy_slope)
+      ! Mermin component slopes are channel-local endpoint data.  Broadcasting
+      ! channel one here replaces the other irreducible-k-point contributions
+      ! before the accepted-secant audit sums them.
       CALL para_env%bcast(qs_ot_env(1)%delta)
       CALL para_env%bcast(qs_ot_env(1)%gnorm)
       CALL para_env%bcast(qs_ot_env(1)%gnorm_old)
