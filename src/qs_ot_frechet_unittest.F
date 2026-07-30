@@ -81,24 +81,26 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
         qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_indefinite_residual_balanced_step, &
+        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_scale, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_step, &
         qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
         qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
@@ -266,8 +268,13 @@ PROGRAM qs_ot_frechet_unittest
                                                 5.0E-13_dp, nfail)
    CALL check_kpoint_coupled_secant_prediction("k-point OT coupled secant prediction", &
                                                5.0E-13_dp, nfail)
+   CALL check_kpoint_reduced_secant_prediction("k-point OT reduced secant prediction", &
+                                               5.0E-13_dp, nfail)
+   CALL check_kpoint_coupled_prediction_gate("k-point OT coupled prediction gate", nfail)
    CALL check_kpoint_reduced_subspace_step("k-point OT reduced secant subspace step", &
                                            5.0E-13_dp, nfail)
+   CALL check_kpoint_indefinite_residual_balanced_step( &
+      "k-point OT indefinite residual-balanced step", 5.0E-13_dp, nfail)
    CALL check_kpoint_residual_compatible_scale("k-point OT residual-compatible affine scale", &
                                                5.0E-14_dp, nfail)
    CALL check_kpoint_affine_correction_model("k-point OT affine correction model", &
@@ -6692,6 +6699,116 @@ CONTAINS
    END SUBROUTINE check_kpoint_coupled_secant_prediction
 
 ! **************************************************************************************************
+!> \brief check that reduced prediction retains physical curvature and rejects energy-coordinate scale
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_reduced_secant_prediction(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp) :: alignment, capture, curvature, curvature_ratio, error, overlap, &
+         predicted_residual_norm, quality, residual_norm, scaled_alignment, scaled_capture, &
+         scaled_curvature, scaled_curvature_ratio, scaled_overlap, scaled_predicted_residual_norm, &
+         scaled_quality, scaled_residual_norm
+      REAL(KIND=dp), DIMENSION(1) :: training_energy_target, training_rotation_step, &
+         training_rotation_target, validation_energy_target, validation_rotation_step, &
+         validation_rotation_target
+      REAL(KIND=dp), DIMENSION(1, 1) :: energy_response, response_metric, rotation_hessian, &
+         scaled_updated_rotation_hessian, updated_rotation_hessian
+
+      rotation_hessian(1, 1) = 1.2_dp
+      response_metric(1, 1) = 0.2_dp
+      energy_response(1, 1) = 0.5_dp
+      training_rotation_step(1) = 1.0_dp
+      training_energy_target(1) = 0.2_dp
+      training_rotation_target(1) = 1.3_dp
+      validation_rotation_step(1) = 0.5_dp
+      validation_energy_target(1) = -0.1_dp
+      validation_rotation_target(1) = 0.75_dp
+
+      CALL qs_scf_kp_reduced_secant_prediction( &
+         rotation_hessian, response_metric, energy_response, training_rotation_step, &
+         training_rotation_target, training_energy_target, validation_rotation_step, &
+         validation_rotation_target, validation_energy_target, updated_rotation_hessian, ready, &
+         overlap, capture, quality, alignment, curvature_ratio, residual_norm, &
+         predicted_residual_norm, curvature)
+      CALL qs_scf_kp_reduced_secant_prediction( &
+         rotation_hessian, response_metric, energy_coordinate_scale*energy_response, &
+         training_rotation_step, training_rotation_target, &
+         training_energy_target/energy_coordinate_scale, validation_rotation_step, &
+         validation_rotation_target, validation_energy_target/energy_coordinate_scale, &
+         scaled_updated_rotation_hessian, scaled_ready, scaled_overlap, scaled_capture, &
+         scaled_quality, scaled_alignment, scaled_curvature_ratio, scaled_residual_norm, &
+         scaled_predicted_residual_norm, scaled_curvature)
+      error = ABS(updated_rotation_hessian(1, 1) - 1.6_dp) + &
+              ABS(scaled_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
+              ABS(overlap - 1.0_dp) + ABS(capture - 1.0_dp) + ABS(quality - 1.0_dp) + &
+              ABS(alignment - 1.0_dp) + ABS(curvature_ratio - 1.0_dp) + &
+              predicted_residual_norm + ABS(curvature - 0.4_dp) + &
+              ABS(scaled_overlap - overlap) + ABS(scaled_capture - capture) + &
+              ABS(scaled_quality - quality) + ABS(scaled_alignment - alignment) + &
+              ABS(scaled_curvature_ratio - curvature_ratio) + &
+              ABS(scaled_residual_norm - residual_norm) + &
+              ABS(scaled_predicted_residual_norm - predicted_residual_norm) + &
+              ABS(scaled_curvature - curvature)
+
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. residual_norm <= 0.0_dp .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),8(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/error/overlap/capture/quality/alignment/cratio/residual/predicted", &
+            ready, scaled_ready, error, overlap, capture, quality, alignment, curvature_ratio, &
+            residual_norm, predicted_residual_norm
+      ELSE
+         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
+            " OK with error/overlap/capture/quality/alignment/cratio/residual", &
+            error, overlap, capture, quality, alignment, curvature_ratio, residual_norm
+      END IF
+
+   END SUBROUTINE check_kpoint_reduced_secant_prediction
+
+! **************************************************************************************************
+!> \brief check that a coupled response candidate needs persistent bidirectional evidence
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_coupled_prediction_gate(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: bad_curvature, bad_response, bad_tail, &
+                                                            good
+
+      good = qs_scf_kp_coupled_prediction_consistent( &
+             .TRUE., .TRUE., .TRUE., 5.0E-5_dp, 0.995_dp, 0.992_dp, 0.75_dp, 0.72_dp, &
+             0.62_dp, 0.58_dp, 0.70_dp, 0.68_dp, 0.78_dp, 0.75_dp, 1.08_dp, 0.93_dp)
+      bad_response = qs_scf_kp_coupled_prediction_consistent( &
+                     .TRUE., .TRUE., .TRUE., 5.0E-5_dp, 0.995_dp, 0.992_dp, 0.75_dp, 0.72_dp, &
+                     0.62_dp, 0.49_dp, 0.70_dp, 0.68_dp, 0.78_dp, 0.75_dp, 1.08_dp, 0.93_dp)
+      bad_curvature = qs_scf_kp_coupled_prediction_consistent( &
+                      .TRUE., .TRUE., .TRUE., 5.0E-5_dp, 0.995_dp, 0.992_dp, 0.75_dp, 0.72_dp, &
+                      0.62_dp, 0.58_dp, 0.70_dp, 0.68_dp, 0.78_dp, 0.75_dp, 1.45_dp, 0.69_dp)
+      bad_tail = qs_scf_kp_coupled_prediction_consistent( &
+                 .TRUE., .TRUE., .TRUE., 2.0E-4_dp, 0.995_dp, 0.992_dp, 0.75_dp, 0.72_dp, &
+                 0.62_dp, 0.58_dp, 0.70_dp, 0.68_dp, 0.78_dp, 0.75_dp, 1.08_dp, 0.93_dp)
+
+      IF (.NOT. good .OR. bad_response .OR. bad_curvature .OR. bad_tail) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,4(1X,L1))') TRIM(label)// &
+            " FAILED with good/bad_response/bad_curvature/bad_tail", &
+            good, bad_response, bad_curvature, bad_tail
+      ELSE
+         WRITE (*, '(A)') TRIM(label)//" OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_coupled_prediction_gate
+
+! **************************************************************************************************
 !> \brief check that the reduced secant solve remains in the measured rotation span
 !> \param label ...
 !> \param tol ...
@@ -6757,6 +6874,75 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_reduced_subspace_step
+
+! **************************************************************************************************
+!> \brief Check sign-aware negative-curvature use against an established residual reference.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_indefinite_residual_balanced_step(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp) :: error, negative_fraction, negative_scale, predicted_ratio, reference_ratio, &
+         scaled_negative_fraction, scaled_negative_scale, scaled_predicted_ratio, &
+         scaled_reference_ratio
+      REAL(KIND=dp), DIMENSION(n) :: coordinate_floor, gradient, reference_step, scale, &
+         scaled_coordinate_floor, scaled_gradient, scaled_reference_step, scaled_step, step
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian, scaled_hessian
+
+      hessian(:, :) = 0.0_dp
+      hessian(1, 1) = 2.0_dp
+      hessian(2, 2) = -1.0_dp
+      hessian(3, 3) = 0.5_dp
+      gradient(:) = [1.0_dp, 1.0_dp, 0.5_dp]
+      coordinate_floor(:) = 0.1_dp
+      reference_step(:) = [0.5_dp, 0.0_dp, 0.5_dp]
+      CALL qs_scf_kp_indefinite_residual_balanced_step( &
+         hessian, gradient, coordinate_floor, reference_step, step, ready, negative_scale, &
+         negative_fraction, predicted_ratio, reference_ratio)
+
+      SCALE(:) = [1.0_dp, 7.0_dp, 0.25_dp]
+      scaled_hessian(:, :) = hessian
+      scaled_hessian(1, :) = SCALE(1)*scaled_hessian(1, :)
+      scaled_hessian(2, :) = SCALE(2)*scaled_hessian(2, :)
+      scaled_hessian(3, :) = SCALE(3)*scaled_hessian(3, :)
+      scaled_hessian(:, 1) = SCALE(1)*scaled_hessian(:, 1)
+      scaled_hessian(:, 2) = SCALE(2)*scaled_hessian(:, 2)
+      scaled_hessian(:, 3) = SCALE(3)*scaled_hessian(:, 3)
+      scaled_gradient(:) = scale*gradient
+      scaled_coordinate_floor(:) = scale**2*coordinate_floor
+      scaled_reference_step(:) = reference_step/scale
+      CALL qs_scf_kp_indefinite_residual_balanced_step( &
+         scaled_hessian, scaled_gradient, scaled_coordinate_floor, scaled_reference_step, &
+         scaled_step, scaled_ready, scaled_negative_scale, scaled_negative_fraction, &
+         scaled_predicted_ratio, scaled_reference_ratio)
+
+      error = MAXVAL(ABS(step - scale*scaled_step)) + &
+              ABS(negative_scale - scaled_negative_scale) + &
+              ABS(negative_fraction - scaled_negative_fraction) + &
+              ABS(predicted_ratio - scaled_predicted_ratio) + &
+              ABS(reference_ratio - scaled_reference_ratio) + &
+              ABS(predicted_ratio - reference_ratio)
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. negative_scale <= tol .OR. &
+          negative_scale >= 1.0_dp - tol .OR. negative_fraction <= tol .OR. &
+          predicted_ratio > 1.0_dp + tol .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),5(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/error/nscale/nfrac/pred/ref", ready, scaled_ready, error, &
+            negative_scale, negative_fraction, predicted_ratio, reference_ratio
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
+            " OK with error/nscale/nfrac/pred/ref", error, negative_scale, negative_fraction, &
+            predicted_ratio, reference_ratio
+      END IF
+
+   END SUBROUTINE check_kpoint_indefinite_residual_balanced_step
 
 ! **************************************************************************************************
 !> \brief check the common energy/residual affine correction interval
@@ -25446,6 +25632,8 @@ CONTAINS
       ot_env%schur_model_slope = 2.5_dp
       ot_env%schur_model_quadratic = 1.0_dp
       ot_env%schur_model_quality_samples = 6
+      ot_env%schur_prediction_pending = .TRUE.
+      ot_env%schur_prediction_drop = 0.6_dp
       ot_env%schur_reduced_secant_pending = .TRUE.
       ot_env%schur_reduced_secant_drop = 0.8_dp
       ot_env%schur_reduced_secant_model_groups = 2
@@ -25469,6 +25657,7 @@ CONTAINS
               ABS(ot_env%schur_model_drop) + ABS(ot_env%schur_model_slope) + &
               ABS(ot_env%schur_model_quadratic) + &
               ABS(REAL(ot_env%schur_model_quality_samples, KIND=dp)) + &
+              ABS(ot_env%schur_prediction_drop) + &
               ABS(ot_env%schur_reduced_secant_drop) + &
               ABS(REAL(ot_env%schur_reduced_secant_model_groups, KIND=dp)) + &
               ABS(REAL(ot_env%schur_reduced_secant_selected_groups, KIND=dp)) + &
@@ -25481,13 +25670,14 @@ CONTAINS
               ABS(ot_env%schur_projector_physical_selected_quality_line_ema) + &
               ABS(REAL(ot_env%schur_closure_response_samples, KIND=dp)) + &
               ABS(ot_env%schur_closure_response_quality_ema)
-      IF (ot_env%schur_model_pending .OR. ot_env%schur_closure_response_pending .OR. &
+      IF (ot_env%schur_model_pending .OR. ot_env%schur_prediction_pending .OR. &
+          ot_env%schur_closure_response_pending .OR. &
           ot_env%schur_reduced_secant_pending .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,L1),1X,ES12.5)') TRIM(label), &
-            "failed with pending/pending-closure/pending-reduced/error", &
-            ot_env%schur_model_pending, ot_env%schur_closure_response_pending, &
-            ot_env%schur_reduced_secant_pending, error
+         WRITE (*, '(A,1X,A,4(1X,L1),1X,ES12.5)') TRIM(label), &
+            "failed with pending/pending-prediction/pending-closure/pending-reduced/error", &
+            ot_env%schur_model_pending, ot_env%schur_prediction_pending, &
+            ot_env%schur_closure_response_pending, ot_env%schur_reduced_secant_pending, error
       ELSE
          WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
       END IF
