@@ -75,21 +75,21 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
         qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
-        qs_scf_kp_affine_correction_model, qs_scf_kp_canonical_density_blend, &
-        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
-        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
-        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_tether_tail_scale, &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_affine_correction_model, qs_scf_kp_affine_residual_quality, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
+        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
+        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_measured_residual_subspace_step, &
@@ -99,9 +99,9 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_subspace_step, &
         qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -265,6 +265,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_residual_compatible_scale("k-point OT residual-compatible affine scale", &
                                                5.0E-14_dp, nfail)
    CALL check_kpoint_affine_correction_model("k-point OT affine correction model", &
+                                             5.0E-15_dp, nfail)
+   CALL check_kpoint_affine_residual_quality("k-point OT accepted affine residual quality", &
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_measured_residual_subspace_step( &
       "k-point OT measured residual subspace step", 5.0E-14_dp, nfail)
@@ -6612,6 +6614,60 @@ CONTAINS
    END SUBROUTINE check_kpoint_affine_correction_model
 
 ! **************************************************************************************************
+!> \brief check accepted-position calibration of an affine physical residual model
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_affine_residual_quality(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: exact_ready, partial_ready, &
+                                                            rejected_increase, rejected_zero
+      REAL(KIND=dp) :: actual_ratio, error, expected_ratio, partial_actual_norm, &
+         partial_actual_ratio, partial_predicted_ratio, partial_quality, predicted_ratio, quality, &
+         rejected_actual_ratio, rejected_predicted_ratio, rejected_quality, zero_actual_ratio, &
+         zero_predicted_ratio, zero_quality
+
+      expected_ratio = SQRT(15.25_dp)/5.0_dp
+      CALL qs_scf_kp_affine_residual_quality( &
+         25.0_dp, -11.0_dp, 5.0_dp, 0.5_dp, 15.25_dp, predicted_ratio, actual_ratio, quality, &
+         exact_ready)
+      partial_actual_norm = 5.0_dp - 0.5_dp*(5.0_dp - SQRT(15.25_dp))
+      CALL qs_scf_kp_affine_residual_quality( &
+         25.0_dp, -11.0_dp, 5.0_dp, 0.5_dp, partial_actual_norm**2, &
+         partial_predicted_ratio, partial_actual_ratio, partial_quality, partial_ready)
+      CALL qs_scf_kp_affine_residual_quality( &
+         25.0_dp, 1.0_dp, 5.0_dp, 0.5_dp, 25.0_dp, rejected_predicted_ratio, &
+         rejected_actual_ratio, rejected_quality, rejected_increase)
+      CALL qs_scf_kp_affine_residual_quality( &
+         25.0_dp, -11.0_dp, 5.0_dp, 0.0_dp, 25.0_dp, zero_predicted_ratio, zero_actual_ratio, &
+         zero_quality, rejected_zero)
+      error = ABS(predicted_ratio - expected_ratio) + ABS(actual_ratio - expected_ratio) + &
+              ABS(quality - 1.0_dp) + ABS(partial_predicted_ratio - expected_ratio) + &
+              ABS(partial_actual_ratio - partial_actual_norm/5.0_dp) + &
+              ABS(partial_quality - 0.5_dp) + ABS(rejected_predicted_ratio - 1.0_dp) + &
+              ABS(rejected_actual_ratio - 1.0_dp) + ABS(rejected_quality) + &
+              ABS(zero_predicted_ratio - 1.0_dp) + ABS(zero_actual_ratio - 1.0_dp) + &
+              ABS(zero_quality)
+      IF (.NOT. exact_ready .OR. .NOT. partial_ready .OR. rejected_increase .OR. rejected_zero .OR. &
+          error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,4(1X,L1),5(1X,ES16.8))') TRIM(label)// &
+            " FAILED with exact/partial/increase/zero/error/pred/actual/q/pq", &
+            exact_ready, partial_ready, rejected_increase, rejected_zero, error, predicted_ratio, &
+            actual_ratio, quality, partial_quality
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
+            " OK with error/predicted/actual/quality/partial", &
+            error, predicted_ratio, actual_ratio, quality, partial_quality
+      END IF
+
+   END SUBROUTINE check_kpoint_affine_residual_quality
+
+! **************************************************************************************************
 !> \brief check that measured response targets define the residual-minimizing coordinate step
 !> \param label ...
 !> \param tol ...
@@ -6816,8 +6872,9 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL :: bad_drop, bad_recent, bad_residual, good, probe, probe_bad_drop, &
-         probe_bad_residual, probe_bad_sample, probe_bad_trust, young, zero_drop
+      LOGICAL :: bad_drop, bad_recent, bad_residual, calibration, calibration_bad_drop, &
+         calibration_bad_quality, calibration_bad_residual, calibration_complete, good, probe, &
+         probe_bad_drop, probe_bad_residual, probe_bad_sample, probe_bad_trust, young, zero_drop
 
       good = qs_scf_kp_secant_candidate_promoted(3, 3, 4.0_dp, 3.0_dp, &
                                                  0.75_dp, 0.80_dp, 0.60_dp, 0.25_dp)
@@ -6836,6 +6893,21 @@ CONTAINS
       probe_bad_trust = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.85_dp, 0.85_dp, 1.1_dp, 1.0_dp)
       probe_bad_residual = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.95_dp, 0.91_dp, 1.1_dp, 1.0_dp)
       probe_bad_drop = qs_scf_kp_secant_bootstrap_probe(0, .TRUE., 0.95_dp, 0.85_dp, 0.9_dp, 1.0_dp)
+      calibration = qs_scf_kp_secant_calibration_probe( &
+                    1, 4, .TRUE., 0.26_dp, 0.26_dp, 1.0_dp, 1.0_dp, 0.95_dp, 0.85_dp, &
+                    1.1_dp, 1.0_dp, 0.25_dp)
+      calibration_bad_quality = qs_scf_kp_secant_calibration_probe( &
+                                1, 4, .TRUE., 0.24_dp, 0.26_dp, 1.0_dp, 1.0_dp, 0.95_dp, 0.85_dp, &
+                                1.1_dp, 1.0_dp, 0.25_dp)
+      calibration_bad_residual = qs_scf_kp_secant_calibration_probe( &
+                                 1, 4, .TRUE., 0.26_dp, 0.26_dp, 0.20_dp, 1.0_dp, 0.95_dp, 0.85_dp, &
+                                 1.1_dp, 1.0_dp, 0.25_dp)
+      calibration_bad_drop = qs_scf_kp_secant_calibration_probe( &
+                             1, 4, .TRUE., 0.26_dp, 0.26_dp, 1.0_dp, 1.0_dp, 0.95_dp, 0.85_dp, &
+                             0.9_dp, 1.0_dp, 0.25_dp)
+      calibration_complete = qs_scf_kp_secant_calibration_probe( &
+                             4, 4, .TRUE., 0.26_dp, 0.26_dp, 1.0_dp, 1.0_dp, 0.95_dp, 0.85_dp, &
+                             1.1_dp, 1.0_dp, 0.25_dp)
       IF (.NOT. good .OR. young .OR. bad_drop .OR. bad_recent .OR. bad_residual .OR. zero_drop) THEN
          nfail = nfail + 1
          WRITE (*, '(A,6(1X,L1))') TRIM(label)//" FAILED with good/young/drop/recent/residual/zero", &
@@ -6846,6 +6918,13 @@ CONTAINS
          WRITE (*, '(A,5(1X,L1))') TRIM(label)// &
             " FAILED with probe/sample/trust/residual/drop", probe, probe_bad_sample, &
             probe_bad_trust, probe_bad_residual, probe_bad_drop
+      ELSE IF (.NOT. calibration .OR. calibration_bad_quality .OR. calibration_bad_residual .OR. &
+               calibration_bad_drop .OR. calibration_complete) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,5(1X,L1))') TRIM(label)// &
+            " FAILED with calibration/quality/residual/drop/complete", calibration, &
+            calibration_bad_quality, calibration_bad_residual, calibration_bad_drop, &
+            calibration_complete
       ELSE
          WRITE (*, '(A)') TRIM(label)//" OK"
       END IF
@@ -25096,6 +25175,13 @@ CONTAINS
       ot_env%schur_model_slope = 2.5_dp
       ot_env%schur_model_quadratic = 1.0_dp
       ot_env%schur_model_quality_samples = 6
+      ot_env%schur_reduced_secant_pending = .TRUE.
+      ot_env%schur_reduced_secant_drop = 0.8_dp
+      ot_env%schur_reduced_secant_model_groups = 2
+      ot_env%schur_reduced_secant_selected_groups = 2
+      ot_env%schur_reduced_secant_rot_residual_start_sq = 3.0_dp
+      ot_env%schur_reduced_secant_rot_residual_delta_dot = -1.0_dp
+      ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.5_dp
       ot_env%schur_projector_physical_selected_quality_samples = 5
       ot_env%schur_projector_physical_selected_drop_sum = 1.5_dp
       ot_env%schur_projector_physical_selected_measured_sum = 0.2_dp
@@ -25112,17 +25198,25 @@ CONTAINS
               ABS(ot_env%schur_model_drop) + ABS(ot_env%schur_model_slope) + &
               ABS(ot_env%schur_model_quadratic) + &
               ABS(REAL(ot_env%schur_model_quality_samples, KIND=dp)) + &
+              ABS(ot_env%schur_reduced_secant_drop) + &
+              ABS(REAL(ot_env%schur_reduced_secant_model_groups, KIND=dp)) + &
+              ABS(REAL(ot_env%schur_reduced_secant_selected_groups, KIND=dp)) + &
+              ABS(ot_env%schur_reduced_secant_rot_residual_start_sq) + &
+              ABS(ot_env%schur_reduced_secant_rot_residual_delta_dot) + &
+              ABS(ot_env%schur_reduced_secant_rot_residual_delta_sq) + &
               ABS(REAL(ot_env%schur_projector_physical_selected_quality_samples, KIND=dp)) + &
               ABS(ot_env%schur_projector_physical_selected_drop_sum) + &
               ABS(ot_env%schur_projector_physical_selected_measured_sum) + &
               ABS(ot_env%schur_projector_physical_selected_quality_line_ema) + &
               ABS(REAL(ot_env%schur_closure_response_samples, KIND=dp)) + &
               ABS(ot_env%schur_closure_response_quality_ema)
-      IF (ot_env%schur_model_pending .OR. ot_env%schur_closure_response_pending .OR. error > tol) THEN
+      IF (ot_env%schur_model_pending .OR. ot_env%schur_closure_response_pending .OR. &
+          ot_env%schur_reduced_secant_pending .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,2(1X,L1),1X,ES12.5)') TRIM(label), &
-            "failed with pending/pending-closure/error", ot_env%schur_model_pending, &
-            ot_env%schur_closure_response_pending, error
+         WRITE (*, '(A,1X,A,3(1X,L1),1X,ES12.5)') TRIM(label), &
+            "failed with pending/pending-closure/pending-reduced/error", &
+            ot_env%schur_model_pending, ot_env%schur_closure_response_pending, &
+            ot_env%schur_reduced_secant_pending, error
       ELSE
          WRITE (*, '(A,1X,A,1X,ES12.5)') TRIM(label), "OK with error", error
       END IF

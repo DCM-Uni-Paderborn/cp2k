@@ -338,6 +338,8 @@ MODULE qs_ot_types
       INTEGER :: schur_vector_secant_quality_samples = 0
       INTEGER :: schur_multisecant_quality_samples = 0
       INTEGER :: schur_reduced_secant_quality_samples = 0
+      INTEGER :: schur_reduced_secant_model_groups = 0
+      INTEGER :: schur_reduced_secant_selected_groups = 0
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
       INTEGER :: schur_projector_offdiag_selected_quality_samples = 0
@@ -467,6 +469,9 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_reduced_secant_residual_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_reduced_secant_drop_sum = 0.0_dp
       REAL(KIND=dp) :: schur_reduced_secant_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+      REAL(KIND=dp) :: schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_drop = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -1137,6 +1142,8 @@ CONTAINS
       qs_ot_env%schur_vector_secant_quality_samples = 0
       qs_ot_env%schur_multisecant_quality_samples = 0
       qs_ot_env%schur_reduced_secant_quality_samples = 0
+      qs_ot_env%schur_reduced_secant_model_groups = 0
+      qs_ot_env%schur_reduced_secant_selected_groups = 0
       qs_ot_env%schur_occgap_shadow_quality_samples = 0
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
@@ -1293,6 +1300,9 @@ CONTAINS
       qs_ot_env%schur_reduced_secant_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_reduced_secant_drop_sum = 0.0_dp
       qs_ot_env%schur_reduced_secant_measured_sum = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_drop = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -1734,6 +1744,13 @@ CONTAINS
       qs_ot_env%schur_model_calibrated_quality = 0.0_dp
       qs_ot_env%schur_model_calibrated_quality_ema = 0.0_dp
       qs_ot_env%schur_model_quality_samples = 0
+      qs_ot_env%schur_reduced_secant_pending = .FALSE.
+      qs_ot_env%schur_reduced_secant_drop = 0.0_dp
+      qs_ot_env%schur_reduced_secant_model_groups = 0
+      qs_ot_env%schur_reduced_secant_selected_groups = 0
+      qs_ot_env%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
       qs_ot_env%schur_closure_response_pending = .FALSE.
       qs_ot_env%schur_closure_response_samples = 0
       qs_ot_env%schur_closure_response_model_delta = 0.0_dp
@@ -1792,12 +1809,17 @@ CONTAINS
       qs_ot_env%schur_multisecant_measured_sum = 0.0_dp
       qs_ot_env%schur_reduced_secant_shadow_validated = .FALSE.
       qs_ot_env%schur_reduced_secant_quality_samples = 0
+      qs_ot_env%schur_reduced_secant_model_groups = 0
+      qs_ot_env%schur_reduced_secant_selected_groups = 0
       qs_ot_env%schur_reduced_secant_quality = 0.0_dp
       qs_ot_env%schur_reduced_secant_quality_ema = 0.0_dp
       qs_ot_env%schur_reduced_secant_residual_quality = 0.0_dp
       qs_ot_env%schur_reduced_secant_residual_quality_ema = 0.0_dp
       qs_ot_env%schur_reduced_secant_drop_sum = 0.0_dp
       qs_ot_env%schur_reduced_secant_measured_sum = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+      qs_ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
 
       CALL reset_selected_calibration( &
          qs_ot_env%schur_projector_offdiag_selected_quality_samples, &

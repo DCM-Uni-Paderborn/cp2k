@@ -250,6 +250,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_coupled_multisecant_update, &
              qs_scf_kp_coupled_reduced_multisecant_update, &
              qs_scf_kp_affine_correction_model, &
+             qs_scf_kp_affine_residual_quality, &
              qs_scf_kp_measured_residual_subspace_step, &
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
@@ -303,6 +304,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_bootstrap_probe, &
+             qs_scf_kp_secant_calibration_probe, &
              qs_scf_kp_secant_candidate_promoted
 
 CONTAINS
@@ -2013,7 +2015,7 @@ CONTAINS
 !> \param energy_hessian ...
 !> \param energy_cross ...
 !> \param rotation_steps ...
-!> \param rotation_targets ...
+!> \param rotation_targets measured raw complex rotation-gradient changes
 !> \param energy_targets ...
 !> \param weight ...
 !> \param updated_rotation_hessian ...
@@ -2421,6 +2423,74 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_affine_correction_model
 
 ! **************************************************************************************************
+!> \brief Compare an affine residual prediction with an accepted line-search endpoint.
+!>
+!>        The residual model is r(alpha)=r0+alpha*dr.  Keeping its three scalar products avoids
+!>        storing a full k-point rotation vector across line-search calls and evaluates the model
+!>        at the position that was actually accepted rather than assuming a unit step.
+!> \param start_norm_sq <r0,r0> in the physical complex-rotation metric
+!> \param delta_dot <r0,dr> in the same metric
+!> \param delta_norm_sq <dr,dr> in the same metric
+!> \param position accepted line-search position alpha
+!> \param actual_norm_sq measured accepted-state physical rotation residual squared
+!> \param predicted_ratio predicted accepted residual norm divided by the start norm
+!> \param actual_ratio measured accepted residual norm divided by the start norm
+!> \param quality measured norm decrease divided by the predicted norm decrease, clipped to [0,1]
+!> \param ready whether the model predicts a finite resolvable decrease
+! **************************************************************************************************
+   PURE SUBROUTINE qs_scf_kp_affine_residual_quality( &
+      start_norm_sq, delta_dot, delta_norm_sq, position, actual_norm_sq, predicted_ratio, &
+      actual_ratio, quality, ready)
+      REAL(KIND=dp), INTENT(IN)                          :: start_norm_sq, delta_dot, delta_norm_sq, &
+                                                            position, actual_norm_sq
+      REAL(KIND=dp), INTENT(OUT)                         :: predicted_ratio, actual_ratio, quality
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      REAL(KIND=dp)                                      :: actual_drop, actual_norm, &
+                                                            predicted_drop, predicted_norm, &
+                                                            predicted_norm_sq, start_norm, &
+                                                            tolerance
+
+      predicted_ratio = 1.0_dp
+      actual_ratio = 1.0_dp
+      quality = 0.0_dp
+      ready = .FALSE.
+      IF (.NOT. (start_norm_sq == start_norm_sq .AND. delta_dot == delta_dot .AND. &
+                 delta_norm_sq == delta_norm_sq .AND. position == position .AND. &
+                 actual_norm_sq == actual_norm_sq)) RETURN
+      IF (start_norm_sq <= EPSILON(start_norm_sq) .OR. delta_norm_sq < 0.0_dp .OR. &
+          position <= EPSILON(position) .OR. actual_norm_sq < 0.0_dp) RETURN
+
+      start_norm = SQRT(start_norm_sq)
+      predicted_norm_sq = start_norm_sq + 2.0_dp*position*delta_dot + &
+                          position*position*delta_norm_sq
+      tolerance = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, start_norm)
+      IF (predicted_norm_sq < -tolerance*MAX(1.0_dp, start_norm)) RETURN
+      predicted_norm = SQRT(MAX(0.0_dp, predicted_norm_sq))
+      actual_norm = SQRT(actual_norm_sq)
+      predicted_ratio = predicted_norm/start_norm
+      actual_ratio = actual_norm/start_norm
+      predicted_drop = start_norm - predicted_norm
+      IF (predicted_drop <= tolerance) THEN
+         predicted_ratio = 1.0_dp
+         actual_ratio = 1.0_dp
+         RETURN
+      END IF
+
+      actual_drop = MAX(0.0_dp, start_norm - actual_norm)
+      quality = MIN(1.0_dp, actual_drop/predicted_drop)
+      ready = predicted_ratio == predicted_ratio .AND. actual_ratio == actual_ratio .AND. &
+              quality == quality .AND. ABS(predicted_ratio) < HUGE(predicted_ratio) .AND. &
+              ABS(actual_ratio) < HUGE(actual_ratio)
+      IF (.NOT. ready) THEN
+         predicted_ratio = 1.0_dp
+         actual_ratio = 1.0_dp
+         quality = 0.0_dp
+      END IF
+
+   END SUBROUTINE qs_scf_kp_affine_residual_quality
+
+! **************************************************************************************************
 !> \brief Maximize a residual correction while retaining a prescribed Mermin-model decrease.
 !>
 !>        For the affine correction model
@@ -2704,6 +2774,41 @@ CONTAINS
               reference_drop > EPSILON(reference_drop) .AND. expected_drop >= reference_drop
 
    END FUNCTION qs_scf_kp_secant_bootstrap_probe
+
+! **************************************************************************************************
+!> \brief Continue measured-response calibration only after a successful accepted probe.
+!> \param samples number of already accepted candidate probes
+!> \param min_samples number of accepted probes required for promotion
+!> \param measured_response whether the candidate is built only from accepted response pairs
+!> \param quality most recent accepted/predicted Mermin-drop ratio
+!> \param quality_ema exponential average of the Mermin-drop ratio
+!> \param residual_quality most recent accepted physical-residual quality
+!> \param residual_quality_ema exponential average of physical-residual quality
+!> \param trust_quality response/trust compatibility in [0,1]
+!> \param predicted_residual_ratio predicted physical rotation residual relative to the current state
+!> \param expected_drop calibrated candidate Mermin decrease
+!> \param reference_drop calibrated decrease of the established candidate
+!> \param min_quality minimum accepted calibration quality
+!> \return whether another pre-promotion calibration probe is justified
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_secant_calibration_probe( &
+      samples, min_samples, measured_response, quality, quality_ema, residual_quality, &
+      residual_quality_ema, trust_quality, predicted_residual_ratio, expected_drop, &
+      reference_drop, min_quality) RESULT(probe)
+      INTEGER, INTENT(IN)                                :: samples, min_samples
+      LOGICAL, INTENT(IN)                                :: measured_response
+      REAL(KIND=dp), INTENT(IN) :: quality, quality_ema, residual_quality, residual_quality_ema, &
+         trust_quality, predicted_residual_ratio, expected_drop, reference_drop, min_quality
+      LOGICAL                                            :: probe
+
+      probe = samples > 0 .AND. samples < min_samples .AND. measured_response .AND. &
+              quality >= min_quality .AND. quality_ema >= min_quality .AND. &
+              residual_quality >= min_quality .AND. residual_quality_ema >= min_quality .AND. &
+              trust_quality >= 0.9_dp .AND. predicted_residual_ratio >= 0.0_dp .AND. &
+              predicted_residual_ratio <= 0.9_dp .AND. reference_drop > EPSILON(reference_drop) .AND. &
+              expected_drop >= reference_drop
+
+   END FUNCTION qs_scf_kp_secant_calibration_probe
 
 ! **************************************************************************************************
 !> \brief Stage the coupled occupation response only inside its local metallic basin.
@@ -4613,6 +4718,11 @@ CONTAINS
       local_ot_env(1)%schur_vector_secant_pending = .FALSE.
       local_ot_env(1)%schur_multisecant_pending = .FALSE.
       local_ot_env(1)%schur_reduced_secant_pending = .FALSE.
+      local_ot_env(1)%schur_reduced_secant_model_groups = 0
+      local_ot_env(1)%schur_reduced_secant_selected_groups = 0
+      local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+      local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+      local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
       local_ot_env(1)%schur_dense_metric_shadow_pending = .FALSE.
       local_ot_env(1)%schur_projector_mode_pending = .FALSE.
       local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
@@ -8704,6 +8814,11 @@ CONTAINS
             local_ot_env(1)%schur_vector_secant_pending = .FALSE.
             local_ot_env(1)%schur_multisecant_pending = .FALSE.
             local_ot_env(1)%schur_reduced_secant_pending = .FALSE.
+            local_ot_env(1)%schur_reduced_secant_model_groups = 0
+            local_ot_env(1)%schur_reduced_secant_selected_groups = 0
+            local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+            local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+            local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -9079,49 +9194,20 @@ CONTAINS
              reduced_secant_predicted_drop > EPSILON(reduced_secant_predicted_drop)) THEN
             reduced_secant_quality_ratio = MAX(0.0_dp, measured_drop)/reduced_secant_predicted_drop
             local_ot_env(1)%schur_reduced_secant_quality = reduced_secant_quality_ratio
-            local_ot_env(1)%schur_reduced_secant_residual_quality = &
-               MAX(0.0_dp, MIN(1.0_dp, residual_quality_ratio))
             samples = MIN(local_ot_env(1)%schur_reduced_secant_quality_samples + 1, HUGE(samples) - 1)
             local_ot_env(1)%schur_reduced_secant_quality_samples = samples
             IF (samples == 1) THEN
                local_ot_env(1)%schur_reduced_secant_quality_ema = reduced_secant_quality_ratio
-               local_ot_env(1)%schur_reduced_secant_residual_quality_ema = &
-                  local_ot_env(1)%schur_reduced_secant_residual_quality
             ELSE
                local_ot_env(1)%schur_reduced_secant_quality_ema = &
                   (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
                   local_ot_env(1)%schur_reduced_secant_quality_ema + &
                   ot_kp_schur_quality_ema_alpha*reduced_secant_quality_ratio
-               local_ot_env(1)%schur_reduced_secant_residual_quality_ema = &
-                  (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
-                  local_ot_env(1)%schur_reduced_secant_residual_quality_ema + &
-                  ot_kp_schur_quality_ema_alpha* &
-                  local_ot_env(1)%schur_reduced_secant_residual_quality
             END IF
             local_ot_env(1)%schur_reduced_secant_drop_sum = &
                local_ot_env(1)%schur_reduced_secant_drop_sum + reduced_secant_predicted_drop
             local_ot_env(1)%schur_reduced_secant_measured_sum = &
                local_ot_env(1)%schur_reduced_secant_measured_sum + MAX(0.0_dp, measured_drop)
-            local_ot_env(1)%schur_reduced_secant_shadow_validated = &
-               qs_scf_kp_secant_candidate_promoted( &
-               samples, ot_kp_schur_calibration_min_samples, &
-               local_ot_env(1)%schur_reduced_secant_drop_sum, &
-               local_ot_env(1)%schur_reduced_secant_measured_sum, &
-               reduced_secant_quality_ratio, &
-               local_ot_env(1)%schur_reduced_secant_quality_ema, &
-               local_ot_env(1)%schur_reduced_secant_residual_quality_ema, &
-               ot_kp_schur_calibrated_quality_min_ratio)
-            logger => cp_get_default_logger()
-            IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
-               " OT Schur LS reduced-secant shadow samples validated q qema rq rqema pred meas ratio:", &
-               samples, local_ot_env(1)%schur_reduced_secant_shadow_validated, &
-               reduced_secant_quality_ratio, local_ot_env(1)%schur_reduced_secant_quality_ema, &
-               local_ot_env(1)%schur_reduced_secant_residual_quality, &
-               local_ot_env(1)%schur_reduced_secant_residual_quality_ema, &
-               reduced_secant_predicted_drop, measured_drop, &
-               local_ot_env(1)%schur_reduced_secant_measured_sum/ &
-               MAX(local_ot_env(1)%schur_reduced_secant_drop_sum, EPSILON(1.0_dp))
          END IF
 
          projector_mode_predicted_drop = local_ot_env(1)%schur_projector_mode_drop
@@ -10981,6 +11067,11 @@ CONTAINS
          local_ot_env(1)%schur_vector_secant_pending = .FALSE.
          local_ot_env(1)%schur_multisecant_pending = .FALSE.
          local_ot_env(1)%schur_reduced_secant_pending = .FALSE.
+         local_ot_env(1)%schur_reduced_secant_model_groups = 0
+         local_ot_env(1)%schur_reduced_secant_selected_groups = 0
+         local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+         local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+         local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
          local_ot_env(1)%schur_dense_metric_shadow_pending = .FALSE.
          local_ot_env(1)%schur_projector_mode_pending = .FALSE.
          local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
@@ -11523,6 +11614,90 @@ CONTAINS
       END SUBROUTINE update_kpoint_ot_schur_line_search_quality
 
 ! **************************************************************************************************
+!> \brief Calibrate a reduced-secant probe against the rebuilt accepted-endpoint rotation residual.
+!>
+!>        The line-search quality update runs before the current Schur groups are rebuilt.  Its
+!>        physical residual audit would therefore see the preceding sampled point.  This deferred
+!>        update is called after every current (spin,k-point) group has contributed its residual.
+!> \param model_groups ...
+!> \param selected_groups ...
+!> \param actual_groups ...
+!> \param start_norm_sq ...
+!> \param delta_dot ...
+!> \param delta_norm_sq ...
+!> \param position ...
+!> \param predicted_drop ...
+!> \param measured_drop ...
+! **************************************************************************************************
+      SUBROUTINE update_kpoint_ot_reduced_secant_endpoint_quality( &
+         model_groups, selected_groups, actual_groups, start_norm_sq, delta_dot, delta_norm_sq, &
+         position, predicted_drop, measured_drop)
+      INTEGER, INTENT(IN)                                :: model_groups, selected_groups, &
+                                                            actual_groups
+      REAL(KIND=dp), INTENT(IN)                          :: start_norm_sq, delta_dot, delta_norm_sq, &
+                                                            position, predicted_drop, measured_drop
+
+      INTEGER                                            :: samples
+      LOGICAL                                            :: quality_ready
+      REAL(KIND=dp)                                      :: actual_ratio, aggregate_ratio, &
+                                                            predicted_ratio, quality
+      TYPE(cp_logger_type), POINTER                      :: logger
+
+         predicted_ratio = 1.0_dp
+         actual_ratio = 1.0_dp
+         quality = 0.0_dp
+         quality_ready = selected_groups > 0 .AND. selected_groups == model_groups .AND. &
+                         actual_groups == model_groups
+         IF (quality_ready) &
+            CALL qs_scf_kp_affine_residual_quality( &
+            start_norm_sq, delta_dot, delta_norm_sq, position, &
+            local_ot_env(1)%kpoint_physical_rot_gnorm, predicted_ratio, actual_ratio, quality, &
+            quality_ready)
+         local_ot_env(1)%schur_reduced_secant_residual_quality = &
+            MERGE(quality, 0.0_dp, quality_ready)
+         samples = local_ot_env(1)%schur_reduced_secant_quality_samples
+         IF (samples == 1) THEN
+            local_ot_env(1)%schur_reduced_secant_residual_quality_ema = &
+               local_ot_env(1)%schur_reduced_secant_residual_quality
+         ELSE IF (samples > 1) THEN
+            local_ot_env(1)%schur_reduced_secant_residual_quality_ema = &
+               (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+               local_ot_env(1)%schur_reduced_secant_residual_quality_ema + &
+               ot_kp_schur_quality_ema_alpha* &
+               local_ot_env(1)%schur_reduced_secant_residual_quality
+         END IF
+         local_ot_env(1)%schur_reduced_secant_shadow_validated = &
+            qs_scf_kp_secant_candidate_promoted( &
+            samples, ot_kp_schur_calibration_min_samples, &
+            local_ot_env(1)%schur_reduced_secant_drop_sum, &
+            local_ot_env(1)%schur_reduced_secant_measured_sum, &
+            local_ot_env(1)%schur_reduced_secant_quality, &
+            local_ot_env(1)%schur_reduced_secant_quality_ema, &
+            local_ot_env(1)%schur_reduced_secant_residual_quality_ema, &
+            ot_kp_schur_calibrated_quality_min_ratio)
+         aggregate_ratio = local_ot_env(1)%schur_reduced_secant_measured_sum/ &
+                           MAX(local_ot_env(1)%schur_reduced_secant_drop_sum, EPSILON(1.0_dp))
+         logger => cp_get_default_logger()
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), &
+                   '(A,1X,L1,3(1X,I4),6(1X,ES16.8))') &
+            " OT Schur LS reduced-secant accepted residual ready selected model actual groups "// &
+            "start delta_dot delta_sq pos pred actual:", &
+            quality_ready, selected_groups, model_groups, actual_groups, start_norm_sq, delta_dot, &
+            delta_norm_sq, position, predicted_ratio, actual_ratio
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I6,1X,L1,7(1X,ES16.8))') &
+            " OT Schur LS reduced-secant accepted history samples validated q qema rq rqema pred meas ratio:", &
+            samples, local_ot_env(1)%schur_reduced_secant_shadow_validated, &
+            local_ot_env(1)%schur_reduced_secant_quality, &
+            local_ot_env(1)%schur_reduced_secant_quality_ema, &
+            local_ot_env(1)%schur_reduced_secant_residual_quality, &
+            local_ot_env(1)%schur_reduced_secant_residual_quality_ema, &
+            predicted_drop, measured_drop, aggregate_ratio
+
+      END SUBROUTINE update_kpoint_ot_reduced_secant_endpoint_quality
+
+! **************************************************************************************************
 !> \brief ...
 !> \param skip_group ...
 ! **************************************************************************************************
@@ -11758,9 +11933,13 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: added_mos_current
       REAL(KIND=dp), INTENT(IN)                          :: eps_scf_channel
 
-      INTEGER                                            :: group
-      LOGICAL                                            :: added_mos_auto_tail_enabled
-      REAL(KIND=dp) :: added_mos_auto_tail_residual_limit, response_raw_delta
+      INTEGER :: group, reduced_secant_endpoint_model_groups, &
+         reduced_secant_endpoint_selected_groups
+      LOGICAL :: added_mos_auto_tail_enabled, reduced_secant_endpoint_pending
+      REAL(KIND=dp) :: added_mos_auto_tail_residual_limit, reduced_secant_endpoint_delta_dot, &
+         reduced_secant_endpoint_delta_sq, reduced_secant_endpoint_measured_drop, &
+         reduced_secant_endpoint_position, reduced_secant_endpoint_predicted_drop, &
+         reduced_secant_endpoint_start_sq, response_raw_delta
 
          group_done(:) = .FALSE.
          IF (.NOT. local_ot_env(1)%settings%do_rotation) RETURN
@@ -11776,7 +11955,29 @@ CONTAINS
                        ot_kp_added_mos_auto_tail_probe_factor*SQRT(eps_scf_channel)), &
                    ot_kp_added_mos_auto_edge_probe_factor*SQRT(eps_scf_channel))
          END IF
+         reduced_secant_endpoint_pending = local_ot_env(1)%schur_model_pending .AND. &
+                                           local_ot_env(1)%line_search_count > 0 .AND. &
+                                           local_ot_env(1)%line_search_might_be_done .AND. &
+                                           local_ot_env(1)%schur_reduced_secant_pending
+         reduced_secant_endpoint_model_groups = &
+            local_ot_env(1)%schur_reduced_secant_model_groups
+         reduced_secant_endpoint_selected_groups = &
+            local_ot_env(1)%schur_reduced_secant_selected_groups
+         reduced_secant_endpoint_start_sq = &
+            local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq
+         reduced_secant_endpoint_delta_dot = &
+            local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot
+         reduced_secant_endpoint_delta_sq = &
+            local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq
+         reduced_secant_endpoint_predicted_drop = &
+            local_ot_env(1)%schur_reduced_secant_drop
+         reduced_secant_endpoint_position = MAX(0.0_dp, local_ot_env(1)%mermin_ls_next_pos)
+         IF (reduced_secant_endpoint_position <= EPSILON(reduced_secant_endpoint_position) .AND. &
+             local_ot_env(1)%mermin_ls_best_sample_index > 0) &
+            reduced_secant_endpoint_position = &
+            MAX(0.0_dp, local_ot_env(1)%mermin_ls_best_sample_pos)
          CALL update_kpoint_ot_schur_line_search_quality()
+         reduced_secant_endpoint_measured_drop = local_ot_env(1)%schur_model_measured_drop
          response_raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
          CALL para_env_inter_kp%max(response_raw_delta)
          IF (.NOT. local_ot_env(1)%energy_only .AND. &
@@ -11791,6 +11992,11 @@ CONTAINS
             local_ot_env(1)%schur_multisecant_drop = 0.0_dp
             local_ot_env(1)%schur_reduced_secant_pending = .FALSE.
             local_ot_env(1)%schur_reduced_secant_drop = 0.0_dp
+            local_ot_env(1)%schur_reduced_secant_model_groups = 0
+            local_ot_env(1)%schur_reduced_secant_selected_groups = 0
+            local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
+            local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
+            local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
             local_ot_env(1)%schur_projector_mode_pending = .FALSE.
             local_ot_env(1)%schur_projector_offdiag_pending = .FALSE.
             local_ot_env(1)%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -11936,8 +12142,16 @@ CONTAINS
             CALL precondition_kpoint_ot_schur_group(group, group_done(group), &
                                                     added_mos_auto_tail_enabled, &
                                                     added_mos_auto_tail_residual_limit, &
-                                                    eps_scf_channel, response_raw_delta)
+                                                    eps_scf_channel, response_raw_delta, &
+                                                    reduced_secant_endpoint_pending)
          END DO
+         IF (reduced_secant_endpoint_pending) &
+            CALL update_kpoint_ot_reduced_secant_endpoint_quality( &
+            reduced_secant_endpoint_model_groups, reduced_secant_endpoint_selected_groups, &
+            local_ot_env(1)%kpoint_physical_delta_groups, reduced_secant_endpoint_start_sq, &
+            reduced_secant_endpoint_delta_dot, reduced_secant_endpoint_delta_sq, &
+            reduced_secant_endpoint_position, reduced_secant_endpoint_predicted_drop, &
+            reduced_secant_endpoint_measured_drop)
       END SUBROUTINE precondition_kpoint_ot_schur
 
 ! **************************************************************************************************
@@ -11948,16 +12162,19 @@ CONTAINS
 !> \param added_mos_auto_tail_residual_limit ...
 !> \param eps_scf_channel ...
 !> \param response_raw_delta unprojected residual from the previous accepted OT state
+!> \param reduced_secant_endpoint_pending accepted response quality is rebuilt after all groups
 ! **************************************************************************************************
       SUBROUTINE precondition_kpoint_ot_schur_group(target_group, group_done, &
                                                     added_mos_auto_tail_enabled, &
                                                     added_mos_auto_tail_residual_limit, &
-                                                    eps_scf_channel, response_raw_delta)
+                                                    eps_scf_channel, response_raw_delta, &
+                                                    reduced_secant_endpoint_pending)
       INTEGER, INTENT(IN)                                :: target_group
       LOGICAL, INTENT(OUT)                               :: group_done
       LOGICAL, INTENT(IN)                                :: added_mos_auto_tail_enabled
       REAL(KIND=dp), INTENT(IN) :: added_mos_auto_tail_residual_limit, eps_scf_channel, &
          response_raw_delta
+      LOGICAL, INTENT(IN) :: reduced_secant_endpoint_pending
 
       INTEGER, PARAMETER :: max_schur_rot = ot_kp_schur_max_rot, reject_dgesv = 1, &
          reject_model_gap = 6, reject_model_mismatch = 8, reject_nondescent = 2, reject_norm = 3, &
@@ -12720,39 +12937,41 @@ CONTAINS
          reduced_secant_model_calibrated_drop, reduced_secant_model_drop, &
          reduced_secant_model_gap, reduced_secant_model_gap_drop, reduced_secant_model_gap_ratio, &
          reduced_secant_model_quadratic, reduced_secant_model_slope, &
-         reduced_secant_predicted_residual_ratio, reduced_secant_reference_drop
-      REAL(KIND=dp) :: reduced_secant_response_abs_step, reduced_secant_response_abs_trust_ratio, &
+         reduced_secant_predicted_residual_delta_dot, reduced_secant_predicted_residual_delta_sq
+      REAL(KIND=dp) :: reduced_secant_predicted_residual_ratio, &
+         reduced_secant_predicted_residual_start_sq, reduced_secant_reference_drop, &
+         reduced_secant_response_abs_step, reduced_secant_response_abs_trust_ratio, &
          reduced_secant_response_weighted_step, reduced_secant_response_weighted_trust_ratio, &
          reduced_secant_trust_quality, residual_delta, residual_reference_quality, &
          response_abs_step, response_abs_trust, response_abs_trust_ratio, response_mixed_diag_avg, &
          response_penalty_diag_sum, response_penalty_term, response_shift, response_step_max, &
-         response_trust, response_trust_base, response_trust_factor, response_trust_ratio, &
-         response_weighted_step, response_weighted_trust_ratio, rot_diag_sum, rot_floor_min
-      REAL(KIND=dp) :: rot_grad_active_fraction_avg, rot_grad_active_fraction_max, &
-         rot_grad_active_im, rot_grad_active_re, rot_grad_active_weight_sum, rot_grad_energy_norm, &
-         rot_grad_fermi_weight, rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, &
-         rot_grad_gap_weight, rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, &
-         rot_grad_gauge_weight, rot_grad_inactive_im, rot_grad_inactive_re, &
-         rot_grad_inactive_weight_sum, rot_grad_norm_weight, rot_grad_pair_fraction, &
-         rot_grad_physical_norm, rot_grad_rest_fraction, rot_grad_sq, &
-         rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg
-      REAL(KIND=dp) :: row_floor_max, row_floor_shift_drop, row_floor_shift_quad, &
-         row_floor_shifted_step, row_floor_step_fraction, row_floor_step_norm, rx_shift, &
-         rx_weight, scale_quality, schur_active_occ_min, schur_diag_min, schur_energy_window, &
-         spectral_resp_correction_drop, spectral_resp_correction_negative, &
-         spectral_resp_cross_drop, spectral_resp_negative_coeff, spectral_resp_negative_drop, &
-         spectral_resp_positive_coeff, spectral_resp_positive_drop, &
-         spectral_resp_raw_negative_fraction, spectral_resp_weight, split_curvature_scale, &
-         split_dense_expected_ratio, split_density_projector_fraction
-      REAL(KIND=dp) :: split_diag_shift_max, split_diag_shift_sum, split_direction_scale, &
-         split_expected_drop, split_gdot_energy, split_gdot_rotation, split_gdotp, &
-         split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, split_norm_energy, &
-         split_norm_ratio, split_norm_rotation, split_normp, split_occgap_shadow_drop, &
-         split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
-         split_quality_for_selection, split_residual_delta, split_residual_quality, &
-         split_response_abs_step, split_response_abs_trust, split_response_abs_trust_ratio, &
-         split_response_step, split_response_trust
-      REAL(KIND=dp) :: split_response_trust_factor, split_response_weighted_step, &
+         response_trust, response_trust_base
+      REAL(KIND=dp) :: response_trust_factor, response_trust_ratio, response_weighted_step, &
+         response_weighted_trust_ratio, rot_diag_sum, rot_floor_min, rot_grad_active_fraction_avg, &
+         rot_grad_active_fraction_max, rot_grad_active_im, rot_grad_active_re, &
+         rot_grad_active_weight_sum, rot_grad_energy_norm, rot_grad_fermi_weight, &
+         rot_grad_gap_fraction, rot_grad_gap_im, rot_grad_gap_re, rot_grad_gap_weight, &
+         rot_grad_gauge_im, rot_grad_gauge_norm, rot_grad_gauge_re, rot_grad_gauge_weight, &
+         rot_grad_inactive_im, rot_grad_inactive_re, rot_grad_inactive_weight_sum, &
+         rot_grad_norm_weight
+      REAL(KIND=dp) :: rot_grad_pair_fraction, rot_grad_physical_norm, rot_grad_rest_fraction, &
+         rot_grad_sq, rot_grad_total_physical_norm, row_abs, row_floor, row_floor_avg, &
+         row_floor_max, row_floor_shift_drop, row_floor_shift_quad, row_floor_shifted_step, &
+         row_floor_step_fraction, row_floor_step_norm, rx_shift, rx_weight, scale_quality, &
+         schur_active_occ_min, schur_diag_min, schur_energy_window, spectral_resp_correction_drop, &
+         spectral_resp_correction_negative, spectral_resp_cross_drop, &
+         spectral_resp_negative_coeff, spectral_resp_negative_drop, spectral_resp_positive_coeff
+      REAL(KIND=dp) :: spectral_resp_positive_drop, spectral_resp_raw_negative_fraction, &
+         spectral_resp_weight, split_curvature_scale, split_dense_expected_ratio, &
+         split_density_projector_fraction, split_diag_shift_max, split_diag_shift_sum, &
+         split_direction_scale, split_expected_drop, split_gdot_energy, split_gdot_rotation, &
+         split_gdotp, split_model_calibrated_drop, split_model_drop, split_model_gap_ratio, &
+         split_norm_energy, split_norm_ratio, split_norm_rotation, split_normp, &
+         split_occgap_shadow_drop, split_occgap_shadow_gap_ratio, split_quality_for_calibration, &
+         split_quality_for_selection
+      REAL(KIND=dp) :: split_residual_delta, split_residual_quality, split_response_abs_step, &
+         split_response_abs_trust, split_response_abs_trust_ratio, split_response_step, &
+         split_response_trust, split_response_trust_factor, split_response_weighted_step, &
          split_response_weighted_trust_ratio, split_rot_floor_min, split_scale_quality, &
          split_schur_diag_min, split_trust_quality, step_gauge_quality, tether_curv_diag_max, &
          tether_curv_diag_sum, tether_projected_term, tether_response, tether_response_diag_sum, &
@@ -12847,6 +13066,9 @@ CONTAINS
          new_search_point = .NOT. local_ot_env(1)%energy_only .AND. &
                             (local_ot_env(1)%line_search_count == 0 .OR. &
                              local_ot_env(1)%line_search_might_be_done)
+         IF (new_search_point) &
+            local_ot_env(1)%schur_reduced_secant_model_groups = &
+            local_ot_env(1)%schur_reduced_secant_model_groups + 1
          projector_physical_shadow_enabled = local_ot_env(1)%schur_projector_physical_candidate_enabled
          IF (new_search_point) &
             projector_physical_shadow_enabled = projector_physical_shadow_enabled .OR. &
@@ -13745,7 +13967,10 @@ CONTAINS
          reduced_secant_model_gap_ratio = 0.0_dp
          reduced_secant_model_quadratic = 0.0_dp
          reduced_secant_model_slope = 0.0_dp
+         reduced_secant_predicted_residual_delta_dot = 0.0_dp
+         reduced_secant_predicted_residual_delta_sq = 0.0_dp
          reduced_secant_predicted_residual_ratio = 1.0_dp
+         reduced_secant_predicted_residual_start_sq = 0.0_dp
          reduced_secant_reference_drop = 0.0_dp
          reduced_secant_response_abs_step = 0.0_dp
          reduced_secant_response_abs_trust_ratio = 0.0_dp
@@ -16691,7 +16916,8 @@ CONTAINS
          ! same minimizer call, including an explicitly evaluated line-search endpoint.
          reduced_secant_candidate_enabled = new_search_point .AND. &
                                             reduced_secant_update_eligible .AND. &
-                                            exact_energy_model_ready
+                                            exact_energy_model_ready .AND. &
+                                            .NOT. reduced_secant_endpoint_pending
          solved = .FALSE.
          trust_rejected = .FALSE.
          schur_used_attempt = 0
@@ -24416,7 +24642,10 @@ CONTAINS
                   reduced_secant_model_calibrated_drop, reduced_secant_model_gap, &
                   reduced_secant_model_gap_drop, reduced_secant_model_gap_ratio, &
                   reduced_secant_response_weighted_step, reduced_secant_response_abs_step, &
-                  reduced_secant_predicted_residual_ratio, reduced_secant_measured_response, &
+                  reduced_secant_predicted_residual_ratio, &
+                  reduced_secant_predicted_residual_start_sq, &
+                  reduced_secant_predicted_residual_delta_dot, &
+                  reduced_secant_predicted_residual_delta_sq, reduced_secant_measured_response, &
                   reduced_secant_candidate_ready, use_measured_response=.TRUE.)
                reduced_secant_response_weighted_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
@@ -24469,6 +24698,17 @@ CONTAINS
                                                reduced_secant_predicted_residual_ratio, &
                                                reduced_secant_expected_drop, &
                                                reduced_secant_reference_drop)
+               reduced_secant_probe_selected = reduced_secant_probe_selected .OR. &
+                                               qs_scf_kp_secant_calibration_probe( &
+                                               local_ot_env(1)%schur_reduced_secant_quality_samples, &
+                                               ot_kp_schur_calibration_min_samples, reduced_secant_measured_response, &
+                                               local_ot_env(1)%schur_reduced_secant_quality, &
+                                               local_ot_env(1)%schur_reduced_secant_quality_ema, &
+                                               local_ot_env(1)%schur_reduced_secant_residual_quality, &
+                                               local_ot_env(1)%schur_reduced_secant_residual_quality_ema, &
+                                               reduced_secant_trust_quality, reduced_secant_predicted_residual_ratio, &
+                                               reduced_secant_expected_drop, reduced_secant_reference_drop, &
+                                               ot_kp_schur_calibrated_quality_min_ratio)
                reduced_secant_candidate_selected = &
                   reduced_secant_expected_drop > EPSILON(reduced_secant_expected_drop) .AND. &
                   (reduced_secant_probe_selected .OR. &
@@ -24896,6 +25136,17 @@ CONTAINS
                local_ot_env(1)%schur_reduced_secant_pending = .TRUE.
                local_ot_env(1)%schur_reduced_secant_drop = &
                   local_ot_env(1)%schur_reduced_secant_drop + accepted_model_calibrated_drop
+               local_ot_env(1)%schur_reduced_secant_selected_groups = &
+                  local_ot_env(1)%schur_reduced_secant_selected_groups + 1
+               local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = &
+                  local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq + &
+                  reduced_secant_predicted_residual_start_sq
+               local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot = &
+                  local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot + &
+                  reduced_secant_predicted_residual_delta_dot
+               local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq = &
+                  local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq + &
+                  reduced_secant_predicted_residual_delta_sq
             END IF
             IF (accepted_occgap_shadow_drop > EPSILON(accepted_occgap_shadow_drop)) THEN
                local_ot_env(1)%schur_occgap_shadow_pending = .TRUE.
@@ -27300,6 +27551,9 @@ CONTAINS
 !> \param response_weighted_step ...
 !> \param response_abs_step ...
 !> \param predicted_residual_ratio ...
+!> \param predicted_residual_start_sq physical residual norm squared before the candidate
+!> \param predicted_residual_delta_dot affine physical residual cross term
+!> \param predicted_residual_delta_sq affine physical residual change norm squared
 !> \param measured_response_used ...
 !> \param ready ...
 !> \param use_measured_response ...
@@ -27314,7 +27568,9 @@ CONTAINS
          response_trust, response_abs_trust, model_gap_factor, rotation_step, energy_step, &
          direction_scale, model_slope, model_quadratic, model_drop, model_calibrated_drop, &
          model_gap, model_gap_drop, model_gap_ratio, response_weighted_step, response_abs_step, &
-         predicted_residual_ratio, measured_response_used, ready, use_measured_response)
+         predicted_residual_ratio, predicted_residual_start_sq, &
+         predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
+         use_measured_response)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, &
                                                             rotation_residual_hessian, &
                                                             response_metric, rotation_modes, &
@@ -27335,7 +27591,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: rotation_step, energy_step
       REAL(KIND=dp), INTENT(OUT) :: direction_scale, model_slope, model_quadratic, model_drop, &
          model_calibrated_drop, model_gap, model_gap_drop, model_gap_ratio, &
-         response_weighted_step, response_abs_step, predicted_residual_ratio
+         response_weighted_step, response_abs_step, predicted_residual_ratio, &
+         predicted_residual_start_sq, predicted_residual_delta_dot, predicted_residual_delta_sq
       LOGICAL, INTENT(OUT)                               :: measured_response_used, ready
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_measured_response
 
@@ -27384,6 +27641,9 @@ CONTAINS
          response_weighted_step = 0.0_dp
          response_abs_step = 0.0_dp
          predicted_residual_ratio = 1.0_dp
+         predicted_residual_start_sq = 0.0_dp
+         predicted_residual_delta_dot = 0.0_dp
+         predicted_residual_delta_sq = 0.0_dp
          measured_response_used = .FALSE.
          ready = .FALSE.
          measured_response_requested = .FALSE.
@@ -27627,6 +27887,14 @@ CONTAINS
                   ready = ready .AND. response_abs_step <= response_abs_trust
                IF (ready) THEN
                   predicted_residual_ratio = measured_scaled_residual_ratio
+                  predicted_residual_start_sq = &
+                     DOT_PRODUCT(rotation_residual_weight, rotation_gradient**2)
+                  predicted_residual_delta_dot = &
+                     DOT_PRODUCT(rotation_residual_weight, rotation_gradient* &
+                                 (measured_scaled_residual - rotation_gradient))
+                  predicted_residual_delta_sq = &
+                     DOT_PRODUCT(rotation_residual_weight, &
+                                 (measured_scaled_residual - rotation_gradient)**2)
                   measured_response_used = .TRUE.
                   DEALLOCATE (measured_base_projection, measured_base_residual, &
                               measured_base_target_response, measured_correction_energy, &
@@ -27736,6 +28004,16 @@ CONTAINS
          IF (.NOT. ready) THEN
             rotation_step(:) = 0.0_dp
             energy_step(:) = 0.0_dp
+         ELSE
+            rhs_local(:) = base_rotation_residual + &
+                           direction_scale*correction_rotation_residual
+            predicted_residual_start_sq = &
+               DOT_PRODUCT(rotation_residual_weight, rotation_gradient**2)
+            predicted_residual_delta_dot = &
+               DOT_PRODUCT(rotation_residual_weight, rotation_gradient* &
+                           (rhs_local - rotation_gradient))
+            predicted_residual_delta_sq = &
+               DOT_PRODUCT(rotation_residual_weight, (rhs_local - rotation_gradient)**2)
          END IF
          DEALLOCATE (base_response, base_rotation_residual, correction_energy, correction_rotation, &
                      correction_rotation_residual, model_response, raw_response, rhs_local, &
@@ -27830,7 +28108,7 @@ CONTAINS
 !> \param energy_hessian_multisecant analytic energy block carried by the active candidate
 !> \param energy_cross_multisecant analytic signed cross block carried by the active candidate
 !> \param reduced_secant_modes accepted complex rotation modes defining the reduced candidate span
-!> \param reduced_secant_targets measured reduced fixed-N gradient changes for those modes
+!> \param reduced_secant_targets measured raw complex rotation-gradient changes for those modes
 !> \param update_ready whether the candidate passed the physical trust gate
 !> \param multisecant_update_ready whether the two-secant candidate passed its geometry gate
 !> \param reduced_secant_shadow_ready whether the reduced coupled shadow passed its geometry gate
@@ -28208,9 +28486,9 @@ CONTAINS
             IF (reduced_secant_shadow_ready) THEN
                rotation_hessian_reduced_secant(:, :) = reduced_multisecant_rotation_hessian(:, :)
                reduced_secant_modes(:, :) = multisecant_rotation_steps(:, :)
-               reduced_secant_targets(:, :) = coupled_rotation_targets(:, :) + &
-                                              MATMUL(TRANSPOSE(energy_response), &
-                                                     multisecant_energy_targets)
+               ! The reduced Schur fit above uses y_R+R^T*y_e.  Residual prediction, however,
+               ! models the observable raw physical rotation gradient and therefore needs y_R.
+               reduced_secant_targets(:, :) = coupled_rotation_targets(:, :)
             END IF
 
             ! Retain the previously calibrated rotation-only candidate as the
