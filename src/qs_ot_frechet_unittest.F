@@ -139,6 +139,8 @@ PROGRAM qs_ot_frechet_unittest
                    5.0E-8_dp, nfail)
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
+   CALL check_complex_covariant_secant_transport("complex endpoint-covariant secant transport", &
+                                                 5.0E-13_dp, nfail)
    CALL check_fm_complex_operator_hermitization("FM complex operator Hermitian projection", &
                                                 5.0E-14_dp, nfail, mp_comm)
    CALL check_kpoint_ot_energy_weighted_density("noncanonical k-point OT force density", &
@@ -1116,6 +1118,84 @@ CONTAINS
       DEALLOCATE (pgrid, row_dist, col_dist, row_blk_size, col_blk_size)
 
    END SUBROUTINE check_dbcsr_sparse_pattern
+
+! **************************************************************************************************
+!> \brief Check that endpoint gradients are trivialized separately before forming a rotation secant.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_covariant_secant_transport(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3
+
+      COMPLEX(KIND=dp)                                   :: kernel, tangent_kernel
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: body_g0, body_g1, body_response, &
+                                                            legacy_response, raw_g0, raw_g1, &
+                                                            recovered_g0, recovered_g1
+      INTEGER                                            :: i, j
+      REAL(KIND=dp)                                      :: error, legacy_error
+      REAL(KIND=dp), DIMENSION(n)                        :: evals0, evals1
+
+      evals0(:) = [0.2_dp, -0.4_dp, 0.7_dp]
+      evals1(:) = [0.8_dp, -0.1_dp, 1.2_dp]
+      body_g0(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      body_g0(1, 1) = CMPLX(0.0_dp, 0.12_dp, KIND=dp)
+      body_g0(2, 2) = CMPLX(0.0_dp, -0.08_dp, KIND=dp)
+      body_g0(3, 3) = CMPLX(0.0_dp, -0.04_dp, KIND=dp)
+      body_g0(1, 2) = CMPLX(0.15_dp, -0.07_dp, KIND=dp)
+      body_g0(2, 1) = -CONJG(body_g0(1, 2))
+      body_g0(1, 3) = CMPLX(-0.05_dp, 0.09_dp, KIND=dp)
+      body_g0(3, 1) = -CONJG(body_g0(1, 3))
+      body_g0(2, 3) = CMPLX(0.11_dp, 0.04_dp, KIND=dp)
+      body_g0(3, 2) = -CONJG(body_g0(2, 3))
+
+      body_response(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      body_response(1, 1) = CMPLX(0.0_dp, -0.03_dp, KIND=dp)
+      body_response(2, 2) = CMPLX(0.0_dp, 0.01_dp, KIND=dp)
+      body_response(3, 3) = CMPLX(0.0_dp, 0.02_dp, KIND=dp)
+      body_response(1, 2) = CMPLX(-0.025_dp, 0.018_dp, KIND=dp)
+      body_response(2, 1) = -CONJG(body_response(1, 2))
+      body_response(1, 3) = CMPLX(0.012_dp, -0.021_dp, KIND=dp)
+      body_response(3, 1) = -CONJG(body_response(1, 3))
+      body_response(2, 3) = CMPLX(-0.016_dp, -0.008_dp, KIND=dp)
+      body_response(3, 2) = -CONJG(body_response(2, 3))
+      body_g1(:, :) = body_g0 + body_response
+
+      DO i = 1, n
+      DO j = 1, n
+         kernel = qs_ot_complex_exp_frechet_kernel(evals0(i), evals0(j))
+         tangent_kernel = EXP(CMPLX(0.0_dp, evals0(i), KIND=dp))*kernel
+         raw_g0(i, j) = CONJG(tangent_kernel)*body_g0(i, j)
+         kernel = qs_ot_complex_exp_frechet_kernel(evals1(i), evals1(j))
+         tangent_kernel = EXP(CMPLX(0.0_dp, evals1(i), KIND=dp))*kernel
+         raw_g1(i, j) = CONJG(tangent_kernel)*body_g1(i, j)
+      END DO
+      END DO
+
+      CALL apply_dense_frechet(evals0, raw_g0, recovered_g0, adjoint=.TRUE., inverse=.TRUE., &
+                               right_trivialized=.TRUE.)
+      CALL apply_dense_frechet(evals1, raw_g1, recovered_g1, adjoint=.TRUE., inverse=.TRUE., &
+                               right_trivialized=.TRUE.)
+      CALL apply_dense_frechet(evals1, raw_g1 - raw_g0, legacy_response, &
+                               adjoint=.TRUE., inverse=.TRUE., right_trivialized=.TRUE.)
+
+      error = MAX(MAXVAL(ABS(recovered_g0 - body_g0)), &
+                  MAXVAL(ABS(recovered_g1 - recovered_g0 - body_response)))
+      legacy_error = MAXVAL(ABS(legacy_response - body_response))
+      IF (error > tol .OR. legacy_error < 1.0E-3_dp) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,ES16.8))') TRIM(label)//" FAILED with covariant/legacy error", &
+            error, legacy_error
+      ELSE
+         WRITE (*, '(A,2(1X,ES16.8))') TRIM(label)//" OK with covariant/legacy error", &
+            error, legacy_error
+      END IF
+
+   END SUBROUTINE check_complex_covariant_secant_transport
 
 ! **************************************************************************************************
 !> \brief Check split-complex FM projection onto the Hermitian operator manifold.

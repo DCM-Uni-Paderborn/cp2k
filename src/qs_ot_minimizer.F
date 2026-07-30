@@ -31,7 +31,8 @@ MODULE qs_ot_minimizer
    USE preconditioner,                  ONLY: apply_preconditioner
    USE qs_ot,                           ONLY: qs_ot_get_derivative,&
                                               qs_ot_get_derivative_ref,&
-                                              qs_ot_get_derivative_ref_complex
+                                              qs_ot_get_derivative_ref_complex,&
+                                              qs_ot_transport_ref_rotation_pair
    USE qs_ot_types,                     ONLY: qs_ot_occupation_preconditioner_active,&
                                               qs_ot_type
 #include "./base/base_uses.f90"
@@ -1259,6 +1260,9 @@ CONTAINS
                                qs_ot_env(ichannel)%rot_mat_gx)
                CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_g0_im, &
                                qs_ot_env(ichannel)%rot_mat_gx_im)
+               CALL qs_ot_transport_ref_rotation_pair( &
+                  qs_ot_env(ichannel), qs_ot_env(ichannel)%rot_mat_mermin_g0, &
+                  qs_ot_env(ichannel)%rot_mat_mermin_g0_im, gradient=.TRUE.)
             END IF
          END IF
          IF (qs_ot_env(1)%settings%do_ener) THEN
@@ -1435,13 +1439,19 @@ CONTAINS
             CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_im, &
                             qs_ot_env(ichannel)%rot_mat_dx_im)
             CALL dbcsr_scale(qs_ot_env(ichannel)%rot_mat_mermin_s_im, alpha)
+            CALL qs_ot_transport_ref_rotation_pair( &
+               qs_ot_env(ichannel), qs_ot_env(ichannel)%rot_mat_mermin_s, &
+               qs_ot_env(ichannel)%rot_mat_mermin_s_im, gradient=.FALSE.)
             CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y, &
                             qs_ot_env(ichannel)%rot_mat_gx)
+            CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
+                            qs_ot_env(ichannel)%rot_mat_gx_im)
+            CALL qs_ot_transport_ref_rotation_pair( &
+               qs_ot_env(ichannel), qs_ot_env(ichannel)%rot_mat_mermin_y, &
+               qs_ot_env(ichannel)%rot_mat_mermin_y_im, gradient=.TRUE.)
             CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_y, &
                            qs_ot_env(ichannel)%rot_mat_mermin_g0, &
                            alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
-            CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
-                            qs_ot_env(ichannel)%rot_mat_gx_im)
             CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
                            qs_ot_env(ichannel)%rot_mat_mermin_g0_im, &
                            alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)

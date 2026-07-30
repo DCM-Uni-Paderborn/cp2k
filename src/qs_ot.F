@@ -55,6 +55,7 @@ MODULE qs_ot
    PUBLIC  :: qs_ot_generate_rotation_complex
    PUBLIC  :: qs_ot_ref_update_required
    PUBLIC  :: qs_ot_rot_mat_derivative_complex
+   PUBLIC  :: qs_ot_transport_ref_rotation_pair
    PUBLIC  :: qs_ot_new_preconditioner
    PRIVATE :: qs_ot_p2m_diag
    PRIVATE :: qs_ot_sinc
@@ -65,7 +66,6 @@ MODULE qs_ot
    PRIVATE :: qs_ot_ref_update
    PRIVATE :: qs_ot_reset_ref_rotation_history
    PRIVATE :: qs_ot_transport_ref_rotation_history
-   PRIVATE :: qs_ot_transport_ref_rotation_pair
    PRIVATE :: qs_ot_refine
    PRIVATE :: qs_ot_on_the_fly_localize
 
@@ -223,8 +223,9 @@ CONTAINS
             ELSE
                cval_out = cval_in*kernel
             END IF
-            IF (use_right_trivialized) &
+            IF (use_right_trivialized) THEN
                cval_out = EXP(CMPLX(0.0_dp, e1, KIND=dp))*cval_out
+            END IF
             block_out_re(i, j) = REAL(cval_out, KIND=dp)
             block_out_im(i, j) = AIMAG(cval_out)
          END DO
@@ -743,13 +744,15 @@ CONTAINS
       IF (qs_ot_env%settings%do_rotation) THEN
          IF (qs_ot_env%use_dx) THEN
             CALL dbcsr_set(qs_ot_env%rot_mat_dx, 0.0_dp)
-            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
+            IF (ASSOCIATED(qs_ot_env%rot_mat_dx_im)) THEN
                CALL dbcsr_set(qs_ot_env%rot_mat_dx_im, 0.0_dp)
+            END IF
          END IF
          IF (qs_ot_env%use_gx_old) THEN
             CALL dbcsr_set(qs_ot_env%rot_mat_gx_old, 0.0_dp)
-            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
+            IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) THEN
                CALL dbcsr_set(qs_ot_env%rot_mat_gx_old_im, 0.0_dp)
+            END IF
          END IF
       END IF
 
@@ -842,7 +845,7 @@ CONTAINS
    END SUBROUTINE qs_ot_transport_ref_rotation_pair
 
 ! **************************************************************************************************
-!> \brief Move CG and Mermin rotation history into the newly absorbed complex REF basis.
+!> \brief Move generator-coordinate CG history into the newly absorbed complex REF basis.
 !> \param qs_ot_env complex OT state containing the accepted unitary U
 ! **************************************************************************************************
    SUBROUTINE qs_ot_transport_ref_rotation_history(qs_ot_env)
@@ -851,40 +854,25 @@ CONTAINS
       IF (qs_ot_env%settings%ot_method /= "CG") RETURN
       IF (.NOT. qs_ot_env%settings%do_rotation) RETURN
 
-      IF (ASSOCIATED(qs_ot_env%rot_mat_gx) .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_im)) &
+      IF (ASSOCIATED(qs_ot_env%rot_mat_gx) .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_im)) THEN
          CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_gx, &
                                                 qs_ot_env%rot_mat_gx_im, gradient=.TRUE.)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_pgx) .AND. ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) &
+      END IF
+      IF (ASSOCIATED(qs_ot_env%rot_mat_pgx) .AND. ASSOCIATED(qs_ot_env%rot_mat_pgx_im)) THEN
          CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_pgx, &
                                                 qs_ot_env%rot_mat_pgx_im, gradient=.FALSE.)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old) .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) &
+      END IF
+      IF (ASSOCIATED(qs_ot_env%rot_mat_gx_old) .AND. ASSOCIATED(qs_ot_env%rot_mat_gx_old_im)) THEN
          CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_gx_old, &
                                                 qs_ot_env%rot_mat_gx_old_im, gradient=.TRUE.)
-      IF (ASSOCIATED(qs_ot_env%rot_mat_dx) .AND. ASSOCIATED(qs_ot_env%rot_mat_dx_im)) &
+      END IF
+      IF (ASSOCIATED(qs_ot_env%rot_mat_dx) .AND. ASSOCIATED(qs_ot_env%rot_mat_dx_im)) THEN
          CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_dx, &
                                                 qs_ot_env%rot_mat_dx_im, gradient=.FALSE.)
-      IF (qs_ot_env%mermin_ls_vector_start_valid .AND. &
-          ASSOCIATED(qs_ot_env%rot_mat_mermin_g0) .AND. ASSOCIATED(qs_ot_env%rot_mat_mermin_g0_im)) &
-         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_g0, &
-                                                qs_ot_env%rot_mat_mermin_g0_im, gradient=.TRUE.)
-      IF (qs_ot_env%mermin_secant_ready) THEN
-         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s) .AND. ASSOCIATED(qs_ot_env%rot_mat_mermin_s_im)) &
-            CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_s, &
-                                                   qs_ot_env%rot_mat_mermin_s_im, gradient=.FALSE.)
-         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y) .AND. ASSOCIATED(qs_ot_env%rot_mat_mermin_y_im)) &
-            CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_y, &
-                                                   qs_ot_env%rot_mat_mermin_y_im, gradient=.TRUE.)
       END IF
-      IF (qs_ot_env%mermin_secant_previous_ready .AND. &
-          ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous) .AND. &
-          ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous_im)) &
-         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_s_previous, &
-                                                qs_ot_env%rot_mat_mermin_s_previous_im, gradient=.FALSE.)
-      IF (qs_ot_env%mermin_secant_previous_ready .AND. &
-          ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous) .AND. &
-          ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous_im)) &
-         CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_mermin_y_previous, &
-                                                qs_ot_env%rot_mat_mermin_y_previous_im, gradient=.TRUE.)
+      ! Mermin secants are captured after separately trivializing both endpoint
+      ! gradients and the accepted step. They already live in the body frame of
+      ! the accepted orbitals and remain unchanged when that frame is absorbed.
 
    END SUBROUTINE qs_ot_transport_ref_rotation_history
 
