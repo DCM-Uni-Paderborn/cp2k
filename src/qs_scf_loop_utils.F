@@ -277,6 +277,8 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
              qs_scf_kp_quadratic_position_drop, &
+             qs_scf_kp_candidate_position_drop, &
+             qs_scf_kp_affine_rebased_drop, &
              qs_scf_kp_canonical_density_residual, &
              qs_scf_kp_canonical_density_blend, &
              qs_scf_kp_canonical_density_candidate, &
@@ -565,6 +567,70 @@ CONTAINS
       model_drop = MAX(0.0_dp, model_drop)
 
    END FUNCTION qs_scf_kp_quadratic_position_drop
+
+! **************************************************************************************************
+!> \brief Candidate-specific Mermin decrease at the accepted line-search position.
+!>
+!>        Candidate histories store their calibrated decrease for the complete search direction.
+!>        Scale that value by the common quadratic model at the accepted position so predicted and
+!>        measured decreases refer to the same finite step.
+!> \param candidate_drop calibrated candidate decrease for the complete direction
+!> \param model_drop common quadratic decrease for the complete direction
+!> \param model_slope common directional Mermin slope
+!> \param model_quadratic common directional Mermin curvature
+!> \param position accepted cumulative line-search coordinate
+!> \return candidate decrease corresponding to the accepted position
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_candidate_position_drop( &
+      candidate_drop, model_drop, model_slope, model_quadratic, position) RESULT(position_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: candidate_drop, model_drop, model_slope, &
+                                                            model_quadratic, position
+      REAL(KIND=dp)                                      :: position_drop
+
+      REAL(KIND=dp)                                      :: model_position_drop
+
+      position_drop = 0.0_dp
+      IF (candidate_drop <= 0.0_dp .OR. model_drop <= EPSILON(model_drop) .OR. &
+          position <= EPSILON(position)) RETURN
+      model_position_drop = qs_scf_kp_quadratic_position_drop( &
+                            model_slope, model_quadratic, position)
+      IF (model_position_drop <= 0.0_dp) RETURN
+      position_drop = candidate_drop*model_position_drop/model_drop
+      IF (position_drop /= position_drop .OR. ABS(position_drop) >= HUGE(position_drop)) &
+         position_drop = 0.0_dp
+      position_drop = MAX(0.0_dp, position_drop)
+
+   END FUNCTION qs_scf_kp_candidate_position_drop
+
+! **************************************************************************************************
+!> \brief Rebase a calibrated affine-candidate decrease onto its exact base-direction slope.
+!>
+!>        A reduced response candidate preserves the established base curvature but can rebuild
+!>        the base direction in a different active subspace.  Its linear term must therefore use
+!>        the exact gradient dot product of that rebuilt direction.  Apply that slope difference
+!>        before adding the affine correction and response-mismatch penalty.
+!> \param established_slope linear term carried by the established candidate
+!> \param exact_base_slope exact gradient dot product of the rebuilt base direction
+!> \param established_drop calibrated decrease carried by the established candidate
+!> \param correction_increment affine correction to the established quadratic model
+!> \param mismatch_drop response-model mismatch penalty
+!> \return calibrated decrease of the rebased affine candidate
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_affine_rebased_drop( &
+      established_slope, exact_base_slope, established_drop, correction_increment, &
+      mismatch_drop) RESULT(rebased_drop)
+      REAL(KIND=dp), INTENT(IN)                          :: established_slope, exact_base_slope, &
+                                                            established_drop, &
+                                                            correction_increment, mismatch_drop
+      REAL(KIND=dp)                                      :: rebased_drop
+
+      rebased_drop = established_drop + exact_base_slope - established_slope + &
+                     correction_increment - mismatch_drop
+      IF (rebased_drop /= rebased_drop .OR. ABS(rebased_drop) >= HUGE(rebased_drop)) &
+         rebased_drop = 0.0_dp
+      rebased_drop = MAX(0.0_dp, rebased_drop)
+
+   END FUNCTION qs_scf_kp_affine_rebased_drop
 
 ! **************************************************************************************************
 !> \brief Regularization floor for the fixed-N auxiliary-energy Hessian of one spin group.
@@ -9086,7 +9152,12 @@ CONTAINS
             END SELECT
          END IF
 
-         vector_secant_predicted_drop = local_ot_env(1)%schur_vector_secant_drop
+         vector_secant_predicted_drop = qs_scf_kp_candidate_position_drop( &
+                                        local_ot_env(1)%schur_vector_secant_drop, &
+                                        local_ot_env(1)%schur_model_drop, &
+                                        local_ot_env(1)%schur_model_slope, &
+                                        local_ot_env(1)%schur_model_quadratic, &
+                                        line_search_model_position)
          vector_secant_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_vector_secant_pending .AND. &
              vector_secant_predicted_drop > EPSILON(vector_secant_predicted_drop)) THEN
@@ -9137,7 +9208,12 @@ CONTAINS
                MAX(local_ot_env(1)%schur_vector_secant_drop_sum, EPSILON(1.0_dp))
          END IF
 
-         multisecant_predicted_drop = local_ot_env(1)%schur_multisecant_drop
+         multisecant_predicted_drop = qs_scf_kp_candidate_position_drop( &
+                                      local_ot_env(1)%schur_multisecant_drop, &
+                                      local_ot_env(1)%schur_model_drop, &
+                                      local_ot_env(1)%schur_model_slope, &
+                                      local_ot_env(1)%schur_model_quadratic, &
+                                      line_search_model_position)
          multisecant_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_multisecant_pending .AND. &
              multisecant_predicted_drop > EPSILON(multisecant_predicted_drop)) THEN
@@ -9188,7 +9264,12 @@ CONTAINS
                MAX(local_ot_env(1)%schur_multisecant_drop_sum, EPSILON(1.0_dp))
          END IF
 
-         reduced_secant_predicted_drop = local_ot_env(1)%schur_reduced_secant_drop
+         reduced_secant_predicted_drop = qs_scf_kp_candidate_position_drop( &
+                                         local_ot_env(1)%schur_reduced_secant_drop, &
+                                         local_ot_env(1)%schur_model_drop, &
+                                         local_ot_env(1)%schur_model_slope, &
+                                         local_ot_env(1)%schur_model_quadratic, &
+                                         line_search_model_position)
          reduced_secant_quality_ratio = 0.0_dp
          IF (mermin_search .AND. local_ot_env(1)%schur_reduced_secant_pending .AND. &
              reduced_secant_predicted_drop > EPSILON(reduced_secant_predicted_drop)) THEN
@@ -11958,6 +12039,7 @@ CONTAINS
          reduced_secant_endpoint_pending = local_ot_env(1)%schur_model_pending .AND. &
                                            local_ot_env(1)%line_search_count > 0 .AND. &
                                            local_ot_env(1)%line_search_might_be_done .AND. &
+                                           .NOT. local_ot_env(1)%schur_history_mixed .AND. &
                                            local_ot_env(1)%schur_reduced_secant_pending
          reduced_secant_endpoint_model_groups = &
             local_ot_env(1)%schur_reduced_secant_model_groups
@@ -11969,13 +12051,17 @@ CONTAINS
             local_ot_env(1)%schur_reduced_secant_rot_residual_delta_dot
          reduced_secant_endpoint_delta_sq = &
             local_ot_env(1)%schur_reduced_secant_rot_residual_delta_sq
-         reduced_secant_endpoint_predicted_drop = &
-            local_ot_env(1)%schur_reduced_secant_drop
          reduced_secant_endpoint_position = MAX(0.0_dp, local_ot_env(1)%mermin_ls_next_pos)
          IF (reduced_secant_endpoint_position <= EPSILON(reduced_secant_endpoint_position) .AND. &
              local_ot_env(1)%mermin_ls_best_sample_index > 0) &
             reduced_secant_endpoint_position = &
             MAX(0.0_dp, local_ot_env(1)%mermin_ls_best_sample_pos)
+         reduced_secant_endpoint_predicted_drop = qs_scf_kp_candidate_position_drop( &
+                                                  local_ot_env(1)%schur_reduced_secant_drop, &
+                                                  local_ot_env(1)%schur_model_drop, &
+                                                  local_ot_env(1)%schur_model_slope, &
+                                                  local_ot_env(1)%schur_model_quadratic, &
+                                                  reduced_secant_endpoint_position)
          CALL update_kpoint_ot_schur_line_search_quality()
          reduced_secant_endpoint_measured_drop = local_ot_env(1)%schur_model_measured_drop
          response_raw_delta = MAX(0.0_dp, local_ot_env(1)%kpoint_raw_delta)
@@ -27942,7 +28028,7 @@ CONTAINS
                      measured_total_response(:) = base_response + &
                                                   measured_direction_scale*measured_response
                      CALL qs_scf_kp_affine_correction_model( &
-                        established_model_slope, established_model_quadratic, &
+                        base_slope, established_model_quadratic, &
                         measured_correction_slope, measured_correction_quadratic, &
                         measured_correction_cross, measured_direction_scale, measured_model_slope, &
                         measured_model_quadratic, measured_model_drop, measured_model_increment, &
@@ -28009,8 +28095,10 @@ CONTAINS
                model_slope = measured_model_slope
                model_quadratic = measured_model_quadratic
                model_drop = measured_model_drop
-               model_calibrated_drop = MAX(0.0_dp, established_model_calibrated_drop + &
-                                           measured_model_increment - model_gap_drop)
+               model_calibrated_drop = qs_scf_kp_affine_rebased_drop( &
+                                       established_model_slope, base_slope, &
+                                       established_model_calibrated_drop, &
+                                       measured_model_increment, model_gap_drop)
                model_gap_ratio = 0.0_dp
                IF (model_gap_factor*response_trust > EPSILON(response_trust)) &
                   model_gap_ratio = model_gap/(model_gap_factor*response_trust)

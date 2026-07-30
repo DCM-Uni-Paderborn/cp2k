@@ -75,7 +75,8 @@ PROGRAM qs_ot_frechet_unittest
    USE qs_scf_loop_utils,               ONLY: &
         qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
         qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
-        qs_scf_kp_affine_correction_model, qs_scf_kp_affine_residual_quality, &
+        qs_scf_kp_affine_correction_model, qs_scf_kp_affine_rebased_drop, &
+        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_position_drop, &
         qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
         qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
         qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
@@ -5846,6 +5847,10 @@ CONTAINS
       failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 5.0E-6_dp, 3.0E-6_dp)
       failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 3.0E-6_dp, 3.0E-6_dp)
       failed = failed .OR. ot_kpoint_cg_metric_history_reset(.TRUE., 0.8_dp, 1.0E-4_dp, 3.0E-6_dp)
+      failed = failed .OR. .NOT. ot_kpoint_cg_metric_history_reset( &
+               .TRUE., 0.8_dp, 1.0E-7_dp, 3.0E-6_dp, .TRUE.)
+      failed = failed .OR. ot_kpoint_cg_metric_history_reset( &
+               .FALSE., 0.8_dp, 1.0E-7_dp, 3.0E-6_dp, .TRUE.)
 
       IF (failed) THEN
          nfail = nfail + 1
@@ -6583,9 +6588,9 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL                                            :: ready, rejected, zero_ready
-      REAL(KIND=dp) :: drop, error, increment, quadratic, rejected_drop, rejected_increment, &
-         rejected_quadratic, rejected_slope, slope, zero_drop, zero_increment, zero_quadratic, &
-         zero_slope
+      REAL(KIND=dp) :: drop, error, increment, quadratic, rebased_drop, rejected_drop, &
+         rejected_increment, rejected_quadratic, rejected_slope, slope, zero_drop, zero_increment, &
+         zero_quadratic, zero_slope
 
       CALL qs_scf_kp_affine_correction_model( &
          5.0_dp, 2.0_dp, 1.5_dp, 0.8_dp, -0.25_dp, 0.4_dp, &
@@ -6596,11 +6601,14 @@ CONTAINS
       CALL qs_scf_kp_affine_correction_model( &
          5.0_dp, 2.0_dp, 1.5_dp, 0.8_dp, -0.25_dp, -0.1_dp, &
          rejected_slope, rejected_quadratic, rejected_drop, rejected_increment, rejected)
+      rebased_drop = qs_scf_kp_affine_rebased_drop( &
+                     5.0_dp, 4.7_dp, 4.0_dp, 0.636_dp, 0.036_dp)
       error = ABS(slope - 5.6_dp) + ABS(quadratic - 1.928_dp) + &
               ABS(drop - 4.636_dp) + ABS(increment - 0.636_dp) + &
               ABS(zero_slope - 5.0_dp) + ABS(zero_quadratic - 2.0_dp) + &
               ABS(zero_drop - 4.0_dp) + ABS(zero_increment) + ABS(rejected_slope) + &
-              ABS(rejected_quadratic) + ABS(rejected_drop) + ABS(rejected_increment)
+              ABS(rejected_quadratic) + ABS(rejected_drop) + ABS(rejected_increment) + &
+              ABS(rebased_drop - 4.3_dp)
       IF (.NOT. ready .OR. .NOT. zero_ready .OR. rejected .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,3(1X,L1),5(1X,ES16.8))') TRIM(label)// &
@@ -6814,9 +6822,10 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
       LOGICAL                                            :: ready, scaled_ready
-      REAL(KIND=dp) :: eliminated_drop, eliminated_quadratic, eliminated_slope, error, &
-         expected_eliminated_quadratic, expected_eliminated_slope, model_drop, model_quadratic, &
-         model_slope, position_drop, scaled_model_drop, scaled_model_quadratic, scaled_model_slope
+      REAL(KIND=dp) :: candidate_position_drop, eliminated_drop, eliminated_quadratic, &
+         eliminated_slope, error, expected_eliminated_quadratic, expected_eliminated_slope, &
+         invalid_position_drop, model_drop, model_quadratic, model_slope, position_drop, &
+         scaled_model_drop, scaled_model_quadratic, scaled_model_slope, zero_position_drop
       REAL(KIND=dp), DIMENSION(2) :: energy_gradient, energy_step, independent_energy_step, &
          rotation_gradient, rotation_step, scaled_energy_gradient, scaled_energy_step
       REAL(KIND=dp), DIMENSION(2, 2) :: energy_cross, energy_hessian, energy_response, &
@@ -6864,6 +6873,12 @@ CONTAINS
          rotation_gradient, energy_gradient, rotation_hessian, energy_hessian, energy_cross, &
          rotation_step, energy_step, eliminated_slope, eliminated_quadratic, eliminated_drop, ready)
       position_drop = qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, 0.25_dp)
+      candidate_position_drop = qs_scf_kp_candidate_position_drop( &
+                                4.0_dp, 1.5_dp, 2.0_dp, 1.0_dp, 0.25_dp)
+      zero_position_drop = qs_scf_kp_candidate_position_drop( &
+                           4.0_dp, 1.5_dp, 2.0_dp, 1.0_dp, 0.0_dp)
+      invalid_position_drop = qs_scf_kp_candidate_position_drop( &
+                              4.0_dp, 0.0_dp, 2.0_dp, 1.0_dp, 0.25_dp)
 
       error = ABS(model_slope - 0.355_dp) + ABS(model_quadratic - 0.058725_dp) + &
               ABS(model_drop - 0.3256375_dp) + ABS(scaled_model_slope - model_slope) + &
@@ -6873,6 +6888,8 @@ CONTAINS
               ABS(eliminated_quadratic - expected_eliminated_quadratic) + &
               ABS(eliminated_drop - MAX(0.0_dp, eliminated_slope - 0.5_dp*eliminated_quadratic)) + &
               ABS(position_drop - 0.46875_dp) + &
+              ABS(candidate_position_drop - 1.25_dp) + ABS(zero_position_drop) + &
+              ABS(invalid_position_drop) + &
               ABS(qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, -0.25_dp))
       IF (.NOT. ready .OR. .NOT. scaled_ready .OR. error > tol) THEN
          nfail = nfail + 1

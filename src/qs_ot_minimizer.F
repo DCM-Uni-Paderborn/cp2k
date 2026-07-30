@@ -226,18 +226,26 @@ CONTAINS
 !> \param beta proposed nonlinear-CG history coefficient
 !> \param physical_tail_delta projected physical residual
 !> \param residual_tail_min lower tail bound scaled to the requested EPS_SCF
+!> \param calibration_change accepted-response candidate transition requiring an isolated probe
 !> \return true when the previous conjugate direction must be discarded
 ! **************************************************************************************************
    PURE FUNCTION ot_kpoint_cg_metric_history_reset(history_change, beta, physical_tail_delta, &
-                                                   residual_tail_min) RESULT(reset_history)
+                                                   residual_tail_min, calibration_change) &
+      RESULT(reset_history)
       LOGICAL, INTENT(IN)                                :: history_change
       REAL(KIND=dp), INTENT(IN)                          :: beta, physical_tail_delta, &
                                                             residual_tail_min
+      LOGICAL, INTENT(IN), OPTIONAL                      :: calibration_change
       LOGICAL                                            :: reset_history
 
+      LOGICAL                                            :: isolate_calibration
+
+      isolate_calibration = .FALSE.
+      IF (PRESENT(calibration_change)) isolate_calibration = calibration_change
       reset_history = history_change .AND. beta > 0.0_dp .AND. &
-                      physical_tail_delta > residual_tail_min .AND. &
-                      physical_tail_delta < ot_cg_kp_residual_tail_max_delta
+                      (isolate_calibration .OR. &
+                       (physical_tail_delta > residual_tail_min .AND. &
+                        physical_tail_delta < ot_cg_kp_residual_tail_max_delta))
 
    END FUNCTION ot_kpoint_cg_metric_history_reset
 
@@ -3483,8 +3491,9 @@ CONTAINS
          history_spike_reset, kpoint_preconditioned_direction, mermin_residual_catastrophic_reset, &
          mermin_residual_growth_reset, negative_beta, physical_raw_gap_guard, preflight_only, &
          projected_raw_tail_release, reset_to_sd, residual_history_reset, &
-         residual_spike_history_reset, residual_tail_spike_reset, schur_history_change, &
-         schur_history_mixed, schur_projector_jump_reset, schur_projector_tail_reset
+         residual_spike_history_reset, residual_tail_spike_reset, schur_calibration_change, &
+         schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
+         schur_projector_tail_reset
       REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_metric, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, &
          matrix_gnorm_metric, matrix_nvar, mermin_residual_growth_quality, mermin_tail_min, &
@@ -3577,7 +3586,12 @@ CONTAINS
                                 schur_flavor == 42 .OR. schur_last_flavor == 42 .OR. &
                                 schur_flavor == 43 .OR. schur_last_flavor == 43 .OR. &
                                 schur_flavor == 44 .OR. schur_last_flavor == 44 .OR. &
-                                schur_flavor == 45 .OR. schur_last_flavor == 45)))
+                                schur_flavor == 45 .OR. schur_last_flavor == 45 .OR. &
+                                schur_flavor == 46 .OR. schur_last_flavor == 46)))
+      schur_calibration_change = schur_history_change .AND. &
+                                 (schur_flavor == 43 .OR. schur_last_flavor == 43 .OR. &
+                                  schur_flavor == 44 .OR. schur_last_flavor == 44 .OR. &
+                                  schur_flavor == 46 .OR. schur_last_flavor == 46)
       schur_history_mixed = .FALSE.
 
       gnorm_matrix_re = 0.0_dp
@@ -4088,8 +4102,9 @@ CONTAINS
       ! Keeping beta across this transition can remain downhill locally while
       ! amplifying the physical rotation residual in the following SCF step.
       ! Retain the productive nonlinear-CG history outside the residual tail.
-      IF (ot_kpoint_cg_metric_history_reset(schur_history_change, beta_pr, &
-                                            physical_tail_delta, residual_tail_min)) THEN
+      IF (ot_kpoint_cg_metric_history_reset( &
+          schur_history_change, beta_pr, physical_tail_delta, residual_tail_min, &
+          schur_calibration_change)) THEN
          beta_pr = 0.0_dp
          reset_to_sd = .TRUE.
       END IF
