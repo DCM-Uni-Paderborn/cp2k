@@ -62,13 +62,13 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
-        ot_kpoint_mermin_secant_consistent, &
         ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
         ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
-        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_shared_spin_group, &
-        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
-        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
-        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
+        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
+        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
+        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
+        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_response_scale, &
+        ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -95,18 +95,19 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
         qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
-        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
-        qs_scf_kp_full_all_spin_normalization, qs_scf_kp_indefinite_residual_balanced_step, &
-        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_scale, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
+        qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
+        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -261,6 +262,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_recovery_active_tail("k-point OT dual-residual recovery tail", nfail)
    CALL check_kpoint_mermin_recovery_deferred("k-point OT pending residual closure", nfail)
    CALL check_kpoint_mermin_secant_consistency("k-point OT accepted secant consistency", nfail)
+   CALL check_kpoint_frozen_energy_gradient("k-point OT frozen-H fixed-N energy gradient", &
+                                            2.0E-14_dp, nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
@@ -6184,8 +6187,9 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN)                       :: label
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: consistent_negative, consistent_positive, &
-                                                            no_signal, nonlinear, opposite_sign
+      LOGICAL                                            :: consistent_negative, &
+                                                            consistent_positive, no_signal, &
+                                                            nonlinear, opposite_sign
 
       consistent_positive = ot_kpoint_mermin_secant_consistent(1.00E-5_dp, 0.95E-5_dp)
       consistent_negative = ot_kpoint_mermin_secant_consistent(-2.00E-6_dp, -1.75E-6_dp)
@@ -6206,6 +6210,46 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_secant_consistency
+
+! **************************************************************************************************
+!> \brief Check the fixed-N projection used by the frozen-H accepted endpoint.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_frozen_energy_gradient(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: error, weight_sum, weighted_residual
+      REAL(KIND=dp), DIMENSION(3)                        :: energy_coordinate, expected, &
+                                                            frozen_diagonal, gradient, &
+                                                            response_weight, zero_gradient
+
+      frozen_diagonal(:) = [0.20_dp, -0.10_dp, 0.50_dp]
+      energy_coordinate(:) = [0.10_dp, -0.05_dp, 0.45_dp]
+      response_weight(:) = [2.0_dp, 1.0_dp, 3.0_dp]
+      expected(:) = [-0.10_dp, 0.10_dp, 0.0_dp]
+      weight_sum = SUM(response_weight)
+      weighted_residual = DOT_PRODUCT(response_weight, frozen_diagonal - energy_coordinate)
+
+      CALL qs_scf_kp_fixed_n_frozen_energy_gradient( &
+         frozen_diagonal, energy_coordinate, response_weight, weight_sum, weighted_residual, gradient)
+      CALL qs_scf_kp_fixed_n_frozen_energy_gradient( &
+         frozen_diagonal, energy_coordinate, response_weight, 0.0_dp, 0.0_dp, zero_gradient)
+      error = MAX(MAXVAL(ABS(gradient - expected)), ABS(SUM(gradient)))
+      error = MAX(error, MAXVAL(ABS(zero_gradient + &
+                                    response_weight*(frozen_diagonal - energy_coordinate))))
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "failed with error", error
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES16.8)') TRIM(label), "OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_frozen_energy_gradient
 
 ! **************************************************************************************************
 !> \brief check vector secant alignment and orthogonal response decomposition

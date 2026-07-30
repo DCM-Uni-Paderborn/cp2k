@@ -14,8 +14,8 @@
 MODULE qs_ot_minimizer
 
    USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_get_info, dbcsr_p_type, dbcsr_release, &
-        dbcsr_scale, dbcsr_set, dbcsr_type
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_get_info, dbcsr_multiply, dbcsr_p_type, &
+        dbcsr_release, dbcsr_scale, dbcsr_set, dbcsr_type
    USE cp_dbcsr_contrib,                ONLY: dbcsr_dot,&
                                               dbcsr_get_diag,&
                                               dbcsr_init_random,&
@@ -1202,7 +1202,7 @@ CONTAINS
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
       INTEGER                                            :: ichannel
-      LOGICAL                                            :: vector_valid
+      LOGICAL                                            :: frozen_valid, vector_valid
       REAL(KIND=dp)                                      :: energy_slope, matrix_slope, &
                                                             rotation_slope, slope_sum, tmp
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -1210,6 +1210,8 @@ CONTAINS
       DO ichannel = 1, SIZE(qs_ot_env)
          qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .FALSE.
          qs_ot_env(ichannel)%mermin_ls_vector_start_valid = .FALSE.
+         qs_ot_env(ichannel)%mermin_frozen_h_valid = .FALSE.
+         qs_ot_env(ichannel)%mermin_frozen_endpoint_valid = .FALSE.
          qs_ot_env(ichannel)%mermin_ls_matrix_slope = 0.0_dp
          qs_ot_env(ichannel)%mermin_ls_rotation_slope = 0.0_dp
          qs_ot_env(ichannel)%mermin_ls_energy_slope = 0.0_dp
@@ -1275,6 +1277,11 @@ CONTAINS
                qs_ot_env(ichannel)%ener_mermin_x0(:) = qs_ot_env(ichannel)%ener_x(:)
             END IF
          END IF
+         frozen_valid = .FALSE.
+         IF (vector_valid .AND. qs_ot_env(1)%settings%do_rotation) THEN
+            CALL store_kpoint_mermin_frozen_hamiltonian(qs_ot_env(ichannel), frozen_valid)
+         END IF
+         qs_ot_env(ichannel)%mermin_frozen_h_valid = frozen_valid
          qs_ot_env(ichannel)%mermin_ls_vector_start_valid = vector_valid
          qs_ot_env(ichannel)%mermin_ls_component_slope_valid = .TRUE.
          matrix_slope = matrix_slope + qs_ot_env(ichannel)%mermin_ls_matrix_slope
@@ -1295,6 +1302,59 @@ CONTAINS
    END SUBROUTINE store_kpoint_mermin_direction_slopes
 
 ! **************************************************************************************************
+!> \brief Store H at a line-search start in the fixed REF basis.
+!> \param qs_ot_env local complex k-point OT channel
+!> \param valid whether all required runtime matrices were available
+! **************************************************************************************************
+   SUBROUTINE store_kpoint_mermin_frozen_hamiltonian(qs_ot_env, valid)
+      TYPE(qs_ot_type)                                   :: qs_ot_env
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      TYPE(dbcsr_type)                                   :: product_im, product_re, tmp
+
+      valid = ASSOCIATED(qs_ot_env%rot_mat_u) .AND. &
+              ASSOCIATED(qs_ot_env%rot_mat_u_im) .AND. &
+              ASSOCIATED(qs_ot_env%rot_mat_chc) .AND. &
+              ASSOCIATED(qs_ot_env%rot_mat_chc_im) .AND. &
+              ASSOCIATED(qs_ot_env%rot_mat_mermin_h0_ref) .AND. &
+              ASSOCIATED(qs_ot_env%rot_mat_mermin_h0_ref_im)
+      IF (.NOT. valid) RETURN
+
+      CALL dbcsr_copy(product_re, qs_ot_env%rot_mat_chc, name="mermin_h0_product_re")
+      CALL dbcsr_copy(product_im, qs_ot_env%rot_mat_chc, name="mermin_h0_product_im")
+      CALL dbcsr_copy(tmp, qs_ot_env%rot_mat_chc, name="mermin_h0_tmp")
+
+      ! product = U * (U^H H U).
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, &
+                          qs_ot_env%rot_mat_chc, 0.0_dp, product_re)
+      CALL dbcsr_multiply('N', 'N', -1.0_dp, qs_ot_env%rot_mat_u_im, &
+                          qs_ot_env%rot_mat_chc_im, 1.0_dp, product_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u, &
+                          qs_ot_env%rot_mat_chc_im, 0.0_dp, product_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, qs_ot_env%rot_mat_u_im, &
+                          qs_ot_env%rot_mat_chc, 1.0_dp, product_im)
+
+      ! H_REF = product * U^H.
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, product_re, qs_ot_env%rot_mat_u, &
+                          0.0_dp, qs_ot_env%rot_mat_mermin_h0_ref)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, product_im, qs_ot_env%rot_mat_u_im, &
+                          0.0_dp, tmp)
+      CALL dbcsr_add(qs_ot_env%rot_mat_mermin_h0_ref, tmp, &
+                     alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, product_im, qs_ot_env%rot_mat_u, &
+                          0.0_dp, qs_ot_env%rot_mat_mermin_h0_ref_im)
+      CALL dbcsr_multiply('N', 'T', 1.0_dp, product_re, qs_ot_env%rot_mat_u_im, &
+                          0.0_dp, tmp)
+      CALL dbcsr_add(qs_ot_env%rot_mat_mermin_h0_ref_im, tmp, &
+                     alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_release(product_im)
+      CALL dbcsr_release(product_re)
+      CALL dbcsr_release(tmp)
+
+   END SUBROUTINE store_kpoint_mermin_frozen_hamiltonian
+
+! **************************************************************************************************
 !> \brief compare accepted finite Mermin curvature with endpoint component derivatives
 !> \param qs_ot_env ...
 !> \param para_env_inter_kp ...
@@ -1303,16 +1363,22 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
-      INTEGER                                            :: ichannel, previous_valid_i, valid_i, &
+      INTEGER                                            :: closure_valid_i, ichannel, &
+                                                            previous_closure_valid_i, &
+                                                            previous_valid_i, valid_i, &
                                                             vector_valid_i
-      LOGICAL                                            :: previous_valid, valid, vector_valid
+      LOGICAL                                            :: closure_valid, previous_closure_valid, &
+                                                            previous_valid, valid, vector_valid
       REAL(KIND=dp) :: alpha, auxiliary_curvature, current_energy, current_matrix, &
-         current_rotation, current_total, energy_curvature, initial_energy, initial_matrix, &
+         current_rotation, current_total, energy_curvature, frozen_energy_sty, frozen_energy_y2, &
+         frozen_rotation_sty, frozen_rotation_y2, initial_energy, initial_matrix, &
          initial_rotation, initial_total, matrix_curvature, matrix_fraction, rotation_curvature, &
-         secant_alignment, secant_consistency, secant_energy_s2, secant_energy_sty, &
-         secant_energy_y2, secant_orthogonal_fraction, secant_rotation_s2, secant_rotation_sty, &
-         secant_rotation_y2, secant_s2, secant_snorm, secant_sty, secant_y2, secant_ynorm, tmp, &
-         total_curvature
+         secant_alignment, secant_closure_energy_sty, secant_closure_energy_y2, &
+         secant_closure_rotation_sty, secant_closure_rotation_y2, secant_consistency, &
+         secant_energy_s2, secant_energy_sty, secant_energy_y2, secant_orthogonal_fraction, &
+         secant_rotation_s2, secant_rotation_sty
+      REAL(KIND=dp) :: secant_rotation_y2, secant_s2, secant_snorm, secant_sty, secant_y2, &
+         secant_ynorm, tmp, total_curvature
       TYPE(cp_logger_type), POINTER                      :: logger
 
       IF (.NOT. qs_ot_env(1)%mermin_ls_sample_pending) RETURN
@@ -1322,6 +1388,7 @@ CONTAINS
       alpha = qs_ot_env(1)%mermin_ls_next_pos
       valid = .TRUE.
       vector_valid = ABS(alpha) > 1.0E4_dp*EPSILON(1.0_dp)
+      closure_valid = vector_valid
       initial_matrix = 0.0_dp
       initial_rotation = 0.0_dp
       initial_energy = 0.0_dp
@@ -1334,6 +1401,14 @@ CONTAINS
       secant_energy_s2 = 0.0_dp
       secant_energy_y2 = 0.0_dp
       secant_energy_sty = 0.0_dp
+      frozen_rotation_y2 = 0.0_dp
+      frozen_rotation_sty = 0.0_dp
+      frozen_energy_y2 = 0.0_dp
+      frozen_energy_sty = 0.0_dp
+      secant_closure_rotation_y2 = 0.0_dp
+      secant_closure_rotation_sty = 0.0_dp
+      secant_closure_energy_y2 = 0.0_dp
+      secant_closure_energy_sty = 0.0_dp
 
       previous_valid = .TRUE.
       DO ichannel = 1, SIZE(qs_ot_env)
@@ -1383,10 +1458,49 @@ CONTAINS
          END DO
       END IF
 
+      previous_closure_valid = previous_valid
+      DO ichannel = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         previous_closure_valid = previous_closure_valid .AND. &
+                                  qs_ot_env(ichannel)%mermin_closure_secant_ready
+         IF (qs_ot_env(1)%settings%do_rotation) THEN
+            previous_closure_valid = previous_closure_valid .AND. &
+                                     ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y) .AND. &
+                                     ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im) .AND. &
+                                     ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous) .AND. &
+                                     ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous_im)
+         END IF
+         IF (qs_ot_env(1)%settings%do_ener) THEN
+            previous_closure_valid = previous_closure_valid .AND. &
+                                     ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y) .AND. &
+                                     ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y_previous)
+         END IF
+      END DO
+      previous_closure_valid_i = MERGE(1, 0, previous_closure_valid)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, previous_closure_valid_i)
+      previous_closure_valid = previous_closure_valid_i > 0
+      IF (previous_closure_valid) THEN
+         DO ichannel = 1, SIZE(qs_ot_env)
+            IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+            IF (qs_ot_env(1)%settings%do_rotation) THEN
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_closure_y)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im)
+            END IF
+            IF (qs_ot_env(1)%settings%do_ener) THEN
+               qs_ot_env(ichannel)%ener_mermin_closure_y_previous(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_closure_y(:)
+            END IF
+         END DO
+      END IF
+
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
          valid = valid .AND. qs_ot_env(ichannel)%mermin_ls_component_slope_valid
          vector_valid = vector_valid .AND. qs_ot_env(ichannel)%mermin_ls_vector_start_valid
+         closure_valid = closure_valid .AND. qs_ot_env(ichannel)%mermin_frozen_h_valid .AND. &
+                         qs_ot_env(ichannel)%mermin_frozen_endpoint_valid
          initial_matrix = initial_matrix + qs_ot_env(ichannel)%mermin_ls_matrix_slope
          initial_rotation = initial_rotation + qs_ot_env(ichannel)%mermin_ls_rotation_slope
          initial_energy = initial_energy + qs_ot_env(ichannel)%mermin_ls_energy_slope
@@ -1456,6 +1570,58 @@ CONTAINS
             CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
                            qs_ot_env(ichannel)%rot_mat_mermin_g0_im, &
                            alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+            closure_valid = closure_valid .AND. &
+                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_frozen_g1) .AND. &
+                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_frozen_g1_im) .AND. &
+                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y) .AND. &
+                            ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im)
+            IF (closure_valid) THEN
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_frozen_g1)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_frozen_g1_im)
+               CALL qs_ot_transport_ref_rotation_pair( &
+                  qs_ot_env(ichannel), qs_ot_env(ichannel)%rot_mat_mermin_closure_y, &
+                  qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, gradient=.TRUE.)
+               CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_closure_y, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_g0, &
+                              alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+               CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_g0_im, &
+                              alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_closure_y, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y, tmp)
+               frozen_rotation_y2 = frozen_rotation_y2 + 0.5_dp*tmp
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, tmp)
+               frozen_rotation_y2 = frozen_rotation_y2 + 0.5_dp*tmp
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y, tmp)
+               frozen_rotation_sty = frozen_rotation_sty + 0.5_dp*tmp
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s_im, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, tmp)
+               frozen_rotation_sty = frozen_rotation_sty + 0.5_dp*tmp
+               CALL dbcsr_scale(qs_ot_env(ichannel)%rot_mat_mermin_closure_y, -1.0_dp)
+               CALL dbcsr_scale(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, -1.0_dp)
+               CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_closure_y, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_y, &
+                              alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+               CALL dbcsr_add(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_y_im, &
+                              alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_closure_y, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y, tmp)
+               secant_closure_rotation_y2 = secant_closure_rotation_y2 + 0.5_dp*tmp
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, tmp)
+               secant_closure_rotation_y2 = secant_closure_rotation_y2 + 0.5_dp*tmp
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y, tmp)
+               secant_closure_rotation_sty = secant_closure_rotation_sty + 0.5_dp*tmp
+               CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s_im, &
+                              qs_ot_env(ichannel)%rot_mat_mermin_closure_y_im, tmp)
+               secant_closure_rotation_sty = secant_closure_rotation_sty + 0.5_dp*tmp
+            END IF
             CALL dbcsr_dot(qs_ot_env(ichannel)%rot_mat_mermin_s, &
                            qs_ot_env(ichannel)%rot_mat_mermin_s, tmp)
             secant_rotation_s2 = secant_rotation_s2 + 0.5_dp*tmp
@@ -1484,6 +1650,29 @@ CONTAINS
                                                    qs_ot_env(ichannel)%ener_mermin_x0(:)
             qs_ot_env(ichannel)%ener_mermin_y(:) = qs_ot_env(ichannel)%ener_gx(:) - &
                                                    qs_ot_env(ichannel)%ener_mermin_g0(:)
+            closure_valid = closure_valid .AND. &
+                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_frozen_g1) .AND. &
+                            ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y)
+            IF (closure_valid) THEN
+               qs_ot_env(ichannel)%ener_mermin_closure_y(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_frozen_g1(:) - &
+                  qs_ot_env(ichannel)%ener_mermin_g0(:)
+               frozen_energy_y2 = frozen_energy_y2 + &
+                                  DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_closure_y, &
+                                              qs_ot_env(ichannel)%ener_mermin_closure_y)
+               frozen_energy_sty = frozen_energy_sty + &
+                                   DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_s, &
+                                               qs_ot_env(ichannel)%ener_mermin_closure_y)
+               qs_ot_env(ichannel)%ener_mermin_closure_y(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_y(:) - &
+                  qs_ot_env(ichannel)%ener_mermin_closure_y(:)
+               secant_closure_energy_y2 = secant_closure_energy_y2 + &
+                                          DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_closure_y, &
+                                                      qs_ot_env(ichannel)%ener_mermin_closure_y)
+               secant_closure_energy_sty = secant_closure_energy_sty + &
+                                           DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_s, &
+                                                       qs_ot_env(ichannel)%ener_mermin_closure_y)
+            END IF
             secant_energy_s2 = secant_energy_s2 + &
                                DOT_PRODUCT(qs_ot_env(ichannel)%ener_mermin_s, &
                                            qs_ot_env(ichannel)%ener_mermin_s)
@@ -1501,6 +1690,9 @@ CONTAINS
       vector_valid_i = MERGE(1, 0, vector_valid)
       CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, vector_valid_i)
       vector_valid = vector_valid_i > 0
+      closure_valid_i = MERGE(1, 0, closure_valid)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, closure_valid_i)
+      closure_valid = closure_valid_i > 0
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_matrix)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_rotation)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, initial_energy)
@@ -1513,6 +1705,14 @@ CONTAINS
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_energy_s2)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_energy_y2)
       CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_energy_sty)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, frozen_rotation_y2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, frozen_rotation_sty)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, frozen_energy_y2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, frozen_energy_sty)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_closure_rotation_y2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_closure_rotation_sty)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_closure_energy_y2)
+      CALL ot_mini_sum_kpoint_scalar(para_env_inter_kp, secant_closure_energy_sty)
 
       valid = valid .AND. ABS(alpha) > 1.0E4_dp*EPSILON(1.0_dp)
       initial_total = initial_matrix + initial_rotation + initial_energy
@@ -1551,10 +1751,16 @@ CONTAINS
 
       vector_valid = vector_valid .AND. valid .AND. &
                      ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
+      closure_valid = closure_valid .AND. vector_valid
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
          qs_ot_env(ichannel)%mermin_secant_previous_ready = previous_valid .AND. vector_valid
          qs_ot_env(ichannel)%mermin_secant_ready = vector_valid
+         qs_ot_env(ichannel)%mermin_closure_secant_previous_ready = &
+            previous_closure_valid .AND. closure_valid
+         qs_ot_env(ichannel)%mermin_closure_secant_ready = closure_valid
+         qs_ot_env(ichannel)%mermin_frozen_h_valid = .FALSE.
+         qs_ot_env(ichannel)%mermin_frozen_endpoint_valid = .FALSE.
          IF (.NOT. vector_valid) CYCLE
          qs_ot_env(ichannel)%mermin_secant_sty = secant_sty
          qs_ot_env(ichannel)%mermin_secant_snorm = secant_snorm
@@ -1577,6 +1783,12 @@ CONTAINS
             vector_valid, secant_rotation_s2, secant_energy_s2, secant_rotation_y2, &
             secant_energy_y2, secant_rotation_sty, secant_energy_sty, secant_snorm, &
             secant_ynorm, secant_alignment, secant_orthogonal_fraction
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
+            " OT Mermin frozen-H closure valid yfrot yfener ycrot ycener sfrot sfener scrot scener:", &
+            closure_valid, frozen_rotation_y2, frozen_energy_y2, &
+            secant_closure_rotation_y2, secant_closure_energy_y2, &
+            frozen_rotation_sty, frozen_energy_sty, &
+            secant_closure_rotation_sty, secant_closure_energy_sty
       END IF
 
    END SUBROUTINE audit_kpoint_mermin_accepted_secant
