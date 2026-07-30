@@ -82,16 +82,16 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_measured_residual_subspace_step, &
@@ -264,6 +264,8 @@ PROGRAM qs_ot_frechet_unittest
                                                   5.0E-13_dp, nfail)
    CALL check_kpoint_coupled_multisecant_update("k-point OT coupled multisecant update", &
                                                 5.0E-13_dp, nfail)
+   CALL check_kpoint_coupled_secant_prediction("k-point OT coupled secant prediction", &
+                                               5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_subspace_step("k-point OT reduced secant subspace step", &
                                            5.0E-13_dp, nfail)
    CALL check_kpoint_residual_compatible_scale("k-point OT residual-compatible affine scale", &
@@ -6596,6 +6598,98 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_coupled_multisecant_update
+
+! **************************************************************************************************
+!> \brief check out-of-sample prediction by a rank-one coupled response mode
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_coupled_secant_prediction(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
+
+      LOGICAL                                            :: ready, scaled_ready
+      REAL(KIND=dp) :: alignment, capture, curvature, curvature_ratio, energy_quality, error, &
+         overlap, predicted_residual_norm, quality, residual_norm, rotation_quality, &
+         scaled_alignment, scaled_capture, scaled_curvature, scaled_curvature_ratio, &
+         scaled_energy_quality, scaled_overlap, scaled_predicted_residual_norm, scaled_quality, &
+         scaled_residual_norm, scaled_rotation_quality
+      REAL(KIND=dp), DIMENSION(1) :: training_energy_step, training_energy_target, &
+         training_rotation_step, training_rotation_target, validation_energy_step, &
+         validation_energy_target, validation_rotation_step, validation_rotation_target
+      REAL(KIND=dp), DIMENSION(1, 1) :: energy_cross, energy_hessian, rotation_hessian, &
+         scaled_updated_energy_cross, scaled_updated_energy_hessian, &
+         scaled_updated_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
+         updated_rotation_hessian
+
+      rotation_hessian(1, 1) = 1.0_dp
+      energy_hessian(1, 1) = 1.0_dp
+      energy_cross(1, 1) = 0.0_dp
+      training_rotation_step(1) = 1.0_dp
+      training_energy_step(1) = 1.0_dp
+      training_rotation_target(1) = 1.4_dp
+      training_energy_target(1) = 1.4_dp
+      validation_rotation_step(1) = 0.5_dp
+      validation_energy_step(1) = -0.2_dp
+      validation_rotation_target(1) = 0.56_dp
+      validation_energy_target(1) = -0.14_dp
+
+      CALL qs_scf_kp_coupled_secant_prediction( &
+         rotation_hessian, energy_hessian, energy_cross, training_rotation_step, &
+         training_energy_step, training_rotation_target, training_energy_target, &
+         validation_rotation_step, validation_energy_step, validation_rotation_target, &
+         validation_energy_target, updated_rotation_hessian, updated_energy_hessian, &
+         updated_energy_cross, ready, overlap, capture, quality, rotation_quality, energy_quality, &
+         alignment, curvature_ratio, residual_norm, predicted_residual_norm, curvature)
+      CALL qs_scf_kp_coupled_secant_prediction( &
+         rotation_hessian, energy_hessian/energy_coordinate_scale**2, &
+         energy_cross/energy_coordinate_scale, training_rotation_step, &
+         energy_coordinate_scale*training_energy_step, training_rotation_target, &
+         training_energy_target/energy_coordinate_scale, validation_rotation_step, &
+         energy_coordinate_scale*validation_energy_step, validation_rotation_target, &
+         validation_energy_target/energy_coordinate_scale, scaled_updated_rotation_hessian, &
+         scaled_updated_energy_hessian, scaled_updated_energy_cross, scaled_ready, &
+         scaled_overlap, scaled_capture, scaled_quality, scaled_rotation_quality, &
+         scaled_energy_quality, scaled_alignment, scaled_curvature_ratio, &
+         scaled_residual_norm, scaled_predicted_residual_norm, scaled_curvature)
+      error = ABS(overlap - 3.0_dp/SQRT(58.0_dp)) + ABS(capture - 1.0_dp) + &
+              ABS(quality - 1.0_dp) + ABS(rotation_quality - 1.0_dp) + &
+              ABS(energy_quality - 1.0_dp) + ABS(alignment - 1.0_dp) + &
+              ABS(curvature_ratio - 1.0_dp) + predicted_residual_norm + &
+              ABS(curvature - 0.4_dp) + ABS(scaled_overlap - overlap) + &
+              ABS(scaled_capture - capture) + ABS(scaled_quality - quality) + &
+              ABS(scaled_rotation_quality - rotation_quality) + &
+              ABS(scaled_energy_quality - energy_quality) + &
+              ABS(scaled_alignment - alignment) + &
+              ABS(scaled_curvature_ratio - curvature_ratio) + &
+              ABS(scaled_residual_norm - residual_norm) + &
+              ABS(scaled_predicted_residual_norm - predicted_residual_norm) + &
+              ABS(scaled_curvature - curvature) + &
+              ABS(scaled_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
+              ABS(energy_coordinate_scale*scaled_updated_energy_cross(1, 1) - &
+                  updated_energy_cross(1, 1)) + &
+              ABS(energy_coordinate_scale**2*scaled_updated_energy_hessian(1, 1) - &
+                  updated_energy_hessian(1, 1))
+
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. residual_norm <= 0.0_dp .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,2(1X,L1),10(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/error/overlap/capture/quality/rquality/equality/ "// &
+            "alignment/cratio/residual/predicted", &
+            ready, scaled_ready, error, overlap, capture, quality, rotation_quality, energy_quality, &
+            alignment, curvature_ratio, residual_norm, predicted_residual_norm
+      ELSE
+         WRITE (*, '(A,9(1X,ES16.8))') TRIM(label)// &
+            " OK with error/overlap/capture/quality/rquality/equality/alignment/cratio/residual", &
+            error, overlap, capture, quality, rotation_quality, energy_quality, alignment, &
+            curvature_ratio, residual_norm
+      END IF
+
+   END SUBROUTINE check_kpoint_coupled_secant_prediction
 
 ! **************************************************************************************************
 !> \brief check that the reduced secant solve remains in the measured rotation span

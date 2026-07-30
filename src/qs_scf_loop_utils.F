@@ -248,6 +248,7 @@ MODULE qs_scf_loop_utils
              qs_scf_check_outer_exit, qs_scf_inner_finalize, qs_scf_rho_update, &
              qs_scf_kp_added_mos_auto_post_resize_steps, &
              qs_scf_kp_coupled_multisecant_update, &
+             qs_scf_kp_coupled_secant_prediction, &
              qs_scf_kp_coupled_subspace_multisecant_update, &
              qs_scf_kp_coupled_reduced_multisecant_update, &
              qs_scf_kp_affine_correction_model, &
@@ -2308,6 +2309,245 @@ CONTAINS
                   updated_model_residual)
 
    END SUBROUTINE qs_scf_kp_coupled_subspace_multisecant_update
+
+! **************************************************************************************************
+!> \brief Score a rank-one coupled response fitted on one accepted secant against the next.
+!>
+!>        The training response changes the analytic fixed-N Mermin Hessian only along the scaled
+!>        full-space training step.  The validation secant is not used to build the correction.
+!>        Its residual reduction is therefore an out-of-sample measure of whether the observed
+!>        self-consistent density/Hamiltonian response persists between accepted steps.
+!> \param rotation_hessian rotation block H_RR
+!> \param energy_hessian fixed-N energy block H_ee
+!> \param energy_cross signed cross block C
+!> \param training_rotation_step older accepted rotation step
+!> \param training_energy_step older accepted auxiliary-energy step
+!> \param training_rotation_target older observed rotation-gradient difference
+!> \param training_energy_target older observed auxiliary-energy-gradient difference
+!> \param validation_rotation_step newer accepted rotation step
+!> \param validation_energy_step newer accepted auxiliary-energy step
+!> \param validation_rotation_target newer observed rotation-gradient difference
+!> \param validation_energy_target newer observed auxiliary-energy-gradient difference
+!> \param updated_rotation_hessian rank-one response model fitted to the training secant
+!> \param updated_energy_hessian rank-one response energy block
+!> \param updated_energy_cross rank-one response signed cross block
+!> \param ready whether the scaled training and validation geometry is finite
+!> \param step_overlap absolute cosine between the training and validation steps
+!> \param training_response_capture fraction of the training model residual parallel to its step
+!> \param validation_quality fractional squared full-residual reduction; negative means degradation
+!> \param validation_rotation_quality fractional squared rotation-residual reduction
+!> \param validation_energy_quality fractional squared energy-residual reduction
+!> \param validation_alignment alignment of predicted and observed validation response
+!> \param validation_curvature_ratio validation/training scalar response curvature
+!> \param validation_residual_norm analytic validation residual norm
+!> \param predicted_residual_norm validation residual norm after the rank-one response
+!> \param response_curvature fitted scaled rank-one response curvature
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_secant_prediction( &
+      rotation_hessian, energy_hessian, energy_cross, training_rotation_step, &
+      training_energy_step, training_rotation_target, training_energy_target, &
+      validation_rotation_step, validation_energy_step, validation_rotation_target, &
+      validation_energy_target, updated_rotation_hessian, updated_energy_hessian, &
+      updated_energy_cross, ready, step_overlap, training_response_capture, validation_quality, &
+      validation_rotation_quality, validation_energy_quality, validation_alignment, &
+      validation_curvature_ratio, validation_residual_norm, predicted_residual_norm, &
+      response_curvature)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian, &
+                                                            energy_cross
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN) :: training_rotation_step, training_energy_step, &
+         training_rotation_target, training_energy_target, validation_rotation_step, &
+         validation_energy_step, validation_rotation_target, validation_energy_target
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_rotation_hessian, &
+                                                            updated_energy_hessian, &
+                                                            updated_energy_cross
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT) :: step_overlap, training_response_capture, validation_quality, &
+         validation_rotation_quality, validation_energy_quality, validation_alignment, &
+         validation_curvature_ratio, validation_residual_norm, predicted_residual_norm, &
+         response_curvature
+
+      INTEGER                                            :: i, j, nener, nfull, nrot
+      REAL(KIND=dp) :: block_floor, block_max, correction_norm, energy_residual_sq, &
+         predicted_energy_residual_sq, predicted_rotation_residual_sq, projected_step, &
+         rotation_residual_sq, training_norm, training_residual_norm, validation_norm, &
+         validation_residual_sq, validation_response_curvature
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coordinate_scale, predicted_response, &
+         predicted_validation_residual, q, training_residual, training_step, training_target, &
+         validation_residual, validation_step, validation_target
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: full_hessian, updated_full_hessian
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      nfull = nrot + nener
+      CPASSERT(SIZE(rotation_hessian, 2) == nrot)
+      CPASSERT(SIZE(energy_hessian, 2) == nener)
+      CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
+      CPASSERT(SIZE(training_rotation_step) == nrot)
+      CPASSERT(SIZE(training_energy_step) == nener)
+      CPASSERT(SIZE(training_rotation_target) == nrot)
+      CPASSERT(SIZE(training_energy_target) == nener)
+      CPASSERT(SIZE(validation_rotation_step) == nrot)
+      CPASSERT(SIZE(validation_energy_step) == nener)
+      CPASSERT(SIZE(validation_rotation_target) == nrot)
+      CPASSERT(SIZE(validation_energy_target) == nener)
+      CPASSERT(ALL(SHAPE(updated_rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(updated_energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(updated_energy_cross) == [nener, nrot]))
+
+      updated_rotation_hessian(:, :) = rotation_hessian(:, :)
+      updated_energy_hessian(:, :) = energy_hessian(:, :)
+      updated_energy_cross(:, :) = energy_cross(:, :)
+      ready = .FALSE.
+      step_overlap = 0.0_dp
+      training_response_capture = 0.0_dp
+      validation_quality = 0.0_dp
+      validation_rotation_quality = 0.0_dp
+      validation_energy_quality = 0.0_dp
+      validation_alignment = 0.0_dp
+      validation_curvature_ratio = 0.0_dp
+      validation_residual_norm = 0.0_dp
+      predicted_residual_norm = 0.0_dp
+      response_curvature = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0) RETURN
+
+      ALLOCATE (coordinate_scale(nfull), full_hessian(nfull, nfull), &
+                updated_full_hessian(nfull, nfull), predicted_response(nfull), &
+                predicted_validation_residual(nfull), q(nfull), training_residual(nfull), &
+                training_step(nfull), training_target(nfull), validation_residual(nfull), &
+                validation_step(nfull), validation_target(nfull))
+      full_hessian(:, :) = 0.0_dp
+      full_hessian(1:nrot, 1:nrot) = rotation_hessian(:, :)
+      full_hessian(1:nrot, nrot + 1:nfull) = -TRANSPOSE(energy_cross(:, :))
+      full_hessian(nrot + 1:nfull, 1:nrot) = -energy_cross(:, :)
+      full_hessian(nrot + 1:nfull, nrot + 1:nfull) = energy_hessian(:, :)
+      training_step(1:nrot) = training_rotation_step(:)
+      training_step(nrot + 1:nfull) = training_energy_step(:)
+      training_target(1:nrot) = training_rotation_target(:)
+      training_target(nrot + 1:nfull) = training_energy_target(:)
+      validation_step(1:nrot) = validation_rotation_step(:)
+      validation_step(nrot + 1:nfull) = validation_energy_step(:)
+      validation_target(1:nrot) = validation_rotation_target(:)
+      validation_target(nrot + 1:nfull) = validation_energy_target(:)
+
+      block_max = MAXVAL(ABS([(rotation_hessian(i, i), i=1, nrot)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nrot
+            coordinate_scale(i) = SQRT(MAX(ABS(rotation_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         coordinate_scale(1:nrot) = 1.0_dp
+      END IF
+      block_max = MAXVAL(ABS([(energy_hessian(i, i), i=1, nener)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nener
+            coordinate_scale(nrot + i) = SQRT(MAX(ABS(energy_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         coordinate_scale(nrot + 1:nfull) = 1.0_dp
+      END IF
+      DO j = 1, nfull
+         DO i = 1, nfull
+            full_hessian(i, j) = full_hessian(i, j)/ &
+                                 (coordinate_scale(i)*coordinate_scale(j))
+         END DO
+      END DO
+      training_step(:) = coordinate_scale(:)*training_step(:)
+      validation_step(:) = coordinate_scale(:)*validation_step(:)
+      training_target(:) = training_target(:)/coordinate_scale(:)
+      validation_target(:) = validation_target(:)/coordinate_scale(:)
+
+      training_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_step, training_step)))
+      validation_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))
+      IF (training_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
+          validation_norm <= SQRT(EPSILON(1.0_dp))) THEN
+         DEALLOCATE (coordinate_scale, full_hessian, updated_full_hessian, predicted_response, &
+                     predicted_validation_residual, q, training_residual, training_step, &
+                     training_target, validation_residual, validation_step, validation_target)
+         RETURN
+      END IF
+      q(:) = training_step(:)/training_norm
+      projected_step = DOT_PRODUCT(q, validation_step)
+      step_overlap = ABS(projected_step)/validation_norm
+
+      training_residual(:) = training_target(:) - MATMUL(full_hessian, training_step)
+      training_residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_residual, training_residual)))
+      response_curvature = DOT_PRODUCT(q, training_residual)/training_norm
+      updated_full_hessian(:, :) = full_hessian(:, :)
+      DO j = 1, nfull
+         DO i = 1, nfull
+            updated_full_hessian(i, j) = updated_full_hessian(i, j) + &
+                                         response_curvature*q(i)*q(j)
+         END DO
+      END DO
+      IF (training_residual_norm > EPSILON(training_residual_norm)) &
+         training_response_capture = ABS(DOT_PRODUCT(q, training_residual))/training_residual_norm
+
+      validation_residual(:) = validation_target(:) - MATMUL(full_hessian, validation_step)
+      predicted_response(:) = response_curvature*projected_step*q(:)
+      predicted_validation_residual(:) = validation_residual(:) - predicted_response(:)
+      validation_residual_sq = MAX(0.0_dp, DOT_PRODUCT(validation_residual, validation_residual))
+      validation_residual_norm = SQRT(validation_residual_sq)
+      predicted_residual_norm = &
+         SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_validation_residual, &
+                                      predicted_validation_residual)))
+      IF (validation_residual_sq > EPSILON(validation_residual_sq)) &
+         validation_quality = 1.0_dp - predicted_residual_norm**2/validation_residual_sq
+
+      rotation_residual_sq = MAX(0.0_dp, &
+                                 DOT_PRODUCT(validation_residual(1:nrot), &
+                                             validation_residual(1:nrot)))
+      predicted_rotation_residual_sq = MAX(0.0_dp, &
+                                           DOT_PRODUCT(predicted_validation_residual(1:nrot), &
+                                                       predicted_validation_residual(1:nrot)))
+      IF (rotation_residual_sq > EPSILON(rotation_residual_sq)) &
+         validation_rotation_quality = 1.0_dp - &
+                                       predicted_rotation_residual_sq/rotation_residual_sq
+      energy_residual_sq = MAX(0.0_dp, &
+                               DOT_PRODUCT(validation_residual(nrot + 1:nfull), &
+                                           validation_residual(nrot + 1:nfull)))
+      predicted_energy_residual_sq = MAX(0.0_dp, &
+                                         DOT_PRODUCT(predicted_validation_residual(nrot + 1:nfull), &
+                                                     predicted_validation_residual(nrot + 1:nfull)))
+      IF (energy_residual_sq > EPSILON(energy_residual_sq)) &
+         validation_energy_quality = 1.0_dp - predicted_energy_residual_sq/energy_residual_sq
+
+      correction_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
+      IF (validation_residual_norm > EPSILON(validation_residual_norm) .AND. &
+          correction_norm > EPSILON(correction_norm)) &
+         validation_alignment = DOT_PRODUCT(validation_residual, predicted_response)/ &
+                                (validation_residual_norm*correction_norm)
+      IF (ABS(projected_step) > SQRT(EPSILON(1.0_dp))*validation_norm .AND. &
+          ABS(response_curvature) > SQRT(EPSILON(1.0_dp))) THEN
+         validation_response_curvature = DOT_PRODUCT(q, validation_residual)/projected_step
+         validation_curvature_ratio = validation_response_curvature/response_curvature
+      END IF
+      ready = step_overlap == step_overlap .AND. training_response_capture == training_response_capture .AND. &
+              validation_quality == validation_quality .AND. &
+              validation_rotation_quality == validation_rotation_quality .AND. &
+              validation_energy_quality == validation_energy_quality .AND. &
+              validation_alignment == validation_alignment .AND. &
+              validation_curvature_ratio == validation_curvature_ratio .AND. &
+              validation_residual_norm == validation_residual_norm .AND. &
+              predicted_residual_norm == predicted_residual_norm .AND. &
+              response_curvature == response_curvature
+      IF (ready) THEN
+         DO j = 1, nfull
+            DO i = 1, nfull
+               updated_full_hessian(i, j) = updated_full_hessian(i, j)* &
+                                            coordinate_scale(i)*coordinate_scale(j)
+            END DO
+         END DO
+         updated_rotation_hessian(:, :) = updated_full_hessian(1:nrot, 1:nrot)
+         updated_energy_cross(:, :) = -updated_full_hessian(nrot + 1:nfull, 1:nrot)
+         updated_energy_hessian(:, :) = updated_full_hessian(nrot + 1:nfull, nrot + 1:nfull)
+      END IF
+      DEALLOCATE (coordinate_scale, full_hessian, updated_full_hessian, predicted_response, &
+                  predicted_validation_residual, q, training_residual, training_step, &
+                  training_target, validation_residual, validation_step, validation_target)
+
+   END SUBROUTINE qs_scf_kp_coupled_secant_prediction
 
 ! **************************************************************************************************
 !> \brief Update the reduced rotation Schur block directly from coupled fixed-N secants.
@@ -28631,10 +28871,11 @@ CONTAINS
                                                             global_spin, group, ie, ifull, imo, &
                                                             jmo, local_channel, nener, nmo, nrot, &
                                                             r, valid_i
-      LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, coupled_schur_eligible, &
-         coupled_schur_finite, coupled_subspace_eligible, coupled_subspace_finite, &
-         multisecant_finite, previous_valid, reduced_multisecant_eligible, &
-         reduced_multisecant_finite, rotation_multisecant_ready, update_finite, valid
+      LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, coupled_prediction_finite, &
+         coupled_prediction_reverse_finite, coupled_schur_eligible, coupled_schur_finite, &
+         coupled_subspace_eligible, coupled_subspace_finite, multisecant_finite, previous_valid, &
+         reduced_multisecant_eligible, reduced_multisecant_finite, rotation_multisecant_ready, &
+         update_finite, valid
       REAL(KIND=dp) :: alignment, base_hessian_norm, component_cross_curvature, &
          component_energy_alignment, component_energy_curvature, component_energy_norm, &
          component_energy_response_alignment, component_energy_response_curvature, &
@@ -28648,37 +28889,53 @@ CONTAINS
          coupled_multisecant_cross_correction_ratio, coupled_multisecant_energy_correction_ratio, &
          coupled_multisecant_hessian_norm, coupled_multisecant_independence, &
          coupled_multisecant_residual_norm, coupled_multisecant_rotation_correction_ratio, &
-         coupled_multisecant_updated_residual_norm, coupled_schur_correction_ratio, &
-         coupled_subspace_compatibility, coupled_subspace_correction_norm, &
-         coupled_subspace_cross_correction_ratio, coupled_subspace_energy_correction_ratio, &
-         coupled_subspace_independence
-      REAL(KIND=dp) :: coupled_subspace_projected_residual_norm, coupled_subspace_residual_norm, &
+         coupled_multisecant_updated_residual_norm, coupled_prediction_alignment, &
+         coupled_prediction_capture, coupled_prediction_curvature, &
+         coupled_prediction_curvature_ratio, coupled_prediction_energy_quality, &
+         coupled_prediction_overlap
+      REAL(KIND=dp) :: coupled_prediction_predicted_residual_norm, coupled_prediction_quality, &
+         coupled_prediction_residual_norm, coupled_prediction_reverse_alignment, &
+         coupled_prediction_reverse_capture, coupled_prediction_reverse_curvature, &
+         coupled_prediction_reverse_curvature_ratio, coupled_prediction_reverse_energy_quality, &
+         coupled_prediction_reverse_overlap, coupled_prediction_reverse_predicted_residual_norm, &
+         coupled_prediction_reverse_quality, coupled_prediction_reverse_residual_norm, &
+         coupled_prediction_reverse_rotation_quality, coupled_prediction_rotation_quality
+      REAL(KIND=dp) :: coupled_schur_correction_ratio, coupled_subspace_compatibility, &
+         coupled_subspace_correction_norm, coupled_subspace_cross_correction_ratio, &
+         coupled_subspace_energy_correction_ratio, coupled_subspace_independence, &
+         coupled_subspace_projected_residual_norm, coupled_subspace_residual_norm, &
          coupled_subspace_response_capture, coupled_subspace_rotation_correction_ratio, &
          coupled_subspace_updated_residual_norm, current_response_coverage, current_step_coverage, &
          curvature_ratio, energy_mean, full_secant_rotation_norm, full_step_rotation_norm, &
-         model_alignment, model_norm, multisecant_compatibility, multisecant_correction_norm, &
+         model_alignment, model_norm
+      REAL(KIND=dp) :: multisecant_compatibility, multisecant_correction_norm, &
          multisecant_correction_ratio, multisecant_independence, multisecant_residual_norm, &
-         multisecant_updated_residual_norm, orthogonal_fraction
-      REAL(KIND=dp) :: previous_full_secant_rotation_norm, previous_full_step_rotation_norm, &
+         multisecant_updated_residual_norm, orthogonal_fraction, &
+         previous_full_secant_rotation_norm, previous_full_step_rotation_norm, &
          previous_response_coverage, previous_step_coverage, reduced_multisecant_compatibility, &
          reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio, &
          reduced_multisecant_independence, reduced_multisecant_residual_norm, &
-         reduced_multisecant_updated_residual_norm, residual_energy_norm, residual_norm, &
-         residual_rotation_norm, rotation_curvature_ratio, rotation_model_alignment, &
+         reduced_multisecant_updated_residual_norm, residual_energy_norm, residual_norm
+      REAL(KIND=dp) :: residual_rotation_norm, rotation_curvature_ratio, rotation_model_alignment, &
          rotation_model_norm, rotation_residual_norm, rotation_stbs, rotation_sty, &
-         rotation_y_norm, snorm, step_norm, sths
-      REAL(KIND=dp) :: stored_sty, sty, updated_rotation_residual_norm, y_norm, ynorm
+         rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, updated_rotation_residual_norm, &
+         y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: model_energy, model_energy_base, &
          model_energy_cross, model_rotation, model_rotation_base, model_rotation_cross, &
          previous_secant_energy, previous_secant_rotation, previous_step_energy, &
          previous_step_rotation, secant_energy, secant_rotation, step_energy, step_rotation, &
          target_rotation
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: coupled_energy_cross, coupled_energy_hessian, &
+         coupled_prediction_current_energy_cross, coupled_prediction_current_energy_hessian, &
+         coupled_prediction_current_rotation_hessian, coupled_prediction_energy_cross, &
+         coupled_prediction_energy_hessian, coupled_prediction_rotation_hessian, &
          coupled_rotation_hessian, coupled_rotation_targets, coupled_schur_rotation_hessian, &
          coupled_subspace_energy_cross, coupled_subspace_energy_hessian, &
          coupled_subspace_rotation_hessian, dense_im, dense_re, multisecant_energy_steps, &
-         multisecant_energy_targets, multisecant_rotation_steps, multisecant_rotation_targets, &
-         reduced_multisecant_rotation_hessian, updated_rotation_hessian
+         multisecant_energy_targets
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: multisecant_rotation_steps, &
+         multisecant_rotation_targets, reduced_multisecant_rotation_hessian, &
+         updated_rotation_hessian
 
          nrot = SIZE(var_channel)
          nener = SIZE(occ_curv)
@@ -29068,6 +29325,28 @@ CONTAINS
          coupled_schur_finite = .FALSE.
          coupled_schur_eligible = .FALSE.
          coupled_schur_correction_ratio = 0.0_dp
+         coupled_prediction_finite = .FALSE.
+         coupled_prediction_overlap = 0.0_dp
+         coupled_prediction_capture = 0.0_dp
+         coupled_prediction_quality = 0.0_dp
+         coupled_prediction_rotation_quality = 0.0_dp
+         coupled_prediction_energy_quality = 0.0_dp
+         coupled_prediction_alignment = 0.0_dp
+         coupled_prediction_curvature_ratio = 0.0_dp
+         coupled_prediction_residual_norm = 0.0_dp
+         coupled_prediction_predicted_residual_norm = 0.0_dp
+         coupled_prediction_curvature = 0.0_dp
+         coupled_prediction_reverse_finite = .FALSE.
+         coupled_prediction_reverse_overlap = 0.0_dp
+         coupled_prediction_reverse_capture = 0.0_dp
+         coupled_prediction_reverse_quality = 0.0_dp
+         coupled_prediction_reverse_rotation_quality = 0.0_dp
+         coupled_prediction_reverse_energy_quality = 0.0_dp
+         coupled_prediction_reverse_alignment = 0.0_dp
+         coupled_prediction_reverse_curvature_ratio = 0.0_dp
+         coupled_prediction_reverse_residual_norm = 0.0_dp
+         coupled_prediction_reverse_predicted_residual_norm = 0.0_dp
+         coupled_prediction_reverse_curvature = 0.0_dp
          coupled_subspace_finite = .FALSE.
          coupled_subspace_eligible = .FALSE.
          coupled_subspace_independence = 0.0_dp
@@ -29093,9 +29372,15 @@ CONTAINS
                       multisecant_rotation_targets(nrot, 2), multisecant_energy_targets(nener, 2), &
                       coupled_rotation_targets(nrot, 2), coupled_rotation_hessian(nrot, nrot), &
                       coupled_schur_rotation_hessian(nrot, nrot), &
+                      coupled_prediction_rotation_hessian(nrot, nrot), &
+                      coupled_prediction_current_rotation_hessian(nrot, nrot), &
                       coupled_subspace_rotation_hessian(nrot, nrot), &
                       reduced_multisecant_rotation_hessian(nrot, nrot), &
                       coupled_energy_hessian(nener, nener), coupled_energy_cross(nener, nrot), &
+                      coupled_prediction_energy_hessian(nener, nener), &
+                      coupled_prediction_energy_cross(nener, nrot), &
+                      coupled_prediction_current_energy_hessian(nener, nener), &
+                      coupled_prediction_current_energy_cross(nener, nrot), &
                       coupled_subspace_energy_hessian(nener, nener), &
                       coupled_subspace_energy_cross(nener, nrot))
             multisecant_rotation_steps(:, 1) = previous_step_rotation(:)
@@ -29109,6 +29394,30 @@ CONTAINS
                                                         multisecant_energy_steps)
             multisecant_energy_targets(:, 1) = previous_secant_energy(:)
             multisecant_energy_targets(:, 2) = secant_energy(:)
+
+            CALL qs_scf_kp_coupled_secant_prediction( &
+               rotation_hessian, energy_hessian, energy_cross, previous_step_rotation, &
+               previous_step_energy, previous_secant_rotation, previous_secant_energy, &
+               step_rotation, step_energy, secant_rotation, secant_energy, &
+               coupled_prediction_rotation_hessian, coupled_prediction_energy_hessian, &
+               coupled_prediction_energy_cross, &
+               coupled_prediction_finite, coupled_prediction_overlap, coupled_prediction_capture, &
+               coupled_prediction_quality, coupled_prediction_rotation_quality, &
+               coupled_prediction_energy_quality, coupled_prediction_alignment, &
+               coupled_prediction_curvature_ratio, coupled_prediction_residual_norm, &
+               coupled_prediction_predicted_residual_norm, coupled_prediction_curvature)
+            CALL qs_scf_kp_coupled_secant_prediction( &
+               rotation_hessian, energy_hessian, energy_cross, step_rotation, step_energy, &
+               secant_rotation, secant_energy, previous_step_rotation, previous_step_energy, &
+               previous_secant_rotation, previous_secant_energy, &
+               coupled_prediction_current_rotation_hessian, &
+               coupled_prediction_current_energy_hessian, coupled_prediction_current_energy_cross, &
+               coupled_prediction_reverse_finite, coupled_prediction_reverse_overlap, &
+               coupled_prediction_reverse_capture, coupled_prediction_reverse_quality, &
+               coupled_prediction_reverse_rotation_quality, coupled_prediction_reverse_energy_quality, &
+               coupled_prediction_reverse_alignment, coupled_prediction_reverse_curvature_ratio, &
+               coupled_prediction_reverse_residual_norm, &
+               coupled_prediction_reverse_predicted_residual_norm, coupled_prediction_reverse_curvature)
 
             CALL qs_scf_kp_coupled_reduced_multisecant_update( &
                rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
@@ -29248,6 +29557,26 @@ CONTAINS
             target_group, component_rotation_alignment, component_energy_alignment, &
             component_rotation_response_alignment, component_energy_response_alignment
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,10(1X,ES16.8))') &
+            " OT Schur coupled leave-one-out response group finite overlap capture quality "// &
+            "qrot qener align cratio rnorm pnorm curvature:", &
+            target_group, coupled_prediction_finite, coupled_prediction_overlap, &
+            coupled_prediction_capture, coupled_prediction_quality, &
+            coupled_prediction_rotation_quality, coupled_prediction_energy_quality, &
+            coupled_prediction_alignment, coupled_prediction_curvature_ratio, &
+            coupled_prediction_residual_norm, coupled_prediction_predicted_residual_norm, &
+            coupled_prediction_curvature
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,10(1X,ES16.8))') &
+            " OT Schur coupled reverse response group finite overlap capture quality "// &
+            "qrot qener align cratio rnorm pnorm curvature:", &
+            target_group, coupled_prediction_reverse_finite, coupled_prediction_reverse_overlap, &
+            coupled_prediction_reverse_capture, coupled_prediction_reverse_quality, &
+            coupled_prediction_reverse_rotation_quality, coupled_prediction_reverse_energy_quality, &
+            coupled_prediction_reverse_alignment, coupled_prediction_reverse_curvature_ratio, &
+            coupled_prediction_reverse_residual_norm, &
+            coupled_prediction_reverse_predicted_residual_norm, coupled_prediction_reverse_curvature
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),9(1X,ES16.8))') &
            " OT Schur accepted rotation secant shadow group finite eligible sty stbs ratio ynorm mnorm align rnorm unorm cratio:", &
             target_group, update_finite, update_ready, rotation_sty, rotation_stbs, rotation_curvature_ratio, &
@@ -29306,6 +29635,10 @@ CONTAINS
                         coupled_rotation_targets, coupled_rotation_hessian, &
                         coupled_schur_rotation_hessian, reduced_multisecant_rotation_hessian, &
                         coupled_energy_hessian, coupled_energy_cross, &
+                        coupled_prediction_rotation_hessian, coupled_prediction_energy_hessian, &
+                        coupled_prediction_energy_cross, coupled_prediction_current_rotation_hessian, &
+                        coupled_prediction_current_energy_hessian, &
+                        coupled_prediction_current_energy_cross, &
                         coupled_subspace_rotation_hessian, coupled_subspace_energy_hessian, &
                         coupled_subspace_energy_cross)
 
