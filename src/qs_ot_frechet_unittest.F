@@ -102,12 +102,12 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
         qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
         qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_compatible_scale, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -278,6 +278,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_coupled_prediction_gate("k-point OT coupled prediction gate", nfail)
    CALL check_kpoint_reduced_subspace_step("k-point OT reduced secant subspace step", &
                                            5.0E-13_dp, nfail)
+   CALL check_kpoint_reduced_subspace_replacement_step( &
+      "k-point OT reduced secant subspace replacement", 5.0E-13_dp, nfail)
    CALL check_kpoint_indefinite_residual_balanced_step( &
       "k-point OT indefinite residual-balanced step", 5.0E-13_dp, nfail)
    CALL check_kpoint_residual_compatible_scale("k-point OT residual-compatible affine scale", &
@@ -6952,6 +6954,64 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_reduced_subspace_step
+
+! **************************************************************************************************
+!> \brief Check a projected KKT replacement while retaining the reference complement.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_reduced_subspace_replacement_step(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      INTEGER                                            :: rank
+      LOGICAL                                            :: ready
+      REAL(KIND=dp)                                      :: driving_fraction, error, modal_shift, &
+                                                            projected_residual, &
+                                                            reference_residual_ratio
+      REAL(KIND=dp), DIMENSION(n)                        :: coordinate_floor, expected_step, &
+                                                            gradient, reference_step, residual, &
+                                                            step
+      REAL(KIND=dp), DIMENSION(n, 3)                     :: modes
+      REAL(KIND=dp), DIMENSION(n, n)                     :: hessian
+
+      hessian(:, :) = RESHAPE([ &
+                              4.0_dp, 1.0_dp, 0.5_dp, 0.0_dp, &
+                              1.0_dp, 3.0_dp, -0.25_dp, 0.2_dp, &
+                              0.5_dp, -0.25_dp, 2.0_dp, 0.3_dp, &
+                              0.0_dp, 0.2_dp, 0.3_dp, 1.5_dp], [n, n])
+      expected_step(:) = [0.4_dp, -0.2_dp, 0.7_dp, -0.3_dp]
+      gradient(:) = MATMUL(hessian, expected_step)
+      reference_step(:) = [2.0_dp, -1.5_dp, 0.7_dp, -0.3_dp]
+      modes(:, 1) = [1.0_dp, 1.0_dp, 0.0_dp, 0.0_dp]
+      modes(:, 2) = [1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp]
+      modes(:, 3) = [2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      coordinate_floor(:) = 1.0E-2_dp
+
+      CALL qs_scf_kp_reduced_subspace_replacement_step( &
+         hessian, gradient, modes, coordinate_floor, reference_step, step, ready, rank, modal_shift, &
+         projected_residual, reference_residual_ratio, driving_fraction)
+      residual(:) = MATMUL(hessian, step) - gradient
+      error = MAXVAL(ABS(step - expected_step)) + MAXVAL(ABS(residual(1:2))) + &
+              ABS(modal_shift) + projected_residual
+
+      IF (.NOT. ready .OR. rank /= 2 .OR. reference_residual_ratio <= tol .OR. &
+          driving_fraction <= tol .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,L1,1X,I3,5(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/rank/error/shift/res/ref/driving", ready, rank, error, modal_shift, &
+            projected_residual, reference_residual_ratio, driving_fraction
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
+            " OK with error/shift/res/ref/driving", error, modal_shift, projected_residual, &
+            reference_residual_ratio, driving_fraction
+      END IF
+
+   END SUBROUTINE check_kpoint_reduced_subspace_replacement_step
 
 ! **************************************************************************************************
 !> \brief Check sign-aware negative-curvature use against an established residual reference.

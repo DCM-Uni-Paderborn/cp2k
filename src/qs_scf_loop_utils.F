@@ -266,6 +266,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_measured_residual_subspace_step, &
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
+             qs_scf_kp_reduced_subspace_replacement_step, &
              qs_scf_kp_residual_compatible_scale, &
              qs_scf_kp_coupled_schur_transport, &
              qs_scf_kp_coupled_secant_model, &
@@ -3086,6 +3087,179 @@ CONTAINS
                   floor_projected, hessian_projected, hessian_solve, orthonormal_modes, work_mode)
 
    END SUBROUTINE qs_scf_kp_reduced_subspace_step
+
+! **************************************************************************************************
+!> \brief Replace the component of a reference step in a measured low-rank subspace.
+!>
+!>        The reference component orthogonal to the measured modes is held fixed.  The projected
+!>        solve includes the Hessian coupling to that complement, so the returned step satisfies
+!>        the regularized projected KKT equation for the complete trial rather than adding an
+!>        independent low-rank correction to the reference step.
+!> \param hessian symmetric full-space model
+!> \param gradient full-space right-hand side
+!> \param modes measured full-space secant modes
+!> \param coordinate_floor nonnegative full-space diagonal curvature floor
+!> \param reference_step established full-space candidate
+!> \param step candidate with its measured-subspace component replaced
+!> \param ready whether a finite descent direction was obtained
+!> \param rank numerical rank of the measured subspace
+!> \param modal_shift uniform curvature shift applied in the orthonormal modal basis
+!> \param projected_residual relative residual of the regularized projected KKT equation
+!> \param reference_residual_ratio projected residual of the reference step relative to the
+!>        projected right-hand side after fixing its orthogonal complement
+!> \param driving_fraction fraction of that complement-conditioned residual in the measured span
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_reduced_subspace_replacement_step( &
+      hessian, gradient, modes, coordinate_floor, reference_step, step, ready, rank, modal_shift, &
+      projected_residual, reference_residual_ratio, driving_fraction)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: gradient
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: modes
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: coordinate_floor, reference_step
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: step
+      LOGICAL, INTENT(OUT)                               :: ready
+      INTEGER, INTENT(OUT)                               :: rank
+      REAL(KIND=dp), INTENT(OUT)                         :: modal_shift, projected_residual, &
+                                                            reference_residual_ratio, &
+                                                            driving_fraction
+
+      INTEGER                                            :: i, info, j, mode_count, nrot, pass
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: ipiv
+      REAL(KIND=dp) :: complement_residual_norm, eigenvalue_min, mode_norm, mode_scale, &
+         numerical_floor, projected_gradient_norm, reference_projected_residual_norm, residual_norm
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coefficients, complement_residual, &
+         projected_gradient, projected_solve_residual, reference_complement, &
+         reference_projected_residual, work_mode
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: floor_projected, hessian_projected, &
+                                                            hessian_solve, hessian_symmetric, &
+                                                            orthonormal_modes
+
+      nrot = SIZE(gradient)
+      mode_count = SIZE(modes, 2)
+      CPASSERT(ALL(SHAPE(hessian) == [nrot, nrot]))
+      CPASSERT(SIZE(modes, 1) == nrot)
+      CPASSERT(SIZE(coordinate_floor) == nrot)
+      CPASSERT(SIZE(reference_step) == nrot)
+      CPASSERT(SIZE(step) == nrot)
+
+      step(:) = 0.0_dp
+      ready = .FALSE.
+      rank = 0
+      modal_shift = 0.0_dp
+      projected_residual = 0.0_dp
+      reference_residual_ratio = 0.0_dp
+      driving_fraction = 0.0_dp
+      IF (nrot <= 0 .OR. mode_count <= 0) RETURN
+
+      ALLOCATE (hessian_symmetric(nrot, nrot), orthonormal_modes(nrot, mode_count), work_mode(nrot))
+      hessian_symmetric(:, :) = 0.5_dp*(hessian + TRANSPOSE(hessian))
+      orthonormal_modes(:, :) = 0.0_dp
+      mode_scale = 0.0_dp
+      DO j = 1, mode_count
+         mode_scale = MAX(mode_scale, SQRT(MAX(0.0_dp, DOT_PRODUCT(modes(:, j), modes(:, j)))))
+      END DO
+      IF (mode_scale <= TINY(1.0_dp)) THEN
+         DEALLOCATE (hessian_symmetric, orthonormal_modes, work_mode)
+         RETURN
+      END IF
+
+      DO j = 1, mode_count
+         work_mode(:) = modes(:, j)
+         DO pass = 1, 2
+            DO i = 1, rank
+               work_mode(:) = work_mode - &
+                              DOT_PRODUCT(orthonormal_modes(:, i), work_mode)* &
+                              orthonormal_modes(:, i)
+            END DO
+         END DO
+         mode_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(work_mode, work_mode)))
+         IF (mode_norm <= 64.0_dp*SQRT(EPSILON(1.0_dp))*mode_scale) CYCLE
+         rank = rank + 1
+         orthonormal_modes(:, rank) = work_mode/mode_norm
+      END DO
+      IF (rank <= 0) THEN
+         DEALLOCATE (hessian_symmetric, orthonormal_modes, work_mode)
+         RETURN
+      END IF
+
+      ALLOCATE (coefficients(rank), complement_residual(nrot), projected_gradient(rank), &
+                projected_solve_residual(rank), reference_complement(nrot), &
+                reference_projected_residual(rank), ipiv(rank), floor_projected(rank, rank), &
+                hessian_projected(rank, rank), hessian_solve(rank, rank))
+      reference_complement(:) = reference_step - &
+                                MATMUL(orthonormal_modes(:, 1:rank), &
+                                       MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), reference_step))
+      complement_residual(:) = gradient - MATMUL(hessian_symmetric, reference_complement)
+      projected_gradient(:) = MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), complement_residual)
+      projected_gradient_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(projected_gradient, projected_gradient)))
+      complement_residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(complement_residual, &
+                                                              complement_residual)))
+      IF (projected_gradient_norm <= 64.0_dp*EPSILON(1.0_dp)* &
+          MAX(1.0_dp, complement_residual_norm)) THEN
+         DEALLOCATE (coefficients, complement_residual, projected_gradient, &
+                     projected_solve_residual, reference_complement, reference_projected_residual, &
+                     ipiv, floor_projected, hessian_projected, hessian_solve, hessian_symmetric, &
+                     orthonormal_modes, work_mode)
+         RETURN
+      END IF
+      driving_fraction = projected_gradient_norm/MAX(complement_residual_norm, EPSILON(1.0_dp))
+
+      hessian_projected(:, :) = MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), &
+                                       MATMUL(hessian_symmetric, orthonormal_modes(:, 1:rank)))
+      floor_projected(:, :) = MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), &
+                                     SPREAD(MAX(0.0_dp, coordinate_floor), 2, rank)* &
+                                     orthonormal_modes(:, 1:rank))
+      hessian_projected(:, :) = 0.5_dp*(hessian_projected + TRANSPOSE(hessian_projected))
+      floor_projected(:, :) = 0.5_dp*(floor_projected + TRANSPOSE(floor_projected))
+      hessian_solve(:, :) = hessian_projected - floor_projected
+      IF (rank == 1) THEN
+         eigenvalue_min = hessian_solve(1, 1)
+      ELSE IF (rank == 2) THEN
+         eigenvalue_min = 0.5_dp*(hessian_solve(1, 1) + hessian_solve(2, 2) - &
+                                  SQRT((hessian_solve(1, 1) - hessian_solve(2, 2))**2 + &
+                                       4.0_dp*hessian_solve(1, 2)**2))
+      ELSE
+         eigenvalue_min = MINVAL([ &
+                                 (hessian_solve(i, i) - SUM(ABS(hessian_solve(i, :))) + &
+                                  ABS(hessian_solve(i, i)), i=1, rank)])
+      END IF
+      numerical_floor = 64.0_dp*EPSILON(1.0_dp)* &
+                        MAX(1.0_dp, MAXVAL(ABS(hessian_projected)), &
+                            MAXVAL(ABS(floor_projected)))
+      modal_shift = MAX(0.0_dp, numerical_floor - eigenvalue_min)
+      hessian_solve(:, :) = hessian_projected(:, :)
+      DO i = 1, rank
+         hessian_solve(i, i) = hessian_solve(i, i) + modal_shift
+      END DO
+
+      reference_projected_residual(:) = MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), &
+                                               gradient - MATMUL(hessian_symmetric, reference_step))
+      reference_projected_residual_norm = SQRT(MAX(0.0_dp, &
+                                                   DOT_PRODUCT(reference_projected_residual, &
+                                                               reference_projected_residual)))
+      reference_residual_ratio = reference_projected_residual_norm/ &
+                                 MAX(projected_gradient_norm, EPSILON(1.0_dp))
+      coefficients(:) = projected_gradient(:)
+      CALL dgesv(rank, 1, hessian_solve, rank, ipiv, coefficients, rank, info)
+      IF (info == 0 .AND. ALL(coefficients == coefficients)) THEN
+         step(:) = reference_complement + MATMUL(orthonormal_modes(:, 1:rank), coefficients)
+         projected_solve_residual(:) = MATMUL(TRANSPOSE(orthonormal_modes(:, 1:rank)), &
+                                              MATMUL(hessian_symmetric, step) - gradient) + &
+                                       modal_shift*coefficients
+         residual_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(projected_solve_residual, &
+                                                      projected_solve_residual)))
+         projected_residual = residual_norm/MAX(projected_gradient_norm, EPSILON(1.0_dp))
+         ready = DOT_PRODUCT(gradient, step) > EPSILON(DOT_PRODUCT(gradient, step)) .AND. &
+                 ALL(step == step) .AND. projected_residual == projected_residual .AND. &
+                 reference_residual_ratio == reference_residual_ratio .AND. &
+                 driving_fraction == driving_fraction
+      END IF
+      IF (.NOT. ready) step(:) = 0.0_dp
+      DEALLOCATE (coefficients, complement_residual, projected_gradient, projected_solve_residual, &
+                  reference_complement, reference_projected_residual, ipiv, floor_projected, &
+                  hessian_projected, hessian_solve, hessian_symmetric, orthonormal_modes, work_mode)
+
+   END SUBROUTINE qs_scf_kp_reduced_subspace_replacement_step
 
 ! **************************************************************************************************
 !> \brief Build a sign-aware step for an indefinite reduced Schur model.
@@ -13649,12 +13823,12 @@ CONTAINS
       LOGICAL :: projector_response_candidate_ready, projector_response_candidate_selected, &
          reduced_secant_candidate_enabled, reduced_secant_candidate_ready, &
          reduced_secant_candidate_selected, reduced_secant_measured_response, &
-         reduced_secant_probe_selected, reduced_secant_update_eligible, &
-         relative_energy_metric_ready, response_model_available, schur_active_subspace, solved, &
-         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected, &
-         vector_secant_update_eligible, vector_secant_update_ready
-      LOGICAL :: vector_secant_update_used
+         reduced_secant_probe_selected, reduced_secant_replacement_eligible, &
+         reduced_secant_update_eligible, relative_energy_metric_ready, response_model_available, &
+         schur_active_subspace, solved, split_candidate_diagnostic, split_candidate_enabled, &
+         split_candidate_ready, split_candidate_selected, split_residual_competitive, &
+         trust_rejected, vector_secant_update_eligible
+      LOGICAL :: vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
                                                             channel_density_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
@@ -15533,6 +15707,7 @@ CONTAINS
          reduced_secant_candidate_selected = .FALSE.
          reduced_secant_measured_response = .FALSE.
          reduced_secant_probe_selected = .FALSE.
+         reduced_secant_replacement_eligible = .FALSE.
          reduced_secant_update_eligible = .FALSE.
          vector_secant_update_eligible = .FALSE.
          vector_secant_update_ready = .FALSE.
@@ -18348,7 +18523,8 @@ CONTAINS
                                                      multisecant_update_eligible, &
                                                      prediction_update_eligible, &
                                                      prediction_predicted_residual_ratio, &
-                                                     reduced_secant_update_eligible)
+                                                     reduced_secant_update_eligible, &
+                                                     reduced_secant_replacement_eligible)
          IF (prediction_update_eligible) THEN
             CALL qs_scf_kp_coupled_schur_transport( &
                rot_hessian_coupled, energy_hessian_reference, energy_cross, &
@@ -18406,9 +18582,10 @@ CONTAINS
             prediction_update_ready, local_ot_env(1)%schur_prediction_candidate_enabled, &
             prediction_transport_correction_ratio, local_ot_env(1)%schur_prediction_quality_samples
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,2(1X,L1),1X,I6)') &
-            " OT Schur reduced-secant shadow group eligible validated samples:", &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),1X,I6)') &
+            " OT Schur reduced-secant shadow group eligible replacement validated samples:", &
             target_group, reduced_secant_update_eligible, &
+            reduced_secant_replacement_eligible, &
             local_ot_env(1)%schur_reduced_secant_shadow_validated, &
             local_ot_env(1)%schur_reduced_secant_quality_samples
 
@@ -26326,7 +26503,8 @@ CONTAINS
                   reduced_secant_candidate_ready, use_measured_response=.TRUE., &
                   full_rotation_gradient=full_grad_rot, &
                   full_rotation_targets=reduced_secant_full_targets, &
-                  full_rotation_residual_weight=full_var_physical_grad_metric_weight)
+                  full_rotation_residual_weight=full_var_physical_grad_metric_weight, &
+                  replace_base_subspace=reduced_secant_replacement_eligible)
                reduced_secant_response_weighted_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   reduced_secant_response_weighted_trust_ratio = &
@@ -29478,6 +29656,8 @@ CONTAINS
 !> \param full_rotation_gradient stable full-pair physical gradient for residual prediction
 !> \param full_rotation_targets accepted full-pair gradient changes for the active secant modes
 !> \param full_rotation_residual_weight physical metric in the stable full-pair ordering
+!> \param replace_base_subspace replace rather than increment the reference component in the
+!>        measured rotation span
 ! **************************************************************************************************
       SUBROUTINE build_kpoint_ot_reduced_secant_candidate( &
          rotation_hessian, rotation_residual_hessian, response_metric, rotation_modes, &
@@ -29492,7 +29672,7 @@ CONTAINS
          predicted_residual_ratio, predicted_residual_start_sq, &
          predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
          use_measured_response, full_rotation_gradient, full_rotation_targets, &
-         full_rotation_residual_weight)
+         full_rotation_residual_weight, replace_base_subspace)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, &
                                                             rotation_residual_hessian, &
                                                             response_metric, rotation_modes, &
@@ -29521,17 +29701,19 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
          OPTIONAL                                        :: full_rotation_targets
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_residual_weight
+      LOGICAL, INTENT(IN), OPTIONAL                      :: replace_base_subspace
 
       INTEGER                                            :: modal_rank, nener, nfull, nrot, r
       LOGICAL :: base_ready, correction_ready, current_residual_ready, full_response_requested, &
-         measured_response_requested, model_ready, residual_step_ready, subspace_ready, trial_ready
+         measured_response_requested, model_ready, replacement_requested, residual_step_ready, &
+         subspace_ready, trial_ready
       REAL(KIND=dp) :: base_drop, base_quadratic, base_slope, correction_cross, correction_drop, &
          correction_quadratic, correction_slope, current_residual_alpha, current_residual_ratio, &
          current_residual_scale, floor_quadratic, increment_slope, modal_shift, &
-         residual_direction_scale, response_abs_unit, response_cross, response_weighted_unit, &
-         rotation_residual_alpha, rotation_residual_base_norm, rotation_residual_delta_norm, &
-         rotation_residual_ratio, schur_gradient_fraction, schur_model_residual, trial_drop, &
-         trial_quadratic, trial_slope
+         replacement_reference_residual_ratio, residual_direction_scale, response_abs_unit, &
+         response_cross, response_weighted_unit, rotation_residual_alpha, &
+         rotation_residual_base_norm, rotation_residual_delta_norm, rotation_residual_ratio, &
+         schur_gradient_fraction, schur_model_residual, trial_drop, trial_quadratic, trial_slope
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: base_response, base_rotation_residual, &
          correction_energy, correction_rotation, correction_rotation_residual, model_response, &
          raw_response, rhs_local, total_response
@@ -29572,8 +29754,11 @@ CONTAINS
          predicted_residual_delta_sq = 0.0_dp
          measured_response_used = .FALSE.
          ready = .FALSE.
+         replacement_requested = .FALSE.
+         IF (PRESENT(replace_base_subspace)) replacement_requested = replace_base_subspace
          measured_response_requested = .FALSE.
          IF (PRESENT(use_measured_response)) measured_response_requested = use_measured_response
+         measured_response_requested = measured_response_requested .AND. .NOT. replacement_requested
          full_response_requested = PRESENT(full_rotation_gradient)
          CPASSERT(PRESENT(full_rotation_targets) .EQV. full_response_requested)
          CPASSERT(PRESENT(full_rotation_residual_weight) .EQV. full_response_requested)
@@ -29593,12 +29778,21 @@ CONTAINS
          schur_reference(:, :) = 0.5_dp*(rotation_hessian + TRANSPOSE(rotation_hessian)) - &
                                  0.5_dp*(response_metric + TRANSPOSE(response_metric))
          schur_reference(:, :) = 0.5_dp*(schur_reference + TRANSPOSE(schur_reference))
-         rhs_local(:) = rotation_gradient + MATMUL(TRANSPOSE(response), energy_gradient) - &
-                        MATMUL(schur_reference, rotation_base_step)
-         CALL qs_scf_kp_reduced_subspace_step( &
-            schur_reference, rhs_local, rotation_modes, rotation_floor, correction_rotation, &
-            subspace_ready, modal_rank, modal_shift, schur_model_residual, &
-            schur_gradient_fraction)
+         rhs_local(:) = rotation_gradient + MATMUL(TRANSPOSE(response), energy_gradient)
+         replacement_reference_residual_ratio = 0.0_dp
+         IF (replacement_requested) THEN
+            CALL qs_scf_kp_reduced_subspace_replacement_step( &
+               schur_reference, rhs_local, rotation_modes, rotation_floor, rotation_base_step, &
+               correction_rotation, subspace_ready, modal_rank, modal_shift, schur_model_residual, &
+               replacement_reference_residual_ratio, schur_gradient_fraction)
+            IF (subspace_ready) correction_rotation(:) = correction_rotation - rotation_base_step
+         ELSE
+            rhs_local(:) = rhs_local - MATMUL(schur_reference, rotation_base_step)
+            CALL qs_scf_kp_reduced_subspace_step( &
+               schur_reference, rhs_local, rotation_modes, rotation_floor, correction_rotation, &
+               subspace_ready, modal_rank, modal_shift, schur_model_residual, &
+               schur_gradient_fraction)
+         END IF
          IF (.NOT. subspace_ready) THEN
             DEALLOCATE (base_response, base_rotation_residual, correction_energy, &
                         correction_rotation, correction_rotation_residual, model_response, &
@@ -29933,9 +30127,11 @@ CONTAINS
          IF (residual_step_ready) direction_scale = residual_direction_scale
          floor_quadratic = modal_shift*DOT_PRODUCT(correction_rotation, correction_rotation)
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
-            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I2,9(1X,ES16.8))') &
-            " OT Schur reduced-secant affine KKT rank sres gfrac floor bdrop ilinear iquad alpha rnorm enorm:", &
-            modal_rank, schur_model_residual, schur_gradient_fraction, floor_quadratic, &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I2,1X,L1,10(1X,ES16.8))') &
+            " OT Schur reduced-secant KKT rank replacement sres refres gfrac floor bdrop "// &
+            "ilinear iquad alpha rnorm enorm:", &
+            modal_rank, replacement_requested, schur_model_residual, &
+            replacement_reference_residual_ratio, schur_gradient_fraction, floor_quadratic, &
             base_drop, increment_slope, correction_quadratic, direction_scale, &
             SQRT(MAX(0.0_dp, DOT_PRODUCT(correction_rotation, correction_rotation))), &
             SQRT(MAX(0.0_dp, DOT_PRODUCT(correction_energy, correction_energy)))
@@ -30119,6 +30315,7 @@ CONTAINS
 !> \param prediction_update_ready whether the bidirectionally predicted coupled candidate is stable
 !> \param prediction_residual_ratio worst held-out residual ratio of the bidirectional prediction
 !> \param reduced_secant_shadow_ready whether the reduced coupled shadow passed its geometry gate
+!> \param reduced_secant_replacement_ready whether the shadow is the validated frozen-H replacement
 ! **************************************************************************************************
       SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, &
                                                      channel_full_var_offset, e_offset, &
@@ -30136,7 +30333,8 @@ CONTAINS
                                                      multisecant_update_ready, &
                                                      prediction_update_ready, &
                                                      prediction_residual_ratio, &
-                                                     reduced_secant_shadow_ready)
+                                                     reduced_secant_shadow_ready, &
+                                                     reduced_secant_replacement_ready)
       INTEGER, INTENT(IN)                                :: target_group
       INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, channel_full_var_offset, &
                                                             e_offset, var_channel, var_i, var_j, &
@@ -30154,7 +30352,7 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: update_ready, multisecant_update_ready, &
                                                             prediction_update_ready
       REAL(KIND=dp), INTENT(OUT)                         :: prediction_residual_ratio
-      LOGICAL, INTENT(OUT)                               :: reduced_secant_shadow_ready
+      LOGICAL, INTENT(OUT) :: reduced_secant_shadow_ready, reduced_secant_replacement_ready
 
       INTEGER                                            :: active_energy_count, global_channel, &
                                                             global_spin, group, ie, ifull, imo, &
@@ -30285,6 +30483,7 @@ CONTAINS
          prediction_residual_ratio = 1.0_dp
          rotation_multisecant_ready = .FALSE.
          reduced_secant_shadow_ready = .FALSE.
+         reduced_secant_replacement_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
          ALLOCATE (step_rotation(nrot), secant_rotation(nrot), closure_secant_rotation(nrot), &
                    frozen_secant_rotation(nrot), model_rotation(nrot), &
@@ -30823,13 +31022,17 @@ CONTAINS
                                                        frozen_prediction_current_hessian - &
                                                        response_metric
                rotation_hessian_reduced_secant(:, :) = 0.5_dp* &
-                                                      (rotation_hessian_reduced_secant + TRANSPOSE(rotation_hessian_reduced_secant))
-               reduced_secant_modes(:, 1) = previous_step_rotation
-               reduced_secant_modes(:, 2) = step_rotation
+                                                       (rotation_hessian_reduced_secant + &
+                                                        TRANSPOSE(rotation_hessian_reduced_secant))
+               ! The current frozen-H secant defines the local mode.  The previous secant validates
+               ! it out of sample but is not projected through the current fixed-N response.
+               reduced_secant_modes(:, 1) = step_rotation
+               reduced_secant_modes(:, 2) = 0.0_dp
                ! Keep the measured raw physical gradient changes for residual prediction.
                reduced_secant_targets(:, 1) = previous_secant_rotation
                reduced_secant_targets(:, 2) = secant_rotation
                reduced_secant_shadow_ready = .TRUE.
+               reduced_secant_replacement_ready = .TRUE.
             END IF
             DEALLOCATE (response_prediction_hessian, frozen_prediction_forward_hessian, &
                         frozen_prediction_current_hessian)
