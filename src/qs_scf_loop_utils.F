@@ -263,6 +263,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_affine_correction_model, &
              qs_scf_kp_affine_residual_quality, &
              qs_scf_kp_indefinite_residual_balanced_step, &
+             qs_scf_kp_add_measured_response_complement, &
              qs_scf_kp_measured_residual_subspace_step, &
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
@@ -3556,6 +3557,43 @@ CONTAINS
       DEALLOCATE (coefficients, residual_after, ipiv, gram, scaled_modes, scaled_targets)
 
    END SUBROUTINE qs_scf_kp_measured_residual_subspace_step
+
+! **************************************************************************************************
+!> \brief Add the analytic response of the coordinate component outside a measured secant span.
+!>
+!>        The measured response already contains Y*c for a projection S*c of active_vector.
+!>        This routine adds H0*(active_vector-S*c) at the corresponding full-response indices.
+!>        Hence accepted secants remain exact while an unresolved coordinate complement no longer
+!>        implies zero physical response.
+!> \param active_vector active-space coordinate vector
+!> \param active_projection projection of active_vector into the measured secant span
+!> \param baseline_hessian analytic active-space response Hessian H0
+!> \param active_response_index full-response index of every active response coordinate
+!> \param response measured response, completed in place
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_add_measured_response_complement( &
+      active_vector, active_projection, baseline_hessian, active_response_index, response)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: active_vector, active_projection
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: baseline_hessian
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: active_response_index
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response
+
+      INTEGER                                            :: i, nactive
+      REAL(KIND=dp), DIMENSION(SIZE(active_vector))      :: complement_response
+
+      nactive = SIZE(active_vector)
+      CPASSERT(SIZE(active_projection) == nactive)
+      CPASSERT(ALL(SHAPE(baseline_hessian) == [nactive, nactive]))
+      CPASSERT(SIZE(active_response_index) == nactive)
+      CPASSERT(ALL(active_response_index > 0 .AND. active_response_index <= SIZE(response)))
+
+      complement_response(:) = MATMUL(baseline_hessian, active_vector - active_projection)
+      DO i = 1, nactive
+         response(active_response_index(i)) = response(active_response_index(i)) + &
+                                              complement_response(i)
+      END DO
+
+   END SUBROUTINE qs_scf_kp_add_measured_response_complement
 
 ! **************************************************************************************************
 !> \brief Combine an established quadratic model with an affine correction.
@@ -30118,9 +30156,13 @@ CONTAINS
                      measured_full_correction_projection, measured_full_correction_ready, &
                      measured_full_correction_rank, measured_full_correction_ratio, &
                      measured_full_correction_capture)
-                  measured_full_residual(:) = full_rotation_gradient
-                  IF (measured_full_base_ready) &
-                     measured_full_residual(:) = measured_full_residual - measured_full_base_response
+                  CALL qs_scf_kp_add_measured_response_complement( &
+                     rotation_base_step, measured_full_base_projection, schur_reference, &
+                     full_rotation_index, measured_full_base_response)
+                  CALL qs_scf_kp_add_measured_response_complement( &
+                     measured_correction_rotation, measured_full_correction_projection, &
+                     schur_reference, full_rotation_index, measured_full_correction_response)
+                  measured_full_residual(:) = full_rotation_gradient - measured_full_base_response
                END IF
                measured_model_drop = 0.0_dp
                measured_model_increment = 0.0_dp
