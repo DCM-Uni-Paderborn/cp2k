@@ -4262,6 +4262,14 @@ CONTAINS
          CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_frozen_g1_im)
          CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_frozen_g1_im, template=matrix_s, &
                                             m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_frozen_reduced_y)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_frozen_reduced_y, template=matrix_s, &
+                                            m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_set(qs_ot_env%rot_mat_mermin_frozen_reduced_y, 0.0_dp)
+         CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_frozen_reduced_y_im)
+         CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_frozen_reduced_y_im, template=matrix_s, &
+                                            m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)
+         CALL dbcsr_set(qs_ot_env%rot_mat_mermin_frozen_reduced_y_im, 0.0_dp)
          CALL dbcsr_init_p(qs_ot_env%rot_mat_mermin_closure_y)
          CALL cp_dbcsr_m_by_n_from_template(qs_ot_env%rot_mat_mermin_closure_y, template=matrix_s, &
                                             m=nmo, n=nmo, sym=dbcsr_type_no_symmetry)

@@ -213,6 +213,9 @@ MODULE qs_ot_types
       LOGICAL          :: mermin_frozen_endpoint_valid = .FALSE.
       LOGICAL          :: mermin_closure_secant_ready = .FALSE.
       LOGICAL          :: mermin_closure_secant_previous_ready = .FALSE.
+      ! Endpoint-local reduced frozen-H response.  This runtime history is
+      ! relearned after restart or a change of the channel MO dimension.
+      LOGICAL          :: mermin_frozen_reduced_target_ready = .FALSE.
       REAL(KIND=dp)    :: mermin_ls_matrix_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_rotation_slope = 0.0_dp
       REAL(KIND=dp)    :: mermin_ls_energy_slope = 0.0_dp
@@ -277,6 +280,8 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_h0_ref_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_frozen_g1 => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_frozen_g1_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_frozen_reduced_y => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_frozen_reduced_y_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_previous => NULL()
@@ -1107,6 +1112,7 @@ CONTAINS
       qs_ot_env%mermin_frozen_endpoint_valid = .FALSE.
       qs_ot_env%mermin_closure_secant_ready = .FALSE.
       qs_ot_env%mermin_closure_secant_previous_ready = .FALSE.
+      qs_ot_env%mermin_frozen_reduced_target_ready = .FALSE.
       qs_ot_env%mermin_secant_sty = 0.0_dp
       qs_ot_env%mermin_secant_snorm = 0.0_dp
       qs_ot_env%mermin_secant_ynorm = 0.0_dp
@@ -2272,6 +2278,8 @@ CONTAINS
                qs_ot_env%rot_mat_mermin_y_previous, qs_ot_env%rot_mat_mermin_y_previous_im, &
                qs_ot_env%rot_mat_mermin_h0_ref, qs_ot_env%rot_mat_mermin_h0_ref_im, &
                qs_ot_env%rot_mat_mermin_frozen_g1, qs_ot_env%rot_mat_mermin_frozen_g1_im, &
+               qs_ot_env%rot_mat_mermin_frozen_reduced_y, &
+               qs_ot_env%rot_mat_mermin_frozen_reduced_y_im, &
                qs_ot_env%rot_mat_mermin_closure_y, qs_ot_env%rot_mat_mermin_closure_y_im, &
                qs_ot_env%rot_mat_mermin_closure_y_previous, &
                qs_ot_env%rot_mat_mermin_closure_y_previous_im, &
@@ -2488,6 +2496,12 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_frozen_g1)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_frozen_g1)
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_frozen_g1_im)) THEN
             CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_frozen_g1_im)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_frozen_reduced_y)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_frozen_reduced_y)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_frozen_reduced_y_im)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_frozen_reduced_y_im)
          END IF
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y)) CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_closure_y)
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_im)) THEN

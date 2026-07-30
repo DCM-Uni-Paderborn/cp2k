@@ -275,6 +275,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_secant_prediction("k-point OT reduced secant prediction", &
                                                5.0E-13_dp, nfail)
+   CALL check_kpoint_reduced_cross_response("k-point OT reduced cross response", &
+                                            5.0E-13_dp, nfail)
    CALL check_kpoint_coupled_prediction_gate("k-point OT coupled prediction gate", nfail)
    CALL check_kpoint_reduced_subspace_step("k-point OT reduced secant subspace step", &
                                            5.0E-13_dp, nfail)
@@ -6791,16 +6793,21 @@ CONTAINS
 
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
-      LOGICAL                                            :: ready, scaled_ready
+      LOGICAL                                            :: endpoint_ready, ready, scaled_ready
       REAL(KIND=dp) :: alignment, capture, curvature, curvature_ratio, error, overlap, &
+         endpoint_alignment, endpoint_capture, endpoint_curvature, endpoint_curvature_ratio, &
+         endpoint_overlap, endpoint_predicted_residual_norm, endpoint_quality, &
+         endpoint_residual_norm, &
          predicted_residual_norm, quality, residual_norm, scaled_alignment, scaled_capture, &
          scaled_curvature, scaled_curvature_ratio, scaled_overlap, scaled_predicted_residual_norm, &
          scaled_quality, scaled_residual_norm
-      REAL(KIND=dp), DIMENSION(1) :: training_energy_target, training_rotation_step, &
+      REAL(KIND=dp), DIMENSION(1) :: endpoint_training_target, endpoint_validation_target, &
+         training_energy_target, training_rotation_step, &
          training_rotation_target, validation_energy_target, validation_rotation_step, &
          validation_rotation_target
       REAL(KIND=dp), DIMENSION(1, 1) :: energy_response, response_metric, rotation_hessian, &
-         scaled_updated_rotation_hessian, updated_rotation_hessian
+         endpoint_updated_rotation_hessian, scaled_updated_rotation_hessian, &
+         updated_rotation_hessian
 
       rotation_hessian(1, 1) = 1.2_dp
       response_metric(1, 1) = 0.2_dp
@@ -6811,6 +6818,8 @@ CONTAINS
       validation_rotation_step(1) = 0.5_dp
       validation_energy_target(1) = -0.1_dp
       validation_rotation_target(1) = 0.75_dp
+      endpoint_training_target(1) = 1.4_dp
+      endpoint_validation_target(1) = 0.7_dp
 
       CALL qs_scf_kp_reduced_secant_prediction( &
          rotation_hessian, response_metric, energy_response, training_rotation_step, &
@@ -6826,8 +6835,17 @@ CONTAINS
          scaled_updated_rotation_hessian, scaled_ready, scaled_overlap, scaled_capture, &
          scaled_quality, scaled_alignment, scaled_curvature_ratio, scaled_residual_norm, &
          scaled_predicted_residual_norm, scaled_curvature)
+      CALL qs_scf_kp_reduced_secant_prediction( &
+         rotation_hessian, response_metric, 5.0_dp*energy_response, training_rotation_step, &
+         training_rotation_target, training_energy_target, validation_rotation_step, &
+         validation_rotation_target, validation_energy_target, endpoint_updated_rotation_hessian, &
+         endpoint_ready, endpoint_overlap, endpoint_capture, endpoint_quality, endpoint_alignment, &
+         endpoint_curvature_ratio, endpoint_residual_norm, endpoint_predicted_residual_norm, &
+         endpoint_curvature, training_reduced_target=endpoint_training_target, &
+         validation_reduced_target=endpoint_validation_target)
       error = ABS(updated_rotation_hessian(1, 1) - 1.6_dp) + &
               ABS(scaled_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
+              ABS(endpoint_updated_rotation_hessian(1, 1) - updated_rotation_hessian(1, 1)) + &
               ABS(overlap - 1.0_dp) + ABS(capture - 1.0_dp) + ABS(quality - 1.0_dp) + &
               ABS(alignment - 1.0_dp) + ABS(curvature_ratio - 1.0_dp) + &
               predicted_residual_norm + ABS(curvature - 0.4_dp) + &
@@ -6836,9 +6854,16 @@ CONTAINS
               ABS(scaled_curvature_ratio - curvature_ratio) + &
               ABS(scaled_residual_norm - residual_norm) + &
               ABS(scaled_predicted_residual_norm - predicted_residual_norm) + &
-              ABS(scaled_curvature - curvature)
+              ABS(scaled_curvature - curvature) + ABS(endpoint_overlap - overlap) + &
+              ABS(endpoint_capture - capture) + ABS(endpoint_quality - quality) + &
+              ABS(endpoint_alignment - alignment) + &
+              ABS(endpoint_curvature_ratio - curvature_ratio) + &
+              ABS(endpoint_residual_norm - residual_norm) + &
+              ABS(endpoint_predicted_residual_norm - predicted_residual_norm) + &
+              ABS(endpoint_curvature - curvature)
 
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. residual_norm <= 0.0_dp .OR. error > tol) THEN
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. endpoint_ready .OR. &
+          residual_norm <= 0.0_dp .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,2(1X,L1),8(1X,ES16.8))') TRIM(label)// &
             " FAILED with ready/scaled/error/overlap/capture/quality/alignment/cratio/residual/predicted", &
@@ -6851,6 +6876,68 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_reduced_secant_prediction
+
+! **************************************************************************************************
+!> \brief check that the reduced symmetric response retains a component transverse to the step
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_reduced_cross_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: ready
+      REAL(KIND=dp) :: alignment, capture, curvature, curvature_ratio, error, overlap, &
+         predicted_residual_norm, quality, residual_norm
+      REAL(KIND=dp), DIMENSION(1) :: training_energy_target, validation_energy_target
+      REAL(KIND=dp), DIMENSION(2) :: training_reduced_target, training_rotation_step, &
+         training_rotation_target, validation_reduced_target, validation_rotation_step, &
+         validation_rotation_target
+      REAL(KIND=dp), DIMENSION(1, 2)                     :: energy_response
+      REAL(KIND=dp), DIMENSION(2, 2) :: expected_hessian, response_metric, rotation_hessian, &
+         updated_rotation_hessian
+
+      rotation_hessian(:, :) = 0.0_dp
+      response_metric(:, :) = 0.0_dp
+      energy_response(:, :) = 0.0_dp
+      training_rotation_step(:) = [1.0_dp, 0.0_dp]
+      training_rotation_target(:) = 0.0_dp
+      training_energy_target(:) = 0.0_dp
+      training_reduced_target(:) = [2.0_dp, 3.0_dp]
+      validation_rotation_step(:) = [1.0_dp, 1.0_dp]
+      validation_rotation_target(:) = 0.0_dp
+      validation_energy_target(:) = 0.0_dp
+      validation_reduced_target(:) = [5.0_dp, 3.0_dp]
+      expected_hessian(:, :) = RESHAPE([2.0_dp, 3.0_dp, 3.0_dp, 0.0_dp], [2, 2])
+
+      CALL qs_scf_kp_reduced_secant_prediction( &
+         rotation_hessian, response_metric, energy_response, training_rotation_step, &
+         training_rotation_target, training_energy_target, validation_rotation_step, &
+         validation_rotation_target, validation_energy_target, updated_rotation_hessian, ready, &
+         overlap, capture, quality, alignment, curvature_ratio, residual_norm, &
+         predicted_residual_norm, curvature, training_reduced_target=training_reduced_target, &
+         validation_reduced_target=validation_reduced_target)
+      error = MAXVAL(ABS(updated_rotation_hessian - expected_hessian)) + &
+              ABS(overlap - 1.0_dp/SQRT(2.0_dp)) + ABS(capture - 1.0_dp) + &
+              ABS(quality - 1.0_dp) + ABS(alignment - 1.0_dp) + &
+              ABS(curvature_ratio - 1.0_dp) + predicted_residual_norm + &
+              ABS(curvature - 2.0_dp)
+
+      IF (.NOT. ready .OR. residual_norm <= 0.0_dp .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,L1,8(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/error/overlap/capture/quality/alignment/cratio/residual/predicted", &
+            ready, error, overlap, capture, quality, alignment, curvature_ratio, residual_norm, &
+            predicted_residual_norm
+      ELSE
+         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
+            " OK with error/overlap/capture/quality/alignment/cratio/residual", &
+            error, overlap, capture, quality, alignment, curvature_ratio, residual_norm
+      END IF
+
+   END SUBROUTINE check_kpoint_reduced_cross_response
 
 ! **************************************************************************************************
 !> \brief check that a coupled response candidate needs persistent bidirectional evidence

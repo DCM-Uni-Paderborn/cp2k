@@ -4,7 +4,7 @@
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
 ! Local 2026-07 MPI-2 reference after norm-consistent endpoint control and
 ! evidence-based non-edge enrichment: AUTO grows 4->8->16 in 21/21 growth
-! steps and converges in 208 final-stage OT steps at -8.15998707439971 Ha.
+! steps and converges in 162 final-stage OT steps at -8.15998707233674 Ha.
 ! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
 ! signal is only 0.803, so AUTO correctly retains the adequate virtual space
 ! instead of masking the intrinsic minimizer tail by growing to the AO limit.
