@@ -83,14 +83,15 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
         qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
         qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_response_mu_shift, &
         qs_scf_kp_full_all_spin_normalization, qs_scf_kp_measured_residual_subspace_step, &
@@ -6356,20 +6357,30 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: energy_coordinate_scale = 37.0_dp
 
       LOGICAL :: direct_ready, projected_ready, ready, scaled_direct_ready, scaled_ready, &
-         scaled_transport_ready, transport_ready
+         scaled_subspace_ready, scaled_transport_ready, subspace_ready, transport_ready
       REAL(KIND=dp) :: analytic_det, compatibility, correction_norm, cross_correction_ratio, &
          direct_compatibility, direct_correction_norm, direct_correction_ratio, &
-         direct_independence, direct_residual_norm, direct_updated_residual_norm, error, &
-         independence, projected_compatibility, projected_correction_norm, &
-         projected_correction_ratio, projected_independence, projected_residual_norm, &
-         projected_updated_residual_norm, reference_norm, residual_norm, response_det, &
-         rotation_correction_ratio, scaled_compatibility, scaled_correction_norm, &
-         scaled_cross_correction_ratio, scaled_direct_compatibility
-      REAL(KIND=dp) :: scaled_direct_correction_norm, scaled_direct_correction_ratio, &
-         scaled_direct_independence, scaled_direct_residual_norm, &
-         scaled_direct_updated_residual_norm, scaled_independence, scaled_reference_norm, &
-         scaled_residual_norm, scaled_rotation_correction_ratio, scaled_transport_ratio, &
-         scaled_updated_residual_norm, transport_ratio, updated_residual_norm
+         direct_independence, direct_residual_norm, direct_updated_residual_norm, &
+         energy_correction_ratio, error, independence, projected_compatibility, &
+         projected_correction_norm, projected_correction_ratio, projected_independence, &
+         projected_residual_norm, projected_updated_residual_norm, reference_norm, residual_norm, &
+         response_det, rotation_correction_ratio, scaled_compatibility, scaled_correction_norm, &
+         scaled_cross_correction_ratio
+      REAL(KIND=dp) :: scaled_direct_compatibility, scaled_direct_correction_norm, &
+         scaled_direct_correction_ratio, scaled_direct_independence, scaled_direct_residual_norm, &
+         scaled_direct_updated_residual_norm, scaled_energy_correction_ratio, scaled_independence, &
+         scaled_reference_norm, scaled_residual_norm, scaled_rotation_correction_ratio, &
+         scaled_subspace_capture, scaled_subspace_compatibility, scaled_subspace_correction_norm, &
+         scaled_subspace_cross_correction_ratio, scaled_subspace_energy_correction_ratio, &
+         scaled_subspace_independence, scaled_subspace_projected_residual_norm
+      REAL(KIND=dp) :: scaled_subspace_residual_norm, scaled_subspace_rotation_correction_ratio, &
+         scaled_subspace_updated_residual_norm, scaled_transport_ratio, &
+         scaled_updated_residual_norm, subspace_capture, subspace_compatibility, &
+         subspace_correction_norm, subspace_cross_correction_ratio, &
+         subspace_energy_correction_ratio, subspace_independence, &
+         subspace_projected_residual_norm, subspace_residual_norm, &
+         subspace_rotation_correction_ratio, subspace_updated_residual_norm, transport_ratio, &
+         updated_residual_norm
       REAL(KIND=dp), DIMENSION(2, 2) :: analytic_response, direct_energy_response, &
          direct_energy_targets, direct_rotation_targets, direct_true_schur, &
          direct_updated_rotation_hessian, energy_cross, energy_hessian, energy_steps, &
@@ -6380,9 +6391,11 @@ CONTAINS
          scaled_direct_energy_targets
       REAL(KIND=dp), DIMENSION(2, 2) :: scaled_direct_updated_rotation_hessian, &
          scaled_energy_cross, scaled_energy_hessian, scaled_energy_steps, scaled_energy_targets, &
-         scaled_transport, scaled_updated_energy_cross, scaled_updated_energy_hessian, &
-         scaled_updated_rotation_hessian, transport, true_energy_cross, true_energy_hessian, &
-         true_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
+         scaled_subspace_energy_cross, scaled_subspace_energy_hessian, &
+         scaled_subspace_rotation_hessian, scaled_transport, scaled_updated_energy_cross, &
+         scaled_updated_energy_hessian, scaled_updated_rotation_hessian, subspace_energy_cross, &
+         subspace_energy_hessian, subspace_rotation_hessian, transport, true_energy_cross, &
+         true_energy_hessian, true_rotation_hessian, updated_energy_cross, updated_energy_hessian, &
          updated_rotation_hessian
 
       rotation_hessian(:, :) = RESHAPE([0.9_dp, 0.05_dp, 0.05_dp, -0.2_dp], [2, 2])
@@ -6422,7 +6435,7 @@ CONTAINS
          rotation_targets, energy_targets, 1.0_dp, updated_rotation_hessian, &
          updated_energy_hessian, updated_energy_cross, ready, independence, compatibility, &
          correction_norm, residual_norm, updated_residual_norm, reference_norm, &
-         rotation_correction_ratio, cross_correction_ratio)
+         rotation_correction_ratio, energy_correction_ratio, cross_correction_ratio)
       error = MAXVAL(ABS(MATMUL(updated_rotation_hessian, rotation_steps) - &
                          MATMUL(TRANSPOSE(updated_energy_cross), energy_steps) - rotation_targets)) + &
               MAXVAL(ABS(MATMUL(updated_energy_hessian, energy_steps) - &
@@ -6442,7 +6455,8 @@ CONTAINS
          scaled_updated_rotation_hessian, scaled_updated_energy_hessian, &
          scaled_updated_energy_cross, scaled_ready, scaled_independence, scaled_compatibility, &
          scaled_correction_norm, scaled_residual_norm, scaled_updated_residual_norm, &
-         scaled_reference_norm, scaled_rotation_correction_ratio, scaled_cross_correction_ratio)
+         scaled_reference_norm, scaled_rotation_correction_ratio, scaled_energy_correction_ratio, &
+         scaled_cross_correction_ratio)
       error = error + MAXVAL(ABS(scaled_updated_rotation_hessian - updated_rotation_hessian)) + &
               MAXVAL(ABS(energy_coordinate_scale*scaled_updated_energy_cross - updated_energy_cross)) + &
               MAXVAL(ABS(energy_coordinate_scale**2*scaled_updated_energy_hessian - &
@@ -6454,7 +6468,44 @@ CONTAINS
               ABS(scaled_updated_residual_norm - updated_residual_norm) + &
               ABS(scaled_reference_norm - reference_norm) + &
               ABS(scaled_rotation_correction_ratio - rotation_correction_ratio) + &
+              ABS(scaled_energy_correction_ratio - energy_correction_ratio) + &
               ABS(scaled_cross_correction_ratio - cross_correction_ratio)
+
+      CALL qs_scf_kp_coupled_subspace_multisecant_update( &
+         rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
+         rotation_targets, energy_targets, 1.0_dp, subspace_rotation_hessian, &
+         subspace_energy_hessian, subspace_energy_cross, subspace_ready, subspace_independence, &
+         subspace_compatibility, subspace_capture, subspace_correction_norm, &
+         subspace_residual_norm, subspace_updated_residual_norm, &
+         subspace_projected_residual_norm, subspace_rotation_correction_ratio, &
+         subspace_energy_correction_ratio, subspace_cross_correction_ratio)
+      CALL qs_scf_kp_coupled_subspace_multisecant_update( &
+         rotation_hessian, scaled_energy_hessian, scaled_energy_cross, rotation_steps, &
+         scaled_energy_steps, rotation_targets, scaled_energy_targets, 1.0_dp, &
+         scaled_subspace_rotation_hessian, scaled_subspace_energy_hessian, &
+         scaled_subspace_energy_cross, scaled_subspace_ready, scaled_subspace_independence, &
+         scaled_subspace_compatibility, scaled_subspace_capture, scaled_subspace_correction_norm, &
+         scaled_subspace_residual_norm, scaled_subspace_updated_residual_norm, &
+         scaled_subspace_projected_residual_norm, scaled_subspace_rotation_correction_ratio, &
+         scaled_subspace_energy_correction_ratio, scaled_subspace_cross_correction_ratio)
+      error = error + subspace_projected_residual_norm + &
+              MAXVAL(ABS(subspace_rotation_hessian - TRANSPOSE(subspace_rotation_hessian))) + &
+              MAXVAL(ABS(subspace_energy_hessian - TRANSPOSE(subspace_energy_hessian))) + &
+              MAXVAL(ABS(scaled_subspace_rotation_hessian - subspace_rotation_hessian)) + &
+              MAXVAL(ABS(energy_coordinate_scale*scaled_subspace_energy_cross - &
+                         subspace_energy_cross)) + &
+              MAXVAL(ABS(energy_coordinate_scale**2*scaled_subspace_energy_hessian - &
+                         subspace_energy_hessian)) + &
+              ABS(scaled_subspace_independence - subspace_independence) + &
+              ABS(scaled_subspace_compatibility - subspace_compatibility) + &
+              ABS(scaled_subspace_capture - subspace_capture) + &
+              ABS(scaled_subspace_correction_norm - subspace_correction_norm) + &
+              ABS(scaled_subspace_residual_norm - subspace_residual_norm) + &
+              ABS(scaled_subspace_updated_residual_norm - subspace_updated_residual_norm) + &
+              ABS(scaled_subspace_projected_residual_norm - subspace_projected_residual_norm) + &
+              ABS(scaled_subspace_rotation_correction_ratio - subspace_rotation_correction_ratio) + &
+              ABS(scaled_subspace_energy_correction_ratio - subspace_energy_correction_ratio) + &
+              ABS(scaled_subspace_cross_correction_ratio - subspace_cross_correction_ratio)
 
       CALL qs_scf_kp_coupled_reduced_multisecant_update( &
          rotation_hessian, energy_hessian, energy_cross, rotation_steps, direct_rotation_targets, &
@@ -6517,26 +6568,31 @@ CONTAINS
               MAXVAL(ABS(scaled_transport - transport)) + &
               ABS(scaled_transport_ratio - transport_ratio)
 
-      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. direct_ready .OR. .NOT. projected_ready .OR. &
+      IF (.NOT. ready .OR. .NOT. scaled_ready .OR. .NOT. subspace_ready .OR. &
+          .NOT. scaled_subspace_ready .OR. .NOT. direct_ready .OR. .NOT. projected_ready .OR. &
           .NOT. scaled_direct_ready .OR. .NOT. transport_ready .OR. &
           .NOT. scaled_transport_ready .OR. independence <= 0.0_dp .OR. &
           direct_independence <= 0.0_dp .OR. reference_norm <= 0.0_dp .OR. &
           projected_independence <= 0.0_dp .OR. &
+          subspace_capture <= 0.0_dp .OR. subspace_capture > 1.0_dp + tol .OR. &
           correction_norm <= 0.0_dp .OR. &
           direct_correction_norm <= 0.0_dp .OR. projected_correction_norm <= 0.0_dp .OR. &
           residual_norm <= updated_residual_norm .OR. &
+          subspace_residual_norm < subspace_updated_residual_norm - tol .OR. &
           projected_residual_norm <= projected_updated_residual_norm .OR. &
           direct_residual_norm <= direct_updated_residual_norm .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,L1,7(1X,ES16.8))') TRIM(label)// &
-            " FAILED with ready/error/independence/compatibility/correction/residual/updated/reference", &
-            ready, error, independence, compatibility, correction_norm, residual_norm, &
-            updated_residual_norm, reference_norm
+         WRITE (*, '(A,4(1X,L1),9(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/scaled/subspace/ssubspace/error/independence/compatibility/ "// &
+            "capture/pres/correction/residual/updated/reference", &
+            ready, scaled_ready, subspace_ready, scaled_subspace_ready, error, independence, &
+            compatibility, subspace_capture, subspace_projected_residual_norm, correction_norm, &
+            residual_norm, updated_residual_norm, reference_norm
       ELSE
-         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
-            " OK with error/independence/compatibility/correction/residual/updated/reference", &
-            error, independence, compatibility, correction_norm, residual_norm, &
-            updated_residual_norm, reference_norm
+         WRITE (*, '(A,9(1X,ES16.8))') TRIM(label)// &
+            " OK with error/independence/compatibility/capture/pres/correction/residual/updated/reference", &
+            error, independence, compatibility, subspace_capture, subspace_projected_residual_norm, &
+            correction_norm, residual_norm, updated_residual_norm, reference_norm
       END IF
 
    END SUBROUTINE check_kpoint_coupled_multisecant_update
