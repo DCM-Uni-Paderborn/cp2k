@@ -46,7 +46,7 @@
 # cheap while the adaptive AUTO grow path can still be checked against the
 # 1E-6 Mermin path.  The 2x1x1 reference grows AUTO 4->8->16 in 37/37/21
 # MPI-2 stage steps and reaches -8.14585310802196 Ha. The symmetry-reduced
-# 3x1x1 reference uses 22/22/205 steps and reaches -8.15998706930238 Ha
+# 3x1x1 reference uses 21/21/208 steps and reaches -8.15998707439971 Ha
 # without overgrowing its empty virtual edge. The explicit full-grid 3x1x1
 # companion retains the initial buffer of 4 and converges in 96 steps at
 # -8.15998707639814 Ha. Their endpoints agree within 1.3E-9 Ha even though
@@ -87,9 +87,9 @@
 # one-k-point smoke references strict.  Their current values include the
 # line-search-consistent adaptive canonical tether, which is fixed for all
 # trial points belonging to one accepted gradient. Continue converges in
-# 78 MPI-2 or 88 serial steps; both layouts remain within 1.2E-8 Ha of the
-# tightly converged diagonalization reference -8.14585309375351 Ha and agree
-# with each other within 3.8E-9 Ha.
+# 75 MPI-2 steps; the most recent serial reference used 88 steps. Both layouts
+# remain within 2.5E-8 Ha of the tightly converged diagonalization reference
+# -8.14585309375351 Ha.
 "Al_kp_ot_restart_read.inp"             = [{matcher="E_total", tol=1.0E-10, ref=-8.11824884393091},
                                            {matcher="Mermin_free_energy", tol=1.0E-10, ref=-8.11824884393091},
                                            {matcher="Electronic_entropic_energy", tol=1.0E-8, ref=-3.77476998E-6},

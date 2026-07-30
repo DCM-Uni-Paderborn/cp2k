@@ -6678,16 +6678,22 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      INTEGER                                            :: rank, singular_rank, weighted_rank
-      LOGICAL                                            :: ready, singular_ready, weighted_ready
-      REAL(KIND=dp)                                      :: captured, error, ratio, &
-                                                            singular_capture, singular_ratio, &
-                                                            weighted_capture, weighted_ratio
+      INTEGER                                            :: cross_rank, rank, singular_rank, &
+                                                            weighted_rank
+      LOGICAL                                            :: cross_ready, ready, singular_ready, &
+                                                            weighted_ready
+      REAL(KIND=dp) :: captured, cross_capture, cross_ratio, error, ratio, singular_capture, &
+         singular_ratio, weighted_capture, weighted_ratio
+      REAL(KIND=dp), DIMENSION(2)                        :: cross_expected_step, cross_step
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: cross_modes
       REAL(KIND=dp), DIMENSION(3) :: expected_step, reduction, residual, singular_reduction, &
          singular_step, step, weighted_expected_step, weighted_reduction, weighted_residual, &
          weighted_step, weights
       REAL(KIND=dp), DIMENSION(3, 2)                     :: modes, singular_targets, targets, &
                                                             weighted_modes, weighted_targets
+      REAL(KIND=dp), DIMENSION(4)                        :: cross_reduction, cross_residual, &
+                                                            cross_weights
+      REAL(KIND=dp), DIMENSION(4, 2)                     :: cross_targets
 
       residual(:) = [3.0_dp, 4.0_dp, 5.0_dp]
       weights(:) = 1.0_dp
@@ -6715,6 +6721,16 @@ CONTAINS
       CALL qs_scf_kp_measured_residual_subspace_step( &
          weighted_residual, weighted_modes, weighted_targets, weights, weighted_step, &
          weighted_reduction, weighted_ready, weighted_rank, weighted_ratio, weighted_capture)
+      cross_residual(:) = [3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp]
+      cross_weights(:) = 1.0_dp
+      cross_modes(:, 1) = [2.0_dp, 0.0_dp]
+      cross_modes(:, 2) = [0.0_dp, 0.5_dp]
+      cross_targets(:, 1) = [1.0_dp, 0.0_dp, 2.0_dp, 0.0_dp]
+      cross_targets(:, 2) = [0.0_dp, 2.0_dp, 0.0_dp, 1.0_dp]
+      cross_expected_step(:) = [26.0_dp/5.0_dp, 7.0_dp/5.0_dp]
+      CALL qs_scf_kp_measured_residual_subspace_step( &
+         cross_residual, cross_modes, cross_targets, cross_weights, cross_step, cross_reduction, &
+         cross_ready, cross_rank, cross_ratio, cross_capture)
       error = MAXVAL(ABS(step - expected_step)) + ABS(ratio - 1.0_dp/SQRT(2.0_dp)) + &
               ABS(captured - 1.0_dp/SQRT(2.0_dp)) + &
               MAXVAL(ABS(reduction - [3.0_dp, 4.0_dp, 0.0_dp])) + &
@@ -6724,19 +6740,27 @@ CONTAINS
               MAXVAL(ABS(weighted_reduction - [110.0_dp/101.0_dp, &
                                                110.0_dp/101.0_dp, 0.0_dp])) + &
               ABS(weighted_ratio - SQRT(8181.0_dp/20402.0_dp)) + &
-              ABS(weighted_capture - SQRT(1.0_dp - 8181.0_dp/20402.0_dp))
+              ABS(weighted_capture - SQRT(1.0_dp - 8181.0_dp/20402.0_dp)) + &
+              MAXVAL(ABS(cross_step - cross_expected_step)) + &
+              MAXVAL(ABS(cross_reduction - [13.0_dp/5.0_dp, 28.0_dp/5.0_dp, &
+                                            26.0_dp/5.0_dp, 14.0_dp/5.0_dp])) + &
+              ABS(cross_ratio - SQRT(13.0_dp/86.0_dp)) + &
+              ABS(cross_capture - SQRT(73.0_dp/86.0_dp))
       IF (.NOT. ready .OR. singular_ready .OR. .NOT. weighted_ready .OR. rank /= 2 .OR. &
-          weighted_rank /= 1 .OR. error > tol) THEN
+          .NOT. cross_ready .OR. weighted_rank /= 1 .OR. cross_rank /= 2 .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,3(1X,L1),3(1X,I3),7(1X,ES16.8))') TRIM(label)// &
-            " FAILED with ready/singular/weighted/rank/srank/wrank/error/ratio/captured/ "// &
-            "sratio/scaptured/wratio/wcaptured", &
-            ready, singular_ready, weighted_ready, rank, singular_rank, weighted_rank, error, ratio, &
-            captured, singular_ratio, singular_capture, weighted_ratio, weighted_capture
+         WRITE (*, '(A,4(1X,L1),4(1X,I3),9(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/singular/weighted/cross/rank/srank/wrank/crank/error/ratio/captured/ "// &
+            "sratio/scaptured/wratio/wcaptured/cratio/ccaptured", &
+            ready, singular_ready, weighted_ready, cross_ready, rank, singular_rank, weighted_rank, &
+            cross_rank, error, ratio, &
+            captured, singular_ratio, singular_capture, weighted_ratio, weighted_capture, &
+            cross_ratio, cross_capture
       ELSE
-         WRITE (*, '(A,7(1X,ES16.8))') TRIM(label)// &
-            " OK with error/ratio/captured/sratio/scaptured/wratio/wcaptured", &
-            error, ratio, captured, singular_ratio, singular_capture, weighted_ratio, weighted_capture
+         WRITE (*, '(A,9(1X,ES16.8))') TRIM(label)// &
+            " OK with error/ratio/captured/sratio/scaptured/wratio/wcaptured/cratio/ccaptured", &
+            error, ratio, captured, singular_ratio, singular_capture, weighted_ratio, weighted_capture, &
+            cross_ratio, cross_capture
       END IF
 
    END SUBROUTINE check_kpoint_measured_residual_subspace_step

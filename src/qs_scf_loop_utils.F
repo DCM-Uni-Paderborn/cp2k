@@ -11651,7 +11651,7 @@ CONTAINS
          IF (quality_ready) &
             CALL qs_scf_kp_affine_residual_quality( &
             start_norm_sq, delta_dot, delta_norm_sq, position, &
-            local_ot_env(1)%kpoint_physical_rot_gnorm, predicted_ratio, actual_ratio, quality, &
+            local_ot_env(1)%kpoint_full_physical_rot_gnorm, predicted_ratio, actual_ratio, quality, &
             quality_ready)
          local_ot_env(1)%schur_reduced_secant_residual_quality = &
             MERGE(quality, 0.0_dp, quality_ready)
@@ -12033,6 +12033,7 @@ CONTAINS
             local_ot_env(1)%kpoint_eps_scf = eps_scf_channel
             local_ot_env(1)%kpoint_physical_gnorm = 0.0_dp
             local_ot_env(1)%kpoint_physical_rot_gnorm = 0.0_dp
+            local_ot_env(1)%kpoint_full_physical_rot_gnorm = 0.0_dp
             local_ot_env(1)%kpoint_physical_energy_gnorm = 0.0_dp
             local_ot_env(1)%kpoint_gauge_gnorm = 0.0_dp
             local_ot_env(1)%schur_constrained_drop = 0.0_dp
@@ -12189,15 +12190,16 @@ CONTAINS
          canonical_density_floor_rank, channel_var_start, constrained_reject_reason, &
          coupled_reject_reason, dense_reject_reason, density_pair_available, &
          density_pair_candidates, failed_i, gauge_projected_count, global_channel, global_kpoint, &
-         global_spin, group, ie, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
+         global_spin, group, ie, ifull, ikpoint, imo, info, ispin, ivar, jmo, local_channel, &
          local_kpoint, max_channel_nmo, nchannels, ne, nmo, nrot, nrot_active, nrot_density, &
          nrot_full, projector_fd_cluster_derivatives, projector_fd_cluster_replacements, &
          projector_kernel_cluster_groups, r
       INTEGER :: reject_reason, s, schur_attempt, schur_used_attempt, selected_attempt, &
          selected_flavor, split_selected_attempt
       INTEGER, ALLOCATABLE, DIMENSION(:) :: canonical_density_cauchy_channel, &
-         channel_multiplicity, channel_nmo, channel_nrot, channel_var_offset, e_offset, ipiv, &
-         ipiv_energy, var_channel, var_ei, var_ej, var_i, var_j, var_kind
+         channel_full_var_offset, channel_multiplicity, channel_nmo, channel_nrot, &
+         channel_var_offset, e_offset, ipiv, ipiv_energy, var_channel, var_ei, var_ej, var_i, &
+         var_j, var_kind
       INTEGER, DIMENSION(3)                              :: density_pair_location
       LOGICAL :: accepted_reduced_secant_shadow_ready, active_pair, attempt_failed, &
          channel_canonical_cauchy_used, constrained_candidate_enabled, &
@@ -12466,28 +12468,31 @@ CONTAINS
          energy_closure_reference_drop, energy_curvature_floor, energy_floor_count, &
          energy_floor_curv_sum, energy_gauge_weight, energy_gradient_abs_sum, energy_gradient_sum
       REAL(KIND=dp) :: energy_independent_gdot, energy_independent_norm, energy_selected_gdot, &
-         energy_selected_norm, energy_split_ratio, exact_response_diag_avg, gdot_energy, &
-         gdot_rotation, gdotp, gnorm, gvalue, inactive_offdiag_mode_abs_quad, &
-         inactive_offdiag_mode_eval_max, inactive_offdiag_mode_eval_min, &
-         inactive_offdiag_mode_negative_fraction, inactive_offdiag_mode_negative_quad, &
-         inactive_offdiag_mode_positive_quad, inactive_offdiag_mode_quad, &
-         inactive_offdiag_mode_quad_abs_ratio, inactive_offdiag_mode_quad_signed_ratio, &
-         inactive_offdiag_mode_step_negative_fraction, maxocc
-      REAL(KIND=dp) :: mermin_branch_loss_gain, mermin_branch_loss_weight, model_calibrated_drop, &
-         model_drop, model_gap, model_gap_drop, model_gap_ratio, model_gap_trust, mu, norm_energy, &
-         norm_ratio, norm_rotation, normp, occ_curv_diag_max, occ_curv_diag_sum, &
-         occ_curv_projection_sum, occ_projected_term, occ_response_diag_sum, occ_tail_i, &
-         occ_tail_j, occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
+         energy_selected_norm, energy_split_ratio, exact_response_diag_avg, &
+         full_rot_grad_physical_norm, gdot_energy, gdot_rotation, gdotp, gnorm, gvalue, &
+         inactive_offdiag_mode_abs_quad, inactive_offdiag_mode_eval_max, &
+         inactive_offdiag_mode_eval_min, inactive_offdiag_mode_negative_fraction, &
+         inactive_offdiag_mode_negative_quad, inactive_offdiag_mode_positive_quad, &
+         inactive_offdiag_mode_quad, inactive_offdiag_mode_quad_abs_ratio, &
+         inactive_offdiag_mode_quad_signed_ratio
+      REAL(KIND=dp) :: inactive_offdiag_mode_step_negative_fraction, maxocc, &
+         mermin_branch_loss_gain, mermin_branch_loss_weight, model_calibrated_drop, model_drop, &
+         model_gap, model_gap_drop, model_gap_ratio, model_gap_trust, mu, norm_energy, norm_ratio, &
+         norm_rotation, normp, occ_curv_diag_max, occ_curv_diag_sum, occ_curv_projection_sum, &
+         occ_projected_term, occ_response_diag_sum, occ_tail_i, occ_tail_j, &
+         occgap_shadow_abs_step, occgap_shadow_drop, occgap_shadow_gap_ratio, &
          occgap_shadow_quality, occgap_shadow_step, orbital_schur_abs_avg, orbital_schur_diag_max, &
-         orbital_schur_diag_sum, orbital_schur_drop_ratio, orbital_schur_step_quad, pair_occ_gap
-      REAL(KIND=dp) :: pair_projector_weight, pair_thermal_activity, physical_delta_norm, &
+         orbital_schur_diag_sum
+      REAL(KIND=dp) :: orbital_schur_drop_ratio, orbital_schur_step_quad, pair_occ_gap, &
+         pair_projector_weight, pair_thermal_activity, physical_delta_norm, &
          physical_delta_norm_limit, physical_delta_nvar, physical_response_gap_avg, &
          physical_response_gap_max, physical_response_gap_norm, plateau_gap_mode_abs_quad, &
          plateau_gap_mode_eval_max, plateau_gap_mode_eval_min, plateau_gap_mode_negative_fraction, &
          plateau_gap_mode_negative_quad, plateau_gap_mode_positive_quad, plateau_gap_mode_quad, &
          plateau_gap_mode_quad_abs_ratio, plateau_gap_mode_quad_signed_ratio, &
-         plateau_gap_mode_step_negative_fraction, projected_term, projector_coupled_weight
-      REAL(KIND=dp) :: projector_density_active_mix_weight, projector_density_basis_audit_abs_avg, &
+         plateau_gap_mode_step_negative_fraction
+      REAL(KIND=dp) :: projected_term, projector_coupled_weight, &
+         projector_density_active_mix_weight, projector_density_basis_audit_abs_avg, &
          projector_density_basis_audit_diag_abs_sum, projector_density_basis_audit_exact_abs_avg, &
          projector_density_basis_audit_low_curv_fraction, &
          projector_density_basis_audit_low_curv_sum, &
@@ -12495,9 +12500,9 @@ CONTAINS
          projector_density_basis_curvfloor_audit_exact_abs_avg, &
          projector_density_basis_curvfloor_audit_low_curv_fraction, &
          projector_density_basis_curvfloor_audit_low_curv_sum, &
-         projector_density_basis_damped_audit_abs_avg, &
-         projector_density_basis_damped_audit_diag_abs_sum
-      REAL(KIND=dp) :: projector_density_basis_damped_audit_exact_abs_avg, &
+         projector_density_basis_damped_audit_abs_avg
+      REAL(KIND=dp) :: projector_density_basis_damped_audit_diag_abs_sum, &
+         projector_density_basis_damped_audit_exact_abs_avg, &
          projector_density_basis_damped_audit_low_curv_fraction, &
          projector_density_basis_damped_audit_low_curv_sum, &
          projector_density_basis_damped_retained_fraction, &
@@ -12506,37 +12511,35 @@ CONTAINS
          projector_density_basis_filtered_audit_exact_abs_avg, &
          projector_density_basis_filtered_audit_low_curv_fraction, &
          projector_density_basis_filtered_audit_low_curv_sum, &
-         projector_density_basis_filtered_retained_fraction, &
-         projector_density_basis_physical_gap_abs_avg
-      REAL(KIND=dp) :: projector_density_basis_physical_gap_abs_max, &
-         projector_density_basis_raw_gap_abs_avg, projector_density_basis_raw_gap_abs_max, &
+         projector_density_basis_filtered_retained_fraction
+      REAL(KIND=dp) :: projector_density_basis_physical_gap_abs_avg, &
+         projector_density_basis_physical_gap_abs_max, projector_density_basis_raw_gap_abs_avg, &
+         projector_density_basis_raw_gap_abs_max, &
          projector_density_basis_selective_audit_diag_abs_sum, &
          projector_density_basis_selective_audit_exact_abs_avg, &
          projector_density_basis_selective_audit_floor_avg, &
          projector_density_basis_selective_audit_floor_max, &
          projector_density_basis_selective_audit_low_curv_fraction, &
          projector_density_basis_selective_audit_low_curv_sum, &
-         projector_density_basis_selective_audit_support_avg, &
-         projector_density_basis_selective_audit_unsupported_fraction
-      REAL(KIND=dp) :: projector_density_floor_audit_abs_avg, &
-         projector_density_floor_audit_diag_abs_sum, projector_density_floor_audit_exact_abs_avg, &
-         projector_density_floor_audit_gap_abs_avg, &
+         projector_density_basis_selective_audit_support_avg
+      REAL(KIND=dp) :: projector_density_basis_selective_audit_unsupported_fraction, &
+         projector_density_floor_audit_abs_avg, projector_density_floor_audit_diag_abs_sum, &
+         projector_density_floor_audit_exact_abs_avg, projector_density_floor_audit_gap_abs_avg, &
          projector_density_floor_audit_low_curv_fraction, &
          projector_density_floor_audit_low_curv_sum, projector_density_floor_safe_audit_abs_avg, &
          projector_density_floor_safe_audit_diag_abs_sum, &
          projector_density_floor_safe_audit_exact_abs_avg, &
          projector_density_floor_safe_audit_low_curv_fraction, &
-         projector_density_floor_safe_audit_low_curv_sum, projector_density_full_audit_abs_avg
-      REAL(KIND=dp) :: projector_density_full_global_abs_avg, &
-         projector_density_full_global_filtered_mix_weight, &
+         projector_density_floor_safe_audit_low_curv_sum
+      REAL(KIND=dp) :: projector_density_full_audit_abs_avg, &
+         projector_density_full_global_abs_avg, projector_density_full_global_filtered_mix_weight, &
          projector_density_full_global_floor_mix_weight, &
          projector_density_full_global_selective_mix_weight, projector_density_history_quality, &
          projector_density_history_weight, projector_density_selected_history_weight, &
          projector_diag_compensation, projector_diagref_quality_for_selection, &
          projector_diagref_weight, projector_gauge_abs_avg, projector_gauge_delta_max, &
-         projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max, &
-         projector_hessian_diag_avg
-      REAL(KIND=dp) :: projector_inactive_offdiag_direction_scale, &
+         projector_hessian_abs_avg, projector_hessian_delta_diag_avg, projector_hessian_delta_max
+      REAL(KIND=dp) :: projector_hessian_diag_avg, projector_inactive_offdiag_direction_scale, &
          projector_inactive_offdiag_expected_drop, projector_inactive_offdiag_gdot_energy, &
          projector_inactive_offdiag_gdot_rotation, projector_inactive_offdiag_gdotp, &
          projector_inactive_offdiag_history_quality, &
@@ -12987,29 +12990,29 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: density_full_sol, density_full_z_e, &
          density_gap_projected_e, density_gap_rx_e, density_gap_trial_basis_e, &
          density_gap_trial_projected_e, density_plateau_rx_e, density_plateau_z_e, &
-         direct_pg_base_e, direct_pg_rx_e, energy_grad_metric_weight, energy_step_weight, grad_e, &
-         grad_rot, occ_curv, projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
+         direct_pg_base_e, direct_pg_rx_e, energy_grad_metric_weight, energy_step_weight, &
+         full_grad_rot, full_var_physical_grad_metric_weight, grad_e, grad_rot, occ_curv, &
+         projector_inactive_offdiag_rx_e, projector_inactive_offdiag_sol, &
          projector_inactive_offdiag_z_e, projector_offdiag_rx_e, projector_offdiag_sol, &
-         projector_offdiag_z_e, projector_physical_direct_active_lcomp, &
-         projector_physical_direct_curv_eval
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_density_rx_e, &
-         projector_physical_direct_density_sol, projector_physical_direct_density_z_e, &
-         projector_physical_direct_diagref_rx_e, projector_physical_direct_effective_rx_e, &
-         projector_physical_direct_model_e, projector_physical_direct_response_rx_e, &
-         projector_physical_direct_rx_e, projector_physical_direct_schur_eval, &
-         projector_physical_direct_sol, projector_physical_direct_spectral_model_e, &
-         projector_physical_direct_spectral_rx_e, projector_physical_direct_spectral_sol, &
-         projector_physical_direct_spectral_z_e
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_z_e, &
-         projector_physical_model_e, projector_physical_rx_e, projector_physical_sol, &
-         projector_physical_z_e, projector_response_rx_e, projector_response_sol, &
-         projector_response_z_e, reduced_secant_response_step, reduced_secant_sol, &
-         reduced_secant_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, rx_model, sol, split_sol, &
-         split_z_e, tether_curv, var_grad_metric_weight, var_occ_gap_weight, &
-         var_physical_grad_metric_weight, var_projector_active_weight, &
-         var_projector_response_weight, var_projector_weight, var_step_weight
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_thermal_activity, &
-         z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
+         projector_offdiag_z_e, projector_physical_direct_active_lcomp
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_curv_eval, &
+         projector_physical_direct_density_rx_e, projector_physical_direct_density_sol, &
+         projector_physical_direct_density_z_e, projector_physical_direct_diagref_rx_e, &
+         projector_physical_direct_effective_rx_e, projector_physical_direct_model_e, &
+         projector_physical_direct_response_rx_e, projector_physical_direct_rx_e, &
+         projector_physical_direct_schur_eval, projector_physical_direct_sol, &
+         projector_physical_direct_spectral_model_e, projector_physical_direct_spectral_rx_e, &
+         projector_physical_direct_spectral_sol
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: projector_physical_direct_spectral_z_e, &
+         projector_physical_direct_z_e, projector_physical_model_e, projector_physical_rx_e, &
+         projector_physical_sol, projector_physical_z_e, projector_response_rx_e, &
+         projector_response_sol, projector_response_z_e, reduced_secant_response_step, &
+         reduced_secant_sol, reduced_secant_z_e, rhs, rot_floor, row_floor_shift, rtd, rx_e, &
+         rx_model, sol, split_sol, split_z_e, tether_curv, var_grad_metric_weight, &
+         var_occ_gap_weight, var_physical_grad_metric_weight, var_projector_active_weight, &
+         var_projector_response_weight
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: var_projector_weight, var_step_weight, &
+         var_thermal_activity, z_density_basis_audit_trial, z_density_basis_curvfloor_audit_trial, &
          z_density_basis_damped_audit_trial, z_density_basis_filtered_audit_trial, &
          z_density_basis_selective_audit_trial, z_density_floor_audit_trial, &
          z_density_floor_safe_audit_trial, z_density_full_audit_trial, &
@@ -13030,28 +13033,28 @@ CONTAINS
          projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
          projector_physical_direct_curv_vec, projector_physical_direct_delta, &
          projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
-         projector_physical_direct_schur_vec, reduced_response_metric, reduced_secant_modes, &
-         reduced_secant_targets, response, response_coupled
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_basis_audit, &
-         response_density_basis_audit_exact, response_density_basis_curvfloor_audit_exact, &
-         response_density_basis_damped_audit, response_density_basis_damped_audit_exact, &
-         response_density_basis_filtered_audit, response_density_basis_filtered_audit_exact, &
+         projector_physical_direct_schur_vec, reduced_response_metric, &
+         reduced_secant_full_targets, reduced_secant_modes, reduced_secant_targets, response
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_coupled, &
+         response_density_basis_audit, response_density_basis_audit_exact, &
+         response_density_basis_curvfloor_audit_exact, response_density_basis_damped_audit, &
+         response_density_basis_damped_audit_exact, response_density_basis_filtered_audit, &
+         response_density_basis_filtered_audit_exact, &
          response_density_basis_selective_audit_exact, response_density_direct_exact, &
          response_density_exact, response_density_floor_audit, response_density_floor_audit_exact, &
-         response_density_floor_safe_audit, response_density_floor_safe_audit_exact, &
-         response_density_full
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_full_audit, &
-         response_density_full_audit_exact, response_density_full_exact, &
-         response_density_full_global, response_density_full_global_exact, &
-         response_density_physical, response_density_plateau, response_density_plateau_exact, &
-         response_exact, response_exact_active, response_exact_physical, response_exact_raw, &
-         response_multisecant, response_occ, response_occ_canonical, response_occ_physical, &
-         response_physical_model, response_split, rot_hessian, rot_hessian_coupled, &
-         rot_hessian_multisecant, rot_hessian_orbital_schur
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_projector, &
-         rot_hessian_projector_physical, rot_hessian_projector_physical_active, &
-         rot_hessian_projector_physical_diagref, rot_hessian_projector_physical_offdiag, &
-         rot_hessian_projector_physical_offdiag_active, &
+         response_density_floor_safe_audit, response_density_floor_safe_audit_exact
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_full, &
+         response_density_full_audit, response_density_full_audit_exact, &
+         response_density_full_exact, response_density_full_global, &
+         response_density_full_global_exact, response_density_physical, response_density_plateau, &
+         response_density_plateau_exact, response_exact, response_exact_active, &
+         response_exact_physical, response_exact_raw, response_multisecant, response_occ, &
+         response_occ_canonical, response_occ_physical, response_physical_model, response_split, &
+         rot_hessian, rot_hessian_coupled, rot_hessian_multisecant
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_orbital_schur, &
+         rot_hessian_projector, rot_hessian_projector_physical, &
+         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
+         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_active, &
          rot_hessian_projector_physical_offdiag_plateau, &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
          rot_hessian_secant, schur, schur_metric
@@ -13156,10 +13159,12 @@ CONTAINS
          ! inter-kpoint communicator assembles them below before the solve.
          nchannels = nspin_ot*SIZE(wkp)
          ALLOCATE (canonical_density_cauchy_channel(nchannels), &
+                   channel_full_var_offset(nchannels), &
                    channel_multiplicity(nchannels), channel_nmo(nchannels), &
                    channel_nrot(nchannels), channel_var_offset(nchannels), &
                    channel_maxocc(nchannels), e_offset(nchannels))
          canonical_density_cauchy_channel(:) = 0
+         channel_full_var_offset(:) = 0
          channel_multiplicity(:) = 0
          channel_nmo(:) = 0
          channel_nrot(:) = 0
@@ -13247,6 +13252,7 @@ CONTAINS
             maxocc = channel_maxocc(global_channel)
             e_offset(global_channel) = ne + 1
             ne = ne + nmo
+            channel_full_var_offset(global_channel) = nrot_full + 1
             nrot_full = nrot_full + nmo*(nmo - 1)
             DO imo = 1, nmo - 1
                DO jmo = imo + 1, nmo
@@ -13324,7 +13330,8 @@ CONTAINS
                WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,I8),1(1X,L1))') &
                " OT Schur skipped group ne nrot full max active:", &
                target_group, ne, nrot, nrot_full, max_schur_rot, schur_active_subspace
-            DEALLOCATE (canonical_density_cauchy_channel, channel_multiplicity, channel_nmo, &
+            DEALLOCATE (canonical_density_cauchy_channel, channel_full_var_offset, &
+                        channel_multiplicity, channel_nmo, &
                         channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                         channel_density_pair_residual, &
                         channel_density_pair_active, channel_density_pair_candidate)
@@ -13390,7 +13397,9 @@ CONTAINS
                    projector_physical_z_e(ne), projector_response_rx_e(ne), &
                    projector_response_z_e(ne), reduced_secant_response_step(ne), &
                    reduced_secant_z_e(ne), split_z_e(ne))
-         ALLOCATE (grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), accepted_sol(nrot), &
+         ALLOCATE (full_grad_rot(nrot_full), &
+                   full_var_physical_grad_metric_weight(nrot_full), &
+                   grad_rot(nrot), rhs(nrot), rtd(nrot), sol(nrot), accepted_sol(nrot), &
                    canonical_density_tangent(nrot), canonical_density_trial_sol(nrot), constrained_sol(nrot), &
                    projector_physical_direct_sol(nrot), projector_physical_sol(nrot), &
                    projector_physical_direct_spectral_sol(nrot), &
@@ -13449,7 +13458,8 @@ CONTAINS
                    response_physical_model(ne, nrot), &
                    response_split(ne, nrot), &
                    rot_hessian(nrot, nrot), rot_hessian_coupled(nrot, nrot), &
-                   rot_hessian_multisecant(nrot, nrot), reduced_secant_modes(nrot, 2), &
+                   rot_hessian_multisecant(nrot, nrot), &
+                   reduced_secant_full_targets(nrot_full, 2), reduced_secant_modes(nrot, 2), &
                    reduced_secant_targets(nrot, 2), &
                    reduced_response_metric(nrot, nrot), &
                    rot_hessian_reduced_secant(nrot, nrot), &
@@ -13473,6 +13483,8 @@ CONTAINS
          ALLOCATE (ipiv_energy(ne))
 
          curv(:) = 0.0_dp
+         full_grad_rot(:) = 0.0_dp
+         full_var_physical_grad_metric_weight(:) = 0.0_dp
          grad_e(:) = 0.0_dp
          occ_curv(:) = 0.0_dp
          canonical_occ_curv(:) = 0.0_dp
@@ -13630,6 +13642,7 @@ CONTAINS
          rot_hessian_multisecant(:, :) = 0.0_dp
          reduced_secant_modes(:, :) = 0.0_dp
          reduced_secant_targets(:, :) = 0.0_dp
+         reduced_secant_full_targets(:, :) = 0.0_dp
          reduced_response_metric(:, :) = 0.0_dp
          rot_hessian_reduced_secant(:, :) = 0.0_dp
          rot_hessian_secant(:, :) = 0.0_dp
@@ -14720,6 +14733,40 @@ CONTAINS
                channel_occ_curv_max = MAXVAL(occ_curv(e_offset(global_channel): &
                                                       e_offset(global_channel) + nmo - 1))
 
+               ! The dense Schur solve may use only a thermal/density-selected subset of MO
+               ! pairs.  Keep a stable full-pair ordering for accepted-response prediction so
+               ! that a response which leaves that subset is still visible at the endpoint.
+               ifull = channel_full_var_offset(global_channel) - 1
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     pair_projector_weight = kpoint_ot_pair_projector_weight( &
+                                             channel_projector_weight, &
+                                             occ_curv(e_offset(global_channel) + imo - 1), &
+                                             occ_curv(e_offset(global_channel) + jmo - 1), &
+                                             channel_occ_curv_max)
+                     pair_occ_gap = MIN(1.0_dp, &
+                                        ABS(trial_occupation(imo, ikpoint, ispin) - &
+                                            trial_occupation(jmo, ikpoint, ispin))/ &
+                                        MAX(maxocc, EPSILON(maxocc)))
+                     rot_grad_pair_fraction = 0.0_dp
+                     IF (channel_projector_weight > EPSILON(channel_projector_weight)) &
+                        rot_grad_pair_fraction = pair_projector_weight/channel_projector_weight
+                     rot_grad_pair_fraction = MIN(1.0_dp, MAX(0.0_dp, rot_grad_pair_fraction))
+                     rot_grad_gap_fraction = kpoint_ot_residual_occ_gap_weight(pair_occ_gap)
+                     ifull = ifull + 1
+                     full_grad_rot(ifull) = 2.0_dp*grad_re(imo, jmo)
+                     full_var_physical_grad_metric_weight(ifull) = rot_grad_norm_weight* &
+                                                                   (rot_grad_pair_fraction + &
+                                                                    (1.0_dp - rot_grad_pair_fraction)*rot_grad_gap_fraction)
+                     ifull = ifull + 1
+                     full_grad_rot(ifull) = 2.0_dp*grad_im(imo, jmo)
+                     full_var_physical_grad_metric_weight(ifull) = &
+                        full_var_physical_grad_metric_weight(ifull - 1)
+                  END DO
+               END DO
+               failed_i = ifull - channel_full_var_offset(global_channel) + 1
+               CPASSERT(failed_i == nmo*(nmo - 1))
+
                ivar = channel_var_offset(global_channel) - 1
                channel_var_start = ivar + 1
                DO imo = 1, nmo - 1
@@ -14844,6 +14891,8 @@ CONTAINS
             CALL para_env_inter_kp%sum(tether_curv)
             CALL para_env_inter_kp%sum(energy_grad_metric_weight)
             CALL para_env_inter_kp%sum(energy_step_weight)
+            CALL para_env_inter_kp%sum(full_grad_rot)
+            CALL para_env_inter_kp%sum(full_var_physical_grad_metric_weight)
             CALL para_env_inter_kp%sum(grad_rot)
             CALL para_env_inter_kp%sum(rot_floor)
             CALL para_env_inter_kp%sum(var_channel)
@@ -14891,6 +14940,8 @@ CONTAINS
          CPASSERT(ALL(var_i > 0))
          CPASSERT(ALL(var_j > 0))
          CPASSERT(ALL(var_kind > 0))
+         full_rot_grad_physical_norm = &
+            DOT_PRODUCT(full_var_physical_grad_metric_weight, full_grad_rot**2)
          rot_grad_active_re = 0.0_dp
          rot_grad_active_im = 0.0_dp
          rot_grad_inactive_re = 0.0_dp
@@ -15036,12 +15087,19 @@ CONTAINS
             local_ot_env(1)%kpoint_physical_gnorm + rot_grad_total_physical_norm
          local_ot_env(1)%kpoint_physical_rot_gnorm = &
             local_ot_env(1)%kpoint_physical_rot_gnorm + rot_grad_physical_norm
+         local_ot_env(1)%kpoint_full_physical_rot_gnorm = &
+            local_ot_env(1)%kpoint_full_physical_rot_gnorm + full_rot_grad_physical_norm
          local_ot_env(1)%kpoint_physical_energy_gnorm = &
             local_ot_env(1)%kpoint_physical_energy_gnorm + rot_grad_energy_norm
          local_ot_env(1)%kpoint_gauge_gnorm = &
             local_ot_env(1)%kpoint_gauge_gnorm + rot_grad_gauge_norm
          local_ot_env(1)%kpoint_physical_delta_ready = &
             local_ot_env(1)%kpoint_physical_delta_ready .AND. physical_delta_group_ready
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,ES16.8))') &
+            " OT Schur physical rotation residual group active full ratio:", &
+            target_group, rot_grad_physical_norm, full_rot_grad_physical_norm, &
+            rot_grad_physical_norm/MAX(full_rot_grad_physical_norm, EPSILON(1.0_dp))
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,8(1X,ES16.8))') &
             " OT Schur rotation gradient active audit group re im inactive_re inactive_im favg fmax wact winact:", &
@@ -15108,7 +15166,8 @@ CONTAINS
                         projector_physical_rx_e, projector_physical_z_e, &
                         projector_response_rx_e, projector_response_z_e, &
                         reduced_secant_z_e, split_z_e)
-            DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
+            DEALLOCATE (full_grad_rot, full_var_physical_grad_metric_weight, &
+                        grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
                         canonical_density_mode_alpha, canonical_density_mode_curvature, &
                         canonical_density_mode_linear, canonical_density_tangent_modes, &
                         canonical_density_trial_sol, constrained_sol, &
@@ -15144,6 +15203,8 @@ CONTAINS
                         projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
                         projector_physical_direct_delta, &
                         rot_hessian_coupled, rot_hessian_multisecant, &
+                        reduced_secant_full_targets, reduced_secant_modes, reduced_secant_targets, &
+                        reduced_response_metric, &
                         rot_hessian_reduced_secant, rot_hessian_secant, &
                         rot_hessian_orbital_schur, &
                         rot_hessian_projector, &
@@ -15155,7 +15216,8 @@ CONTAINS
                         rot_hessian_projector_physical_offdiag_plateau, &
                         rot_hessian_projector_physical_offdiag_plateau_active, &
                         schur, schur_metric, ipiv, ipiv_energy, &
-                        canonical_density_cauchy_channel, channel_multiplicity, channel_nmo, &
+                        canonical_density_cauchy_channel, channel_full_var_offset, &
+                        channel_multiplicity, channel_nmo, &
                         channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                         channel_density_pair_residual, channel_density_pair_active, &
                         channel_density_pair_candidate)
@@ -16829,7 +16891,8 @@ CONTAINS
             response_mixed_diag_avg = response_mixed_diag_avg/REAL(MAX(1, nrot), KIND=dp)
          END IF
          IF (new_search_point .AND. exact_energy_model_ready) &
-            CALL audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
+            CALL audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, &
+                                                     channel_full_var_offset, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rot_hessian_coupled, &
                                                      energy_hessian_reference, energy_cross, response_exact, &
@@ -16839,6 +16902,7 @@ CONTAINS
                                                      rot_hessian_reduced_secant, &
                                                      energy_hessian_multisecant, &
                                                      energy_cross_multisecant, &
+                                                     reduced_secant_full_targets, &
                                                      reduced_secant_modes, &
                                                      reduced_secant_targets, &
                                                      vector_secant_update_eligible, &
@@ -24646,7 +24710,10 @@ CONTAINS
                   reduced_secant_predicted_residual_start_sq, &
                   reduced_secant_predicted_residual_delta_dot, &
                   reduced_secant_predicted_residual_delta_sq, reduced_secant_measured_response, &
-                  reduced_secant_candidate_ready, use_measured_response=.TRUE.)
+                  reduced_secant_candidate_ready, use_measured_response=.TRUE., &
+                  full_rotation_gradient=full_grad_rot, &
+                  full_rotation_targets=reduced_secant_full_targets, &
+                  full_rotation_residual_weight=full_var_physical_grad_metric_weight)
                reduced_secant_response_weighted_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   reduced_secant_response_weighted_trust_ratio = &
@@ -27437,7 +27504,8 @@ CONTAINS
                      projector_physical_z_e, &
                      projector_response_rx_e, projector_response_z_e, &
                      reduced_secant_response_step, reduced_secant_z_e, split_z_e)
-         DEALLOCATE (grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
+         DEALLOCATE (full_grad_rot, full_var_physical_grad_metric_weight, &
+                     grad_rot, rhs, rtd, sol, accepted_sol, canonical_density_tangent, &
                      canonical_density_mode_alpha, canonical_density_mode_curvature, &
                      canonical_density_mode_linear, canonical_density_tangent_modes, &
                      canonical_density_trial_sol, constrained_sol, &
@@ -27484,7 +27552,8 @@ CONTAINS
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
                      rot_hessian_coupled, rot_hessian_multisecant, &
-                     reduced_response_metric, reduced_secant_modes, &
+                     reduced_response_metric, reduced_secant_full_targets, reduced_secant_modes, &
+                     reduced_secant_targets, &
                      rot_hessian_reduced_secant, rot_hessian_secant, &
                      rot_hessian_orbital_schur, &
                      rot_hessian_projector, &
@@ -27497,7 +27566,8 @@ CONTAINS
                      rot_hessian_projector_physical_offdiag_plateau, &
                      rot_hessian_projector_physical_offdiag_plateau_active, &
                      schur, schur_metric, ipiv, ipiv_energy, &
-                     canonical_density_cauchy_channel, channel_multiplicity, channel_nmo, &
+                     canonical_density_cauchy_channel, channel_full_var_offset, &
+                     channel_multiplicity, channel_nmo, &
                      channel_nrot, channel_var_offset, channel_maxocc, e_offset, &
                      channel_density_pair_residual, channel_density_pair_active, &
                      channel_density_pair_candidate)
@@ -27557,6 +27627,9 @@ CONTAINS
 !> \param measured_response_used ...
 !> \param ready ...
 !> \param use_measured_response ...
+!> \param full_rotation_gradient stable full-pair physical gradient for residual prediction
+!> \param full_rotation_targets accepted full-pair gradient changes for the active secant modes
+!> \param full_rotation_residual_weight physical metric in the stable full-pair ordering
 ! **************************************************************************************************
       SUBROUTINE build_kpoint_ot_reduced_secant_candidate( &
          rotation_hessian, rotation_residual_hessian, response_metric, rotation_modes, &
@@ -27570,7 +27643,8 @@ CONTAINS
          model_gap, model_gap_drop, model_gap_ratio, response_weighted_step, response_abs_step, &
          predicted_residual_ratio, predicted_residual_start_sq, &
          predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
-         use_measured_response)
+         use_measured_response, full_rotation_gradient, full_rotation_targets, &
+         full_rotation_residual_weight)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, &
                                                             rotation_residual_hessian, &
                                                             response_metric, rotation_modes, &
@@ -27595,9 +27669,13 @@ CONTAINS
          predicted_residual_start_sq, predicted_residual_delta_dot, predicted_residual_delta_sq
       LOGICAL, INTENT(OUT)                               :: measured_response_used, ready
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_measured_response
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_gradient
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
+         OPTIONAL                                        :: full_rotation_targets
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_residual_weight
 
-      INTEGER                                            :: modal_rank, nener, nrot, r
-      LOGICAL :: base_ready, correction_ready, current_residual_ready, &
+      INTEGER                                            :: modal_rank, nener, nfull, nrot, r
+      LOGICAL :: base_ready, correction_ready, current_residual_ready, full_response_requested, &
          measured_response_requested, model_ready, residual_step_ready, subspace_ready, trial_ready
       REAL(KIND=dp) :: base_drop, base_quadratic, base_slope, correction_cross, correction_drop, &
          correction_quadratic, correction_slope, current_residual_alpha, current_residual_ratio, &
@@ -27648,6 +27726,16 @@ CONTAINS
          ready = .FALSE.
          measured_response_requested = .FALSE.
          IF (PRESENT(use_measured_response)) measured_response_requested = use_measured_response
+         full_response_requested = PRESENT(full_rotation_gradient)
+         CPASSERT(PRESENT(full_rotation_targets) .EQV. full_response_requested)
+         CPASSERT(PRESENT(full_rotation_residual_weight) .EQV. full_response_requested)
+         nfull = nrot
+         IF (full_response_requested) THEN
+            nfull = SIZE(full_rotation_gradient)
+            CPASSERT(ALL(SHAPE(full_rotation_targets) == [nfull, SIZE(rotation_modes, 2)]))
+            CPASSERT(SIZE(full_rotation_residual_weight) == nfull)
+            CPASSERT(ALL(full_rotation_residual_weight >= 0.0_dp))
+         END IF
          IF (nrot <= 0 .OR. nener <= 0) RETURN
 
          ALLOCATE (base_response(nener), base_rotation_residual(nrot), correction_energy(nener), &
@@ -27725,9 +27813,12 @@ CONTAINS
          END IF
 
          BLOCK
-            INTEGER                                      :: measured_base_rank, measured_rank
+            INTEGER :: measured_base_rank, measured_full_base_rank, &
+                       measured_full_correction_rank, measured_rank
             LOGICAL                                      :: measured_base_ready, &
                                                             measured_correction_ready, &
+                                                            measured_full_base_ready, &
+                                                            measured_full_correction_ready, &
                                                             measured_model_ready, &
                                                             measured_subspace_ready, &
                                                             measured_trial_ready
@@ -27737,6 +27828,8 @@ CONTAINS
                              measured_correction_slope, measured_direction_scale, measured_increment_slope, &
                              measured_model_drop, measured_model_increment, measured_model_quadratic, &
                              measured_model_slope, &
+                             measured_full_base_capture, measured_full_base_ratio, &
+                             measured_full_correction_capture, measured_full_correction_ratio, &
                              measured_residual_norm, measured_residual_ratio, &
                              measured_scaled_residual_ratio, measured_trial_drop, measured_trial_quadratic, &
                              measured_trial_slope
@@ -27746,16 +27839,33 @@ CONTAINS
                                                         measured_energy_step, measured_residual_reduction, measured_response, &
                                                         measured_rotation_step, measured_scaled_residual, &
                                                         measured_total_response
+            REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: measured_full_base_projection, &
+                                                        measured_full_base_response, measured_full_correction_projection, &
+                                                        measured_full_correction_response, measured_full_residual, &
+                                                        measured_full_scaled_residual
 
             ALLOCATE (measured_base_projection(nrot), measured_base_residual(nrot), &
                       measured_base_target_response(nrot), measured_correction_energy(nener), &
                       measured_correction_rotation(nrot), measured_residual_reduction(nrot), &
                       measured_response(nener), measured_rotation_step(nrot), &
                       measured_scaled_residual(nrot), &
+                      measured_full_base_projection(nrot), &
+                      measured_full_base_response(nfull), &
+                      measured_full_correction_projection(nrot), &
+                      measured_full_correction_response(nfull), measured_full_residual(nfull), &
+                      measured_full_scaled_residual(nfull), &
                       measured_energy_step(nener), measured_total_response(nener))
             measured_correction_energy(:) = 0.0_dp
             measured_correction_rotation(:) = 0.0_dp
             measured_response(:) = 0.0_dp
+            measured_full_base_projection(:) = 0.0_dp
+            measured_full_base_response(:) = 0.0_dp
+            measured_full_correction_projection(:) = 0.0_dp
+            measured_full_correction_response(:) = 0.0_dp
+            measured_full_residual(:) = 0.0_dp
+            measured_full_scaled_residual(:) = 0.0_dp
+            measured_full_base_ready = .FALSE.
+            measured_full_correction_ready = .FALSE.
             CALL qs_scf_kp_measured_residual_subspace_step( &
                rotation_base_step, rotation_targets, rotation_modes, rotation_step_weight, &
                measured_base_target_response, measured_base_projection, measured_base_ready, &
@@ -27767,6 +27877,22 @@ CONTAINS
                measured_base_residual, rotation_modes, rotation_targets, rotation_residual_weight, &
                measured_correction_rotation, measured_residual_reduction, measured_subspace_ready, &
                measured_rank, measured_residual_ratio, measured_capture)
+            IF (full_response_requested .AND. measured_subspace_ready) THEN
+               CALL qs_scf_kp_measured_residual_subspace_step( &
+                  rotation_base_step, full_rotation_targets, rotation_modes, rotation_step_weight, &
+                  measured_full_base_response, measured_full_base_projection, &
+                  measured_full_base_ready, measured_full_base_rank, measured_full_base_ratio, &
+                  measured_full_base_capture)
+               CALL qs_scf_kp_measured_residual_subspace_step( &
+                  measured_correction_rotation, full_rotation_targets, rotation_modes, &
+                  rotation_step_weight, measured_full_correction_response, &
+                  measured_full_correction_projection, measured_full_correction_ready, &
+                  measured_full_correction_rank, measured_full_correction_ratio, &
+                  measured_full_correction_capture)
+               measured_full_residual(:) = full_rotation_gradient
+               IF (measured_full_base_ready) &
+                  measured_full_residual(:) = measured_full_residual - measured_full_base_response
+            END IF
             measured_model_drop = 0.0_dp
             measured_model_increment = 0.0_dp
             measured_model_quadratic = 0.0_dp
@@ -27823,13 +27949,22 @@ CONTAINS
                         measured_model_ready)
                      measured_scaled_residual(:) = measured_base_residual - &
                                                    measured_direction_scale*measured_residual_reduction
-                     measured_residual_norm = SQRT(MAX(0.0_dp, &
-                                                       DOT_PRODUCT(rotation_residual_weight, &
-                                                                   measured_base_residual**2)))
-                     measured_scaled_residual_ratio = SQRT(MAX(0.0_dp, &
-                                                               DOT_PRODUCT(rotation_residual_weight, &
-                                                                           measured_scaled_residual**2)))/ &
-                                                      MAX(measured_residual_norm, EPSILON(1.0_dp))
+                     IF (full_response_requested .AND. measured_full_correction_ready) THEN
+                        measured_full_scaled_residual(:) = measured_full_residual - &
+                                                           measured_direction_scale*measured_full_correction_response
+                        measured_residual_norm = SQRT(MAX(0.0_dp, &
+                                                          DOT_PRODUCT(full_rotation_residual_weight, measured_full_residual**2)))
+                        measured_scaled_residual_ratio = SQRT(MAX(0.0_dp, &
+                                                                  DOT_PRODUCT(full_rotation_residual_weight, &
+                                                                              measured_full_scaled_residual**2)))/ &
+                                                         MAX(measured_residual_norm, EPSILON(1.0_dp))
+                     ELSE
+                        measured_residual_norm = SQRT(MAX(0.0_dp, &
+                                                          DOT_PRODUCT(rotation_residual_weight, measured_base_residual**2)))
+                        measured_scaled_residual_ratio = SQRT(MAX(0.0_dp, &
+                                                             DOT_PRODUCT(rotation_residual_weight, measured_scaled_residual**2)))/ &
+                                                         MAX(measured_residual_norm, EPSILON(1.0_dp))
+                     END IF
                   ELSE
                      measured_model_ready = .FALSE.
                   END IF
@@ -27887,20 +28022,35 @@ CONTAINS
                   ready = ready .AND. response_abs_step <= response_abs_trust
                IF (ready) THEN
                   predicted_residual_ratio = measured_scaled_residual_ratio
-                  predicted_residual_start_sq = &
-                     DOT_PRODUCT(rotation_residual_weight, rotation_gradient**2)
-                  predicted_residual_delta_dot = &
-                     DOT_PRODUCT(rotation_residual_weight, rotation_gradient* &
-                                 (measured_scaled_residual - rotation_gradient))
-                  predicted_residual_delta_sq = &
-                     DOT_PRODUCT(rotation_residual_weight, &
-                                 (measured_scaled_residual - rotation_gradient)**2)
+                  IF (full_response_requested .AND. measured_full_correction_ready) THEN
+                     predicted_residual_start_sq = &
+                        DOT_PRODUCT(full_rotation_residual_weight, full_rotation_gradient**2)
+                     predicted_residual_delta_dot = &
+                        DOT_PRODUCT(full_rotation_residual_weight, full_rotation_gradient* &
+                                    (measured_full_scaled_residual - full_rotation_gradient))
+                     predicted_residual_delta_sq = &
+                        DOT_PRODUCT(full_rotation_residual_weight, &
+                                    (measured_full_scaled_residual - full_rotation_gradient)**2)
+                  ELSE
+                     predicted_residual_start_sq = &
+                        DOT_PRODUCT(rotation_residual_weight, rotation_gradient**2)
+                     predicted_residual_delta_dot = &
+                        DOT_PRODUCT(rotation_residual_weight, rotation_gradient* &
+                                    (measured_scaled_residual - rotation_gradient))
+                     predicted_residual_delta_sq = &
+                        DOT_PRODUCT(rotation_residual_weight, &
+                                    (measured_scaled_residual - rotation_gradient)**2)
+                  END IF
                   measured_response_used = .TRUE.
                   DEALLOCATE (measured_base_projection, measured_base_residual, &
                               measured_base_target_response, measured_correction_energy, &
                               measured_correction_rotation, measured_residual_reduction, &
                               measured_response, measured_rotation_step, measured_scaled_residual, &
-                              measured_energy_step, measured_total_response)
+                              measured_energy_step, measured_total_response, &
+                              measured_full_base_projection, measured_full_base_response, &
+                              measured_full_correction_projection, &
+                              measured_full_correction_response, measured_full_residual, &
+                              measured_full_scaled_residual)
                   DEALLOCATE (base_response, base_rotation_residual, correction_energy, &
                               correction_rotation, correction_rotation_residual, model_response, &
                               raw_response, rhs_local, total_response, schur_reference)
@@ -27911,7 +28061,10 @@ CONTAINS
                         measured_base_target_response, measured_correction_energy, &
                         measured_correction_rotation, measured_residual_reduction, &
                         measured_response, measured_rotation_step, measured_scaled_residual, &
-                        measured_energy_step, measured_total_response)
+                        measured_energy_step, measured_total_response, &
+                        measured_full_base_projection, measured_full_base_response, &
+                        measured_full_correction_projection, measured_full_correction_response, &
+                        measured_full_residual, measured_full_scaled_residual)
          END BLOCK
 
          correction_cross = 0.5_dp*(trial_quadratic - base_quadratic - correction_quadratic)
@@ -28088,6 +28241,7 @@ CONTAINS
 !> \brief Compare the finite coupled Hessian with the last accepted complex OT vector secant.
 !> \param target_group fixed-N spin group
 !> \param channel_nmo number of local MOs for every global channel
+!> \param channel_full_var_offset first full rotation variable for every global channel
 !> \param e_offset first auxiliary-energy variable for every global channel
 !> \param var_channel global channel for every rotation variable
 !> \param var_i first MO index for every rotation variable
@@ -28107,13 +28261,15 @@ CONTAINS
 !> \param rotation_hessian_reduced_secant direct coupled fixed-N multisecant in the analytic Schur block
 !> \param energy_hessian_multisecant analytic energy block carried by the active candidate
 !> \param energy_cross_multisecant analytic signed cross block carried by the active candidate
+!> \param reduced_secant_full_targets measured gradient changes in the stable full-pair ordering
 !> \param reduced_secant_modes accepted complex rotation modes defining the reduced candidate span
 !> \param reduced_secant_targets measured raw complex rotation-gradient changes for those modes
 !> \param update_ready whether the candidate passed the physical trust gate
 !> \param multisecant_update_ready whether the two-secant candidate passed its geometry gate
 !> \param reduced_secant_shadow_ready whether the reduced coupled shadow passed its geometry gate
 ! **************************************************************************************************
-      SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, e_offset, &
+      SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, &
+                                                     channel_full_var_offset, e_offset, &
                                                      var_channel, var_i, var_j, var_kind, &
                                                      occ_curv, tether_curv, rotation_hessian, &
                                                      energy_hessian, energy_cross, energy_response, &
@@ -28122,13 +28278,15 @@ CONTAINS
                                                      rotation_hessian_multisecant, &
                                                      rotation_hessian_reduced_secant, &
                                                      energy_hessian_multisecant, &
-                                                     energy_cross_multisecant, reduced_secant_modes, &
+                                                     energy_cross_multisecant, &
+                                                     reduced_secant_full_targets, reduced_secant_modes, &
                                                      reduced_secant_targets, update_ready, &
                                                      multisecant_update_ready, &
                                                      reduced_secant_shadow_ready)
       INTEGER, INTENT(IN)                                :: target_group
-      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, e_offset, var_channel, &
-                                                            var_i, var_j, var_kind
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: channel_nmo, channel_full_var_offset, &
+                                                            e_offset, var_channel, var_i, var_j, &
+                                                            var_kind
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occ_curv, tether_curv
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian, &
                                                             energy_cross, energy_response, &
@@ -28137,15 +28295,15 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: active_subspace
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT) :: rotation_hessian_secant, &
          rotation_hessian_multisecant, rotation_hessian_reduced_secant, &
-         energy_hessian_multisecant, energy_cross_multisecant, reduced_secant_modes, &
-         reduced_secant_targets
+         energy_hessian_multisecant, energy_cross_multisecant, reduced_secant_full_targets, &
+         reduced_secant_modes, reduced_secant_targets
       LOGICAL, INTENT(OUT)                               :: update_ready, multisecant_update_ready, &
                                                             reduced_secant_shadow_ready
 
       INTEGER                                            :: active_energy_count, global_channel, &
-                                                            global_spin, group, ie, imo, &
-                                                            local_channel, nener, nmo, nrot, r, &
-                                                            valid_i
+                                                            global_spin, group, ie, ifull, imo, &
+                                                            jmo, local_channel, nener, nmo, nrot, &
+                                                            r, valid_i
       LOGICAL :: coupled_multisecant_finite, coupled_multisecant_ready, coupled_schur_eligible, &
          coupled_schur_finite, multisecant_finite, previous_valid, reduced_multisecant_eligible, &
          reduced_multisecant_finite, update_finite, valid
@@ -28155,18 +28313,20 @@ CONTAINS
          coupled_multisecant_hessian_norm, coupled_multisecant_independence, &
          coupled_multisecant_residual_norm, coupled_multisecant_rotation_correction_ratio, &
          coupled_multisecant_updated_residual_norm, coupled_schur_correction_ratio, &
-         curvature_ratio, energy_mean, model_alignment, model_norm, multisecant_compatibility, &
-         multisecant_correction_norm
-      REAL(KIND=dp) :: multisecant_correction_ratio, multisecant_independence, &
+         current_response_coverage, current_step_coverage, curvature_ratio, energy_mean, &
+         full_secant_rotation_norm, full_step_rotation_norm
+      REAL(KIND=dp) :: model_alignment, model_norm, multisecant_compatibility, &
+         multisecant_correction_norm, multisecant_correction_ratio, multisecant_independence, &
          multisecant_residual_norm, multisecant_updated_residual_norm, orthogonal_fraction, &
-         reduced_multisecant_compatibility, reduced_multisecant_correction_norm, &
-         reduced_multisecant_correction_ratio, reduced_multisecant_independence, &
-         reduced_multisecant_residual_norm, reduced_multisecant_updated_residual_norm, &
-         residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
-         rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
-         rotation_sty, rotation_y_norm, snorm
-      REAL(KIND=dp) :: step_norm, sths, stored_sty, sty, updated_rotation_residual_norm, y_norm, &
-         ynorm
+         previous_full_secant_rotation_norm, previous_full_step_rotation_norm, &
+         previous_response_coverage, previous_step_coverage, reduced_multisecant_compatibility, &
+         reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio, &
+         reduced_multisecant_independence, reduced_multisecant_residual_norm, &
+         reduced_multisecant_updated_residual_norm
+      REAL(KIND=dp) :: residual_energy_norm, residual_norm, residual_rotation_norm, &
+         rotation_curvature_ratio, rotation_model_alignment, rotation_model_norm, &
+         rotation_residual_norm, rotation_stbs, rotation_sty, rotation_y_norm, snorm, step_norm, &
+         sths, stored_sty, sty, updated_rotation_residual_norm, y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: model_energy, model_rotation, &
          previous_secant_energy, previous_secant_rotation, previous_step_energy, &
          previous_step_rotation, secant_energy, secant_rotation, step_energy, step_rotation, &
@@ -28186,6 +28346,7 @@ CONTAINS
          CPASSERT(ALL(SHAPE(energy_cross_multisecant) == SHAPE(energy_cross)))
          CPASSERT(ALL(SHAPE(reduced_secant_modes) == [nrot, 2]))
          CPASSERT(ALL(SHAPE(reduced_secant_targets) == [nrot, 2]))
+         CPASSERT(SIZE(reduced_secant_full_targets, 2) == 2)
          CPASSERT(ALL(SHAPE(energy_response) == SHAPE(energy_cross)))
          CPASSERT(ALL(SHAPE(response_metric) == SHAPE(rotation_hessian)))
          rotation_hessian_secant(:, :) = rotation_hessian(:, :)
@@ -28195,6 +28356,7 @@ CONTAINS
          energy_cross_multisecant(:, :) = energy_cross(:, :)
          reduced_secant_modes(:, :) = 0.0_dp
          reduced_secant_targets(:, :) = 0.0_dp
+         reduced_secant_full_targets(:, :) = 0.0_dp
          update_ready = .FALSE.
          multisecant_update_ready = .FALSE.
          reduced_secant_shadow_ready = .FALSE.
@@ -28213,6 +28375,10 @@ CONTAINS
          previous_secant_rotation(:) = 0.0_dp
          previous_step_energy(:) = 0.0_dp
          previous_secant_energy(:) = 0.0_dp
+         full_step_rotation_norm = 0.0_dp
+         full_secant_rotation_norm = 0.0_dp
+         previous_full_step_rotation_norm = 0.0_dp
+         previous_full_secant_rotation_norm = 0.0_dp
 
          valid = .TRUE.
          previous_valid = .TRUE.
@@ -28246,6 +28412,12 @@ CONTAINS
             CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_s_im, dense_im)
             CALL local_ot_env(local_channel)%para_env%sum(dense_re)
             CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+            DO jmo = 2, nmo
+               DO imo = 1, jmo - 1
+                  full_step_rotation_norm = full_step_rotation_norm + &
+                                            dense_re(imo, jmo)**2 + dense_im(imo, jmo)**2
+               END DO
+            END DO
             DO r = 1, nrot
                IF (var_channel(r) /= global_channel) CYCLE
                SELECT CASE (var_kind(r))
@@ -28259,6 +28431,21 @@ CONTAINS
             CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_y_im, dense_im)
             CALL local_ot_env(local_channel)%para_env%sum(dense_re)
             CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+            DO imo = 1, nmo - 1
+               DO jmo = imo + 1, nmo
+                  full_secant_rotation_norm = full_secant_rotation_norm + &
+                                              4.0_dp*(dense_re(imo, jmo)**2 + dense_im(imo, jmo)**2)
+               END DO
+            END DO
+            ifull = channel_full_var_offset(global_channel) - 1
+            DO imo = 1, nmo - 1
+               DO jmo = imo + 1, nmo
+                  ifull = ifull + 1
+                  reduced_secant_full_targets(ifull, 2) = 2.0_dp*dense_re(imo, jmo)
+                  ifull = ifull + 1
+                  reduced_secant_full_targets(ifull, 2) = 2.0_dp*dense_im(imo, jmo)
+               END DO
+            END DO
             DO r = 1, nrot
                IF (var_channel(r) /= global_channel) CYCLE
                SELECT CASE (var_kind(r))
@@ -28273,6 +28460,12 @@ CONTAINS
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_s_previous_im, dense_im)
                CALL local_ot_env(local_channel)%para_env%sum(dense_re)
                CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO jmo = 2, nmo
+                  DO imo = 1, jmo - 1
+                     previous_full_step_rotation_norm = previous_full_step_rotation_norm + &
+                                                        dense_re(imo, jmo)**2 + dense_im(imo, jmo)**2
+                  END DO
+               END DO
                DO r = 1, nrot
                   IF (var_channel(r) /= global_channel) CYCLE
                   SELECT CASE (var_kind(r))
@@ -28286,6 +28479,21 @@ CONTAINS
                CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_y_previous_im, dense_im)
                CALL local_ot_env(local_channel)%para_env%sum(dense_re)
                CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     previous_full_secant_rotation_norm = previous_full_secant_rotation_norm + &
+                                                          4.0_dp*(dense_re(imo, jmo)**2 + dense_im(imo, jmo)**2)
+                  END DO
+               END DO
+               ifull = channel_full_var_offset(global_channel) - 1
+               DO imo = 1, nmo - 1
+                  DO jmo = imo + 1, nmo
+                     ifull = ifull + 1
+                     reduced_secant_full_targets(ifull, 1) = 2.0_dp*dense_re(imo, jmo)
+                     ifull = ifull + 1
+                     reduced_secant_full_targets(ifull, 1) = 2.0_dp*dense_im(imo, jmo)
+                  END DO
+               END DO
                DO r = 1, nrot
                   IF (var_channel(r) /= global_channel) CYCLE
                   SELECT CASE (var_kind(r))
@@ -28326,13 +28534,42 @@ CONTAINS
             CALL para_env_inter_kp%sum(secant_rotation)
             CALL para_env_inter_kp%sum(step_energy)
             CALL para_env_inter_kp%sum(secant_energy)
+            CALL para_env_inter_kp%sum(reduced_secant_full_targets)
+            CALL para_env_inter_kp%sum(full_step_rotation_norm)
+            CALL para_env_inter_kp%sum(full_secant_rotation_norm)
             IF (previous_valid) THEN
                CALL para_env_inter_kp%sum(previous_step_rotation)
                CALL para_env_inter_kp%sum(previous_secant_rotation)
                CALL para_env_inter_kp%sum(previous_step_energy)
                CALL para_env_inter_kp%sum(previous_secant_energy)
+               CALL para_env_inter_kp%sum(previous_full_step_rotation_norm)
+               CALL para_env_inter_kp%sum(previous_full_secant_rotation_norm)
             END IF
          END IF
+
+         current_step_coverage = 1.0_dp
+         IF (full_step_rotation_norm > EPSILON(full_step_rotation_norm)) &
+            current_step_coverage = DOT_PRODUCT(step_rotation, step_rotation)/full_step_rotation_norm
+         current_response_coverage = 1.0_dp
+         IF (full_secant_rotation_norm > EPSILON(full_secant_rotation_norm)) &
+            current_response_coverage = DOT_PRODUCT(secant_rotation, secant_rotation)/ &
+                                        full_secant_rotation_norm
+         previous_step_coverage = 1.0_dp
+         IF (previous_full_step_rotation_norm > EPSILON(previous_full_step_rotation_norm)) &
+            previous_step_coverage = DOT_PRODUCT(previous_step_rotation, previous_step_rotation)/ &
+                                     previous_full_step_rotation_norm
+         previous_response_coverage = 1.0_dp
+         IF (previous_full_secant_rotation_norm > EPSILON(previous_full_secant_rotation_norm)) &
+            previous_response_coverage = DOT_PRODUCT(previous_secant_rotation, previous_secant_rotation)/ &
+                                         previous_full_secant_rotation_norm
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,L1,8(1X,ES16.8))') &
+            " OT Schur accepted secant active coverage group history step response pstep presponse "// &
+            "full_step full_response pfull_step pfull_response:", &
+            target_group, previous_valid, current_step_coverage, current_response_coverage, &
+            previous_step_coverage, previous_response_coverage, full_step_rotation_norm, &
+            full_secant_rotation_norm, previous_full_step_rotation_norm, &
+            previous_full_secant_rotation_norm
 
          active_energy_count = COUNT(occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
          DO ie = 1, nener

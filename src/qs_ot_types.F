@@ -414,6 +414,7 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: kpoint_canonical_mu = 0.0_dp
       REAL(KIND=dp) :: kpoint_eps_scf = -1.0_dp
       REAL(KIND=dp) :: kpoint_physical_gnorm = 0.0_dp, kpoint_physical_rot_gnorm = 0.0_dp
+      REAL(KIND=dp) :: kpoint_full_physical_rot_gnorm = 0.0_dp
       REAL(KIND=dp) :: kpoint_physical_energy_gnorm = 0.0_dp, kpoint_gauge_gnorm = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_drop = 0.0_dp, schur_constrained_calibrated_drop = 0.0_dp
       REAL(KIND=dp) :: schur_constrained_quality = 0.0_dp, schur_constrained_quality_ema = 0.0_dp
@@ -1234,6 +1235,7 @@ CONTAINS
       qs_ot_env%kpoint_eps_scf = -1.0_dp
       qs_ot_env%kpoint_physical_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_rot_gnorm = 0.0_dp
+      qs_ot_env%kpoint_full_physical_rot_gnorm = 0.0_dp
       qs_ot_env%kpoint_physical_energy_gnorm = 0.0_dp
       qs_ot_env%kpoint_gauge_gnorm = 0.0_dp
       qs_ot_env%schur_constrained_drop = 0.0_dp
