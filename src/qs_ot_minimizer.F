@@ -48,6 +48,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_fermi_window_direction_scale, &
               ot_kpoint_mermin_closure_response_quality, &
               ot_kpoint_mermin_current_guard_delta, &
+              ot_kpoint_mermin_secant_consistent, &
               ot_kpoint_multiplicity_direction_scale, &
               ot_kpoint_physical_residual_split, &
               ot_kpoint_mermin_candidate_restart_step, &
@@ -110,7 +111,8 @@ MODULE qs_ot_minimizer
                                         ot_cg_kp_residual_history_damp_quality = 2.0E-1_dp, &
                                         ot_cg_kp_residual_spike_quality_ceiling = 0.0_dp, &
                                         ot_cg_kp_closure_response_ema_alpha = 2.5E-1_dp, &
-                                        ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp
+                                        ot_cg_kp_mermin_closure_backtrack = 5.0E-1_dp, &
+                                        ot_cg_kp_mermin_secant_consistency = 2.0E-1_dp
 
    TYPE, PRIVATE :: ot_cg_history_snapshot_type
       TYPE(dbcsr_type), POINTER                         :: matrix_gx_old => NULL(), &
@@ -1547,6 +1549,8 @@ CONTAINS
                               MAX(ABS(total_curvature), ABS(energy_curvature), EPSILON(1.0_dp))
       END IF
 
+      vector_valid = vector_valid .AND. valid .AND. &
+                     ot_kpoint_mermin_secant_consistent(total_curvature, energy_curvature)
       DO ichannel = 1, SIZE(qs_ot_env)
          IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
          qs_ot_env(ichannel)%mermin_secant_previous_ready = previous_valid .AND. vector_valid
@@ -1576,6 +1580,26 @@ CONTAINS
       END IF
 
    END SUBROUTINE audit_kpoint_mermin_accepted_secant
+
+! **************************************************************************************************
+!> \brief test whether an accepted derivative secant reproduces its finite Mermin curvature
+!> \param gradient_curvature curvature from endpoint directional derivatives
+!> \param energy_curvature curvature from the accepted finite Mermin-energy change
+!> \return true when the sample is resolved and locally quadratic
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION ot_kpoint_mermin_secant_consistent(gradient_curvature, energy_curvature) &
+      RESULT(consistent)
+      REAL(KIND=dp), INTENT(IN)                          :: gradient_curvature, energy_curvature
+
+      REAL(KIND=dp)                                      :: curvature_scale, relative_mismatch
+
+      curvature_scale = MAX(ABS(gradient_curvature), ABS(energy_curvature))
+      relative_mismatch = ABS(gradient_curvature - energy_curvature)/ &
+                          MAX(curvature_scale, EPSILON(1.0_dp))
+      consistent = curvature_scale > 1.0E4_dp*EPSILON(1.0_dp) .AND. &
+                   relative_mismatch <= ot_cg_kp_mermin_secant_consistency
+
+   END FUNCTION ot_kpoint_mermin_secant_consistent
 
 ! **************************************************************************************************
 !> \brief Euclidean geometry of an accepted vector secant

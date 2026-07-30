@@ -62,6 +62,7 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
+        ot_kpoint_mermin_secant_consistent, &
         ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
         ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
         ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_shared_spin_group, &
@@ -259,6 +260,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_tail_energy_stagnant("k-point OT flat-energy tail restart", nfail)
    CALL check_kpoint_mermin_recovery_active_tail("k-point OT dual-residual recovery tail", nfail)
    CALL check_kpoint_mermin_recovery_deferred("k-point OT pending residual closure", nfail)
+   CALL check_kpoint_mermin_secant_consistency("k-point OT accepted secant consistency", nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
@@ -6172,6 +6174,38 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_mermin_recovery_deferred
+
+! **************************************************************************************************
+!> \brief Check that response history only admits locally quadratic accepted Mermin secants.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_secant_consistency(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: consistent_negative, consistent_positive, &
+                                                            no_signal, nonlinear, opposite_sign
+
+      consistent_positive = ot_kpoint_mermin_secant_consistent(1.00E-5_dp, 0.95E-5_dp)
+      consistent_negative = ot_kpoint_mermin_secant_consistent(-2.00E-6_dp, -1.75E-6_dp)
+      nonlinear = ot_kpoint_mermin_secant_consistent(1.00E-6_dp, 0.60E-6_dp)
+      opposite_sign = ot_kpoint_mermin_secant_consistent(-1.00E-6_dp, 1.00E-6_dp)
+      no_signal = ot_kpoint_mermin_secant_consistent(0.0_dp, 0.0_dp)
+
+      IF (.NOT. consistent_positive .OR. .NOT. consistent_negative .OR. nonlinear .OR. &
+          opposite_sign .OR. no_signal) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "failed with positive/negative/nonlinear/opposite/no-signal", &
+            consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,L1))') TRIM(label), &
+            "OK with positive/negative/nonlinear/opposite/no-signal", &
+            consistent_positive, consistent_negative, nonlinear, opposite_sign, no_signal
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_secant_consistency
 
 ! **************************************************************************************************
 !> \brief check vector secant alignment and orthogonal response decomposition
