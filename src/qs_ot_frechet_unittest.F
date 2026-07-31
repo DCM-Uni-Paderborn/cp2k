@@ -83,23 +83,23 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
         qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
         qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
-        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_tether_tail_scale, &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
+        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
+        qs_scf_kp_directional_subspace_curvature_update, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_tail_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -671,6 +671,8 @@ PROGRAM qs_ot_frechet_unittest
       "history-safe occupation-projector covariant finite difference", 5.0E-8_dp, nfail)
    CALL check_canonical_fixed_n_occ_projector_derivative( &
       "canonical fixed-N occupation-projector derivative", 5.0E-7_dp, nfail)
+   CALL check_canonical_projector_density_response_fd( &
+      "canonical projector density-response finite difference", 5.0E-7_dp, nfail)
    CALL check_canonical_projector_similarity_gauge( &
       "canonical projector similarity-gauge response", 5.0E-10_dp, nfail)
    CALL check_density_replaced_response( &
@@ -25827,6 +25829,77 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_canonical_fixed_n_occ_projector_derivative
+
+! **************************************************************************************************
+!> \brief Check the matched canonical dP/occupation-curvature response at fixed electron number.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_canonical_projector_density_response_fd(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+      REAL(KIND=dp), PARAMETER :: fd_step = 1.0E-6_dp, maxocc = 1.0_dp, nel = 2.15_dp, &
+         projector_weight = 0.10_dp, sigma = 0.08_dp, wk = 1.0_dp
+
+      INTEGER                                            :: i
+      REAL(KIND=dp) :: analytic_mu_response, err, gauge_err, inactive_response, kTS, mu, mu_m, &
+         mu_p, projected_density_derivative, response
+      REAL(KIND=dp), DIMENSION(1)                        :: weights
+      REAL(KIND=dp), DIMENSION(n)                        :: canonical_curv, direction, evals, &
+                                                            expected
+      REAL(KIND=dp), DIMENSION(n, 1)                     :: eps, eps_m, eps_p, occ, occ_m, occ_p
+
+      weights(1) = wk
+      evals(:) = [-0.31_dp, -0.06_dp, 0.04_dp, 0.29_dp]
+      direction(:) = [0.13_dp, -0.08_dp, 0.05_dp, -0.03_dp]
+      eps(:, 1) = evals(:)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps, nel, weights, sigma, maxocc)
+      DO i = 1, n
+         canonical_curv(i) = wk*maxocc*(occ(i, 1)/maxocc)*(1.0_dp - occ(i, 1)/maxocc)/sigma
+      END DO
+      analytic_mu_response = DOT_PRODUCT(canonical_curv, direction)/SUM(canonical_curv)
+      expected(:) = -projector_weight*(direction(:) - analytic_mu_response)
+
+      eps_p(:, 1) = evals(:) + fd_step*direction(:)
+      eps_m(:, 1) = evals(:) - fd_step*direction(:)
+      CALL dense_fermi_kpoint(occ_p, mu_p, kTS, eps_p, nel, weights, sigma, maxocc)
+      CALL dense_fermi_kpoint(occ_m, mu_m, kTS, eps_m, nel, weights, sigma, maxocc)
+      err = 0.0_dp
+      DO i = 1, n
+         projected_density_derivative = 2.0_dp*wk*projector_weight* &
+                                        (occ_p(i, 1) - occ_m(i, 1))/(2.0_dp*fd_step)
+         response = qs_scf_kp_canonical_projector_density_response( &
+                    projected_density_derivative, canonical_curv(i))
+         err = MAX(err, ABS(response - expected(i)))
+      END DO
+
+      eps_p(:, 1) = evals(:) + fd_step
+      eps_m(:, 1) = evals(:) - fd_step
+      CALL dense_fermi_kpoint(occ_p, mu_p, kTS, eps_p, nel, weights, sigma, maxocc)
+      CALL dense_fermi_kpoint(occ_m, mu_m, kTS, eps_m, nel, weights, sigma, maxocc)
+      gauge_err = 0.0_dp
+      DO i = 1, n
+         projected_density_derivative = 2.0_dp*wk*projector_weight* &
+                                        (occ_p(i, 1) - occ_m(i, 1))/(2.0_dp*fd_step)
+         gauge_err = MAX(gauge_err, ABS(qs_scf_kp_canonical_projector_density_response( &
+                                        projected_density_derivative, canonical_curv(i))))
+      END DO
+      inactive_response = qs_scf_kp_canonical_projector_density_response(1.0_dp, 0.0_dp)
+
+      IF (err > tol .OR. gauge_err > tol .OR. ABS(inactive_response) > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with response/gauge/inactive", err, gauge_err, inactive_response
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with response/gauge/inactive", err, gauge_err, inactive_response
+      END IF
+
+   END SUBROUTINE check_canonical_projector_density_response_fd
 
 ! **************************************************************************************************
 !> \brief Check that a pure similarity rotation has no canonical band-energy response although

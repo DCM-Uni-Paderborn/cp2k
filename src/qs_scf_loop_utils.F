@@ -294,6 +294,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_fermi_guard_transition, &
              qs_scf_kp_fixed_n_frozen_energy_gradient, &
              qs_scf_kp_fixed_n_response_mu_shift, &
+             qs_scf_kp_canonical_projector_density_response, &
              qs_scf_kp_full_all_spin_normalization, &
              qs_scf_kp_orbital_schur_correction, &
              qs_scf_kp_occ_metric_continuation, &
@@ -371,6 +372,29 @@ CONTAINS
          mu_shift = weighted_energy_response/response_denominator
 
    END FUNCTION qs_scf_kp_fixed_n_response_mu_shift
+
+! **************************************************************************************************
+!> \brief canonical band-energy response represented by a covariant density derivative
+!>
+!>        The density derivative and occupation curvature must refer to the same canonical band.
+!>        In particular, a canonical projector derivative must not be divided by the curvature of
+!>        the equally numbered REF orbital: those labels differ after a finite REF rotation and the
+!>        latter curvature can vanish at an otherwise active Fermi-surface mode.
+!> \param projected_density_derivative Tr[P_i dP], including spin and k-point weights
+!> \param canonical_occ_curv positive canonical -df_i/de_i curvature, including k-point weight
+!> \return canonical auxiliary-energy response; zero for a thermally inactive band
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_canonical_projector_density_response( &
+      projected_density_derivative, canonical_occ_curv) RESULT(response)
+      REAL(KIND=dp), INTENT(IN)                          :: projected_density_derivative, &
+                                                            canonical_occ_curv
+      REAL(KIND=dp)                                      :: response
+
+      response = 0.0_dp
+      IF (canonical_occ_curv > EPSILON(canonical_occ_curv)) &
+         response = 0.5_dp*projected_density_derivative/canonical_occ_curv
+
+   END FUNCTION qs_scf_kp_canonical_projector_density_response
 
 ! **************************************************************************************************
 !> \brief Fixed-N auxiliary-energy gradient for a Hamiltonian frozen at a line-search start.
@@ -39495,14 +39519,20 @@ CONTAINS
                      density_plateau_column(ie) = density_projector_column(ie)
                      density_full_column(ie) = 0.5_dp*REAL(docc_plateau(ie, ie), KIND=dp)/ &
                                                occ_curv_channel(ie)
-                     IF (compute_density_full_audit) THEN
-                        CALL dense_history_safe_occ_projector_basis(projector_evec_base, projector_weight, ie, &
-                                                                    occ_basis)
-                        density_basis_response = &
-                           0.5_dp*REAL(SUM(CONJG(occ_basis(:, :))*docc_plateau(:, :)), KIND=dp)/ &
-                           occ_curv_channel(ie)
-                        density_basis_column(ie) = density_basis_response
-                     END IF
+                  END IF
+                  IF (compute_density_full_audit .AND. &
+                      canonical_occ_curv_channel(ie) > EPSILON(canonical_occ_curv_channel(ie))) THEN
+                     ! docc_plateau is a canonical covariant dP.  Project it
+                     ! on the matching canonical band and divide by that
+                     ! band's curvature; using a REF-labelled curvature here
+                     ! creates an unbounded response after a subspace refresh.
+                     CALL dense_history_safe_occ_projector_basis(projector_evec_base, 1.0_dp, ie, &
+                                                                 occ_basis)
+                     density_basis_response = &
+                        qs_scf_kp_canonical_projector_density_response( &
+                        REAL(SUM(CONJG(occ_basis(:, :))*docc_plateau(:, :)), KIND=dp), &
+                        canonical_occ_curv_channel(ie))
+                     density_basis_column(ie) = density_basis_response
                   END IF
                END DO
                density_plateau_centered_column(:) = density_plateau_column(:)
