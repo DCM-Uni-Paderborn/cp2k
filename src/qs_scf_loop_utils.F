@@ -1614,12 +1614,17 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_canonical_density_multimode_blend
 
 ! **************************************************************************************************
-!> \brief Fit two accepted self-consistent response secants in physical density modes.
+!> \brief Fit accepted self-consistent response secants in physical density modes.
 !>
 !>        Rotation and response gauge components are removed before fitting one symmetric
 !>        two-secant Hessian in the canonical fixed-N density tangent span.  The compatible
 !>        signed fit retains both positive and negative physical response modes without a
-!>        least-change completion in the unconstrained rotation space.
+!>        least-change completion in the unconstrained rotation space.  If both accepted
+!>        steps resolve only one physical direction, retain only the scalar curvature
+!>        projected onto that direction.  A transverse target determines a cross
+!>        coupling but not the companion orthogonal curvature needed to close its
+!>        indefinite block, so it remains a reported residual and the orthogonal
+!>        density curvature stays unsupported.
 !> \param tangent_modes physical channel-resolved density tangents
 !> \param response_steps two accepted rotation steps
 !> \param response_targets measured closure-gradient changes for those steps
@@ -1648,12 +1653,15 @@ CONTAINS
 
       INTEGER                                            :: active_modes, i, imode, j, jmode, nmode, &
                                                             nrot
-      LOGICAL                                            :: fit_ready
+      LOGICAL                                            :: fit_ready, rank_one_fit
       REAL(KIND=dp) :: correction_norm, curvature_floor, initial_norm, mode_curvature, mode_norm, &
          projected_target_norm, residual_norm, response_scale, step_norm_sq, updated_residual_norm
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues, mode
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues, mode, sample_coeff, &
+                                                            step_eigenvalues, supported_step, &
+                                                            supported_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: basis, projected_residual, projected_steps, &
-         projected_targets, reduced_eigenvectors, reduced_response, response_modes, zero_response
+         projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
+         step_eigenvectors, zero_response
 
       nrot = SIZE(tangent_modes, 1)
       nmode = SIZE(tangent_modes, 2)
@@ -1703,6 +1711,7 @@ CONTAINS
       projected_targets(:, :) = MATMUL(TRANSPOSE(basis(:, 1:active_modes)), response_targets)
       zero_response(:, :) = 0.0_dp
       fit_ready = .FALSE.
+      rank_one_fit = .FALSE.
       correction_norm = 0.0_dp
       residual_norm = 0.0_dp
       updated_residual_norm = 0.0_dp
@@ -1720,6 +1729,33 @@ CONTAINS
             zero_response, projected_steps, projected_targets, 1.0_dp, reduced_response, &
             fit_ready, independence, compatibility_norm, correction_norm, residual_norm, &
             updated_residual_norm)
+         IF (.NOT. fit_ready) THEN
+            ALLOCATE (sample_coeff(SIZE(projected_steps, 2)), &
+                      step_eigenvalues(active_modes), step_eigenvectors(active_modes, active_modes), &
+                      supported_step(active_modes), supported_target(active_modes))
+            step_eigenvectors(:, :) = MATMUL(projected_steps, TRANSPOSE(projected_steps))
+            CALL diamat_all(step_eigenvectors, step_eigenvalues)
+            step_norm_sq = MAX(0.0_dp, step_eigenvalues(active_modes))
+            IF (step_norm_sq > EPSILON(step_norm_sq)) THEN
+               supported_step(:) = step_eigenvectors(:, active_modes)
+               sample_coeff(:) = MATMUL(TRANSPOSE(projected_steps), supported_step)
+               supported_target(:) = MATMUL(projected_targets, sample_coeff)/step_norm_sq
+               mode_curvature = DOT_PRODUCT(supported_step, supported_target)
+               DO j = 1, active_modes
+                  DO i = 1, active_modes
+                     reduced_response(i, j) = mode_curvature*supported_step(i)*supported_step(j)
+                  END DO
+               END DO
+               correction_norm = ABS(mode_curvature)
+               fit_ready = mode_curvature == mode_curvature .AND. &
+                           ALL(reduced_response == reduced_response)
+               rank_one_fit = fit_ready
+               independence = step_norm_sq/ &
+                              MAX(SUM(MAX(0.0_dp, step_eigenvalues)), EPSILON(1.0_dp))
+            END IF
+            DEALLOCATE (sample_coeff, step_eigenvalues, step_eigenvectors, supported_step, &
+                        supported_target)
+         END IF
       END IF
       IF (.NOT. fit_ready) THEN
          unsupported_modes = nmode
@@ -1734,6 +1770,7 @@ CONTAINS
       projected_target_norm = SQRT(MAX(0.0_dp, SUM(projected_targets**2)))
       residual_ratio = SQRT(MAX(0.0_dp, SUM(projected_residual**2)))/ &
                        MAX(projected_target_norm, EPSILON(1.0_dp))
+      IF (rank_one_fit) compatibility_norm = residual_ratio
 
       reduced_response(:, :) = 0.5_dp*(reduced_response + TRANSPOSE(reduced_response))
       reduced_eigenvectors(:, :) = reduced_response(:, :)

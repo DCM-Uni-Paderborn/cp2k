@@ -6902,22 +6902,21 @@ CONTAINS
          incompatible_negative_modes, incompatible_positive_modes, incompatible_unsupported_modes, &
          negative_modes, positive_modes, rank_deficient_negative_modes, &
          rank_deficient_positive_modes, rank_deficient_unsupported_modes, scaled_negative_modes, &
-         scaled_positive_modes, scaled_unsupported_modes, unsupported_modes
+         scaled_positive_modes, scaled_unsupported_modes, transverse_negative_modes, &
+         transverse_positive_modes, transverse_unsupported_modes, unsupported_modes
       LOGICAL                                            :: incompatible_ready, &
                                                             rank_deficient_ready, ready, &
-                                                            scaled_ready
+                                                            scaled_ready, transverse_ready
       REAL(KIND=dp) :: compatibility, error, incompatible_compatibility, &
          incompatible_independence, incompatible_residual_ratio, independence, &
          rank_deficient_compatibility, rank_deficient_independence, rank_deficient_residual_ratio, &
-         residual_ratio, scaled_compatibility, scaled_independence, scaled_residual_ratio
-      REAL(KIND=dp), DIMENSION(nrot, 2)                  :: incompatible_targets, &
-                                                            rank_deficient_steps, response_steps, &
-                                                            response_targets
+         residual_ratio, scaled_compatibility, scaled_independence, scaled_residual_ratio, &
+         transverse_compatibility, transverse_independence, transverse_residual_ratio
+      REAL(KIND=dp), DIMENSION(nrot, 2) :: incompatible_targets, rank_deficient_steps, &
+         rank_deficient_targets, response_steps, response_targets, transverse_targets
       REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: correction, expected, &
-                                                            incompatible_correction, &
-                                                            rank_deficient_correction, &
-                                                            scaled_correction
+      REAL(KIND=dp), DIMENSION(nrot, nrot) :: correction, expected, incompatible_correction, &
+         rank_deficient_correction, scaled_correction, transverse_correction
 
       tangent_modes(:, :) = 0.0_dp
       tangent_modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
@@ -6967,18 +6966,45 @@ CONTAINS
           scaled_negative_modes /= negative_modes .OR. &
           scaled_unsupported_modes /= unsupported_modes) error = HUGE(1.0_dp)
 
-      ! Dependent accepted steps do not determine a two-dimensional physical Hessian.
+      ! Dependent accepted steps still determine one physical response direction.
       rank_deficient_steps(:, :) = response_steps(:, :)
       rank_deficient_steps(1, 2) = 2.0_dp*response_steps(1, 1)
       rank_deficient_steps(3, 2) = 2.0_dp*response_steps(3, 1)
+      rank_deficient_targets(:, :) = 0.0_dp
+      rank_deficient_targets(1, :) = 3.0_dp*rank_deficient_steps(1, :)
+      rank_deficient_targets(3, :) = 3.0_dp*rank_deficient_steps(3, :)
       CALL qs_scf_kp_validated_density_response( &
-         tangent_modes, rank_deficient_steps, response_targets, rank_deficient_correction, &
+         tangent_modes, rank_deficient_steps, rank_deficient_targets, rank_deficient_correction, &
          rank_deficient_ready, rank_deficient_positive_modes, rank_deficient_negative_modes, &
          rank_deficient_unsupported_modes, &
          rank_deficient_independence, rank_deficient_compatibility, rank_deficient_residual_ratio)
-      IF (rank_deficient_ready .OR. MAXVAL(ABS(rank_deficient_correction)) > tol .OR. &
-          rank_deficient_positive_modes /= 0 .OR. rank_deficient_negative_modes /= 0 .OR. &
-          rank_deficient_unsupported_modes /= nmode) &
+      IF (.NOT. rank_deficient_ready .OR. &
+          MAXVAL(ABS(MATMUL(rank_deficient_correction, rank_deficient_steps(:, 1)) - &
+                     rank_deficient_targets(:, 1))) > tol .OR. &
+          MAXVAL(ABS(rank_deficient_correction - TRANSPOSE(rank_deficient_correction))) > tol .OR. &
+          rank_deficient_positive_modes /= 1 .OR. rank_deficient_negative_modes /= 0 .OR. &
+          rank_deficient_unsupported_modes /= 2 .OR. &
+          ABS(rank_deficient_independence - 1.0_dp) > tol .OR. &
+          rank_deficient_compatibility > tol .OR. rank_deficient_residual_ratio > tol) &
+         error = HUGE(1.0_dp)
+
+      ! A transverse target is not promoted into an unclosed indefinite cross block.
+      transverse_targets(:, :) = rank_deficient_targets(:, :)
+      transverse_targets(1, :) = transverse_targets(1, :) - &
+                                 rank_deficient_steps(3, :)
+      transverse_targets(3, :) = transverse_targets(3, :) + &
+                                 rank_deficient_steps(1, :)
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, rank_deficient_steps, transverse_targets, transverse_correction, &
+         transverse_ready, transverse_positive_modes, transverse_negative_modes, &
+         transverse_unsupported_modes, transverse_independence, transverse_compatibility, &
+         transverse_residual_ratio)
+      IF (.NOT. transverse_ready .OR. &
+          MAXVAL(ABS(transverse_correction - rank_deficient_correction)) > tol .OR. &
+          transverse_positive_modes /= 1 .OR. transverse_negative_modes /= 0 .OR. &
+          transverse_unsupported_modes /= 2 .OR. &
+          ABS(transverse_independence - 1.0_dp) > tol .OR. &
+          transverse_compatibility <= tol .OR. transverse_residual_ratio <= tol) &
          error = HUGE(1.0_dp)
 
       ! Incompatible noisy secants remain finite and expose their symmetry correction.
