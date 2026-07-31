@@ -11,6 +11,7 @@
 "N2_gfn2_ot.inp"                         = [{matcher="E_total", tol=1.0E-8, ref=-5.7289226128}]
 "N2_gfn2_ot_smear.inp"                   = [{matcher="E_total", tol=1.0E-9, ref=-5.72892261280201},
                                              {matcher="Mermin_free_energy", tol=1.0E-9, ref=-5.72892261280201},
+                                             {matcher="Variational_smearing_free_energy", tol=1.0E-9, ref=-5.72892261280201},
                                              {matcher="OT_SCF_convergence", tol=5.0E-1, ref=6.3E-9},
                                              {matcher="NO_TEXT", text="Smearing includes the first MO"},
                                              {matcher="NO_TEXT", text="Smearing includes the last MO"},
