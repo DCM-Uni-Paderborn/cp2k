@@ -315,6 +315,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_model_ready, &
              qs_scf_kp_energy_closure_preferred, &
              qs_scf_kp_energy_closure_ready, &
+             qs_scf_kp_energy_closure_tail_ready, &
              qs_scf_kp_energy_curvature_floor, &
              qs_scf_kp_energy_relative_metric_ready, &
              qs_scf_kp_exit_residual, &
@@ -761,23 +762,67 @@ CONTAINS
    END FUNCTION qs_scf_kp_energy_relative_metric_ready
 
 ! **************************************************************************************************
-!> \brief Select the fixed-N energy closure only when density stationarity alone blocks convergence.
+!> \brief Require a complete, calibrated physical residual before blockwise energy closure.
+!> \param residual_delta current global OT residual
+!> \param physical_delta_norm complete fixed-N energy/rotation RMS
+!> \param density_delta canonical-density stationarity residual
+!> \param accepted_samples accepted Mermin calibration samples
+!> \return whether the current MO-space state is an asymptotic physical tail
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_energy_closure_tail_ready( &
+      residual_delta, physical_delta_norm, density_delta, accepted_samples) RESULT(ready)
+      REAL(KIND=dp), INTENT(IN)                          :: residual_delta, physical_delta_norm, &
+                                                            density_delta
+      INTEGER, INTENT(IN)                                :: accepted_samples
+      LOGICAL                                            :: ready
+
+      ready = residual_delta >= 0.0_dp .AND. &
+              residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+              physical_delta_norm >= 0.0_dp .AND. &
+              physical_delta_norm <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+              density_delta >= 0.0_dp .AND. &
+              density_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+              accepted_samples >= ot_kp_schur_calibration_min_samples
+
+   END FUNCTION qs_scf_kp_energy_closure_tail_ready
+
+! **************************************************************************************************
+!> \brief Select a fixed-N energy closure when the auxiliary-energy block limits density stationarity.
 !> \param new_search_point whether a fresh line-search direction can be constructed
 !> \param density_ready whether the complete canonical-density audit is available
-!> \param physical_delta projected fixed-N Mermin residual
+!> \param physical_delta current global OT residual
 !> \param density_delta canonical-density stationarity residual
 !> \param eps_scf requested SCF accuracy
+!> \param energy_residual fixed-N auxiliary-energy gradient norm squared
+!> \param rotation_residual physical rotation-gradient norm squared
+!> \param gauge_residual gauge-like rotation-gradient norm squared
+!> \param tail_ready whether the current MO space has mature accepted tail history
 !> \return whether an energy-only fixed-N closure candidate is required
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_energy_closure_ready(new_search_point, density_ready, physical_delta, &
-                                                density_delta, eps_scf) RESULT(ready)
+                                                density_delta, eps_scf, energy_residual, &
+                                                rotation_residual, gauge_residual, tail_ready) RESULT(ready)
       LOGICAL, INTENT(IN)                                :: new_search_point, density_ready
-      REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf
+      REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf, &
+                                                            energy_residual, rotation_residual, &
+                                                            gauge_residual
+      LOGICAL, INTENT(IN)                                :: tail_ready
       LOGICAL                                            :: ready
 
-      ready = new_search_point .AND. density_ready .AND. eps_scf > 0.0_dp .AND. &
-              physical_delta >= 0.0_dp .AND. physical_delta <= eps_scf .AND. &
-              density_delta > eps_scf
+      REAL(KIND=dp)                                      :: energy_signal, nonenergy_signal
+
+      ready = new_search_point .AND. density_ready .AND. tail_ready .AND. eps_scf > 0.0_dp .AND. &
+              physical_delta >= 0.0_dp .AND. density_delta > eps_scf
+      IF (.NOT. ready .OR. physical_delta <= eps_scf) RETURN
+
+      ! Above the converged-residual tail, an energy-only block step is admissible only when the
+      ! exact block it solves is the leading physical-gradient component and the independently
+      ! measured canonical-density defect is larger than the global OT defect.  The competing
+      ! coupled model and the ordinary Mermin line search still decide whether the step is accepted.
+      energy_signal = MAX(0.0_dp, energy_residual)
+      nonenergy_signal = MAX(0.0_dp, rotation_residual) + MAX(0.0_dp, gauge_residual)
+      ready = energy_signal > MAX(nonenergy_signal, EPSILON(energy_signal)) .AND. &
+              physical_delta <= density_delta
 
    END FUNCTION qs_scf_kp_energy_closure_ready
 
@@ -15193,40 +15238,41 @@ CONTAINS
          density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
          density_full_tail_probe_ready, density_pair_activation_ready
       LOGICAL :: density_pair_shape_ok, energy_closure_candidate_selected, &
-         energy_closure_competing_ready, exact_active_response_ready, exact_attempt_response, &
-         exact_density_basis_audit_ready, exact_density_basis_curvfloor_audit_ready, &
-         exact_density_basis_damped_audit_ready, exact_density_basis_filtered_audit_ready, &
-         exact_density_basis_selective_audit_ready, exact_density_direct_response_ready, &
-         exact_density_floor_audit_ready, exact_density_floor_safe_audit_ready, &
-         exact_density_full_audit_ready, exact_density_full_response_ready, &
-         exact_density_plateau_response_ready, exact_density_response_ready
-      LOGICAL :: exact_energy_model_ready, exact_physical_response_ready, failed, &
-         fermi_active_pair, inactive_gauge_projection_used, metric_attempt_current_bridge, &
-         metric_attempt_response, metric_attempt_selectable, metric_attempt_tail_bridge, &
-         multisecant_response_ready, multisecant_update_eligible, multisecant_update_ready, &
-         multisecant_update_used, new_search_point, physical_delta_group_ready, &
-         physical_delta_norm_ready, physical_delta_plateau_ready, physical_delta_raw_tail_ready, &
-         prediction_candidate_ready, prediction_candidate_selected, prediction_probe_selected, &
-         prediction_transport_ready
-      LOGICAL :: prediction_update_eligible, prediction_update_ready, prediction_update_used, &
-         projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, &
+         energy_closure_competing_ready, energy_closure_tail_ready, exact_active_response_ready, &
+         exact_attempt_response, exact_density_basis_audit_ready, &
+         exact_density_basis_curvfloor_audit_ready, exact_density_basis_damped_audit_ready, &
+         exact_density_basis_filtered_audit_ready, exact_density_basis_selective_audit_ready, &
+         exact_density_direct_response_ready, exact_density_floor_audit_ready, &
+         exact_density_floor_safe_audit_ready, exact_density_full_audit_ready, &
+         exact_density_full_response_ready, exact_density_plateau_response_ready
+      LOGICAL :: exact_density_response_ready, exact_energy_model_ready, &
+         exact_physical_response_ready, failed, fermi_active_pair, inactive_gauge_projection_used, &
+         metric_attempt_current_bridge, metric_attempt_response, metric_attempt_selectable, &
+         metric_attempt_tail_bridge, multisecant_response_ready, multisecant_update_eligible, &
+         multisecant_update_ready, multisecant_update_used, new_search_point, &
+         physical_delta_group_ready, physical_delta_norm_ready, physical_delta_plateau_ready, &
+         physical_delta_raw_tail_ready, prediction_candidate_ready, prediction_candidate_selected, &
+         prediction_probe_selected
+      LOGICAL :: prediction_transport_ready, prediction_update_eligible, prediction_update_ready, &
+         prediction_update_used, projector_density_full_audit_enabled, &
+         projector_density_full_history_enabled, projector_inactive_offdiag_candidate_ready, &
          projector_inactive_offdiag_tail_refresh_probe, &
          projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
          projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
          projector_physical_candidate_ready, projector_physical_candidate_selected, &
-         projector_physical_coupled_model_ready, projector_physical_direct_basis_tail_limited
-      LOGICAL :: projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
+         projector_physical_coupled_model_ready
+      LOGICAL :: projector_physical_direct_basis_tail_limited, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+         projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
          projector_physical_direct_density_candidate_selected, &
          projector_physical_direct_density_fshadow_ready, &
          projector_physical_direct_density_override_protected, &
          projector_physical_direct_density_quality_ready, &
          projector_physical_direct_density_residual_bad, &
-         projector_physical_direct_density_selected_probe_ready, &
-         projector_physical_direct_density_tail_probe_ready
-      LOGICAL :: projector_physical_direct_diagref_candidate_ready, &
+         projector_physical_direct_density_selected_probe_ready
+      LOGICAL :: projector_physical_direct_density_tail_probe_ready, &
+         projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_effective_response_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
          projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
@@ -15234,20 +15280,21 @@ CONTAINS
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
-         projector_physical_direct_spectral_probe_quality_ready, &
-         projector_physical_direct_spectral_probe_ready
-      LOGICAL :: projector_physical_direct_spectral_probe_selected, &
+         projector_physical_direct_spectral_probe_quality_ready
+      LOGICAL :: projector_physical_direct_spectral_probe_ready, &
+         projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
          projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
          projector_response_candidate_selected, reduced_secant_candidate_enabled, &
          reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
          reduced_secant_measured_response, reduced_secant_probe_selected, &
-         reduced_secant_replacement_eligible, reduced_secant_update_eligible
-      LOGICAL :: relative_energy_metric_ready, response_model_available, schur_active_subspace, &
-         solved, split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected, &
-         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
+         reduced_secant_replacement_eligible
+      LOGICAL :: reduced_secant_update_eligible, relative_energy_metric_ready, &
+         response_model_available, schur_active_subspace, solved, split_candidate_diagnostic, &
+         split_candidate_enabled, split_candidate_ready, split_candidate_selected, &
+         split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
+         vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
                                                             channel_density_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
@@ -16090,6 +16137,7 @@ CONTAINS
          new_search_point = .NOT. local_ot_env(1)%energy_only .AND. &
                             (local_ot_env(1)%line_search_count == 0 .OR. &
                              local_ot_env(1)%line_search_might_be_done)
+         energy_closure_tail_ready = .FALSE.
          IF (new_search_point) &
             local_ot_env(1)%schur_reduced_secant_model_groups = &
             local_ot_env(1)%schur_reduced_secant_model_groups + 1
@@ -18195,6 +18243,10 @@ CONTAINS
          IF (physical_delta_nvar > 0.0_dp) &
             physical_delta_norm = SQRT(MAX(0.0_dp, rot_grad_total_physical_norm)/ &
                                        physical_delta_nvar)
+         energy_closure_tail_ready = qs_scf_kp_energy_closure_tail_ready( &
+                                     residual_delta, physical_delta_norm, &
+                                     local_ot_env(1)%kpoint_density_stationarity_delta, &
+                                     local_ot_env(1)%mermin_ls_accepted_quality_samples)
          physical_delta_norm_limit = &
             ot_kp_schur_physical_norm_tail_factor*ot_kp_schur_physical_tail_eps_factor* &
             eps_scf_channel
@@ -24826,7 +24878,9 @@ CONTAINS
                                  local_ot_env(1)%kpoint_density_stationarity_ready, &
                                  residual_delta, &
                                  local_ot_env(1)%kpoint_density_stationarity_delta, &
-                                 eps_scf_channel), &
+                                 eps_scf_channel, rot_grad_energy_norm, &
+                                 rot_grad_physical_norm, rot_grad_gauge_norm, &
+                                 energy_closure_tail_ready), &
                                  density_full_direct_coupled_model_ready, &
                                  density_full_direct_model_calibrated_drop, &
                                  density_full_direct_response_weighted_trust_ratio, &
@@ -28460,23 +28514,28 @@ CONTAINS
                   closure_candidate_reference_residual_ratio, closure_response_residual_ratio
             END IF
 
-            ! Once the projected Mermin residual is converged, a remaining canonical-density
-            ! residual is an auxiliary-energy closure problem.  Solve that fixed-N block in its
-            ! own Hessian metric instead of shrinking it with the orbital Euclidean norm.  The
-            ! resulting direction still passes through the ordinary Mermin line search and the
-            ! accepted residual closure before it can alter the state.
+            ! A remaining canonical-density residual can be an auxiliary-energy closure problem
+            ! either after the complete Mermin residual has converged or while the fixed-N energy
+            ! gradient is the dominant physical block.  Solve that block in its own Hessian metric
+            ! instead of shrinking it with the orbital Euclidean norm.  The resulting direction
+            ! still passes through the ordinary Mermin line search and accepted residual closure.
             IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= high_print_level .AND. &
                 logger%para_env%is_source()) &
-               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),3(1X,ES16.8))') &
-               " OT Schur energy closure gate group ready new density_ready physical density eps:", &
+               WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,4(1X,L1),3(1X,ES16.8))') &
+               " OT Schur energy closure gate group ready new density_ready tail physical density eps:", &
                target_group, qs_scf_kp_energy_closure_ready( &
                new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, residual_delta, &
-               local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel), &
-               new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, residual_delta, &
+               local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel, &
+               rot_grad_energy_norm, rot_grad_physical_norm, rot_grad_gauge_norm, &
+               energy_closure_tail_ready), &
+               new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, &
+               energy_closure_tail_ready, residual_delta, &
                local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel
             IF (schur_attempt == 3 .AND. qs_scf_kp_energy_closure_ready( &
                 new_search_point, local_ot_env(1)%kpoint_density_stationarity_ready, residual_delta, &
-                local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel)) THEN
+                local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf_channel, &
+                rot_grad_energy_norm, rot_grad_physical_norm, rot_grad_gauge_norm, &
+                energy_closure_tail_ready)) THEN
                energy_closure_competing_ready = .NOT. attempt_failed
                energy_closure_reference_drop = dense_expected_drop
                energy_closure_gdot_energy = DOT_PRODUCT(grad_e, z_trial)

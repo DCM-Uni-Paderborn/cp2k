@@ -96,8 +96,9 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
         qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -5554,7 +5555,7 @@ CONTAINS
    END SUBROUTINE check_kpoint_response_corrected_step
 
 ! **************************************************************************************************
-!> \brief Check that the energy closure is restricted to a complete density-only convergence tail.
+!> \brief Check converged-tail and energy-dominant fixed-N closure eligibility.
 !> \param label ...
 !> \param nfail ...
 ! **************************************************************************************************
@@ -5564,16 +5565,48 @@ CONTAINS
 
       LOGICAL                                            :: failed
 
-      failed = .NOT. qs_scf_kp_energy_closure_ready(.TRUE., .TRUE., 8.0E-7_dp, &
-                                                    1.4E-6_dp, 1.0E-6_dp)
-      failed = failed .OR. qs_scf_kp_energy_closure_ready(.FALSE., .TRUE., 8.0E-7_dp, &
-                                                          1.4E-6_dp, 1.0E-6_dp)
-      failed = failed .OR. qs_scf_kp_energy_closure_ready(.TRUE., .FALSE., 8.0E-7_dp, &
-                                                          1.4E-6_dp, 1.0E-6_dp)
-      failed = failed .OR. qs_scf_kp_energy_closure_ready(.TRUE., .TRUE., 1.2E-6_dp, &
-                                                          1.4E-6_dp, 1.0E-6_dp)
-      failed = failed .OR. qs_scf_kp_energy_closure_ready(.TRUE., .TRUE., 8.0E-7_dp, &
-                                                          9.0E-7_dp, 1.0E-6_dp)
+      failed = .NOT. qs_scf_kp_energy_closure_tail_ready( &
+               3.46120986E-6_dp, 5.27499363E-5_dp, 2.40347087E-5_dp, 34)
+      ! A just-rebuilt 4->8 MO space has a tiny REF gradient but an immature density.
+      failed = failed .OR. qs_scf_kp_energy_closure_tail_ready( &
+               0.0_dp, 1.02202765E-8_dp, 8.95601311E-4_dp, 8)
+      ! The later 8->16 rebuild is also rejected by its complete physical residual.
+      failed = failed .OR. qs_scf_kp_energy_closure_tail_ready( &
+               1.0E-6_dp, 7.55335078E-4_dp, 1.55565180E-3_dp, 7)
+      failed = failed .OR. qs_scf_kp_energy_closure_tail_ready( &
+               3.46120986E-6_dp, 5.27499363E-5_dp, 2.40347087E-5_dp, 3)
+      failed = failed .OR. qs_scf_kp_energy_closure_tail_ready( &
+               1.1E-4_dp, 5.27499363E-5_dp, 2.40347087E-5_dp, 34)
+      ! The legacy converged-residual path remains independent of the block split.
+      failed = failed .OR. .NOT. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 8.0E-7_dp, 1.4E-6_dp, 1.0E-6_dp, &
+               1.0E-4_dp, 2.0E-4_dp, 3.0E-4_dp, .TRUE.)
+      ! Na-q9-like tail: the exact energy block dominates and density stationarity is less complete.
+      failed = failed .OR. .NOT. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 3.46120986E-6_dp, 2.40347087E-5_dp, 1.0E-7_dp, &
+               5.95793260E-6_dp, 1.60907556E-7_dp, 1.24843188E-7_dp, .TRUE.)
+      ! A just-rebuilt AUTO space has no mature tail model even if its reset residual is zero.
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 0.0_dp, 7.54097284E-4_dp, 1.0E-7_dp, &
+               3.77525523E-3_dp, 2.0E-4_dp, 1.0E-4_dp, .FALSE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .FALSE., .TRUE., 8.0E-7_dp, 1.4E-6_dp, 1.0E-6_dp, &
+               1.0E-4_dp, 2.0E-4_dp, 3.0E-4_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .FALSE., 8.0E-7_dp, 1.4E-6_dp, 1.0E-6_dp, &
+               1.0E-4_dp, 2.0E-4_dp, 3.0E-4_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 2.0E-5_dp, 1.4E-6_dp, 1.0E-6_dp, &
+               8.0E-4_dp, 1.0E-4_dp, 1.0E-4_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 3.0E-6_dp, 1.4E-5_dp, 1.0E-6_dp, &
+               2.0E-4_dp, 3.0E-4_dp, 1.0E-4_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 3.0E-6_dp, 1.4E-5_dp, 1.0E-6_dp, &
+               2.0E-4_dp, 1.0E-4_dp, 3.0E-4_dp, .TRUE.)
+      failed = failed .OR. qs_scf_kp_energy_closure_ready( &
+               .TRUE., .TRUE., 8.0E-7_dp, 9.0E-7_dp, 1.0E-6_dp, &
+               1.0E-4_dp, 2.0E-4_dp, 3.0E-4_dp, .TRUE.)
 
       IF (failed) THEN
          nfail = nfail + 1
