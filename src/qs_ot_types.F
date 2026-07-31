@@ -412,6 +412,17 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_closure_response_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_closure_response_density_quality = 0.0_dp
       REAL(KIND=dp) :: schur_closure_response_density_quality_ema = 0.0_dp
+      LOGICAL :: schur_closure_shadow_pending = .FALSE.
+      INTEGER :: schur_closure_shadow_quality_samples = 0
+      REAL(KIND=dp) :: schur_closure_shadow_quadratic = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_advantage = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_advantage_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_residual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_shadow_measured_sum = 0.0_dp
       LOGICAL :: schur_residual_history_reset_pending = .FALSE.
       REAL(KIND=dp) :: schur_residual_history_quality = 1.0_dp
       INTEGER :: schur_step_gauge_quality_samples = 0
@@ -1242,6 +1253,17 @@ CONTAINS
       qs_ot_env%schur_closure_response_quality_ema = 0.0_dp
       qs_ot_env%schur_closure_response_density_quality = 0.0_dp
       qs_ot_env%schur_closure_response_density_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_pending = .FALSE.
+      qs_ot_env%schur_closure_shadow_quality_samples = 0
+      qs_ot_env%schur_closure_shadow_quadratic = 0.0_dp
+      qs_ot_env%schur_closure_shadow_quality = 0.0_dp
+      qs_ot_env%schur_closure_shadow_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_advantage = 0.0_dp
+      qs_ot_env%schur_closure_shadow_advantage_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_residual_quality = 0.0_dp
+      qs_ot_env%schur_closure_shadow_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_drop_sum = 0.0_dp
+      qs_ot_env%schur_closure_shadow_measured_sum = 0.0_dp
       qs_ot_env%schur_residual_history_reset_pending = .FALSE.
       qs_ot_env%schur_residual_history_quality = 1.0_dp
       qs_ot_env%schur_step_gauge_quality_samples = 0
@@ -1809,6 +1831,17 @@ CONTAINS
       qs_ot_env%schur_closure_response_quality_ema = 0.0_dp
       qs_ot_env%schur_closure_response_density_quality = 0.0_dp
       qs_ot_env%schur_closure_response_density_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_pending = .FALSE.
+      qs_ot_env%schur_closure_shadow_quality_samples = 0
+      qs_ot_env%schur_closure_shadow_quadratic = 0.0_dp
+      qs_ot_env%schur_closure_shadow_quality = 0.0_dp
+      qs_ot_env%schur_closure_shadow_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_advantage = 0.0_dp
+      qs_ot_env%schur_closure_shadow_advantage_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_residual_quality = 0.0_dp
+      qs_ot_env%schur_closure_shadow_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_shadow_drop_sum = 0.0_dp
+      qs_ot_env%schur_closure_shadow_measured_sum = 0.0_dp
 
       qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
       qs_ot_env%schur_constrained_quality = 0.0_dp

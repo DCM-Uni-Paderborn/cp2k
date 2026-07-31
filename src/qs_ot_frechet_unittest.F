@@ -108,7 +108,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
         qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
         qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -276,6 +277,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_secant_prediction("k-point OT reduced secant prediction", &
                                                5.0E-13_dp, nfail)
+   CALL check_kpoint_validated_density_response("k-point OT physical density response subspace", &
+                                                5.0E-13_dp, nfail)
    CALL check_kpoint_reduced_cross_response("k-point OT reduced cross response", &
                                             5.0E-13_dp, nfail)
    CALL check_kpoint_coupled_prediction_gate("k-point OT coupled prediction gate", nfail)
@@ -6881,6 +6884,148 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_reduced_secant_prediction
+
+! **************************************************************************************************
+!> \brief Check a signed two-secant closure response in the physical density-mode span.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_validated_density_response(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: nmode = 3, nrot = 5
+
+      INTEGER :: base_negative_modes, base_positive_modes, base_unsupported_modes, &
+         incompatible_negative_modes, incompatible_positive_modes, incompatible_unsupported_modes, &
+         negative_modes, positive_modes, rank_deficient_negative_modes, &
+         rank_deficient_positive_modes, rank_deficient_unsupported_modes, scaled_negative_modes, &
+         scaled_positive_modes, scaled_unsupported_modes, unsupported_modes
+      LOGICAL                                            :: incompatible_ready, &
+                                                            rank_deficient_ready, ready, &
+                                                            scaled_ready
+      REAL(KIND=dp) :: compatibility, error, incompatible_compatibility, &
+         incompatible_independence, incompatible_residual_ratio, independence, &
+         rank_deficient_compatibility, rank_deficient_independence, rank_deficient_residual_ratio, &
+         residual_ratio, scaled_compatibility, scaled_independence, scaled_residual_ratio
+      REAL(KIND=dp), DIMENSION(nrot, 2)                  :: incompatible_targets, &
+                                                            rank_deficient_steps, response_steps, &
+                                                            response_targets
+      REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: correction, expected, &
+                                                            incompatible_correction, &
+                                                            rank_deficient_correction, &
+                                                            scaled_correction
+
+      tangent_modes(:, :) = 0.0_dp
+      tangent_modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      tangent_modes(:, 2) = [0.0_dp, 0.0_dp, 3.0_dp, 0.0_dp, 0.0_dp]
+      tangent_modes(:, 3) = [2.0_dp, 1.0E-12_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      response_steps(:, :) = 0.0_dp
+      response_steps(:, 1) = [1.0_dp, 40.0_dp, 0.5_dp, -30.0_dp, 7.0_dp]
+      response_steps(:, 2) = [-0.25_dp, -20.0_dp, 1.5_dp, 50.0_dp, -3.0_dp]
+      response_targets(:, :) = 0.0_dp
+      response_targets(1, :) = 3.0_dp*response_steps(1, :) + response_steps(3, :)
+      response_targets(3, :) = response_steps(1, :) - 2.0_dp*response_steps(3, :)
+      ! Large gauge response outside the density tangent span must not enter the fit.
+      response_targets(2, :) = [300.0_dp, -700.0_dp]
+      response_targets(4, :) = [-500.0_dp, 900.0_dp]
+      response_targets(5, :) = [110.0_dp, -130.0_dp]
+
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, response_steps, response_targets, correction, ready, positive_modes, &
+         negative_modes, unsupported_modes, independence, compatibility, residual_ratio)
+      base_positive_modes = positive_modes
+      base_negative_modes = negative_modes
+      base_unsupported_modes = unsupported_modes
+      expected(:, :) = 0.0_dp
+      expected(1, 1) = 3.0_dp
+      expected(1, 3) = 1.0_dp
+      expected(3, 1) = 1.0_dp
+      expected(3, 3) = -2.0_dp
+      error = MAXVAL(ABS(correction - expected))
+      error = MAX(error, compatibility, residual_ratio)
+      IF (.NOT. ready .OR. positive_modes /= 1 .OR. negative_modes /= 1 .OR. &
+          unsupported_modes /= 1 .OR. independence <= 0.0_dp) error = HUGE(1.0_dp)
+
+      ! Scaling and permutation of the supplied channel tangents must leave the response invariant.
+      scaled_tangent_modes(:, :) = 0.0_dp
+      scaled_tangent_modes(:, 1) = -7.0_dp*tangent_modes(:, 2)
+      scaled_tangent_modes(:, 2) = 0.25_dp*tangent_modes(:, 1)
+      scaled_tangent_modes(:, 3) = scaled_tangent_modes(:, 2) + &
+                                   [0.0_dp, 1.0E-13_dp, 0.0_dp, 0.0_dp, 0.0_dp]
+      CALL qs_scf_kp_validated_density_response( &
+         scaled_tangent_modes, response_steps, response_targets, scaled_correction, scaled_ready, &
+         scaled_positive_modes, scaled_negative_modes, scaled_unsupported_modes, &
+         scaled_independence, scaled_compatibility, scaled_residual_ratio)
+      error = MAX(error, MAXVAL(ABS(scaled_correction - expected)), &
+                  ABS(scaled_independence - independence), scaled_compatibility, &
+                  scaled_residual_ratio)
+      IF (.NOT. scaled_ready .OR. scaled_positive_modes /= positive_modes .OR. &
+          scaled_negative_modes /= negative_modes .OR. &
+          scaled_unsupported_modes /= unsupported_modes) error = HUGE(1.0_dp)
+
+      ! Dependent accepted steps do not determine a two-dimensional physical Hessian.
+      rank_deficient_steps(:, :) = response_steps(:, :)
+      rank_deficient_steps(1, 2) = 2.0_dp*response_steps(1, 1)
+      rank_deficient_steps(3, 2) = 2.0_dp*response_steps(3, 1)
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, rank_deficient_steps, response_targets, rank_deficient_correction, &
+         rank_deficient_ready, rank_deficient_positive_modes, rank_deficient_negative_modes, &
+         rank_deficient_unsupported_modes, &
+         rank_deficient_independence, rank_deficient_compatibility, rank_deficient_residual_ratio)
+      IF (rank_deficient_ready .OR. MAXVAL(ABS(rank_deficient_correction)) > tol .OR. &
+          rank_deficient_positive_modes /= 0 .OR. rank_deficient_negative_modes /= 0 .OR. &
+          rank_deficient_unsupported_modes /= nmode) &
+         error = HUGE(1.0_dp)
+
+      ! Incompatible noisy secants remain finite and expose their symmetry correction.
+      incompatible_targets(:, :) = response_targets(:, :)
+      incompatible_targets(1, 2) = incompatible_targets(1, 2) + 0.2_dp
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, response_steps, incompatible_targets, incompatible_correction, &
+         incompatible_ready, incompatible_positive_modes, incompatible_negative_modes, &
+         incompatible_unsupported_modes, incompatible_independence, incompatible_compatibility, &
+         incompatible_residual_ratio)
+      IF (.NOT. incompatible_ready .OR. incompatible_compatibility <= tol .OR. &
+          incompatible_residual_ratio <= tol .OR. &
+          MAXVAL(ABS(incompatible_correction - TRANSPOSE(incompatible_correction))) > tol .OR. &
+          MAXVAL(ABS(incompatible_correction(2:2, :))) > tol .OR. &
+          MAXVAL(ABS(incompatible_correction(4:5, :))) > tol .OR. &
+          incompatible_positive_modes /= 1 .OR. incompatible_negative_modes /= 1 .OR. &
+          incompatible_unsupported_modes /= 1) error = HUGE(1.0_dp)
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,L1,3(1X,I4),3(1X,ES16.8))') &
+            "  base ready/pos/neg/unsupported/independence/compatibility/residual", &
+            ready, base_positive_modes, base_negative_modes, base_unsupported_modes, independence, &
+            compatibility, residual_ratio
+         WRITE (*, '(A,1X,L1,3(1X,I4),3(1X,ES16.8))') &
+            "  scaled ready/pos/neg/unsupported/independence/compatibility/residual", &
+            scaled_ready, scaled_positive_modes, scaled_negative_modes, scaled_unsupported_modes, &
+            scaled_independence, scaled_compatibility, scaled_residual_ratio
+         WRITE (*, '(A,1X,L1,3(1X,I4),3(1X,ES16.8))') &
+            "  rank ready/pos/neg/unsupported/independence/compatibility/residual", &
+            rank_deficient_ready, rank_deficient_positive_modes, rank_deficient_negative_modes, &
+            rank_deficient_unsupported_modes, &
+            rank_deficient_independence, rank_deficient_compatibility, rank_deficient_residual_ratio
+         WRITE (*, '(A,1X,A,1X,ES16.8,3(1X,I4),3(1X,ES16.8))') TRIM(label), &
+            "FAILED with error/pos/neg/unsupported/independence/compatibility/residual", &
+            error, incompatible_positive_modes, incompatible_negative_modes, &
+            incompatible_unsupported_modes, incompatible_independence, incompatible_compatibility, &
+            incompatible_residual_ratio
+      ELSE
+         WRITE (*, '(A,1X,A,1X,ES16.8,3(1X,I4),3(1X,ES16.8))') TRIM(label), &
+            "OK with error/pos/neg/unsupported/independence/compatibility/residual", &
+            error, incompatible_positive_modes, incompatible_negative_modes, &
+            incompatible_unsupported_modes, incompatible_independence, incompatible_compatibility, &
+            incompatible_residual_ratio
+      END IF
+
+   END SUBROUTINE check_kpoint_validated_density_response
 
 ! **************************************************************************************************
 !> \brief check that the reduced symmetric response retains a component transverse to the step
