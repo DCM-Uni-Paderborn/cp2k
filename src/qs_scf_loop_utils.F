@@ -1617,16 +1617,17 @@ CONTAINS
 !> \brief Fit accepted self-consistent response secants in physical density modes.
 !>
 !>        Rotation and response gauge components are removed before fitting one symmetric
-!>        two-secant Hessian in the canonical fixed-N density tangent span.  The compatible
+!>        Hessian from the most independent pair in the canonical fixed-N density tangent
+!>        span.  Additional accepted secants remain in the residual audit.  The compatible
 !>        signed fit retains both positive and negative physical response modes without a
-!>        least-change completion in the unconstrained rotation space.  If both accepted
+!>        least-change completion in the unconstrained rotation space.  If the accepted
 !>        steps resolve only one physical direction, retain only the scalar curvature
-!>        projected onto that direction.  A transverse target determines a cross
-!>        coupling but not the companion orthogonal curvature needed to close its
-!>        indefinite block, so it remains a reported residual and the orthogonal
-!>        density curvature stays unsupported.
+!>        projected onto that direction.  A transverse target determines a cross coupling
+!>        but not the companion orthogonal curvature needed to close its indefinite block,
+!>        so it remains a reported residual and the orthogonal density curvature stays
+!>        unsupported.
 !> \param tangent_modes physical channel-resolved density tangents
-!> \param response_steps two accepted rotation steps
+!> \param response_steps accepted rotation steps
 !> \param response_targets measured closure-gradient changes for those steps
 !> \param response_correction validated low-rank response in rotation coordinates
 !> \param ready at least one physical response mode was retained
@@ -1651,22 +1652,26 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: independence, compatibility_norm, &
                                                             residual_ratio
 
-      INTEGER                                            :: active_modes, i, imode, j, jmode, nmode, &
-                                                            nrot
+      INTEGER                                            :: active_modes, best_i, best_j, i, imode, &
+                                                            isample, j, jmode, jsample, nmode, &
+                                                            nrot, nsample
       LOGICAL                                            :: fit_ready, rank_one_fit
-      REAL(KIND=dp) :: correction_norm, curvature_floor, initial_norm, mode_curvature, mode_norm, &
-         projected_target_norm, residual_norm, response_scale, step_norm_sq, updated_residual_norm
+      REAL(KIND=dp) :: best_independence, correction_norm, curvature_floor, initial_norm, &
+         mode_curvature, mode_norm, pair_independence, projected_target_norm, residual_norm, &
+         response_scale, step_cosine, step_dot, step_norm_i, step_norm_j, step_norm_sq, &
+         updated_residual_norm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues, mode, sample_coeff, &
                                                             step_eigenvalues, supported_step, &
                                                             supported_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: basis, projected_residual, projected_steps, &
          projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
-         step_eigenvectors, zero_response
+         selected_steps, selected_targets, step_eigenvectors, zero_response
 
       nrot = SIZE(tangent_modes, 1)
       nmode = SIZE(tangent_modes, 2)
-      CPASSERT(ALL(SHAPE(response_steps) == [nrot, 2]))
-      CPASSERT(ALL(SHAPE(response_targets) == [nrot, 2]))
+      nsample = SIZE(response_steps, 2)
+      CPASSERT(SIZE(response_steps, 1) == nrot)
+      CPASSERT(ALL(SHAPE(response_targets) == [nrot, nsample]))
       CPASSERT(ALL(SHAPE(response_correction) == [nrot, nrot]))
 
       response_correction(:, :) = 0.0_dp
@@ -1677,7 +1682,7 @@ CONTAINS
       independence = 0.0_dp
       compatibility_norm = 0.0_dp
       residual_ratio = 0.0_dp
-      IF (nrot <= 0 .OR. nmode <= 0) RETURN
+      IF (nrot <= 0 .OR. nmode <= 0 .OR. nsample < 2) RETURN
       IF (.NOT. ALL(response_steps == response_steps) .OR. &
           .NOT. ALL(response_targets == response_targets)) RETURN
 
@@ -1702,11 +1707,12 @@ CONTAINS
          RETURN
       END IF
 
-      ALLOCATE (eigenvalues(active_modes), projected_residual(active_modes, 2), &
-                projected_steps(active_modes, 2), projected_targets(active_modes, 2), &
+      ALLOCATE (eigenvalues(active_modes), projected_residual(active_modes, nsample), &
+                projected_steps(active_modes, nsample), projected_targets(active_modes, nsample), &
                 reduced_eigenvectors(active_modes, active_modes), &
                 reduced_response(active_modes, active_modes), &
-                response_modes(nrot, active_modes), zero_response(active_modes, active_modes))
+                response_modes(nrot, active_modes), selected_steps(active_modes, 2), &
+                selected_targets(active_modes, 2), zero_response(active_modes, active_modes))
       projected_steps(:, :) = MATMUL(TRANSPOSE(basis(:, 1:active_modes)), response_steps)
       projected_targets(:, :) = MATMUL(TRANSPOSE(basis(:, 1:active_modes)), response_targets)
       zero_response(:, :) = 0.0_dp
@@ -1725,8 +1731,46 @@ CONTAINS
             reduced_response(:, :) = 0.0_dp
          END IF
       ELSE
+         best_i = 0
+         best_j = 0
+         best_independence = -1.0_dp
+         DO jsample = 2, nsample
+            DO isample = 1, jsample - 1
+               step_norm_i = DOT_PRODUCT(projected_steps(:, isample), &
+                                         projected_steps(:, isample))
+               step_norm_j = DOT_PRODUCT(projected_steps(:, jsample), &
+                                         projected_steps(:, jsample))
+               IF (step_norm_i <= TINY(1.0_dp) .OR. step_norm_j <= TINY(1.0_dp)) CYCLE
+               step_dot = DOT_PRODUCT(projected_steps(:, isample), &
+                                      projected_steps(:, jsample))
+               step_cosine = MAX(-1.0_dp, MIN(1.0_dp, &
+                                              step_dot/(SQRT(step_norm_i)*SQRT(step_norm_j))))
+               pair_independence = MAX(0.0_dp, 1.0_dp - step_cosine*step_cosine)
+               IF (pair_independence > best_independence) THEN
+                  best_independence = pair_independence
+                  best_i = isample
+                  best_j = jsample
+               END IF
+            END DO
+         END DO
+         selected_steps(:, :) = 0.0_dp
+         selected_targets(:, :) = 0.0_dp
+         IF (best_i > 0) THEN
+            selected_steps(:, 1) = projected_steps(:, best_i)
+            selected_steps(:, 2) = projected_steps(:, best_j)
+            selected_targets(:, 1) = projected_targets(:, best_i)
+            selected_targets(:, 2) = projected_targets(:, best_j)
+            DO isample = 1, 2
+               step_norm_sq = DOT_PRODUCT(selected_steps(:, isample), &
+                                          selected_steps(:, isample))
+               IF (step_norm_sq <= TINY(1.0_dp)) EXIT
+               response_scale = SQRT(step_norm_sq)
+               selected_steps(:, isample) = selected_steps(:, isample)/response_scale
+               selected_targets(:, isample) = selected_targets(:, isample)/response_scale
+            END DO
+         END IF
          CALL qs_scf_kp_symmetric_multisecant_update( &
-            zero_response, projected_steps, projected_targets, 1.0_dp, reduced_response, &
+            zero_response, selected_steps, selected_targets, 1.0_dp, reduced_response, &
             fit_ready, independence, compatibility_norm, correction_norm, residual_norm, &
             updated_residual_norm)
          IF (.NOT. fit_ready) THEN
@@ -1761,7 +1805,7 @@ CONTAINS
          unsupported_modes = nmode
          DEALLOCATE (basis, eigenvalues, mode, projected_residual, projected_steps, &
                      projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
-                     zero_response)
+                     selected_steps, selected_targets, zero_response)
          RETURN
       END IF
 
@@ -1803,7 +1847,7 @@ CONTAINS
 
       DEALLOCATE (basis, eigenvalues, mode, projected_residual, projected_steps, &
                   projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
-                  zero_response)
+                  selected_steps, selected_targets, zero_response)
 
    END SUBROUTINE qs_scf_kp_validated_density_response
 
@@ -15521,8 +15565,8 @@ CONTAINS
                    response_physical_model(ne, nrot), &
                    response_prediction(ne, nrot), &
                    response_split(ne, nrot), &
-                   rot_hessian(nrot, nrot), closure_response_steps(nrot, 2), &
-                   closure_response_targets(nrot, 2), &
+                   rot_hessian(nrot, nrot), closure_response_steps(nrot, 3), &
+                   closure_response_targets(nrot, 3), &
                    rot_hessian_closure_response(nrot, nrot), &
                    rot_hessian_coupled(nrot, nrot), &
                    rot_hessian_multisecant(nrot, nrot), &
@@ -30931,9 +30975,9 @@ CONTAINS
 !> \param prediction_residual_ratio worst held-out residual ratio of the bidirectional prediction
 !> \param reduced_secant_shadow_ready whether the reduced coupled shadow passed its geometry gate
 !> \param reduced_secant_replacement_ready whether the shadow is the validated frozen-H replacement
-!> \param closure_response_steps two accepted rotation steps for the closure response
+!> \param closure_response_steps accepted rotation steps for the closure response
 !> \param closure_response_targets measured fixed-N closure response for those steps
-!> \param closure_response_pair_ready whether both accepted closure secants are available
+!> \param closure_response_pair_ready whether at least two accepted closure secants are available
 ! **************************************************************************************************
       SUBROUTINE audit_kpoint_ot_vector_secant_model(target_group, channel_nmo, &
                                                      channel_full_var_offset, e_offset, &
@@ -30982,15 +31026,15 @@ CONTAINS
                                                             global_spin, group, ie, ifull, imo, &
                                                             jmo, local_channel, nener, nmo, nrot, &
                                                             r, valid_i
-      LOGICAL :: closure_previous_valid, closure_secant_valid, coupled_multisecant_finite, &
-         coupled_multisecant_ready, coupled_prediction_finite, coupled_prediction_reverse_finite, &
-         coupled_schur_eligible, coupled_schur_finite, coupled_subspace_eligible, &
-         coupled_subspace_finite, frozen_candidate_eligible, frozen_endpoint_multisecant_finite, &
-         frozen_prediction_consistent, multisecant_finite, previous_frozen_reduced_valid, &
-         previous_valid, reduced_multisecant_eligible, reduced_multisecant_finite, &
-         reduced_prediction_consistent, reduced_prediction_finite, &
-         reduced_prediction_reverse_finite
-      LOGICAL :: rotation_multisecant_ready, update_finite, valid
+      LOGICAL :: closure_anchor_valid, closure_previous_valid, closure_secant_valid, &
+         coupled_multisecant_finite, coupled_multisecant_ready, coupled_prediction_finite, &
+         coupled_prediction_reverse_finite, coupled_schur_eligible, coupled_schur_finite, &
+         coupled_subspace_eligible, coupled_subspace_finite, frozen_candidate_eligible, &
+         frozen_endpoint_multisecant_finite, frozen_prediction_consistent, multisecant_finite, &
+         previous_frozen_reduced_valid, previous_valid, reduced_multisecant_eligible, &
+         reduced_multisecant_finite, reduced_prediction_consistent, reduced_prediction_finite
+      LOGICAL :: reduced_prediction_reverse_finite, rotation_multisecant_ready, update_finite, &
+         valid
       LOGICAL, DIMENSION(2)                              :: frozen_prediction_finite
       REAL(KIND=dp) :: alignment, base_hessian_norm, closure_model_alignment, &
          closure_reduced_curvature, closure_reduced_norm, component_cross_curvature, &
@@ -31057,17 +31101,19 @@ CONTAINS
          rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, total_model_alignment, &
          total_reduced_curvature, total_reduced_norm, total_reduced_residual_norm, &
          updated_rotation_residual_norm, y_norm, ynorm
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: closure_reduced_target, closure_secant_energy, &
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: anchor_closure_reduced_target, &
+         anchor_closure_secant_energy, anchor_closure_secant_rotation, anchor_step_energy, &
+         anchor_step_rotation, closure_reduced_target, closure_secant_energy, &
          closure_secant_rotation, frozen_reduced_target, frozen_secant_energy, &
          frozen_secant_rotation, model_energy, model_energy_base, model_energy_cross, &
          model_rotation, model_rotation_base, model_rotation_cross, &
          previous_closure_reduced_target, previous_closure_secant_energy, &
          previous_closure_secant_rotation, previous_frozen_reduced_target, &
-         previous_frozen_secant_energy, previous_frozen_secant_rotation, previous_secant_energy, &
-         previous_secant_rotation, previous_step_energy, previous_step_rotation
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: reduced_model, secant_energy, secant_rotation, &
-         step_energy, step_rotation, target_rotation, total_reduced_prediction, &
-         total_reduced_target
+         previous_frozen_secant_energy
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: previous_frozen_secant_rotation, &
+         previous_secant_energy, previous_secant_rotation, previous_step_energy, &
+         previous_step_rotation, reduced_model, secant_energy, secant_rotation, step_energy, &
+         step_rotation, target_rotation, total_reduced_prediction, total_reduced_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: coupled_energy_cross, coupled_energy_hessian, &
          coupled_prediction_current_energy_cross, coupled_prediction_current_energy_hessian, &
          coupled_prediction_current_rotation_hessian, coupled_prediction_energy_cross, &
@@ -31092,8 +31138,8 @@ CONTAINS
          CPASSERT(ALL(SHAPE(rotation_hessian_secant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(rotation_hessian_multisecant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(rotation_hessian_reduced_secant) == SHAPE(rotation_hessian)))
-         CPASSERT(ALL(SHAPE(closure_response_steps) == [nrot, 2]))
-         CPASSERT(ALL(SHAPE(closure_response_targets) == [nrot, 2]))
+         CPASSERT(ALL(SHAPE(closure_response_steps) == [nrot, 3]))
+         CPASSERT(ALL(SHAPE(closure_response_targets) == [nrot, 3]))
          CPASSERT(ALL(SHAPE(energy_hessian_multisecant) == SHAPE(energy_hessian)))
          CPASSERT(ALL(SHAPE(energy_cross_multisecant) == SHAPE(energy_cross)))
          CPASSERT(ALL(SHAPE(reduced_secant_modes) == [nrot, 2]))
@@ -31120,8 +31166,11 @@ CONTAINS
          reduced_secant_replacement_ready = .FALSE.
          closure_response_pair_ready = .FALSE.
          IF (nrot <= 0 .OR. nener <= 0) RETURN
-         ALLOCATE (step_rotation(nrot), secant_rotation(nrot), closure_secant_rotation(nrot), &
+         ALLOCATE (anchor_step_rotation(nrot), anchor_closure_secant_rotation(nrot), &
+                   anchor_closure_reduced_target(nrot), step_rotation(nrot), &
+                   secant_rotation(nrot), closure_secant_rotation(nrot), &
                    frozen_secant_rotation(nrot), model_rotation(nrot), &
+                   anchor_step_energy(nener), anchor_closure_secant_energy(nener), &
                    step_energy(nener), secant_energy(nener), closure_secant_energy(nener), &
                    frozen_secant_energy(nener), model_energy(nener), &
                    model_rotation_base(nrot), model_rotation_cross(nrot), &
@@ -31134,11 +31183,16 @@ CONTAINS
                    previous_frozen_reduced_target(nrot), &
                    total_reduced_target(nrot), frozen_reduced_target(nrot), &
                    closure_reduced_target(nrot), reduced_model(nrot), total_reduced_prediction(nrot))
+         anchor_step_rotation(:) = 0.0_dp
+         anchor_closure_secant_rotation(:) = 0.0_dp
+         anchor_closure_reduced_target(:) = 0.0_dp
          step_rotation(:) = 0.0_dp
          secant_rotation(:) = 0.0_dp
          closure_secant_rotation(:) = 0.0_dp
          frozen_secant_rotation(:) = 0.0_dp
          model_rotation(:) = 0.0_dp
+         anchor_step_energy(:) = 0.0_dp
+         anchor_closure_secant_energy(:) = 0.0_dp
          step_energy(:) = 0.0_dp
          secant_energy(:) = 0.0_dp
          closure_secant_energy(:) = 0.0_dp
@@ -31172,6 +31226,7 @@ CONTAINS
          previous_valid = .TRUE.
          closure_secant_valid = .TRUE.
          closure_previous_valid = .TRUE.
+         closure_anchor_valid = .TRUE.
          previous_frozen_reduced_valid = .TRUE.
          DO local_channel = 1, SIZE(local_ot_env)
             global_channel = first_channel + local_channel - 1
@@ -31206,6 +31261,14 @@ CONTAINS
                                      ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_closure_y_previous) .AND. &
                                      ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_closure_y_previous_im) .AND. &
                                      ASSOCIATED(local_ot_env(local_channel)%ener_mermin_closure_y_previous)
+            closure_anchor_valid = closure_anchor_valid .AND. &
+                                   local_ot_env(local_channel)%mermin_closure_secant_anchor_ready .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_anchor) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_s_anchor_im) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor_im) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%ener_mermin_s_anchor) .AND. &
+                                   ASSOCIATED(local_ot_env(local_channel)%ener_mermin_closure_y_anchor)
             previous_frozen_reduced_valid = previous_frozen_reduced_valid .AND. &
                                             local_ot_env(local_channel)%mermin_frozen_reduced_target_ready .AND. &
                                             ASSOCIATED(local_ot_env(local_channel)%rot_mat_mermin_frozen_reduced_y) .AND. &
@@ -31343,6 +31406,38 @@ CONTAINS
                   END SELECT
                END DO
             END IF
+            IF (closure_anchor_valid) THEN
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_s_anchor, dense_re)
+               CALL dbcsr_square_to_dense(local_ot_env(local_channel)%rot_mat_mermin_s_anchor_im, dense_im)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_re)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO r = 1, nrot
+                  IF (var_channel(r) /= global_channel) CYCLE
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     anchor_step_rotation(r) = dense_re(var_i(r), var_j(r))
+                  CASE (2)
+                     anchor_step_rotation(r) = dense_im(var_i(r), var_j(r))
+                  END SELECT
+               END DO
+               CALL dbcsr_square_to_dense( &
+                  local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor, dense_re)
+               CALL dbcsr_square_to_dense( &
+                  local_ot_env(local_channel)%rot_mat_mermin_closure_y_anchor_im, dense_im)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_re)
+               CALL local_ot_env(local_channel)%para_env%sum(dense_im)
+               DO r = 1, nrot
+                  IF (var_channel(r) /= global_channel) CYCLE
+                  SELECT CASE (var_kind(r))
+                  CASE (1)
+                     anchor_closure_secant_rotation(r) = &
+                        2.0_dp*dense_re(var_i(r), var_j(r))
+                  CASE (2)
+                     anchor_closure_secant_rotation(r) = &
+                        2.0_dp*dense_im(var_i(r), var_j(r))
+                  END SELECT
+               END DO
+            END IF
             IF (previous_frozen_reduced_valid) THEN
                CALL dbcsr_square_to_dense( &
                   local_ot_env(local_channel)%rot_mat_mermin_frozen_reduced_y, dense_re)
@@ -31375,6 +31470,11 @@ CONTAINS
                      previous_closure_secant_energy(ie) = &
                      local_ot_env(local_channel)%ener_mermin_closure_y_previous(imo)
                END IF
+               IF (closure_anchor_valid) THEN
+                  anchor_step_energy(ie) = local_ot_env(local_channel)%ener_mermin_s_anchor(imo)
+                  anchor_closure_secant_energy(ie) = &
+                     local_ot_env(local_channel)%ener_mermin_closure_y_anchor(imo)
+               END IF
             END DO
          END DO
 
@@ -31390,6 +31490,9 @@ CONTAINS
          valid_i = MERGE(1, 0, closure_previous_valid)
          IF (global_schur_replicated) CALL para_env_inter_kp%min(valid_i)
          closure_previous_valid = valid_i > 0 .AND. previous_valid
+         valid_i = MERGE(1, 0, closure_anchor_valid)
+         IF (global_schur_replicated) CALL para_env_inter_kp%min(valid_i)
+         closure_anchor_valid = valid_i > 0 .AND. closure_previous_valid
          valid_i = MERGE(1, 0, previous_frozen_reduced_valid)
          IF (global_schur_replicated) CALL para_env_inter_kp%min(valid_i)
          previous_frozen_reduced_valid = valid_i > 0 .AND. previous_valid
@@ -31402,9 +31505,12 @@ CONTAINS
                IF (group == target_group) &
                   local_ot_env(local_channel)%mermin_frozen_reduced_target_ready = .FALSE.
             END DO
-            DEALLOCATE (step_rotation, secant_rotation, closure_secant_rotation, &
+            DEALLOCATE (anchor_step_rotation, anchor_closure_secant_rotation, &
+                        anchor_closure_reduced_target, step_rotation, secant_rotation, &
+                        closure_secant_rotation, &
                         frozen_secant_rotation, model_rotation, step_energy, secant_energy, &
-                        closure_secant_energy, frozen_secant_energy, model_energy, model_rotation_base, &
+                        anchor_step_energy, anchor_closure_secant_energy, closure_secant_energy, &
+                        frozen_secant_energy, model_energy, model_rotation_base, &
                         model_rotation_cross, model_energy_base, model_energy_cross, previous_step_rotation, &
                         previous_secant_rotation, previous_step_energy, previous_secant_energy, &
                         previous_closure_secant_rotation, previous_frozen_secant_rotation, &
@@ -31439,6 +31545,12 @@ CONTAINS
                CALL para_env_inter_kp%sum(previous_full_secant_rotation_norm)
                IF (previous_frozen_reduced_valid) &
                   CALL para_env_inter_kp%sum(previous_frozen_reduced_target)
+            END IF
+            IF (closure_anchor_valid) THEN
+               CALL para_env_inter_kp%sum(anchor_step_rotation)
+               CALL para_env_inter_kp%sum(anchor_closure_secant_rotation)
+               CALL para_env_inter_kp%sum(anchor_step_energy)
+               CALL para_env_inter_kp%sum(anchor_closure_secant_energy)
             END IF
          END IF
          IF (closure_secant_valid) THEN
@@ -31487,6 +31599,8 @@ CONTAINS
                previous_secant_energy(ie) = 0.0_dp
                previous_closure_secant_energy(ie) = 0.0_dp
                previous_frozen_secant_energy(ie) = 0.0_dp
+               anchor_step_energy(ie) = 0.0_dp
+               anchor_closure_secant_energy(ie) = 0.0_dp
             END IF
          END DO
          IF (active_energy_count > 0) THEN
@@ -31529,6 +31643,17 @@ CONTAINS
                      previous_frozen_secant_energy = previous_frozen_secant_energy - energy_mean
                   END WHERE
                END IF
+            END IF
+            IF (closure_anchor_valid) THEN
+               energy_mean = SUM(anchor_step_energy)/REAL(active_energy_count, KIND=dp)
+               WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
+                  anchor_step_energy = anchor_step_energy - energy_mean
+               END WHERE
+               energy_mean = SUM(anchor_closure_secant_energy)/ &
+                             REAL(active_energy_count, KIND=dp)
+               WHERE (occ_curv + tether_curv > EPSILON(MAXVAL(occ_curv + tether_curv)))
+                  anchor_closure_secant_energy = anchor_closure_secant_energy - energy_mean
+               END WHERE
             END IF
          END IF
 
@@ -31592,6 +31717,13 @@ CONTAINS
             closure_response_steps(:, 2) = step_rotation
             closure_response_targets(:, 1) = previous_closure_reduced_target
             closure_response_targets(:, 2) = closure_reduced_target
+            IF (closure_anchor_valid) THEN
+               anchor_closure_reduced_target(:) = anchor_closure_secant_rotation + &
+                                                  MATMUL(TRANSPOSE(energy_response), &
+                                                         anchor_closure_secant_energy)
+               closure_response_steps(:, 3) = anchor_step_rotation
+               closure_response_targets(:, 3) = anchor_closure_reduced_target
+            END IF
             closure_response_pair_ready = ALL(closure_response_steps == closure_response_steps) .AND. &
                                           ALL(closure_response_targets == closure_response_targets)
             IF (.NOT. closure_response_pair_ready) THEN
@@ -32340,9 +32472,12 @@ CONTAINS
             reduced_multisecant_residual_norm, reduced_multisecant_updated_residual_norm, &
             reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio
 
-         DEALLOCATE (step_rotation, secant_rotation, closure_secant_rotation, &
+         DEALLOCATE (anchor_step_rotation, anchor_closure_secant_rotation, &
+                     anchor_closure_reduced_target, step_rotation, secant_rotation, &
+                     closure_secant_rotation, &
                      frozen_secant_rotation, model_rotation, step_energy, secant_energy, &
-                     closure_secant_energy, frozen_secant_energy, model_energy, &
+                     anchor_step_energy, anchor_closure_secant_energy, closure_secant_energy, &
+                     frozen_secant_energy, model_energy, &
                      model_rotation_base, model_rotation_cross, &
                      model_energy_base, model_energy_cross, previous_step_rotation, &
                      previous_secant_rotation, previous_step_energy, previous_secant_energy, &

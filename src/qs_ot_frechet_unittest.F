@@ -6899,24 +6899,28 @@ CONTAINS
       INTEGER, PARAMETER                                 :: nmode = 3, nrot = 5
 
       INTEGER :: base_negative_modes, base_positive_modes, base_unsupported_modes, &
+         history_negative_modes, history_positive_modes, history_unsupported_modes, &
          incompatible_negative_modes, incompatible_positive_modes, incompatible_unsupported_modes, &
          negative_modes, positive_modes, rank_deficient_negative_modes, &
          rank_deficient_positive_modes, rank_deficient_unsupported_modes, scaled_negative_modes, &
          scaled_positive_modes, scaled_unsupported_modes, transverse_negative_modes, &
          transverse_positive_modes, transverse_unsupported_modes, unsupported_modes
-      LOGICAL                                            :: incompatible_ready, &
+      LOGICAL                                            :: history_ready, incompatible_ready, &
                                                             rank_deficient_ready, ready, &
                                                             scaled_ready, transverse_ready
-      REAL(KIND=dp) :: compatibility, error, incompatible_compatibility, &
-         incompatible_independence, incompatible_residual_ratio, independence, &
-         rank_deficient_compatibility, rank_deficient_independence, rank_deficient_residual_ratio, &
-         residual_ratio, scaled_compatibility, scaled_independence, scaled_residual_ratio, &
+      REAL(KIND=dp) :: compatibility, error, history_compatibility, history_independence, &
+         history_residual_ratio, incompatible_compatibility, incompatible_independence, &
+         incompatible_residual_ratio, independence, rank_deficient_compatibility, &
+         rank_deficient_independence, rank_deficient_residual_ratio, residual_ratio, &
+         scaled_compatibility, scaled_independence, scaled_residual_ratio, &
          transverse_compatibility, transverse_independence, transverse_residual_ratio
       REAL(KIND=dp), DIMENSION(nrot, 2) :: incompatible_targets, rank_deficient_steps, &
          rank_deficient_targets, response_steps, response_targets, transverse_targets
+      REAL(KIND=dp), DIMENSION(nrot, 3)                  :: history_steps, history_targets
       REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
-      REAL(KIND=dp), DIMENSION(nrot, nrot) :: correction, expected, incompatible_correction, &
-         rank_deficient_correction, scaled_correction, transverse_correction
+      REAL(KIND=dp), DIMENSION(nrot, nrot) :: correction, expected, history_correction, &
+         incompatible_correction, rank_deficient_correction, scaled_correction, &
+         transverse_correction
 
       tangent_modes(:, :) = 0.0_dp
       tangent_modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
@@ -6965,6 +6969,35 @@ CONTAINS
       IF (.NOT. scaled_ready .OR. scaled_positive_modes /= positive_modes .OR. &
           scaled_negative_modes /= negative_modes .OR. &
           scaled_unsupported_modes /= unsupported_modes) error = HUGE(1.0_dp)
+
+      ! A third accepted secant recovers an independent physical direction when the latest
+      ! pair is collinear; all three samples must remain consistent with the selected fit.
+      history_steps(:, 1) = response_steps(:, 1)
+      history_steps(:, 2) = 2.0_dp*response_steps(:, 1)
+      history_steps(:, 3) = response_steps(:, 2)
+      history_targets(:, :) = 0.0_dp
+      history_targets(1, :) = 3.0_dp*history_steps(1, :) + history_steps(3, :)
+      history_targets(3, :) = history_steps(1, :) - 2.0_dp*history_steps(3, :)
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, history_steps, history_targets, history_correction, history_ready, &
+         history_positive_modes, history_negative_modes, history_unsupported_modes, &
+         history_independence, history_compatibility, history_residual_ratio)
+      IF (.NOT. history_ready .OR. MAXVAL(ABS(history_correction - expected)) > tol .OR. &
+          history_positive_modes /= 1 .OR. history_negative_modes /= 1 .OR. &
+          history_unsupported_modes /= 1 .OR. history_independence <= tol .OR. &
+          history_compatibility > tol .OR. history_residual_ratio > tol) &
+         error = HUGE(1.0_dp)
+      history_steps(:, :) = 1.0E-12_dp*history_steps
+      history_targets(:, :) = 1.0E-12_dp*history_targets
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, history_steps, history_targets, history_correction, history_ready, &
+         history_positive_modes, history_negative_modes, history_unsupported_modes, &
+         history_independence, history_compatibility, history_residual_ratio)
+      IF (.NOT. history_ready .OR. MAXVAL(ABS(history_correction - expected)) > tol .OR. &
+          history_positive_modes /= 1 .OR. history_negative_modes /= 1 .OR. &
+          history_unsupported_modes /= 1 .OR. history_independence <= tol .OR. &
+          history_compatibility > tol .OR. history_residual_ratio > tol) &
+         error = HUGE(1.0_dp)
 
       ! Dependent accepted steps still determine one physical response direction.
       rank_deficient_steps(:, :) = response_steps(:, :)

@@ -213,6 +213,9 @@ MODULE qs_ot_types
       LOGICAL          :: mermin_frozen_endpoint_valid = .FALSE.
       LOGICAL          :: mermin_closure_secant_ready = .FALSE.
       LOGICAL          :: mermin_closure_secant_previous_ready = .FALSE.
+      ! One older accepted closure secant is runtime-only and provides an
+      ! independent density-response direction when the latest pair is collinear.
+      LOGICAL          :: mermin_closure_secant_anchor_ready = .FALSE.
       ! Endpoint-local reduced frozen-H response.  This runtime history is
       ! relearned after restart or a change of the channel MO dimension.
       LOGICAL          :: mermin_frozen_reduced_target_ready = .FALSE.
@@ -286,6 +289,10 @@ MODULE qs_ot_types
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_im => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_previous => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_previous_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_anchor => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_s_anchor_im => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_anchor => NULL()
+      TYPE(dbcsr_type), POINTER :: rot_mat_mermin_closure_y_anchor_im => NULL()
 
       REAL(KIND=dp), DIMENSION(:), POINTER :: rot_mat_evals => NULL()
       TYPE(dbcsr_type), POINTER :: rot_mat_evec_re => NULL()
@@ -850,6 +857,8 @@ MODULE qs_ot_types
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_frozen_g1 => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_closure_y => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_closure_y_previous => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_s_anchor => NULL()
+      REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_mermin_closure_y_anchor => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: ener_x_trust_weight => NULL()
       REAL(KIND=dp), POINTER, DIMENSION(:) :: matrix_occ_precond_scale => NULL()
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :) :: orbital_schur_response_metric
@@ -1123,6 +1132,7 @@ CONTAINS
       qs_ot_env%mermin_frozen_endpoint_valid = .FALSE.
       qs_ot_env%mermin_closure_secant_ready = .FALSE.
       qs_ot_env%mermin_closure_secant_previous_ready = .FALSE.
+      qs_ot_env%mermin_closure_secant_anchor_ready = .FALSE.
       qs_ot_env%mermin_frozen_reduced_target_ready = .FALSE.
       qs_ot_env%mermin_secant_sty = 0.0_dp
       qs_ot_env%mermin_secant_snorm = 0.0_dp
@@ -2316,6 +2326,9 @@ CONTAINS
                qs_ot_env%rot_mat_mermin_closure_y, qs_ot_env%rot_mat_mermin_closure_y_im, &
                qs_ot_env%rot_mat_mermin_closure_y_previous, &
                qs_ot_env%rot_mat_mermin_closure_y_previous_im, &
+               qs_ot_env%rot_mat_mermin_s_anchor, qs_ot_env%rot_mat_mermin_s_anchor_im, &
+               qs_ot_env%rot_mat_mermin_closure_y_anchor, &
+               qs_ot_env%rot_mat_mermin_closure_y_anchor_im, &
                qs_ot_env%rot_mat_evals, qs_ot_env%rot_mat_dedu, &
                qs_ot_env%rot_mat_dedu_im, qs_ot_env%rot_mat_chc, qs_ot_env%rot_mat_chc_im, &
                qs_ot_env%rot_mat_evec_re, qs_ot_env%rot_mat_evec_im)
@@ -2546,6 +2559,18 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_previous_im)) THEN
             CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_closure_y_previous_im)
          END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_anchor)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_anchor)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_anchor_im)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_s_anchor_im)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_closure_y_anchor)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor_im)) THEN
+            CALL dbcsr_release_p(qs_ot_env%rot_mat_mermin_closure_y_anchor_im)
+         END IF
       END IF
 
       IF (qs_ot_env%settings%do_ener) THEN
@@ -2567,6 +2592,10 @@ CONTAINS
          IF (ASSOCIATED(qs_ot_env%ener_mermin_closure_y)) DEALLOCATE (qs_ot_env%ener_mermin_closure_y)
          IF (ASSOCIATED(qs_ot_env%ener_mermin_closure_y_previous)) THEN
             DEALLOCATE (qs_ot_env%ener_mermin_closure_y_previous)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_s_anchor)) DEALLOCATE (qs_ot_env%ener_mermin_s_anchor)
+         IF (ASSOCIATED(qs_ot_env%ener_mermin_closure_y_anchor)) THEN
+            DEALLOCATE (qs_ot_env%ener_mermin_closure_y_anchor)
          END IF
          IF (qs_ot_env%settings%ot_method == "DIIS") THEN
             IF (ASSOCIATED(qs_ot_env%ener_h_x)) DEALLOCATE (qs_ot_env%ener_h_x)

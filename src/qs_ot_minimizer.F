@@ -1374,11 +1374,10 @@ CONTAINS
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: qs_ot_env
       TYPE(mp_para_env_type), OPTIONAL, POINTER          :: para_env_inter_kp
 
-      INTEGER                                            :: closure_valid_i, ichannel, &
-                                                            previous_closure_valid_i, &
-                                                            previous_valid_i, valid_i, &
-                                                            vector_valid_i
-      LOGICAL                                            :: closure_valid, previous_closure_valid, &
+      INTEGER :: anchor_valid_i, closure_valid_i, ichannel, previous_closure_valid_i, &
+         previous_valid_i, valid_i, vector_valid_i
+      LOGICAL                                            :: anchor_valid, closure_valid, &
+                                                            previous_closure_valid, &
                                                             previous_valid, valid, vector_valid
       REAL(KIND=dp) :: alpha, auxiliary_curvature, current_energy, current_matrix, &
          current_rotation, current_total, energy_curvature, frozen_energy_sty, frozen_energy_y2, &
@@ -1420,6 +1419,56 @@ CONTAINS
       secant_closure_rotation_sty = 0.0_dp
       secant_closure_energy_y2 = 0.0_dp
       secant_closure_energy_sty = 0.0_dp
+
+      anchor_valid = .TRUE.
+      DO ichannel = 1, SIZE(qs_ot_env)
+         IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+         anchor_valid = anchor_valid .AND. &
+                        qs_ot_env(ichannel)%mermin_secant_previous_ready .AND. &
+                        qs_ot_env(ichannel)%mermin_closure_secant_previous_ready
+         IF (qs_ot_env(1)%settings%do_rotation) THEN
+            anchor_valid = anchor_valid .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_previous) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_previous_im) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous_im) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor_im) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor_im)
+         END IF
+         IF (qs_ot_env(1)%settings%do_ener) THEN
+            anchor_valid = anchor_valid .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s_previous) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y_previous) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_s_anchor) .AND. &
+                           ASSOCIATED(qs_ot_env(ichannel)%ener_mermin_closure_y_anchor)
+         END IF
+      END DO
+      anchor_valid_i = MERGE(1, 0, anchor_valid)
+      CALL ot_mini_min_kpoint_integer(qs_ot_env, para_env_inter_kp, anchor_valid_i)
+      anchor_valid = anchor_valid_i > 0
+      IF (anchor_valid) THEN
+         DO ichannel = 1, SIZE(qs_ot_env)
+            IF (.NOT. qs_ot_env(ichannel)%has_complex_kpoint_state) CYCLE
+            IF (qs_ot_env(1)%settings%do_rotation) THEN
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_s_previous)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_s_anchor_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_s_previous_im)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous)
+               CALL dbcsr_copy(qs_ot_env(ichannel)%rot_mat_mermin_closure_y_anchor_im, &
+                               qs_ot_env(ichannel)%rot_mat_mermin_closure_y_previous_im)
+            END IF
+            IF (qs_ot_env(1)%settings%do_ener) THEN
+               qs_ot_env(ichannel)%ener_mermin_s_anchor(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_s_previous(:)
+               qs_ot_env(ichannel)%ener_mermin_closure_y_anchor(:) = &
+                  qs_ot_env(ichannel)%ener_mermin_closure_y_previous(:)
+            END IF
+         END DO
+      END IF
 
       previous_valid = .TRUE.
       DO ichannel = 1, SIZE(qs_ot_env)
@@ -1769,6 +1818,8 @@ CONTAINS
          qs_ot_env(ichannel)%mermin_secant_ready = vector_valid
          qs_ot_env(ichannel)%mermin_closure_secant_previous_ready = &
             previous_closure_valid .AND. closure_valid
+         qs_ot_env(ichannel)%mermin_closure_secant_anchor_ready = &
+            anchor_valid .AND. closure_valid
          qs_ot_env(ichannel)%mermin_closure_secant_ready = closure_valid
          qs_ot_env(ichannel)%mermin_frozen_h_valid = .FALSE.
          qs_ot_env(ichannel)%mermin_frozen_endpoint_valid = .FALSE.
