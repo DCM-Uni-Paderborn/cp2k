@@ -90,9 +90,10 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
         qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
         qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
         qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
         qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
         qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
@@ -229,6 +230,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_added_mos_integer_density("k-point ADDED_MOS integer-density bootstrap", nfail)
    CALL check_kpoint_added_mos_fractional_tail_gate("k-point ADDED_MOS fractional-tail gate", nfail)
    CALL check_kpoint_subspace_refresh_gate("k-point OT subspace refresh gate", nfail)
+   CALL check_kpoint_density_closure_history_refresh( &
+      "k-point OT accepted density-closure refresh", nfail)
    CALL check_kpoint_occ_preconditioner_transition("k-point OT occupation-preconditioner bootstrap", nfail)
    CALL check_kpoint_fixed_spin_targets("k-point fixed-spin electron targets", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_control_delta("k-point OT accepted density-projector tail", &
@@ -249,6 +252,7 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
    CALL check_kpoint_canonical_density_residual("k-point OT canonical density residual", &
                                                 5.0E-14_dp, nfail)
+   CALL check_kpoint_density_pair_activation("k-point OT canonical density pair activation", nfail)
    CALL check_kpoint_density_stationarity_history( &
       "k-point OT accepted canonical density history", 5.0E-14_dp, nfail)
    CALL check_kpoint_physical_residual_split("k-point OT physical model/exit residual", &
@@ -5223,6 +5227,41 @@ CONTAINS
    END SUBROUTINE check_kpoint_subspace_refresh_gate
 
 ! **************************************************************************************************
+!> \brief Check accepted-progress detection for density-dominant subspace refreshes.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_density_closure_history_refresh(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 139, 9.93223361E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 139, 1.0E-2_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 3, 9.93223361E-5_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 8.0E-7_dp, 2.0E-7_dp, 1.0E-7_dp, 20, 1.0E-2_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 1.05E-3_dp, 8.8E-4_dp, 1.0E-7_dp, 20, 1.0E-6_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .TRUE., 2.0E-5_dp, 2.1E-5_dp, 1.0E-7_dp, 20, 1.0E-6_dp)
+      failed = failed .OR. qs_scf_kp_density_closure_history_refresh_ready( &
+               .FALSE., 4.41810212E-4_dp, 2.18590918E-5_dp, 1.0E-7_dp, 139, 9.93223361E-5_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_density_closure_history_refresh
+
+! **************************************************************************************************
 !> \brief Check that the coupled response is switched only at stable search boundaries.
 !> \param label ...
 !> \param nfail ...
@@ -5777,6 +5816,39 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_canonical_density_residual
+
+! **************************************************************************************************
+!> \brief Check residual-scaled activation of canonical-density relabeling pairs.
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_density_pair_activation(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: failed
+
+      failed = .NOT. qs_scf_kp_density_pair_activation_ready( &
+               .TRUE., 4.90667085E-4_dp, 2.13340580E-5_dp, 1.0E-7_dp)
+      failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
+               .TRUE., 8.95600000E-4_dp, 0.0_dp, 1.0E-7_dp)
+      failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
+               .TRUE., 2.0E-5_dp, 2.1E-5_dp, 1.0E-7_dp)
+      failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
+               .TRUE., 1.05E-3_dp, 8.8E-4_dp, 1.0E-7_dp)
+      failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
+               .TRUE., 9.0E-8_dp, 3.8E-6_dp, 1.0E-7_dp)
+      failed = failed .OR. qs_scf_kp_density_pair_activation_ready( &
+               .FALSE., 4.90667085E-4_dp, 2.13340580E-5_dp, 1.0E-7_dp)
+
+      IF (failed) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A)') TRIM(label), "failed"
+      ELSE
+         WRITE (*, '(A,1X,A)') TRIM(label), "OK"
+      END IF
+
+   END SUBROUTINE check_kpoint_density_pair_activation
 
 ! **************************************************************************************************
 !> \brief Check accepted-step canonical-density quality.

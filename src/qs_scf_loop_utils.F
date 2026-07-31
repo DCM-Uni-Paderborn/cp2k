@@ -303,6 +303,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_candidate_position_drop, &
              qs_scf_kp_affine_rebased_drop, &
              qs_scf_kp_canonical_density_residual, &
+             qs_scf_kp_density_pair_activation_ready, &
              qs_scf_kp_canonical_density_blend, &
              qs_scf_kp_canonical_density_candidate, &
              qs_scf_kp_canonical_density_multimode_blend, &
@@ -332,6 +333,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_added_mos_integer_density_ready, &
              qs_scf_kp_subspace_is_collapsed, &
              qs_scf_kp_density_closure_buffer_ready, &
+             qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_bootstrap_probe, &
@@ -1090,6 +1092,32 @@ CONTAINS
       DEALLOCATE (projector)
 
    END SUBROUTINE qs_scf_kp_canonical_density_residual
+
+! **************************************************************************************************
+!> \brief Decide whether canonical-density mismatch must enlarge the active Schur pair space.
+!>
+!>        The raw OT residual is the scale already represented by the current minimizer model.
+!>        In the calibrated coupled tail, once a valid canonical-density residual is larger,
+!>        omitting its off-diagonal pairs makes the reduced response blind to physically dominant
+!>        occupied-projector relabeling modes.  A positive raw residual is required so a freshly
+!>        rebuilt MO space cannot activate pairs from stale or uncalibrated residual history.
+!> \param density_ready canonical fixed-N density audit is valid for the current orbitals
+!> \param density_delta RMS canonical-density residual in energy units
+!> \param raw_delta unprojected residual of the previous accepted OT state
+!> \param eps_scf requested SCF residual
+!> \return true when density-selected complex pairs belong in the coupled response space
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_pair_activation_ready(density_ready, density_delta, raw_delta, &
+                                                         eps_scf) RESULT(ready)
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, raw_delta, eps_scf
+      LOGICAL                                            :: ready
+
+      ready = density_ready .AND. eps_scf > 0.0_dp .AND. raw_delta > 0.0_dp .AND. &
+              raw_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+              density_delta > MAX(eps_scf, raw_delta)
+
+   END FUNCTION qs_scf_kp_density_pair_activation_ready
 
 ! **************************************************************************************************
 !> \brief Build the finite-generator tangent which rotates the current diagonal occupation
@@ -5263,6 +5291,44 @@ CONTAINS
    END FUNCTION qs_scf_kp_density_closure_refresh_ready
 
 ! **************************************************************************************************
+!> \brief Detect a density-dominant accepted tail which the current OT subspace cannot close.
+!>
+!>        Density stationarity quality is the accepted fractional reduction
+!>        (density_old-density_new)/density_old. Once its EMA is no larger than
+!>        EPS_SCF/density_delta, another accepted step is expected to remove at most one
+!>        convergence tolerance. Four calibrated Mermin-descent samples, a complete density
+!>        audit, and a raw residual already inside the coupled tail are required before replacing
+!>        the represented subspace by a canonical diagonalization.
+!> \param density_ready canonical fixed-N density audit is valid for the current orbitals
+!> \param density_delta canonical fixed-N density stationarity residual
+!> \param raw_delta raw residual of the previous accepted OT state
+!> \param eps_scf requested SCF threshold
+!> \param quality_samples accepted density-stationarity quality samples
+!> \param quality_ema EMA of the accepted fractional density-residual reduction
+!> \return true when accepted progress cannot close the unresolved canonical density efficiently
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_closure_history_refresh_ready( &
+      density_ready, density_delta, raw_delta, eps_scf, quality_samples, quality_ema) RESULT(ready)
+
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, raw_delta, eps_scf
+      INTEGER, INTENT(IN)                                :: quality_samples
+      REAL(KIND=dp), INTENT(IN)                          :: quality_ema
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: eps, target_fraction
+
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      target_fraction = eps/MAX(density_delta, eps)
+      ready = qs_scf_kp_density_pair_activation_ready( &
+              density_ready, density_delta, raw_delta, eps_scf) .AND. &
+              density_delta > 10.0_dp*eps .AND. &
+              quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
+              quality_ema <= target_fraction
+
+   END FUNCTION qs_scf_kp_density_closure_history_refresh_ready
+
+! **************************************************************************************************
 !> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
 !> \param allow_refresh whether this SCF invocation may still refresh once
 !> \param fermi_window_guarded whether the current state is a projected Fermi-window sample
@@ -7141,10 +7207,8 @@ CONTAINS
 
       INTEGER                                            :: density_buffer_ready_i, ikpoint, imo, &
                                                             ispin, local_kpoint, nmo
-      LOGICAL                                            :: base_state, collapsed, &
-                                                            density_buffer_ready, &
-                                                            density_closure_stagnant, &
-                                                            high_residual_stagnant, step_ready
+      LOGICAL :: base_state, collapsed, density_buffer_ready, density_closure_stagnant, &
+         density_history_stagnant, high_residual_stagnant, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -7199,6 +7263,14 @@ CONTAINS
                                  qs_scf_kp_density_closure_refresh_ready( &
                                  residual_delta, &
                                  local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf)
+      density_history_stagnant = density_buffer_ready .AND. &
+                                 qs_scf_kp_density_closure_history_refresh_ready( &
+                                 local_ot_env(1)%kpoint_density_stationarity_ready, &
+                                 local_ot_env(1)%kpoint_density_stationarity_delta, &
+                                 local_ot_env(1)%kpoint_raw_delta, eps_scf, &
+                                 local_ot_env(1)%schur_density_stationarity_quality_samples, &
+                                 local_ot_env(1)%schur_density_stationarity_quality_ema)
+      density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
@@ -7206,11 +7278,12 @@ CONTAINS
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
           (collapsed .OR. density_closure_stagnant) .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),1X,I6,4(1X,ES16.8))') &
-         " OT k-point subspace refresh ready restart stagnant buffer closure step residual density frac max:", &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),1X,I6,5(1X,ES16.8))') &
+         " OT k-point subspace refresh ready restart stagnant buffer closure history step residual density qema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
-         local_ot_env(1)%OT_count, residual_delta, &
-         local_ot_env(1)%kpoint_density_stationarity_delta, fractional_weight, max_partial_fraction
+         density_history_stagnant, local_ot_env(1)%OT_count, residual_delta, &
+         local_ot_env(1)%kpoint_density_stationarity_delta, &
+         local_ot_env(1)%schur_density_stationarity_quality_ema, fractional_weight, max_partial_fraction
 
    END FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed
 
@@ -15496,9 +15569,10 @@ CONTAINS
          density_gap_response_weighted_step, density_gap_response_weighted_trust_ratio, &
          density_gap_scale_quality
       REAL(KIND=dp) :: density_gap_trust_quality, density_global_lift_control, &
-         density_plateau_direction_scale, density_plateau_exact_gap_avg, &
-         density_plateau_exact_gap_max, density_plateau_expected_drop, &
-         density_plateau_gdot_energy, density_plateau_gdot_rotation, density_plateau_gdotp, &
+         density_pair_activation_threshold, density_plateau_direction_scale, &
+         density_plateau_exact_gap_avg, density_plateau_exact_gap_max, &
+         density_plateau_expected_drop, density_plateau_gdot_energy, &
+         density_plateau_gdot_rotation, density_plateau_gdotp, &
          density_plateau_model_calibrated_drop, density_plateau_model_drop, &
          density_plateau_model_gap_drop, density_plateau_norm_energy, &
          density_plateau_norm_rotation, density_plateau_normp, density_plateau_raw_gap_avg, &
@@ -16304,10 +16378,11 @@ CONTAINS
          schur_active_subspace = .FALSE.
          schur_energy_window = ot_kp_fermi_window_outer_factor*MAX(sigma, EPSILON(sigma))
          projector_occupation_window_gap = schur_energy_window
-         density_pair_activation_ready = &
-            local_ot_env(1)%kpoint_density_stationarity_ready .AND. eps_scf_channel > 0.0_dp .AND. &
-            local_ot_env(1)%kpoint_density_stationarity_delta <= &
-            ot_kp_schur_projector_response_full_delta
+         density_pair_activation_threshold = MAX(eps_scf_channel, response_raw_delta)
+         density_pair_activation_ready = qs_scf_kp_density_pair_activation_ready( &
+                                         local_ot_env(1)%kpoint_density_stationarity_ready, &
+                                         local_ot_env(1)%kpoint_density_stationarity_delta, &
+                                         response_raw_delta, eps_scf_channel)
          DO global_channel = 1, nchannels
             IF (channel_nmo(global_channel) <= 0) CYCLE
             schur_active_occ_min = MAX(schur_active_occ_min, &
@@ -16340,7 +16415,8 @@ CONTAINS
                   IF (fermi_active_pair) THEN
                      nrot_active = nrot_active + 2
                   ELSE IF (density_pair_activation_ready .AND. &
-                           channel_density_pair_residual(imo, jmo, global_channel) > eps_scf_channel) THEN
+                           channel_density_pair_residual(imo, jmo, global_channel) > &
+                           density_pair_activation_threshold) THEN
                      channel_density_pair_candidate(imo, jmo, global_channel) = .TRUE.
                   END IF
                END DO
