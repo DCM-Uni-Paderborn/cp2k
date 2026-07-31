@@ -1640,11 +1640,12 @@ CONTAINS
 !> \param independence normalized independence of the projected accepted steps
 !> \param compatibility_norm relative correction enforcing a symmetric secant pair
 !> \param residual_ratio relative residual against the unmodified projected targets
+!> \param response_prior optional analytic physical response already present in the candidate
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_validated_density_response( &
       tangent_modes, response_steps, response_targets, response_correction, ready, &
       positive_modes, negative_modes, unsupported_modes, independence, compatibility_norm, &
-      residual_ratio)
+      residual_ratio, response_prior)
 
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: tangent_modes, response_steps, &
                                                             response_targets
@@ -1654,6 +1655,8 @@ CONTAINS
                                                             unsupported_modes
       REAL(KIND=dp), INTENT(OUT)                         :: independence, compatibility_norm, &
                                                             residual_ratio
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
+         OPTIONAL                                        :: response_prior
 
       INTEGER                                            :: active_modes, best_i, best_j, i, imode, &
                                                             isample, j, jmode, jsample, nmode, &
@@ -1667,8 +1670,9 @@ CONTAINS
                                                             step_eigenvalues, supported_step, &
                                                             supported_target
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: basis, projected_residual, projected_steps, &
-         projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
-         selected_steps, selected_targets, step_eigenvectors, zero_response
+         projected_targets, reduced_correction, reduced_eigenvectors, reduced_prior, &
+         reduced_response, residual_targets, response_modes, selected_steps, selected_targets, &
+         step_eigenvectors
 
       nrot = SIZE(tangent_modes, 1)
       nmode = SIZE(tangent_modes, 2)
@@ -1676,6 +1680,9 @@ CONTAINS
       CPASSERT(SIZE(response_steps, 1) == nrot)
       CPASSERT(ALL(SHAPE(response_targets) == [nrot, nsample]))
       CPASSERT(ALL(SHAPE(response_correction) == [nrot, nrot]))
+      IF (PRESENT(response_prior)) THEN
+         CPASSERT(ALL(SHAPE(response_prior) == [nrot, nrot]))
+      END IF
 
       response_correction(:, :) = 0.0_dp
       ready = .FALSE.
@@ -1712,13 +1719,22 @@ CONTAINS
 
       ALLOCATE (eigenvalues(active_modes), projected_residual(active_modes, nsample), &
                 projected_steps(active_modes, nsample), projected_targets(active_modes, nsample), &
+                reduced_correction(active_modes, active_modes), &
                 reduced_eigenvectors(active_modes, active_modes), &
-                reduced_response(active_modes, active_modes), &
+                reduced_prior(active_modes, active_modes), reduced_response(active_modes, active_modes), &
+                residual_targets(active_modes, nsample), &
                 response_modes(nrot, active_modes), selected_steps(active_modes, 2), &
-                selected_targets(active_modes, 2), zero_response(active_modes, active_modes))
+                selected_targets(active_modes, 2))
       projected_steps(:, :) = MATMUL(TRANSPOSE(basis(:, 1:active_modes)), response_steps)
       projected_targets(:, :) = MATMUL(TRANSPOSE(basis(:, 1:active_modes)), response_targets)
-      zero_response(:, :) = 0.0_dp
+      reduced_prior(:, :) = 0.0_dp
+      IF (PRESENT(response_prior)) &
+         reduced_prior(:, :) = MATMUL(TRANSPOSE(basis(:, 1:active_modes)), &
+                                      MATMUL(0.5_dp*(response_prior + TRANSPOSE(response_prior)), &
+                                             basis(:, 1:active_modes)))
+      residual_targets(:, :) = projected_targets - MATMUL(reduced_prior, projected_steps)
+      reduced_response(:, :) = reduced_prior(:, :)
+      reduced_correction(:, :) = 0.0_dp
       fit_ready = .FALSE.
       rank_one_fit = .FALSE.
       correction_norm = 0.0_dp
@@ -1727,11 +1743,10 @@ CONTAINS
       IF (active_modes == 1) THEN
          step_norm_sq = SUM(projected_steps**2)
          IF (step_norm_sq > EPSILON(1.0_dp)) THEN
-            reduced_response(1, 1) = SUM(projected_steps*projected_targets)/step_norm_sq
+            reduced_correction(1, 1) = SUM(projected_steps*residual_targets)/step_norm_sq
+            reduced_response(1, 1) = reduced_prior(1, 1) + reduced_correction(1, 1)
             independence = 1.0_dp
-            fit_ready = reduced_response(1, 1) == reduced_response(1, 1)
-         ELSE
-            reduced_response(:, :) = 0.0_dp
+            fit_ready = reduced_correction(1, 1) == reduced_correction(1, 1)
          END IF
       ELSE
          best_i = 0
@@ -1773,9 +1788,10 @@ CONTAINS
             END DO
          END IF
          CALL qs_scf_kp_symmetric_multisecant_update( &
-            zero_response, selected_steps, selected_targets, 1.0_dp, reduced_response, &
+            reduced_prior, selected_steps, selected_targets, 1.0_dp, reduced_response, &
             fit_ready, independence, compatibility_norm, correction_norm, residual_norm, &
             updated_residual_norm)
+         reduced_correction(:, :) = reduced_response - reduced_prior
          IF (.NOT. fit_ready) THEN
             ALLOCATE (sample_coeff(SIZE(projected_steps, 2)), &
                       step_eigenvalues(active_modes), step_eigenvectors(active_modes, active_modes), &
@@ -1786,16 +1802,18 @@ CONTAINS
             IF (step_norm_sq > EPSILON(step_norm_sq)) THEN
                supported_step(:) = step_eigenvectors(:, active_modes)
                sample_coeff(:) = MATMUL(TRANSPOSE(projected_steps), supported_step)
-               supported_target(:) = MATMUL(projected_targets, sample_coeff)/step_norm_sq
+               supported_target(:) = MATMUL(residual_targets, sample_coeff)/step_norm_sq
                mode_curvature = DOT_PRODUCT(supported_step, supported_target)
                DO j = 1, active_modes
                   DO i = 1, active_modes
-                     reduced_response(i, j) = mode_curvature*supported_step(i)*supported_step(j)
+                     reduced_correction(i, j) = &
+                        mode_curvature*supported_step(i)*supported_step(j)
                   END DO
                END DO
+               reduced_response(:, :) = reduced_prior + reduced_correction
                correction_norm = ABS(mode_curvature)
                fit_ready = mode_curvature == mode_curvature .AND. &
-                           ALL(reduced_response == reduced_response)
+                           ALL(reduced_correction == reduced_correction)
                rank_one_fit = fit_ready
                independence = step_norm_sq/ &
                               MAX(SUM(MAX(0.0_dp, step_eigenvalues)), EPSILON(1.0_dp))
@@ -1807,8 +1825,9 @@ CONTAINS
       IF (.NOT. fit_ready) THEN
          unsupported_modes = nmode
          DEALLOCATE (basis, eigenvalues, mode, projected_residual, projected_steps, &
-                     projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
-                     selected_steps, selected_targets, zero_response)
+                     projected_targets, reduced_correction, reduced_eigenvectors, reduced_prior, &
+                     reduced_response, residual_targets, response_modes, selected_steps, &
+                     selected_targets)
          RETURN
       END IF
 
@@ -1819,8 +1838,8 @@ CONTAINS
                        MAX(projected_target_norm, EPSILON(1.0_dp))
       IF (rank_one_fit) compatibility_norm = residual_ratio
 
-      reduced_response(:, :) = 0.5_dp*(reduced_response + TRANSPOSE(reduced_response))
-      reduced_eigenvectors(:, :) = reduced_response(:, :)
+      reduced_correction(:, :) = 0.5_dp*(reduced_correction + TRANSPOSE(reduced_correction))
+      reduced_eigenvectors(:, :) = reduced_correction(:, :)
       CALL diamat_all(reduced_eigenvectors, eigenvalues)
       response_modes(:, :) = MATMUL(basis(:, 1:active_modes), reduced_eigenvectors)
       response_scale = MAXVAL(ABS(eigenvalues))
@@ -1849,8 +1868,8 @@ CONTAINS
       IF (.NOT. ready) response_correction(:, :) = 0.0_dp
 
       DEALLOCATE (basis, eigenvalues, mode, projected_residual, projected_steps, &
-                  projected_targets, reduced_eigenvectors, reduced_response, response_modes, &
-                  selected_steps, selected_targets, zero_response)
+                  projected_targets, reduced_correction, reduced_eigenvectors, reduced_prior, &
+                  reduced_response, residual_targets, response_modes, selected_steps, selected_targets)
 
    END SUBROUTINE qs_scf_kp_validated_density_response
 
@@ -15500,13 +15519,14 @@ CONTAINS
          response_exact_physical, response_exact_raw, response_multisecant, response_occ
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_occ_canonical, &
          response_occ_physical, response_physical_model, response_prediction, response_split, &
-         rot_hessian, rot_hessian_closure_candidate, rot_hessian_closure_response, &
-         rot_hessian_coupled, rot_hessian_multisecant, rot_hessian_orbital_schur, &
-         rot_hessian_prediction, rot_hessian_projector, rot_hessian_projector_physical, &
-         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
-         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_active, &
-         rot_hessian_projector_physical_offdiag_plateau
+         rot_hessian, rot_hessian_closure_candidate, rot_hessian_closure_prior, &
+         rot_hessian_closure_response, rot_hessian_coupled, rot_hessian_multisecant, &
+         rot_hessian_orbital_schur, rot_hessian_prediction, rot_hessian_projector, &
+         rot_hessian_projector_physical, rot_hessian_projector_physical_active, &
+         rot_hessian_projector_physical_diagref, rot_hessian_projector_physical_offdiag, &
+         rot_hessian_projector_physical_offdiag_active
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
+         rot_hessian_projector_physical_offdiag_plateau, &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
          rot_hessian_secant, schur, schur_metric
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: channel_density_pair_residual
@@ -15921,6 +15941,7 @@ CONTAINS
                    closure_response_targets(nrot, 3), &
                    closure_response_metric(nrot, nrot), &
                    rot_hessian_closure_candidate(nrot, nrot), &
+                   rot_hessian_closure_prior(nrot, nrot), &
                    rot_hessian_closure_response(nrot, nrot), &
                    rot_hessian_coupled(nrot, nrot), &
                    rot_hessian_multisecant(nrot, nrot), &
@@ -16117,6 +16138,7 @@ CONTAINS
          closure_response_targets(:, :) = 0.0_dp
          closure_response_metric(:, :) = 0.0_dp
          rot_hessian_closure_candidate(:, :) = 0.0_dp
+         rot_hessian_closure_prior(:, :) = 0.0_dp
          rot_hessian_closure_response(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
          rot_hessian_multisecant(:, :) = 0.0_dp
@@ -17761,7 +17783,8 @@ CONTAINS
                         projector_physical_direct_base_delta, projector_physical_direct_curv_vec, &
                         projector_physical_direct_delta, &
                         closure_response_steps, closure_response_targets, closure_response_metric, &
-                        rot_hessian_closure_candidate, rot_hessian_closure_response, rot_hessian_coupled, &
+                        rot_hessian_closure_candidate, rot_hessian_closure_prior, &
+                        rot_hessian_closure_response, rot_hessian_coupled, &
                         rot_hessian_multisecant, rot_hessian_prediction, &
                         reduced_secant_full_targets, reduced_secant_modes, reduced_secant_targets, &
                         reduced_response_metric, &
@@ -23408,6 +23431,30 @@ CONTAINS
                         canonical_density_mode_curvature(:) = 0.0_dp
                         canonical_density_mode_linear(:) = 0.0_dp
                         canonical_density_tangent_gain = 0.0_dp
+                        closure_response_metric(:, :) = 0.0_dp
+                        DO s = 1, nrot
+                           DO r = 1, nrot
+                              closure_response_metric(r, s) = 0.5_dp* &
+                                                              (DOT_PRODUCT(energy_cross_physical_model(:, r), &
+                                                                           response_physical_model(:, s)) + &
+                                                               DOT_PRODUCT(energy_cross_physical_model(:, s), &
+                                                                           response_physical_model(:, r)))
+                           END DO
+                        END DO
+                        closure_response_metric(:, :) = 0.5_dp* &
+                                                        (closure_response_metric + &
+                                                         TRANSPOSE(closure_response_metric))
+                        ! The accepted closure secant measures the full self-consistent
+                        ! contribution relative to the frozen-H response.  The Direct candidate
+                        ! already contains the analytic finite-complex projector/occupation
+                        ! contribution.  Fit only the remaining physical delta, otherwise that
+                        ! analytic response is counted twice.
+                        rot_hessian_closure_prior(:, :) = &
+                           projector_coupled_weight*projector_physical_direct_delta(:, :) - &
+                           closure_response_metric(:, :) + reduced_response_metric(:, :)
+                        rot_hessian_closure_prior(:, :) = 0.5_dp* &
+                                                          (rot_hessian_closure_prior + &
+                                                           TRANSPOSE(rot_hessian_closure_prior))
                         rot_hessian_closure_response(:, :) = 0.0_dp
                         closure_response_subspace_ready = .FALSE.
                         closure_response_positive_modes = 0
@@ -23425,34 +23472,24 @@ CONTAINS
                            closure_response_subspace_ready, closure_response_positive_modes, &
                            closure_response_negative_modes, closure_response_unsupported_modes, &
                            closure_response_independence, closure_response_compatibility, &
-                           closure_response_residual_ratio)
+                           closure_response_residual_ratio, &
+                           response_prior=rot_hessian_closure_prior)
                         IF (closure_response_subspace_ready) THEN
                            rot_hessian_closure_candidate(:, :) = &
                               projector_physical_direct_schur_vec(:, :) + &
                               rot_hessian_closure_response(:, :)
-                           DO s = 1, nrot
-                              DO r = 1, nrot
-                                 closure_response_metric(r, s) = 0.5_dp* &
-                                                                 (DOT_PRODUCT(energy_cross_physical_model(:, r), &
-                                                                              response_physical_model(:, s)) + &
-                                                                  DOT_PRODUCT(energy_cross_physical_model(:, s), &
-                                                                              response_physical_model(:, r)))
-                              END DO
-                           END DO
-                           closure_response_metric(:, :) = 0.5_dp* &
-                                                           (closure_response_metric + &
-                                                            TRANSPOSE(closure_response_metric))
                         END IF
                         IF (logger%iter_info%print_level >= high_print_level .AND. &
                             logger%para_env%is_source()) &
                            WRITE (cp_logger_get_default_unit_nr(logger), &
-                                  '(A,1X,I3,1X,L1,3(1X,I4),5(1X,ES16.8))') &
+                                  '(A,1X,I3,1X,L1,3(1X,I4),6(1X,ES16.8))') &
                            " OT Schur canonical density closure response group ready pos neg unsupported "// &
-                           "independence compatibility residual norm density_ema:", &
+                           "independence compatibility residual prior_norm correction_norm density_ema:", &
                            target_group, closure_response_subspace_ready, &
                            closure_response_positive_modes, closure_response_negative_modes, &
                            closure_response_unsupported_modes, closure_response_independence, &
                            closure_response_compatibility, closure_response_residual_ratio, &
+                           SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_prior**2))), &
                            SQRT(MAX(0.0_dp, SUM(rot_hessian_closure_response**2))), &
                            local_ot_env(1)%schur_closure_response_density_quality_ema
                         CALL qs_scf_kp_canonical_density_multimode_blend( &
@@ -30573,7 +30610,8 @@ CONTAINS
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
                      closure_response_steps, closure_response_targets, closure_response_metric, &
-                     rot_hessian_closure_candidate, rot_hessian_closure_response, rot_hessian_coupled, &
+                     rot_hessian_closure_candidate, rot_hessian_closure_prior, &
+                     rot_hessian_closure_response, rot_hessian_coupled, &
                      rot_hessian_multisecant, rot_hessian_prediction, &
                      reduced_response_metric, reduced_secant_full_targets, reduced_secant_modes, &
                      reduced_secant_targets, &
