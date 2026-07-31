@@ -3,11 +3,11 @@
 ! TEST_FILES.toml so the default regtest stays cheap. It targets the converged
 ! 1E-6 Mermin path without k-point symmetry reduction against the
 ! symmetry-weighted companion Al_kp_ot_added_auto_sym3_converge.inp.
-! Local 2026-07 MPI-2 reference with evidence-based non-edge enrichment:
-! all three explicit k-point channels retain the initial AUTO buffer of 4;
-! the run converges in 96 OT steps at -8.15998707639814 Ha. It prints no
+! Local 2026-07 MPI-2/OMP-2 reference with directional reduced-Schur response:
+! AUTO grows 4->8->16 in 28/22/59 stage steps and reaches
+! -8.15998706621799 Ha. It prints no
 ! first/last-band, AUTO-exhausted, MAX-ITER, or unsupported-content warning.
-! The endpoint agrees with the symmetry-reduced companion within 3.2E-8 Ha
+! The endpoint agrees with the symmetry-reduced companion within 5.7E-9 Ha
 ! and therefore guards explicit-grid versus irreducible-weight consistency
 ! without requiring identical local virtual-space growth histories.
 &GLOBAL

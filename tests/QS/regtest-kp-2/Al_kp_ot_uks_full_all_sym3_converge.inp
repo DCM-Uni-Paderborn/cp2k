@@ -4,11 +4,11 @@
 ! a fixed magnetic moment, complex FULL_ALL response, and fractional Fermi
 ! support through the complete fixed-N Mermin minimization.
 !
-! Local 2026-07 OMP_NUM_THREADS=1, MPI-2 reference from a fresh directory:
-! the uninterrupted OT run converges in 85 steps at EPS_SCF 1E-6, with
-! Mermin F = -8.14036048931759 Ha and kTS = -0.00016920816952 Ha. A matching
+! Local 2026-07 OMP_NUM_THREADS=2, MPI-2 reference from a fresh directory:
+! the uninterrupted OT run converges in 87 steps at EPS_SCF 1E-6, with
+! Mermin F = -8.14036049802345 Ha and kTS = -0.000169137099 Ha. A matching
 ! diagonalization run converges to -8.14036093712786 Ha, so the free-energy
-! difference is 4.5E-7 Ha. The weighted spin populations remain 7 and 5;
+! difference is 4.4E-7 Ha. The weighted spin populations remain 7 and 5;
 ! there is no first/last-band warning or terminal integer-occupation branch.
 &GLOBAL
   PRINT_LEVEL HIGH
