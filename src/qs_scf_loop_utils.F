@@ -328,6 +328,8 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_added_mos_fractional_tail_ready, &
              qs_scf_kp_added_mos_integer_density_ready, &
              qs_scf_kp_subspace_is_collapsed, &
+             qs_scf_kp_density_closure_buffer_ready, &
+             qs_scf_kp_density_closure_refresh_ready, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_bootstrap_probe, &
              qs_scf_kp_secant_calibration_probe, &
@@ -4960,6 +4962,57 @@ CONTAINS
    END FUNCTION qs_scf_kp_subspace_is_collapsed
 
 ! **************************************************************************************************
+!> \brief Check whether ADDED_MOS AUTO has left its small-buffer bootstrap before density closure.
+!> \param added_mos_auto whether the channel uses adaptive virtual-space growth
+!> \param current_added current added-MO buffer
+!> \param nmo total represented MOs
+!> \return true when density closure cannot preempt the AUTO bootstrap probe
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_closure_buffer_ready( &
+      added_mos_auto, current_added, nmo) RESULT(ready)
+
+      LOGICAL, INTENT(IN)                                :: added_mos_auto
+      INTEGER, INTENT(IN)                                :: current_added, nmo
+      LOGICAL                                            :: ready
+
+      INTEGER                                            :: base_nmo, nonedge_probe_limit
+
+      ready = .TRUE.
+      IF (.NOT. added_mos_auto) RETURN
+      base_nmo = MAX(0, nmo - MAX(0, current_added))
+      nonedge_probe_limit = MAX(8, (base_nmo + 3)/4)
+      ready = current_added > nonedge_probe_limit
+
+   END FUNCTION qs_scf_kp_density_closure_buffer_ready
+
+! **************************************************************************************************
+!> \brief Decide when canonical density closure is the dominant asymptotic k-point OT block.
+!>
+!>        The physical OT residual need not already satisfy EPS_SCF. It must, however, lie below
+!>        the geometric transition sqrt(EPS_SCF*density_delta), so that its remaining error is
+!>        higher order relative to the independently measured canonical fixed-N density block.
+!> \param physical_delta complete physical OT residual
+!> \param density_delta canonical fixed-N density stationarity residual
+!> \param eps_scf requested SCF threshold
+!> \return true when canonical density closure is the dominant asymptotic block
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_density_closure_refresh_ready( &
+      physical_delta, density_delta, eps_scf) RESULT(ready)
+
+      REAL(KIND=dp), INTENT(IN)                          :: physical_delta, density_delta, eps_scf
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: asymptotic_delta, closure_crossover, eps
+
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      asymptotic_delta = MAX(eps, SQRT(eps))
+      closure_crossover = SQRT(eps*MAX(density_delta, 0.0_dp))
+      ready = physical_delta >= 0.0_dp .AND. density_delta > eps .AND. &
+              physical_delta <= MIN(asymptotic_delta, closure_crossover)
+
+   END FUNCTION qs_scf_kp_density_closure_refresh_ready
+
+! **************************************************************************************************
 !> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
 !> \param allow_refresh whether this SCF invocation may still refresh once
 !> \param fermi_window_guarded whether the current state is a projected Fermi-window sample
@@ -5732,6 +5785,7 @@ CONTAINS
       END IF
       ot_kp_subspace_refresh = qs_scf_loop_ot_kp_subspace_refresh_needed( &
                                kpoints, local_ot_env, nspin_ot, wkp, para_env_inter_kp, scf_control%smear, &
+                               scf_control%added_mos_auto, scf_control%added_mos, &
                                trial_occupation, scf_env%iter_count, scf_env%iter_delta, scf_control%eps_scf, &
                                scf_env%qs_ot_restart%valid, protect_mermin_ls_sample, fermi_window_guarded, &
                                allow_ot_kp_subspace_refresh)
@@ -6802,6 +6856,8 @@ CONTAINS
 !> \param wkp ...
 !> \param para_env_inter_kp ...
 !> \param smear ...
+!> \param added_mos_auto whether each spin channel uses adaptive virtual-space growth
+!> \param added_mos current added-MO buffer for each spin channel
 !> \param trial_occupation ...
 !> \param scf_iteration ...
 !> \param scf_residual ...
@@ -6813,7 +6869,8 @@ CONTAINS
 !> \return true when the current OT virtual subspace must be rebuilt by diagonalization
 ! **************************************************************************************************
    FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed( &
-      kpoints, local_ot_env, nspin_ot, wkp, para_env_inter_kp, smear, trial_occupation, &
+      kpoints, local_ot_env, nspin_ot, wkp, para_env_inter_kp, smear, &
+      added_mos_auto, added_mos, trial_occupation, &
       scf_iteration, scf_residual, eps_scf, restart_valid, accepted_sample, &
       fermi_window_guarded, allow_refresh) RESULT(refresh)
 
@@ -6823,6 +6880,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
       TYPE(smear_type), INTENT(IN)                       :: smear
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: added_mos_auto
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: added_mos
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: trial_occupation
       INTEGER, INTENT(IN)                                :: scf_iteration
       REAL(KIND=dp), INTENT(IN)                          :: scf_residual, eps_scf
@@ -6830,8 +6889,10 @@ CONTAINS
                                                             fermi_window_guarded, allow_refresh
       LOGICAL                                            :: refresh
 
-      INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo
+      INTEGER                                            :: density_buffer_ready_i, ikpoint, imo, &
+                                                            ispin, local_kpoint, nmo
       LOGICAL                                            :: base_state, collapsed, &
+                                                            density_buffer_ready, &
                                                             density_closure_stagnant, &
                                                             high_residual_stagnant, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
@@ -6849,12 +6910,17 @@ CONTAINS
 
       fractional_weight = 0.0_dp
       max_partial_fraction = 0.0_dp
+      density_buffer_ready_i = 1
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env
          ikpoint = kp%nkpoint
          DO ispin = 1, nspin_ot
             CALL get_mo_set(kp%mos(1, ispin), maxocc=maxocc, nmo=nmo)
             IF (maxocc <= EPSILON(maxocc)) CYCLE
+            IF (ispin <= SIZE(added_mos_auto) .AND. ispin <= SIZE(added_mos)) THEN
+               IF (.NOT. qs_scf_kp_density_closure_buffer_ready( &
+                   added_mos_auto(ispin), added_mos(ispin), nmo)) density_buffer_ready_i = 0
+            END IF
             weight = ABS(wkp(ikpoint))
             DO imo = 1, MIN(nmo, SIZE(trial_occupation, 1))
                occ_tail = MAX(0.0_dp, MIN(trial_occupation(imo, ikpoint, ispin), &
@@ -6866,6 +6932,8 @@ CONTAINS
       END DO
       CALL para_env_inter_kp%sum(fractional_weight)
       CALL para_env_inter_kp%max(max_partial_fraction)
+      CALL para_env_inter_kp%min(density_buffer_ready_i)
+      density_buffer_ready = density_buffer_ready_i > 0
 
       collapsed = qs_scf_kp_subspace_is_collapsed(max_partial_fraction)
       residual_delta = MAX(scf_residual, local_ot_env(1)%delta)
@@ -6877,9 +6945,10 @@ CONTAINS
                                local_ot_env(1)%ds_min <= &
                                MAX(eps_scf, SQRT(EPSILON(1.0_dp)))
       density_closure_stagnant = local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
-                                 residual_delta <= MAX(eps_scf, EPSILON(1.0_dp)) .AND. &
-                                 local_ot_env(1)%kpoint_density_stationarity_delta > &
-                                 MAX(eps_scf, EPSILON(1.0_dp))
+                                 density_buffer_ready .AND. &
+                                 qs_scf_kp_density_closure_refresh_ready( &
+                                 residual_delta, &
+                                 local_ot_env(1)%kpoint_density_stationarity_delta, eps_scf)
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
@@ -6887,9 +6956,9 @@ CONTAINS
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
           (collapsed .OR. density_closure_stagnant) .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),1X,I6,4(1X,ES16.8))') &
-         " OT k-point subspace refresh ready restart stagnant closure step residual density frac max:", &
-         refresh, restart_valid, high_residual_stagnant, density_closure_stagnant, &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,5(1X,L1),1X,I6,4(1X,ES16.8))') &
+         " OT k-point subspace refresh ready restart stagnant buffer closure step residual density frac max:", &
+         refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
          local_ot_env(1)%OT_count, residual_delta, &
          local_ot_env(1)%kpoint_density_stationarity_delta, fractional_weight, max_partial_fraction
 

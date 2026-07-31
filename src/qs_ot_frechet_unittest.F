@@ -90,7 +90,8 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
         qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
         qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
         qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
         qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
@@ -5187,6 +5188,21 @@ CONTAINS
                                                2.0E-1_dp, eps_scf, .TRUE., .TRUE., .FALSE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                5.0E-4_dp, eps_scf, .FALSE., .TRUE.) .OR. &
+               .NOT. qs_scf_kp_density_closure_refresh_ready( &
+               1.0E-5_dp, 4.0E-4_dp, eps_scf) .OR. &
+               .NOT. qs_scf_kp_density_closure_refresh_ready( &
+               8.0E-7_dp, 4.0E-6_dp, eps_scf) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               2.0E-3_dp, 4.0E-3_dp, eps_scf) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               3.0E-4_dp, 1.0E-3_dp, eps_scf) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               4.0E-4_dp, 1.0E-5_dp, eps_scf) .OR. &
+               qs_scf_kp_density_closure_refresh_ready( &
+               8.0E-7_dp, 8.0E-7_dp, eps_scf) .OR. &
+               .NOT. qs_scf_kp_density_closure_buffer_ready(.FALSE., 4, 13) .OR. &
+               qs_scf_kp_density_closure_buffer_ready(.TRUE., 8, 17) .OR. &
+               .NOT. qs_scf_kp_density_closure_buffer_ready(.TRUE., 16, 25) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                5.0E-4_dp, eps_scf, .TRUE., .FALSE.)
       IF (failed) THEN
