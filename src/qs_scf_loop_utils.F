@@ -265,6 +265,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_affine_residual_quality, &
              qs_scf_kp_residual_advantage_resolved, &
              qs_scf_kp_indefinite_residual_balanced_step, &
+             qs_scf_kp_add_full_response_complement, &
              qs_scf_kp_add_measured_response_complement, &
              qs_scf_kp_measured_residual_subspace_step, &
              qs_scf_kp_mermin_residual_pareto_blend, &
@@ -3988,6 +3989,33 @@ CONTAINS
       END DO
 
    END SUBROUTINE qs_scf_kp_add_measured_response_complement
+
+! **************************************************************************************************
+!> \brief Add an analytic full-output response outside a measured active-coordinate span.
+!>
+!>        The measured response is exact for the projected active step.  The rectangular analytic
+!>        response operator supplies only the unresolved coordinate complement, preserving accepted
+!>        secants while exposing their response in every full complex-rotation coordinate.
+!> \param active_vector active-space coordinate vector
+!> \param active_projection projection of active_vector into the measured secant span
+!> \param full_response_hessian analytic map from active coordinates to the full response ordering
+!> \param response measured full response, completed in place
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_add_full_response_complement( &
+      active_vector, active_projection, full_response_hessian, response)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: active_vector, active_projection
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: full_response_hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: response
+
+      INTEGER                                            :: nactive
+
+      nactive = SIZE(active_vector)
+      CPASSERT(SIZE(active_projection) == nactive)
+      CPASSERT(ALL(SHAPE(full_response_hessian) == [SIZE(response), nactive]))
+
+      response(:) = response + MATMUL(full_response_hessian, active_vector - active_projection)
+
+   END SUBROUTINE qs_scf_kp_add_full_response_complement
 
 ! **************************************************************************************************
 !> \brief Combine an established quadratic model with an affine correction.
@@ -15731,36 +15759,35 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross_density_full_audit, &
          energy_cross_density_full_global, energy_cross_density_plateau, energy_cross_multisecant, &
          energy_cross_physical_model, energy_cross_prediction, energy_cross_raw, energy_hessian, &
-         energy_hessian_multisecant, energy_hessian_prediction, energy_hessian_reference, grad_im, &
-         grad_re, h_im, h_re, projector_physical_direct_base_delta, &
-         projector_physical_direct_curv_evec, projector_physical_direct_curv_vec, &
-         projector_physical_direct_delta, projector_physical_direct_schur_evec, &
-         projector_physical_direct_schur_mat
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: projector_physical_direct_schur_vec, &
-         reduced_response_metric, reduced_secant_full_targets, reduced_secant_modes, &
-         reduced_secant_targets, response, response_coupled, response_density_basis_audit, &
-         response_density_basis_audit_exact, response_density_basis_curvfloor_audit_exact, &
-         response_density_basis_damped_audit, response_density_basis_damped_audit_exact, &
-         response_density_basis_filtered_audit, response_density_basis_filtered_audit_exact, &
-         response_density_basis_selective_audit_exact, response_density_direct_exact, &
-         response_density_exact
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_floor_audit, &
-         response_density_floor_audit_exact, response_density_floor_safe_audit, &
-         response_density_floor_safe_audit_exact, response_density_full, &
-         response_density_full_audit, response_density_full_audit_exact, &
+         energy_hessian_multisecant, energy_hessian_prediction, energy_hessian_reference, &
+         full_rot_hessian_coupled, grad_im, grad_re, h_im, h_re, &
+         projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
+         projector_physical_direct_curv_vec, projector_physical_direct_delta, &
+         projector_physical_direct_schur_evec
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: projector_physical_direct_schur_mat, &
+         projector_physical_direct_schur_vec, reduced_response_metric, &
+         reduced_secant_full_targets, reduced_secant_modes, reduced_secant_targets, response, &
+         response_coupled, response_density_basis_audit, response_density_basis_audit_exact, &
+         response_density_basis_curvfloor_audit_exact, response_density_basis_damped_audit, &
+         response_density_basis_damped_audit_exact, response_density_basis_filtered_audit, &
+         response_density_basis_filtered_audit_exact, response_density_basis_selective_audit_exact
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_direct_exact, &
+         response_density_exact, response_density_floor_audit, response_density_floor_audit_exact, &
+         response_density_floor_safe_audit, response_density_floor_safe_audit_exact, &
+         response_density_full, response_density_full_audit, response_density_full_audit_exact, &
          response_density_full_exact, response_density_full_global, &
          response_density_full_global_exact, response_density_physical, response_density_plateau, &
          response_density_plateau_exact, response_exact, response_exact_active, &
-         response_exact_physical, response_exact_raw, response_multisecant, response_occ
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_occ_canonical, &
-         response_occ_physical, response_physical_model, response_prediction, response_split, &
-         rot_hessian, rot_hessian_closure_candidate, rot_hessian_closure_fullrank_response, &
-         rot_hessian_closure_prior, rot_hessian_closure_response, rot_hessian_coupled, &
-         rot_hessian_multisecant, rot_hessian_orbital_schur, rot_hessian_prediction, &
-         rot_hessian_projector, rot_hessian_projector_physical, &
-         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
-         rot_hessian_projector_physical_offdiag
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
+         response_exact_physical, response_exact_raw
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_multisecant, response_occ, &
+         response_occ_canonical, response_occ_physical, response_physical_model, &
+         response_prediction, response_split, rot_hessian, rot_hessian_closure_candidate, &
+         rot_hessian_closure_fullrank_response, rot_hessian_closure_prior, &
+         rot_hessian_closure_response, rot_hessian_coupled, rot_hessian_multisecant, &
+         rot_hessian_orbital_schur, rot_hessian_prediction, rot_hessian_projector, &
+         rot_hessian_projector_physical, rot_hessian_projector_physical_active, &
+         rot_hessian_projector_physical_diagref
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_projector_physical_offdiag, &
          rot_hessian_projector_physical_offdiag_active, &
          rot_hessian_projector_physical_offdiag_plateau, &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
@@ -16181,6 +16208,7 @@ CONTAINS
                    rot_hessian_closure_prior(nrot, nrot), &
                    rot_hessian_closure_response(nrot, nrot), &
                    rot_hessian_coupled(nrot, nrot), &
+                   full_rot_hessian_coupled(nrot_full, nrot), &
                    rot_hessian_multisecant(nrot, nrot), &
                    rot_hessian_prediction(nrot, nrot), &
                    reduced_secant_full_targets(nrot_full, 2), reduced_secant_modes(nrot, 2), &
@@ -16379,6 +16407,7 @@ CONTAINS
          rot_hessian_closure_prior(:, :) = 0.0_dp
          rot_hessian_closure_response(:, :) = 0.0_dp
          rot_hessian_coupled(:, :) = 0.0_dp
+         full_rot_hessian_coupled(:, :) = 0.0_dp
          rot_hessian_multisecant(:, :) = 0.0_dp
          rot_hessian_prediction(:, :) = 0.0_dp
          reduced_secant_modes(:, :) = 0.0_dp
@@ -17666,6 +17695,7 @@ CONTAINS
                   kpoint_ot_density_global_lift_control(eps_scf_channel, residual_delta)
                channel_canonical_cauchy_used = .FALSE.
                CALL build_finite_ref_rotation_model(local_channel, nmo, channel_var_start, ivar, &
+                                                    channel_full_var_offset(global_channel), &
                                                     e_offset(global_channel), h_re, h_im, grad_re, grad_im, &
                                                     trial_occupation(1:nmo, ikpoint, ispin), wkp(ikpoint), &
                                                     projector_occupation_window_gap, &
@@ -17678,6 +17708,7 @@ CONTAINS
                                                     projector_plateau_gap_model_enabled, &
                                                     step_gauge_quality, density_global_lift_control, &
                                                     rot_hessian, rot_hessian_coupled, &
+                                                    full_rot_hessian_coupled, &
                                                     rot_hessian_orbital_schur, rot_hessian_projector, &
                                                     rot_hessian_projector_physical, &
                                                     rot_hessian_projector_physical_offdiag, &
@@ -17741,6 +17772,7 @@ CONTAINS
             CALL para_env_inter_kp%sum(canonical_density_cauchy_channel)
             CALL para_env_inter_kp%sum(rot_hessian)
             CALL para_env_inter_kp%sum(rot_hessian_coupled)
+            CALL para_env_inter_kp%sum(full_rot_hessian_coupled)
             CALL para_env_inter_kp%sum(rot_hessian_orbital_schur)
             CALL para_env_inter_kp%sum(rot_hessian_projector)
             CALL para_env_inter_kp%sum(rot_hessian_projector_physical)
@@ -18026,6 +18058,7 @@ CONTAINS
                         closure_response_steps, closure_response_targets, closure_response_metric, &
                         rot_hessian_closure_candidate, rot_hessian_closure_prior, &
                         rot_hessian_closure_response, rot_hessian_coupled, &
+                        full_rot_hessian_coupled, &
                         rot_hessian_multisecant, rot_hessian_prediction, &
                         reduced_secant_full_targets, reduced_secant_modes, reduced_secant_targets, &
                         reduced_response_metric, &
@@ -27825,6 +27858,7 @@ CONTAINS
                   reduced_secant_candidate_ready, use_measured_response=.TRUE., &
                   full_rotation_gradient=full_grad_rot, &
                   full_rotation_targets=reduced_secant_full_targets, &
+                  full_rotation_hessian=full_rot_hessian_coupled, &
                   full_rotation_residual_weight=full_var_physical_grad_metric_weight, &
                   full_rotation_index=var_full_index, &
                   replace_base_subspace=reduced_secant_replacement_eligible)
@@ -27986,6 +28020,7 @@ CONTAINS
                   rebase_established_model=.TRUE., full_rotation_gradient=full_grad_rot, &
                   full_rotation_targets=reduced_secant_full_targets, &
                   full_rotation_modes=reduced_secant_modes, &
+                  full_rotation_hessian=full_rot_hessian_coupled, &
                   full_rotation_residual_weight=full_var_physical_grad_metric_weight, &
                   full_rotation_index=var_full_index)
                closure_candidate_response_weighted_trust_ratio = 0.0_dp
@@ -30907,6 +30942,7 @@ CONTAINS
                      closure_response_metric, &
                      rot_hessian_closure_candidate, rot_hessian_closure_fullrank_response, &
                      rot_hessian_closure_prior, rot_hessian_closure_response, rot_hessian_coupled, &
+                     full_rot_hessian_coupled, &
                      rot_hessian_multisecant, rot_hessian_prediction, &
                      reduced_response_metric, reduced_secant_full_targets, reduced_secant_modes, &
                      reduced_secant_targets, &
@@ -31208,6 +31244,7 @@ CONTAINS
 !> \param full_rotation_targets accepted full-pair gradient changes for the active secant modes
 !> \param full_rotation_modes rotation modes associated with full_rotation_targets when they differ
 !>        from the modes used to construct the reduced correction
+!> \param full_rotation_hessian analytic full-pair response to active rotation coordinates
 !> \param full_rotation_residual_weight physical metric in the stable full-pair ordering
 !> \param full_rotation_index full-pair index of every active rotation coordinate
 !> \param replace_base_subspace replace rather than increment the reference component in the
@@ -31232,6 +31269,7 @@ CONTAINS
          predicted_residual_ratio, reference_residual_ratio, predicted_residual_start_sq, &
          predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
          use_measured_response, full_rotation_gradient, full_rotation_targets, full_rotation_modes, &
+         full_rotation_hessian, &
          full_rotation_residual_weight, full_rotation_index, replace_base_subspace, &
          contract_complete_step, pareto_blend_with_base, base_blend_scale, &
          rebase_established_model)
@@ -31266,6 +31304,8 @@ CONTAINS
          OPTIONAL                                        :: full_rotation_targets
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
          OPTIONAL, TARGET                                :: full_rotation_modes
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
+         OPTIONAL                                        :: full_rotation_hessian
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_residual_weight
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: full_rotation_index
       LOGICAL, INTENT(IN), OPTIONAL                      :: replace_base_subspace, &
@@ -31356,6 +31396,7 @@ CONTAINS
          full_response_requested = PRESENT(full_rotation_targets)
          CPASSERT(.NOT. full_response_requested .OR. full_residual_requested)
          CPASSERT(.NOT. PRESENT(full_rotation_modes) .OR. full_response_requested)
+         CPASSERT(.NOT. PRESENT(full_rotation_hessian) .OR. full_response_requested)
          nfull = nrot
          IF (full_residual_requested) THEN
             nfull = SIZE(full_rotation_gradient)
@@ -31371,6 +31412,9 @@ CONTAINS
             nfull_modes = SIZE(full_rotation_response_modes, 2)
             CPASSERT(SIZE(full_rotation_targets, 1) == nfull)
             CPASSERT(SIZE(full_rotation_targets, 2) == nfull_modes)
+            IF (PRESENT(full_rotation_hessian)) THEN
+               CPASSERT(ALL(SHAPE(full_rotation_hessian) == [nfull, nrot]))
+            END IF
          END IF
          IF (nrot <= 0 .OR. nener <= 0) RETURN
 
@@ -31560,12 +31604,21 @@ CONTAINS
                      measured_full_correction_projection, measured_full_correction_ready, &
                      measured_full_correction_rank, measured_full_correction_ratio, &
                      measured_full_correction_capture)
-                  CALL qs_scf_kp_add_measured_response_complement( &
-                     rotation_base_step, measured_full_base_projection, schur_reference, &
-                     full_rotation_index, measured_full_base_response)
-                  CALL qs_scf_kp_add_measured_response_complement( &
-                     measured_correction_rotation, measured_full_correction_projection, &
-                     schur_reference, full_rotation_index, measured_full_correction_response)
+                  IF (PRESENT(full_rotation_hessian)) THEN
+                     CALL qs_scf_kp_add_full_response_complement( &
+                        rotation_base_step, measured_full_base_projection, &
+                        full_rotation_hessian, measured_full_base_response)
+                     CALL qs_scf_kp_add_full_response_complement( &
+                        measured_correction_rotation, measured_full_correction_projection, &
+                        full_rotation_hessian, measured_full_correction_response)
+                  ELSE
+                     CALL qs_scf_kp_add_measured_response_complement( &
+                        rotation_base_step, measured_full_base_projection, schur_reference, &
+                        full_rotation_index, measured_full_base_response)
+                     CALL qs_scf_kp_add_measured_response_complement( &
+                        measured_correction_rotation, measured_full_correction_projection, &
+                        schur_reference, full_rotation_index, measured_full_correction_response)
+                  END IF
                   measured_full_residual(:) = full_rotation_gradient - measured_full_base_response
                END IF
                measured_model_drop = 0.0_dp
@@ -31927,6 +31980,14 @@ CONTAINS
                            rotation_step_weight, full_correction_response, &
                            full_correction_projection, full_correction_ready, &
                            full_correction_rank, full_correction_ratio, full_correction_capture)
+                        IF (PRESENT(full_rotation_hessian)) THEN
+                           CALL qs_scf_kp_add_full_response_complement( &
+                              rotation_base_step, full_base_projection, full_rotation_hessian, &
+                              full_base_response)
+                           CALL qs_scf_kp_add_full_response_complement( &
+                              correction_rotation, full_correction_projection, &
+                              full_rotation_hessian, full_correction_response)
+                        END IF
                         CALL qs_scf_kp_full_residual_completion( &
                            full_rotation_gradient, base_rotation_residual, full_rotation_index, &
                            full_base_response, full_base_residual)
@@ -32036,6 +32097,10 @@ CONTAINS
                         rotation_step_weight, &
                         full_response, full_response_projection, full_response_ready, &
                         full_response_rank, full_response_ratio, full_response_capture)
+                     IF (PRESENT(full_rotation_hessian)) &
+                        CALL qs_scf_kp_add_full_response_complement( &
+                        rotation_step, full_response_projection, full_rotation_hessian, &
+                        full_response)
                      CALL qs_scf_kp_full_residual_completion( &
                         full_rotation_gradient, rhs_local, full_rotation_index, full_response, &
                         full_trial_residual)
@@ -38522,6 +38587,7 @@ CONTAINS
 !> \param nmo ...
 !> \param first_var ...
 !> \param last_var ...
+!> \param first_full_var first full Re/Im pair response row for this channel
 !> \param first_energy ...
 !> \param chc_re ...
 !> \param chc_im ...
@@ -38543,6 +38609,7 @@ CONTAINS
 !> \param density_lift_control threshold-like control for the low-curvature global density lift
 !> \param rot_hessian ...
 !> \param rot_hessian_coupled ...
+!> \param full_rot_hessian_coupled exact fixed-occupation response in the full pair ordering
 !> \param rot_hessian_orbital_schur ...
 !> \param rot_hessian_projector ...
 !> \param rot_hessian_projector_physical ...
@@ -38566,7 +38633,8 @@ CONTAINS
 !> \param canonical_cauchy_selected the physical Cauchy tangent replaced an uphill density Newton step
 !> \param failed ...
 ! **************************************************************************************************
-      SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, first_energy, &
+      SUBROUTINE build_finite_ref_rotation_model(local_channel, nmo, first_var, last_var, &
+                                                 first_full_var, first_energy, &
                                                  chc_re, chc_im, mermin_grad_re, mermin_grad_im, &
                                                  occupation_numbers, kpoint_weight, &
                                                  projector_window_gap, occ_curv_channel, &
@@ -38576,6 +38644,7 @@ CONTAINS
                                                  compute_density_full_audit, compute_projector_plateau_audit, &
                                                  step_gauge_quality, density_lift_control, &
                                                  rot_hessian, rot_hessian_coupled, &
+                                                 full_rot_hessian_coupled, &
                                                  rot_hessian_orbital_schur, rot_hessian_projector, &
                                                  rot_hessian_projector_physical, &
                                                  rot_hessian_projector_physical_offdiag, &
@@ -38592,7 +38661,7 @@ CONTAINS
                                                  projector_kernel_cluster_groups, &
                                                  canonical_cauchy_selected, failed)
       INTEGER, INTENT(IN)                                :: local_channel, nmo, first_var, last_var, &
-                                                            first_energy
+                                                            first_full_var, first_energy
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: chc_re, chc_im, mermin_grad_re, &
                                                             mermin_grad_im
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: occupation_numbers
@@ -38605,12 +38674,12 @@ CONTAINS
          compute_projector_plateau_audit
       REAL(KIND=dp), INTENT(IN)                          :: step_gauge_quality, density_lift_control
       REAL(KIND=dp), DIMENSION(:, :), INTENT(INOUT) :: rot_hessian, rot_hessian_coupled, &
-         rot_hessian_orbital_schur, rot_hessian_projector, rot_hessian_projector_physical, &
-         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_plateau, &
-         response, response_occ, response_occ_canonical, response_occ_physical, &
-         response_density_physical, response_density_floor_audit, &
-         response_density_floor_safe_audit, response_density_full, response_density_full_audit, &
-         response_density_basis_audit, response_density_plateau
+         full_rot_hessian_coupled, rot_hessian_orbital_schur, rot_hessian_projector, &
+         rot_hessian_projector_physical, rot_hessian_projector_physical_offdiag, &
+         rot_hessian_projector_physical_offdiag_plateau, response, response_occ, &
+         response_occ_canonical, response_occ_physical, response_density_physical, &
+         response_density_floor_audit, response_density_floor_safe_audit, response_density_full, &
+         response_density_full_audit, response_density_basis_audit, response_density_plateau
       REAL(KIND=dp), DIMENSION(:), INTENT(INOUT)         :: canonical_density_tangent
       INTEGER, INTENT(INOUT) :: projector_fd_cluster_derivatives, &
          projector_fd_cluster_replacements, projector_kernel_cluster_groups
@@ -38623,7 +38692,8 @@ CONTAINS
          docc_plateau, occ_basis, occ_mat, occ_mat_coupled, occ_mat_m, occ_mat_p, orbital_occ_m, &
          orbital_occ_p, projector_evec_base, projector_evec_trial, u
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)  :: orbital_occ_response
-      INTEGER                                            :: ie, imo, jmo, kernel_cluster_groups, r, s
+      INTEGER                                            :: ie, ifull, imo, jmo, &
+                                                            kernel_cluster_groups, r, s
       LOGICAL                                            :: compute_orbital_schur, fd_cluster_used
       REAL(KIND=dp) :: canonical_cauchy_alignment, canonical_newton_alignment, &
          channel_occ_curv_max, density_basis_response, density_global_lift_weight, &
@@ -38644,6 +38714,9 @@ CONTAINS
          canonical_cauchy_selected = .FALSE.
          IF (failed) RETURN
          IF (first_var > last_var) RETURN
+         CPASSERT(first_full_var > 0)
+         CPASSERT(first_full_var + nmo*(nmo - 1) - 1 <= SIZE(full_rot_hessian_coupled, 1))
+         CPASSERT(SIZE(full_rot_hessian_coupled, 2) == SIZE(rot_hessian_coupled, 2))
 
          compute_orbital_schur = local_ot_env(local_channel)%orbital_schur_response_ready .AND. &
                                  ALLOCATED(local_ot_env(local_channel)%orbital_schur_response_metric)
@@ -39094,6 +39167,18 @@ CONTAINS
                      2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
                END SELECT
             END DO
+            ifull = first_full_var - 1
+            DO imo = 1, nmo - 1
+               DO jmo = imo + 1, nmo
+                  ifull = ifull + 1
+                  full_rot_hessian_coupled(ifull, s) = &
+                     2.0_dp*(grad_p_re(imo, jmo) - grad_m_re(imo, jmo))/(2.0_dp*fd_step)
+                  ifull = ifull + 1
+                  full_rot_hessian_coupled(ifull, s) = &
+                     2.0_dp*(grad_p_im(imo, jmo) - grad_m_im(imo, jmo))/(2.0_dp*fd_step)
+               END DO
+            END DO
+            CPASSERT(ifull - first_full_var + 1 == nmo*(nmo - 1))
             DO ie = 1, nmo
                raw_response = (eps_p(ie) - eps_m(ie))/(2.0_dp*fd_step)
                response(first_energy + ie - 1, s) = raw_response

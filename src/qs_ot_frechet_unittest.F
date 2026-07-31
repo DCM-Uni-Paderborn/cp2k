@@ -74,28 +74,28 @@ PROGRAM qs_ot_frechet_unittest
                                               qs_ot_type
    USE qs_scf_diagonalization,          ONLY: qs_scf_hermitize_ot_kp_fm_operator
    USE qs_scf_loop_utils,               ONLY: &
-        qs_scf_kp_active_residual_affine, qs_scf_kp_add_measured_response_complement, &
-        qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
-        qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
-        qs_scf_kp_affine_correction_model, qs_scf_kp_affine_rebased_drop, &
-        qs_scf_kp_affine_residual_calibration, qs_scf_kp_affine_residual_minimum, &
-        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_position_drop, &
-        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
-        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
-        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
-        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
-        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
-        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
-        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
-        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
-        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_active_residual_affine, qs_scf_kp_add_full_response_complement, &
+        qs_scf_kp_add_measured_response_complement, qs_scf_kp_added_mos_basis_bootstrap_ready, &
+        qs_scf_kp_added_mos_fractional_density_ready, qs_scf_kp_added_mos_fractional_tail_ready, &
+        qs_scf_kp_added_mos_integer_density_ready, qs_scf_kp_affine_correction_model, &
+        qs_scf_kp_affine_rebased_drop, qs_scf_kp_affine_residual_calibration, &
+        qs_scf_kp_affine_residual_minimum, qs_scf_kp_affine_residual_quality, &
+        qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
+        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
+        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
+        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_tether_tail_scale, &
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
+        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
+        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
+        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
+        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
+        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
+        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -309,6 +309,8 @@ PROGRAM qs_ot_frechet_unittest
       "k-point OT measured residual subspace step", 5.0E-14_dp, nfail)
    CALL check_kpoint_measured_response_complement( &
       "k-point OT measured response complement", 5.0E-14_dp, nfail)
+   CALL check_kpoint_full_response_complement( &
+      "k-point OT analytic full response complement", 5.0E-14_dp, nfail)
    CALL check_kpoint_mermin_residual_pareto_scale( &
       "k-point OT Mermin-residual Pareto scale", 5.0E-14_dp, nfail)
    CALL check_kpoint_coupled_step_model("k-point OT coupled accepted-step model", &
@@ -7961,6 +7963,48 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_measured_response_complement
+
+! **************************************************************************************************
+!> \brief check rectangular full-output response completion outside a measured span
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_full_response_complement(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: error
+      REAL(KIND=dp), DIMENSION(2)                        :: active_projection, active_vector
+      REAL(KIND=dp), DIMENSION(4)                        :: exact_response, expected, response
+      REAL(KIND=dp), DIMENSION(4, 2)                     :: full_response_hessian
+
+      active_vector(:) = [2.0_dp, -1.0_dp]
+      active_projection(:) = [1.5_dp, -0.5_dp]
+      full_response_hessian(:, :) = RESHAPE( &
+                                    [2.0_dp, -1.0_dp, 0.5_dp, 3.0_dp, &
+                                     1.0_dp, 4.0_dp, -2.0_dp, 0.25_dp], [4, 2])
+      response(:) = [10.0_dp, 20.0_dp, 30.0_dp, 40.0_dp]
+      exact_response(:) = response
+      expected(:) = response + MATMUL(full_response_hessian, &
+                                      active_vector - active_projection)
+
+      CALL qs_scf_kp_add_full_response_complement( &
+         active_vector, active_projection, full_response_hessian, response)
+      CALL qs_scf_kp_add_full_response_complement( &
+         active_vector, active_vector, full_response_hessian, exact_response)
+
+      error = MAXVAL(ABS(response - expected)) + &
+              MAXVAL(ABS(exact_response - [10.0_dp, 20.0_dp, 30.0_dp, 40.0_dp]))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
+      ELSE
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_full_response_complement
 
 ! **************************************************************************************************
 !> \brief check the constrained residual scale at a prescribed retained Mermin decrease
