@@ -36,6 +36,9 @@ registry["E_total"] = GenericMatcher(r"Total energy:", col=3)
 registry["Mermin_free_energy"] = GenericMatcher(
     r"Mermin free energy \(E - T\*S\):\s+([-+0-9.EeDd]+)", col=1, regex=True
 )
+registry["Variational_smearing_free_energy"] = GenericMatcher(
+    r"Variational smearing free energy:\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
 registry["OT_SCF_convergence"] = GenericMatcher(
     r"^\s*\d+\s+OT\s+\S+\s+\S+\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
 )

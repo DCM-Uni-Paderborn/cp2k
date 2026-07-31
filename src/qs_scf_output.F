@@ -885,6 +885,8 @@ CONTAINS
             WRITE (UNIT=output_unit, FMT="(/,(T3,A,T56,F25.14))") &
                "Total energy:                                  ", energy%total
             IF (dft_control%smear) THEN
+               WRITE (UNIT=output_unit, FMT="((T3,A,T56,F25.14))") &
+                  "Variational smearing free energy:            ", energy%total
                SELECT CASE (scf_control%smear%method)
                CASE (smear_fermi_dirac)
                   e_no_entropy = energy%total - energy%kTS
