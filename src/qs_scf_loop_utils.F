@@ -412,8 +412,8 @@ CONTAINS
                                                             enrichment_window, residual_spike
       LOGICAL                                            :: ready
 
-      ready = .NOT. residual_spike .AND. &
-              (active_tail .OR. (basis_probe_limited .AND. enrichment_window))
+      ready = .NOT. residual_spike .AND. enrichment_window .AND. &
+              (active_tail .OR. basis_probe_limited)
 
    END FUNCTION qs_scf_kp_added_mos_basis_bootstrap_ready
 
@@ -4969,21 +4969,24 @@ CONTAINS
 !> \param step_ready whether enough history or a restart is available
 !> \param base_state whether the sample is an accepted/base line-search state
 !> \param high_residual_stagnant optional flag for a collapsed line search below SCF resolution
+!> \param density_closure_stagnant optional flag for a converged OT residual with an unresolved
+!>        canonical fixed-N density residual
 !> \return true when a full subspace rebuild is warranted
 ! **************************************************************************************************
    PURE FUNCTION qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                  residual_delta, eps_scf, step_ready, base_state, &
-                                                 high_residual_stagnant) &
+                                                 high_residual_stagnant, density_closure_stagnant) &
       RESULT(refresh)
 
       LOGICAL, INTENT(IN)                                :: allow_refresh, fermi_window_guarded, &
                                                             collapsed
       REAL(KIND=dp), INTENT(IN)                          :: residual_delta, eps_scf
       LOGICAL, INTENT(IN)                                :: step_ready, base_state
-      LOGICAL, INTENT(IN), OPTIONAL                      :: high_residual_stagnant
+      LOGICAL, INTENT(IN), OPTIONAL                      :: high_residual_stagnant, &
+                                                            density_closure_stagnant
       LOGICAL                                            :: refresh
 
-      LOGICAL                                            :: catastrophic_stagnation
+      LOGICAL                                            :: catastrophic_stagnation, density_closure
       REAL(KIND=dp)                                      :: eps, residual_upper
 
       eps = MAX(eps_scf, EPSILON(1.0_dp))
@@ -4991,10 +4994,13 @@ CONTAINS
       catastrophic_stagnation = .FALSE.
       IF (PRESENT(high_residual_stagnant)) &
          catastrophic_stagnation = high_residual_stagnant .AND. residual_delta > residual_upper
-      refresh = allow_refresh .AND. .NOT. fermi_window_guarded .AND. collapsed .AND. &
-                residual_delta > 10.0_dp*eps .AND. &
-                (residual_delta <= residual_upper .OR. catastrophic_stagnation) .AND. &
-                step_ready .AND. (base_state .OR. catastrophic_stagnation)
+      density_closure = .FALSE.
+      IF (PRESENT(density_closure_stagnant)) density_closure = density_closure_stagnant
+      refresh = allow_refresh .AND. .NOT. fermi_window_guarded .AND. step_ready .AND. &
+                (base_state .OR. catastrophic_stagnation) .AND. &
+                ((collapsed .AND. residual_delta > 10.0_dp*eps .AND. &
+                  (residual_delta <= residual_upper .OR. catastrophic_stagnation)) .OR. &
+                 density_closure)
 
    END FUNCTION qs_scf_kp_subspace_refresh_gate
 
@@ -6826,6 +6832,7 @@ CONTAINS
 
       INTEGER                                            :: ikpoint, imo, ispin, local_kpoint, nmo
       LOGICAL                                            :: base_state, collapsed, &
+                                                            density_closure_stagnant, &
                                                             high_residual_stagnant, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
@@ -6869,17 +6876,22 @@ CONTAINS
       high_residual_stagnant = residual_delta > SQRT(MAX(eps_scf, EPSILON(1.0_dp))) .AND. &
                                local_ot_env(1)%ds_min <= &
                                MAX(eps_scf, SQRT(EPSILON(1.0_dp)))
+      density_closure_stagnant = local_ot_env(1)%kpoint_density_stationarity_ready .AND. &
+                                 residual_delta <= MAX(eps_scf, EPSILON(1.0_dp)) .AND. &
+                                 local_ot_env(1)%kpoint_density_stationarity_delta > &
+                                 MAX(eps_scf, EPSILON(1.0_dp))
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
-                                                high_residual_stagnant)
+                                                high_residual_stagnant, density_closure_stagnant)
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
-          collapsed .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,3(1X,L1),1X,I6,3(1X,ES16.8))') &
-         " OT k-point subspace refresh ready restart stagnant step residual frac max:", &
-         refresh, restart_valid, high_residual_stagnant, local_ot_env(1)%OT_count, residual_delta, &
-         fractional_weight, max_partial_fraction
+          (collapsed .OR. density_closure_stagnant) .AND. step_ready) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,4(1X,L1),1X,I6,4(1X,ES16.8))') &
+         " OT k-point subspace refresh ready restart stagnant closure step residual density frac max:", &
+         refresh, restart_valid, high_residual_stagnant, density_closure_stagnant, &
+         local_ot_env(1)%OT_count, residual_delta, &
+         local_ot_env(1)%kpoint_density_stationarity_delta, fractional_weight, max_partial_fraction
 
    END FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed
 
@@ -7107,7 +7119,8 @@ CONTAINS
       IF (.NOT. expandable) RETURN
       IF (.NOT. qs_scf_kp_added_mos_basis_bootstrap_ready( &
           active_tail, basis_probe_limited, &
-          nonedge_residual_probe .OR. integer_density_enrichment .OR. fractional_density_enrichment, &
+          edge_limited .OR. nonedge_residual_probe .OR. integer_density_enrichment .OR. &
+          fractional_density_enrichment, &
           residual_spike)) RETURN
       IF (.NOT. residual_tail_limited .AND. .NOT. basis_limited .AND. .NOT. basis_probe_limited .AND. &
           .NOT. strong_tail_limited .AND. .NOT. fractional_tail_limited) THEN

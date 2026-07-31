@@ -5003,8 +5003,10 @@ CONTAINS
 
       LOGICAL                                            :: failed
 
-      failed = .NOT. qs_scf_kp_added_mos_basis_bootstrap_ready( &
+      failed = qs_scf_kp_added_mos_basis_bootstrap_ready( &
                .TRUE., .FALSE., .FALSE., .FALSE.) .OR. &
+               .NOT. qs_scf_kp_added_mos_basis_bootstrap_ready( &
+               .TRUE., .FALSE., .TRUE., .FALSE.) .OR. &
                .NOT. qs_scf_kp_added_mos_basis_bootstrap_ready( &
                .FALSE., .TRUE., .TRUE., .FALSE.) .OR. &
                qs_scf_kp_added_mos_basis_bootstrap_ready( &
@@ -5175,6 +5177,12 @@ CONTAINS
                                                1.1E-3_dp, eps_scf, .TRUE., .TRUE.) .OR. &
                .NOT. qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                      2.0E-1_dp, eps_scf, .TRUE., .FALSE., .TRUE.) .OR. &
+               .NOT. qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .FALSE., &
+                                                     8.0E-7_dp, eps_scf, .TRUE., .TRUE., .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .TRUE., .FALSE., &
+                                               8.0E-7_dp, eps_scf, .TRUE., .TRUE., .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .FALSE., &
+                                               8.0E-7_dp, eps_scf, .TRUE., .FALSE., .FALSE., .TRUE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
                                                2.0E-1_dp, eps_scf, .TRUE., .TRUE., .FALSE.) .OR. &
                qs_scf_kp_subspace_refresh_gate(.TRUE., .FALSE., .TRUE., &
