@@ -322,6 +322,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
              qs_scf_kp_directional_curvature_update, &
+             qs_scf_kp_directional_subspace_curvature_update, &
              qs_scf_kp_symmetric_multisecant_update, &
              qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_added_mos_basis_bootstrap_ready, &
@@ -2345,6 +2346,135 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_scf_kp_directional_curvature_update
+
+! **************************************************************************************************
+!> \brief Complete missing positive curvature in an orthonormal accepted-secant subspace.
+!>
+!>        Steps and their measured Hessian responses are transformed together by modified
+!>        Gram-Schmidt.  Positive rank-one corrections in the resulting orthonormal basis are
+!>        mutually independent, preserve earlier modal curvatures, and leave the orthogonal
+!>        complement unchanged.
+!> \param hessian symmetric reference Hessian
+!> \param steps accepted steps, newest first
+!> \param secant_targets measured Hessian responses for steps
+!> \param updated_hessian PSD-completed Hessian
+!> \param ready whether a finite positive correction was applied
+!> \param independent_rank number of independent transformed directions
+!> \param correction_rank number of directions with positive missing curvature
+!> \param independence smallest retained orthogonal step fraction
+!> \param compatibility relative antisymmetric norm of the measured modal response
+!> \param correction_norm Frobenius norm of the PSD correction
+!> \param curvature_error largest retained modal curvature error after the update
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_directional_subspace_curvature_update( &
+      hessian, steps, secant_targets, updated_hessian, ready, independent_rank, &
+      correction_rank, independence, compatibility, correction_norm, curvature_error)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian, steps, secant_targets
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_hessian
+      LOGICAL, INTENT(OUT)                               :: ready
+      INTEGER, INTENT(OUT)                               :: independent_rank, correction_rank
+      REAL(KIND=dp), INTENT(OUT)                         :: independence, compatibility, &
+                                                            correction_norm, curvature_error
+
+      INTEGER                                            :: i, j, mode, n, nmode
+      REAL(KIND=dp) :: coefficient, correction_curvature, curvature_scale, measured_curvature, &
+         modal_norm, model_curvature, original_norm, projection, response_norm
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: response, vector
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: modal_metric, modes, responses
+
+      n = SIZE(steps, 1)
+      nmode = SIZE(steps, 2)
+      CPASSERT(ALL(SHAPE(hessian) == [n, n]))
+      CPASSERT(ALL(SHAPE(secant_targets) == [n, nmode]))
+      CPASSERT(ALL(SHAPE(updated_hessian) == [n, n]))
+
+      updated_hessian(:, :) = hessian(:, :)
+      ready = .FALSE.
+      independent_rank = 0
+      correction_rank = 0
+      independence = 0.0_dp
+      compatibility = 0.0_dp
+      correction_norm = 0.0_dp
+      curvature_error = 0.0_dp
+      IF (n <= 0 .OR. nmode <= 0) RETURN
+
+      ALLOCATE (vector(n), response(n), modes(n, nmode), responses(n, nmode), &
+                modal_metric(nmode, nmode))
+      modes(:, :) = 0.0_dp
+      responses(:, :) = 0.0_dp
+      modal_metric(:, :) = 0.0_dp
+      independence = 1.0_dp
+
+      DO mode = 1, nmode
+         vector(:) = steps(:, mode)
+         response(:) = secant_targets(:, mode)
+         original_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(vector, vector)))
+         IF (original_norm <= SQRT(TINY(1.0_dp))) CYCLE
+         DO j = 1, independent_rank
+            projection = DOT_PRODUCT(modes(:, j), vector)
+            vector(:) = vector - projection*modes(:, j)
+            response(:) = response - projection*responses(:, j)
+         END DO
+         modal_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(vector, vector)))
+         independence = MIN(independence, modal_norm/original_norm)
+         IF (modal_norm <= SQRT(EPSILON(1.0_dp))*original_norm) CYCLE
+
+         independent_rank = independent_rank + 1
+         modes(:, independent_rank) = vector/modal_norm
+         responses(:, independent_rank) = response/modal_norm
+      END DO
+      IF (independent_rank <= 0) THEN
+         independence = 0.0_dp
+         DEALLOCATE (vector, response, modes, responses, modal_metric)
+         RETURN
+      END IF
+
+      modal_metric(1:independent_rank, 1:independent_rank) = &
+         MATMUL(TRANSPOSE(modes(:, 1:independent_rank)), responses(:, 1:independent_rank))
+      response_norm = SQRT(MAX(0.0_dp, &
+                               SUM(modal_metric(1:independent_rank, 1:independent_rank)**2)))
+      compatibility = SQRT(MAX(0.0_dp, &
+                               SUM((modal_metric(1:independent_rank, 1:independent_rank) - &
+                                    TRANSPOSE(modal_metric(1:independent_rank, 1:independent_rank)))**2)))/ &
+                      MAX(response_norm, EPSILON(1.0_dp))
+
+      DO mode = 1, independent_rank
+         measured_curvature = DOT_PRODUCT(modes(:, mode), responses(:, mode))
+         model_curvature = DOT_PRODUCT(modes(:, mode), &
+                                       MATMUL(updated_hessian, modes(:, mode)))
+         correction_curvature = measured_curvature - model_curvature
+         curvature_scale = MAX(ABS(measured_curvature), ABS(model_curvature), TINY(1.0_dp))
+         IF (measured_curvature <= 0.0_dp .OR. &
+             correction_curvature <= 64.0_dp*EPSILON(1.0_dp)*curvature_scale) CYCLE
+         correction_rank = correction_rank + 1
+         coefficient = correction_curvature
+         DO j = 1, n
+            DO i = 1, n
+               updated_hessian(i, j) = updated_hessian(i, j) + &
+                                       coefficient*modes(i, mode)*modes(j, mode)
+            END DO
+         END DO
+         correction_norm = correction_norm + correction_curvature**2
+      END DO
+      correction_norm = SQRT(MAX(0.0_dp, correction_norm))
+      DO mode = 1, independent_rank
+         curvature_error = MAX(curvature_error, &
+                               ABS(DOT_PRODUCT(modes(:, mode), &
+                                               MATMUL(updated_hessian, modes(:, mode))) - &
+                                   DOT_PRODUCT(modes(:, mode), responses(:, mode))))
+      END DO
+      ready = correction_rank > 0 .AND. ALL(updated_hessian == updated_hessian) .AND. &
+              ALL(ABS(updated_hessian) < HUGE(1.0_dp)) .AND. &
+              compatibility == compatibility .AND. correction_norm < HUGE(1.0_dp)
+      IF (.NOT. ready) THEN
+         updated_hessian(:, :) = hessian(:, :)
+         correction_rank = 0
+         correction_norm = 0.0_dp
+         curvature_error = 0.0_dp
+      END IF
+      DEALLOCATE (vector, response, modes, responses, modal_metric)
+
+   END SUBROUTINE qs_scf_kp_directional_subspace_curvature_update
 
 ! **************************************************************************************************
 !> \brief Apply a symmetric least-change update for two accepted vector secants.
@@ -19959,6 +20089,7 @@ CONTAINS
                                     local_ot_env(1)%schur_prediction_quality_samples < &
                                     ot_kp_schur_calibration_min_samples)
          multisecant_update_ready = multisecant_update_eligible .AND. &
+                                    local_ot_env(1)%schur_vector_secant_candidate_enabled .AND. &
                                     (local_ot_env(1)%schur_multisecant_candidate_enabled .OR. &
                                      local_ot_env(1)%schur_multisecant_quality_samples < &
                                      ot_kp_schur_calibration_min_samples)
@@ -32461,17 +32592,19 @@ CONTAINS
                                                             closure_response_targets
       LOGICAL, INTENT(OUT)                               :: closure_response_pair_ready
 
-      INTEGER :: active_energy_count, global_channel, global_spin, group, ie, ifull, imo, jmo, &
+      INTEGER :: active_energy_count, directional_subspace_correction_rank, &
+         directional_subspace_rank, global_channel, global_spin, group, ie, ifull, imo, jmo, &
          local_channel, nener, nmo, nrot, nrot_full, r, valid_i
       LOGICAL :: closure_anchor_valid, closure_previous_valid, closure_secant_valid, &
          coupled_multisecant_finite, coupled_multisecant_ready, coupled_prediction_finite, &
          coupled_prediction_reverse_finite, coupled_schur_eligible, coupled_schur_finite, &
-         coupled_subspace_eligible, coupled_subspace_finite, directional_update_finite, &
-         directional_update_ready, frozen_candidate_eligible, frozen_endpoint_multisecant_finite, &
+         coupled_subspace_eligible, coupled_subspace_finite, directional_subspace_finite, &
+         directional_subspace_ready, directional_update_finite, directional_update_ready, &
+         frozen_candidate_eligible, frozen_endpoint_multisecant_finite, &
          frozen_prediction_consistent, full_update_ready, multisecant_finite, &
-         previous_frozen_reduced_valid, previous_valid, reduced_multisecant_eligible, &
-         reduced_multisecant_finite
-      LOGICAL :: reduced_prediction_consistent, reduced_prediction_finite, &
+         previous_frozen_reduced_valid, previous_valid
+      LOGICAL :: reduced_multisecant_eligible, reduced_multisecant_finite, &
+         reduced_prediction_consistent, reduced_prediction_finite, &
          reduced_prediction_reverse_finite, rotation_multisecant_ready, update_finite, valid
       LOGICAL, DIMENSION(2)                              :: frozen_prediction_finite
       REAL(KIND=dp) :: alignment, base_hessian_norm, closure_model_alignment, &
@@ -32507,38 +32640,40 @@ CONTAINS
          current_response_coverage, current_step_coverage, curvature_ratio, decomposition_error, &
          directional_correction_curvature
       REAL(KIND=dp) :: directional_correction_norm, directional_correction_ratio, &
-         directional_model_curvature, energy_mean, frozen_endpoint_multisecant_compatibility, &
-         frozen_endpoint_multisecant_correction_norm, &
+         directional_model_curvature, directional_subspace_compatibility, &
+         directional_subspace_correction_norm, directional_subspace_correction_ratio, &
+         directional_subspace_curvature_error, directional_subspace_independence, energy_mean, &
+         frozen_endpoint_multisecant_compatibility, frozen_endpoint_multisecant_correction_norm, &
          frozen_endpoint_multisecant_correction_ratio, frozen_endpoint_multisecant_independence, &
          frozen_endpoint_multisecant_residual_norm, &
-         frozen_endpoint_multisecant_updated_residual_norm, frozen_model_alignment, &
-         frozen_model_residual_norm, frozen_reduced_curvature, frozen_reduced_norm, &
+         frozen_endpoint_multisecant_updated_residual_norm, frozen_model_alignment
+      REAL(KIND=dp) :: frozen_model_residual_norm, frozen_reduced_curvature, frozen_reduced_norm, &
          frozen_total_prediction_alignment, frozen_total_prediction_curvature, &
-         frozen_total_prediction_curvature_ratio
-      REAL(KIND=dp) :: frozen_total_prediction_quality, frozen_total_prediction_residual_norm, &
-         full_secant_rotation_norm, full_step_rotation_norm, model_alignment, model_norm, &
-         multisecant_compatibility, multisecant_correction_norm, multisecant_correction_ratio, &
-         multisecant_independence, multisecant_residual_norm, multisecant_updated_residual_norm, &
-         orthogonal_fraction, previous_full_secant_rotation_norm, &
-         previous_full_step_rotation_norm, previous_response_coverage, previous_step_coverage, &
-         reduced_model_curvature, reduced_model_norm, reduced_multisecant_compatibility
-      REAL(KIND=dp) :: reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio, &
-         reduced_multisecant_independence, reduced_multisecant_residual_norm, &
-         reduced_multisecant_updated_residual_norm, reduced_prediction_alignment, &
-         reduced_prediction_capture, reduced_prediction_curvature, &
+         frozen_total_prediction_curvature_ratio, frozen_total_prediction_quality, &
+         frozen_total_prediction_residual_norm, full_secant_rotation_norm, &
+         full_step_rotation_norm, model_alignment, model_norm, multisecant_compatibility, &
+         multisecant_correction_norm, multisecant_correction_ratio, multisecant_independence, &
+         multisecant_residual_norm, multisecant_updated_residual_norm, orthogonal_fraction, &
+         previous_full_secant_rotation_norm
+      REAL(KIND=dp) :: previous_full_step_rotation_norm, previous_response_coverage, &
+         previous_step_coverage, reduced_model_curvature, reduced_model_norm, &
+         reduced_multisecant_compatibility, reduced_multisecant_correction_norm, &
+         reduced_multisecant_correction_ratio, reduced_multisecant_independence, &
+         reduced_multisecant_residual_norm, reduced_multisecant_updated_residual_norm, &
+         reduced_prediction_alignment, reduced_prediction_capture, reduced_prediction_curvature, &
          reduced_prediction_curvature_ratio, reduced_prediction_overlap, &
-         reduced_prediction_predicted_residual_norm, reduced_prediction_quality, &
-         reduced_prediction_residual_norm, reduced_prediction_reverse_alignment, &
-         reduced_prediction_reverse_capture, reduced_prediction_reverse_curvature
-      REAL(KIND=dp) :: reduced_prediction_reverse_curvature_ratio, &
-         reduced_prediction_reverse_overlap, reduced_prediction_reverse_predicted_residual_norm, &
-         reduced_prediction_reverse_quality, reduced_prediction_reverse_residual_norm, &
-         residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
-         rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
-         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
-         total_model_alignment, total_reduced_curvature, total_reduced_norm, &
-         total_reduced_residual_norm
-      REAL(KIND=dp) :: updated_rotation_residual_norm, y_norm, ynorm
+         reduced_prediction_predicted_residual_norm, reduced_prediction_quality
+      REAL(KIND=dp) :: reduced_prediction_residual_norm, reduced_prediction_reverse_alignment, &
+         reduced_prediction_reverse_capture, reduced_prediction_reverse_curvature, &
+         reduced_prediction_reverse_curvature_ratio, reduced_prediction_reverse_overlap, &
+         reduced_prediction_reverse_predicted_residual_norm, reduced_prediction_reverse_quality, &
+         reduced_prediction_reverse_residual_norm, residual_energy_norm, residual_norm, &
+         residual_rotation_norm, rotation_curvature_ratio, rotation_model_alignment, &
+         rotation_model_norm, rotation_residual_norm, rotation_stbs, rotation_sty, &
+         rotation_y_norm, snorm, step_norm
+      REAL(KIND=dp) :: sths, stored_sty, sty, total_model_alignment, total_reduced_curvature, &
+         total_reduced_norm, total_reduced_residual_norm, updated_rotation_residual_norm, y_norm, &
+         ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: anchor_closure_reduced_target, &
          anchor_closure_secant_energy, anchor_closure_secant_rotation, anchor_step_energy, &
          anchor_step_rotation, closure_reduced_target, closure_secant_energy, &
@@ -32559,14 +32694,15 @@ CONTAINS
          coupled_rotation_hessian, coupled_rotation_targets, coupled_schur_rotation_hessian, &
          coupled_subspace_energy_cross, coupled_subspace_energy_hessian, &
          coupled_subspace_rotation_hessian, dense_im, dense_re, directional_rotation_hessian, &
-         frozen_endpoint_multisecant_hessian
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: frozen_endpoint_multisecant_steps, &
-         frozen_endpoint_multisecant_targets, frozen_endpoint_reference_hessian, &
-         frozen_prediction_current_hessian, frozen_prediction_forward_hessian, &
-         multisecant_energy_steps, multisecant_energy_targets, multisecant_rotation_steps, &
-         multisecant_rotation_targets, reduced_multisecant_rotation_hessian, &
-         reduced_prediction_current_rotation_hessian, reduced_prediction_rotation_hessian, &
-         updated_rotation_hessian
+         directional_subspace_hessian
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: directional_subspace_steps, &
+         directional_subspace_targets, frozen_endpoint_multisecant_hessian, &
+         frozen_endpoint_multisecant_steps, frozen_endpoint_multisecant_targets, &
+         frozen_endpoint_reference_hessian, frozen_prediction_current_hessian, &
+         frozen_prediction_forward_hessian, multisecant_energy_steps, multisecant_energy_targets, &
+         multisecant_rotation_steps, multisecant_rotation_targets, &
+         reduced_multisecant_rotation_hessian, reduced_prediction_current_rotation_hessian, &
+         reduced_prediction_rotation_hessian, updated_rotation_hessian
       REAL(KIND=dp), DIMENSION(2) :: frozen_prediction_alignment, frozen_prediction_capture, &
          frozen_prediction_curvature, frozen_prediction_curvature_ratio, &
          frozen_prediction_overlap, frozen_prediction_predicted_residual_norm, &
@@ -33483,6 +33619,15 @@ CONTAINS
          multisecant_residual_norm = 0.0_dp
          multisecant_updated_residual_norm = 0.0_dp
          multisecant_correction_ratio = 0.0_dp
+         directional_subspace_finite = .FALSE.
+         directional_subspace_ready = .FALSE.
+         directional_subspace_rank = 0
+         directional_subspace_correction_rank = 0
+         directional_subspace_independence = 0.0_dp
+         directional_subspace_compatibility = 0.0_dp
+         directional_subspace_correction_norm = 0.0_dp
+         directional_subspace_correction_ratio = 0.0_dp
+         directional_subspace_curvature_error = 0.0_dp
          coupled_multisecant_finite = .FALSE.
          coupled_multisecant_ready = .FALSE.
          coupled_multisecant_independence = 0.0_dp
@@ -33570,6 +33715,9 @@ CONTAINS
                       reduced_prediction_current_rotation_hessian(nrot, nrot), &
                       coupled_subspace_rotation_hessian(nrot, nrot), &
                       reduced_multisecant_rotation_hessian(nrot, nrot), &
+                      directional_subspace_hessian(nrot, nrot), &
+                      directional_subspace_steps(nrot, 2), &
+                      directional_subspace_targets(nrot, 2), &
                       coupled_energy_hessian(nener, nener), coupled_energy_cross(nener, nrot), &
                       coupled_prediction_energy_hessian(nener, nener), &
                       coupled_prediction_energy_cross(nener, nrot), &
@@ -33588,6 +33736,34 @@ CONTAINS
                                                         multisecant_energy_steps)
             multisecant_energy_targets(:, 1) = previous_secant_energy(:)
             multisecant_energy_targets(:, 2) = secant_energy(:)
+
+            directional_subspace_steps(:, 1) = step_rotation(:)
+            directional_subspace_steps(:, 2) = previous_step_rotation(:)
+            directional_subspace_targets(:, 1) = total_reduced_target(:)
+            directional_subspace_targets(:, 2) = previous_secant_rotation(:) + &
+                                                 MATMUL(TRANSPOSE(energy_response), &
+                                                        previous_secant_energy)
+            CALL qs_scf_kp_directional_subspace_curvature_update( &
+               rotation_hessian - response_metric, directional_subspace_steps, &
+               directional_subspace_targets, directional_subspace_hessian, &
+               directional_subspace_finite, directional_subspace_rank, &
+               directional_subspace_correction_rank, directional_subspace_independence, &
+               directional_subspace_compatibility, directional_subspace_correction_norm, &
+               directional_subspace_curvature_error)
+            directional_subspace_correction_ratio = directional_subspace_correction_norm/ &
+                                                    MAX(base_hessian_norm, EPSILON(1.0_dp))
+            directional_subspace_ready = directional_subspace_finite .AND. &
+                                         directional_subspace_rank == 2 .AND. &
+                                         directional_subspace_correction_rank == 2 .AND. &
+                                         directional_subspace_independence >= 5.0E-2_dp .AND. &
+                                         directional_subspace_compatibility <= 1.0E-1_dp .AND. &
+                                         active_subspace .AND. &
+                                         residual_delta <= &
+                                         ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                         local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                         ot_kp_schur_calibration_min_samples .AND. &
+                                         local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp .AND. &
+                                         local_ot_env(1)%schur_vector_secant_candidate_enabled
 
             CALL qs_scf_kp_coupled_secant_prediction( &
                rotation_hessian, energy_hessian, energy_cross, previous_step_rotation, &
@@ -33706,8 +33882,12 @@ CONTAINS
                                          local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
                                          ot_kp_schur_calibration_min_samples .AND. &
                                          local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
-            IF (.NOT. rotation_multisecant_ready) &
+            IF (.NOT. rotation_multisecant_ready .AND. directional_subspace_ready) THEN
+               rotation_hessian_multisecant(:, :) = directional_subspace_hessian(:, :) + &
+                                                    response_metric(:, :)
+            ELSE IF (.NOT. rotation_multisecant_ready) THEN
                rotation_hessian_multisecant(:, :) = rotation_hessian(:, :)
+            END IF
 
             CALL qs_scf_kp_coupled_multisecant_update( &
                rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
@@ -33766,7 +33946,8 @@ CONTAINS
             ! Prefer the current-secant response only after the two accepted
             ! secants predict each other.  It then receives a separate
             ! accepted-Mermin-drop history in the caller.
-            multisecant_update_ready = rotation_multisecant_ready .AND. &
+            multisecant_update_ready = (rotation_multisecant_ready .OR. &
+                                        directional_subspace_ready) .AND. &
                                        .NOT. prediction_update_ready
             IF (prediction_update_ready) THEN
                rotation_hessian_multisecant(:, :) = &
@@ -33901,6 +34082,15 @@ CONTAINS
             directional_model_curvature, total_reduced_curvature, directional_correction_curvature, &
             directional_correction_norm, directional_correction_ratio
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), &
+                   '(A,1X,I3,3(1X,L1),2(1X,I2),5(1X,ES16.8))') &
+            " OT Schur directional subspace group history finite eligible rank crank indep compat norm cratio error:", &
+            target_group, previous_valid, directional_subspace_finite, directional_subspace_ready, &
+            directional_subspace_rank, directional_subspace_correction_rank, &
+            directional_subspace_independence, directional_subspace_compatibility, &
+            directional_subspace_correction_norm, directional_subspace_correction_ratio, &
+            directional_subspace_curvature_error
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,ES16.8)') &
             " OT Schur accepted rotation secant correction group Frobenius:", &
             target_group, correction_norm
@@ -33955,7 +34145,8 @@ CONTAINS
                      previous_closure_secant_energy, previous_frozen_secant_energy, &
                      previous_closure_reduced_target, previous_frozen_reduced_target, &
                      total_reduced_target, frozen_reduced_target, closure_reduced_target, reduced_model, &
-                     total_reduced_prediction, target_rotation, updated_rotation_hessian)
+                     total_reduced_prediction, target_rotation, directional_rotation_hessian, &
+                     updated_rotation_hessian)
          IF (ALLOCATED(frozen_endpoint_multisecant_steps)) THEN
             DEALLOCATE (frozen_endpoint_multisecant_steps, frozen_endpoint_multisecant_targets, &
                         frozen_endpoint_multisecant_hessian, frozen_endpoint_reference_hessian)
@@ -33972,6 +34163,8 @@ CONTAINS
                         coupled_prediction_current_energy_cross, &
                         reduced_prediction_rotation_hessian, &
                         reduced_prediction_current_rotation_hessian, &
+                        directional_subspace_hessian, directional_subspace_steps, &
+                        directional_subspace_targets, &
                         coupled_subspace_rotation_hessian, coupled_subspace_energy_hessian, &
                         coupled_subspace_energy_cross)
 

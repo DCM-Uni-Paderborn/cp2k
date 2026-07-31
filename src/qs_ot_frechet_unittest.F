@@ -94,10 +94,10 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
         qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_energy_closure_preferred, &
-        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
+        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -277,6 +277,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
    CALL check_kpoint_directional_curvature_update( &
       "k-point OT directional curvature update", 5.0E-14_dp, nfail)
+   CALL check_kpoint_directional_subspace_curvature_update( &
+      "k-point OT directional subspace curvature update", 5.0E-14_dp, nfail)
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
    CALL check_kpoint_symmetric_multisecant_update("k-point OT symmetric multisecant update", &
                                                   5.0E-13_dp, nfail)
@@ -6457,6 +6459,74 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_directional_curvature_update
+
+! **************************************************************************************************
+!> \brief check orthogonal two-mode PSD curvature completion
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_directional_subspace_curvature_update(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER                                            :: correction_rank, &
+                                                            dependent_correction_rank, &
+                                                            dependent_rank, independent_rank
+      LOGICAL                                            :: dependent_ready, ready
+      REAL(KIND=dp) :: compatibility, correction_norm, curvature_error, dependent_compatibility, &
+         dependent_correction_norm, dependent_curvature_error, dependent_independence, error, &
+         independence, psd_curvature
+      REAL(KIND=dp), DIMENSION(3)                        :: probe
+      REAL(KIND=dp), DIMENSION(3, 2)                     :: dependent_steps, secant_targets, steps
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: dependent_hessian, hessian, &
+                                                            true_hessian, updated_hessian
+
+      hessian(:, :) = RESHAPE([1.0_dp, 0.1_dp, 0.0_dp, &
+                               0.1_dp, 0.8_dp, 0.2_dp, &
+                               0.0_dp, 0.2_dp, 1.4_dp], [3, 3])
+      true_hessian(:, :) = hessian(:, :)
+      true_hessian(1, 1) = true_hessian(1, 1) + 0.7_dp
+      true_hessian(2, 2) = true_hessian(2, 2) + 0.4_dp
+      steps(:, 1) = [1.0_dp, 0.0_dp, 0.0_dp]
+      steps(:, 2) = [1.0_dp, 1.0_dp, 0.0_dp]
+      secant_targets(:, :) = MATMUL(true_hessian, steps)
+      probe(:) = [-0.3_dp, 0.4_dp, 0.7_dp]
+
+      CALL qs_scf_kp_directional_subspace_curvature_update( &
+         hessian, steps, secant_targets, updated_hessian, ready, independent_rank, &
+         correction_rank, independence, compatibility, correction_norm, curvature_error)
+      psd_curvature = DOT_PRODUCT(probe, MATMUL(updated_hessian - hessian, probe))
+      error = MAX(MAXVAL(ABS(updated_hessian - true_hessian)), curvature_error, &
+                  MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))))
+
+      dependent_steps(:, 1) = steps(:, 1)
+      dependent_steps(:, 2) = 2.0_dp*steps(:, 1)
+      secant_targets(:, :) = MATMUL(true_hessian, dependent_steps)
+      CALL qs_scf_kp_directional_subspace_curvature_update( &
+         hessian, dependent_steps, secant_targets, dependent_hessian, dependent_ready, &
+         dependent_rank, dependent_correction_rank, dependent_independence, &
+         dependent_compatibility, dependent_correction_norm, dependent_curvature_error)
+      IF (.NOT. ready .OR. independent_rank /= 2 .OR. correction_rank /= 2 .OR. &
+          independence < 0.7_dp .OR. compatibility > tol .OR. correction_norm <= 0.0_dp .OR. &
+          psd_curvature < -tol .OR. error > tol .OR. .NOT. dependent_ready .OR. &
+          dependent_rank /= 1 .OR. dependent_correction_rank /= 1 .OR. &
+          dependent_independence > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,5(1X,ES16.8),4(1X,I2),2(1X,L1))') &
+            TRIM(label)//" FAILED with error/independence/compatibility/correction/psd/ranks/ready", &
+            error, independence, compatibility, correction_norm, psd_curvature, &
+            independent_rank, correction_rank, dependent_rank, dependent_correction_rank, &
+            ready, dependent_ready
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8),4(1X,I2))') &
+            TRIM(label)//" OK with error/independence/compatibility/correction/psd/ranks", &
+            error, independence, compatibility, correction_norm, psd_curvature, &
+            independent_rank, correction_rank, dependent_rank, dependent_correction_rank
+      END IF
+
+   END SUBROUTINE check_kpoint_directional_subspace_curvature_update
 
 ! **************************************************************************************************
 !> \brief check the symmetric least-change response update

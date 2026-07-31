@@ -2,9 +2,9 @@
 ! OT smoke test. This input is intentionally not listed in TEST_FILES.toml so
 ! the default regtest stays cheap. It exercises the guarded adaptive AUTO tail
 ! grow/rebuild path with two irreducible k-points and nontrivial weights.
-! Local 2026-07 MPI-2 reference after directional reduced-Schur response
-! completion: AUTO grows 4->8->16 after 24/37 stage steps and converges in
-! 41 final-stage OT steps at -8.15998707183558 Ha.
+! Local 2026-07 MPI-2 reference after hierarchical directional-response
+! calibration: AUTO grows 4->8->16 after 24/35 stage steps and converges in
+! 35 final-stage OT steps at -8.15998707315680 Ha.
 ! At 16 MOs the weighted upper-edge occupation is below 6E-97 and the basis
 ! signal is only 0.803, so AUTO correctly retains the adequate virtual space
 ! instead of masking the intrinsic minimizer tail by growing to the AO limit.
