@@ -62,13 +62,13 @@ PROGRAM qs_ot_frechet_unittest
         ot_kpoint_cg_tail_metric_tracked, ot_kpoint_fermi_window_direction_scale, &
         ot_kpoint_fermi_window_energy_coordinate, ot_kpoint_mermin_candidate_restart_step, &
         ot_kpoint_mermin_closure_response_quality, ot_kpoint_mermin_current_guard_delta, &
-        ot_kpoint_mermin_recovery_active_tail, ot_kpoint_mermin_recovery_deferred, &
-        ot_kpoint_mermin_reference_guard_delta, ot_kpoint_mermin_restart_step, &
-        ot_kpoint_mermin_search_stagnant, ot_kpoint_mermin_secant_consistent, &
-        ot_kpoint_mermin_shared_spin_group, ot_kpoint_mermin_tail_energy_stagnant, &
-        ot_kpoint_multiplicity_direction_scale, ot_kpoint_physical_residual_split, &
-        ot_kpoint_rayleigh_model_factor, ot_kpoint_rayleigh_response_scale, &
-        ot_kpoint_secant_geometry
+        ot_kpoint_mermin_full_direction_model, ot_kpoint_mermin_recovery_active_tail, &
+        ot_kpoint_mermin_recovery_deferred, ot_kpoint_mermin_reference_guard_delta, &
+        ot_kpoint_mermin_restart_step, ot_kpoint_mermin_search_stagnant, &
+        ot_kpoint_mermin_secant_consistent, ot_kpoint_mermin_shared_spin_group, &
+        ot_kpoint_mermin_tail_energy_stagnant, ot_kpoint_multiplicity_direction_scale, &
+        ot_kpoint_physical_residual_split, ot_kpoint_rayleigh_model_factor, &
+        ot_kpoint_rayleigh_response_scale, ot_kpoint_secant_geometry
    USE qs_ot_scf,                       ONLY: init_ot_smearing_frontier_energies
    USE qs_ot_types,                     ONLY: qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
@@ -94,9 +94,10 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
         qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
         qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_directional_curvature_update, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -268,10 +269,14 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_mermin_recovery_active_tail("k-point OT dual-residual recovery tail", nfail)
    CALL check_kpoint_mermin_recovery_deferred("k-point OT pending residual closure", nfail)
    CALL check_kpoint_mermin_secant_consistency("k-point OT accepted secant consistency", nfail)
+   CALL check_kpoint_mermin_full_direction_model( &
+      "k-point OT complete CG direction model", 5.0E-15_dp, nfail)
    CALL check_kpoint_frozen_energy_gradient("k-point OT frozen-H fixed-N energy gradient", &
                                             2.0E-14_dp, nfail)
    CALL check_kpoint_secant_geometry("k-point OT vector secant geometry", 5.0E-15_dp, nfail)
    CALL check_kpoint_coupled_secant_model("k-point OT coupled secant model", 5.0E-15_dp, nfail)
+   CALL check_kpoint_directional_curvature_update( &
+      "k-point OT directional curvature update", 5.0E-14_dp, nfail)
    CALL check_kpoint_symmetric_secant_update("k-point OT symmetric secant update", 5.0E-14_dp, nfail)
    CALL check_kpoint_symmetric_multisecant_update("k-point OT symmetric multisecant update", &
                                                   5.0E-13_dp, nfail)
@@ -6262,6 +6267,43 @@ CONTAINS
    END SUBROUTINE check_kpoint_mermin_secant_consistency
 
 ! **************************************************************************************************
+!> \brief Check completion of a partial Schur model for the actual nonlinear-CG direction.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_mermin_full_direction_model(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      REAL(KIND=dp)                                      :: drop, error, optimum, quadratic, slope
+
+      CALL ot_kpoint_mermin_full_direction_model( &
+         2.0_dp, 2.0_dp, 2.5_dp, 4.0_dp, 0.5_dp, 6.0_dp, .TRUE., &
+         slope, quadratic, drop, optimum)
+      error = MAX(ABS(slope - 4.0_dp), ABS(quadratic - 4.0_dp), &
+                  ABS(drop - 2.0_dp), ABS(optimum - 1.0_dp))
+      CALL ot_kpoint_mermin_full_direction_model( &
+         2.0_dp, 2.0_dp, 2.5_dp, 4.0_dp, 0.5_dp, 6.0_dp, .FALSE., &
+         slope, quadratic, drop, optimum)
+      error = MAX(error, ABS(slope - 4.0_dp), ABS(quadratic - 2.5_dp), &
+                  ABS(drop - 2.75_dp), ABS(optimum - 1.6_dp))
+
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,5(1X,ES16.8))') TRIM(label), &
+            "failed with slope/quadratic/drop/optimum/error", &
+            slope, quadratic, drop, optimum, error
+      ELSE
+         WRITE (*, '(A,1X,A,5(1X,ES16.8))') TRIM(label), &
+            "OK with slope/quadratic/drop/optimum/error", &
+            slope, quadratic, drop, optimum, error
+      END IF
+
+   END SUBROUTINE check_kpoint_mermin_full_direction_model
+
+! **************************************************************************************************
 !> \brief Check the fixed-N projection used by the frozen-H accepted endpoint.
 !> \param label ...
 !> \param tol ...
@@ -6365,6 +6407,56 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_coupled_secant_model
+
+! **************************************************************************************************
+!> \brief check positive directional curvature completion and its no-op branch
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_directional_curvature_update(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: no_op_ready, ready
+      REAL(KIND=dp) :: correction_curvature, correction_norm, error, measured_curvature, &
+         model_curvature, no_op_correction, no_op_model, no_op_norm, psd_curvature
+      REAL(KIND=dp), DIMENSION(3)                        :: probe, step
+      REAL(KIND=dp), DIMENSION(3, 3)                     :: hessian, no_op_hessian, updated_hessian
+
+      hessian(:, :) = RESHAPE([2.0_dp, 0.2_dp, -0.1_dp, &
+                               0.2_dp, 0.5_dp, 0.3_dp, &
+                               -0.1_dp, 0.3_dp, 1.2_dp], [3, 3])
+      step(:) = [0.4_dp, -0.3_dp, 0.2_dp]
+      probe(:) = [-0.1_dp, 0.6_dp, 0.5_dp]
+      measured_curvature = 1.75_dp*DOT_PRODUCT(step, MATMUL(hessian, step))
+      CALL qs_scf_kp_directional_curvature_update( &
+         hessian, step, measured_curvature, updated_hessian, ready, model_curvature, &
+         correction_curvature, correction_norm)
+      psd_curvature = DOT_PRODUCT(probe, MATMUL(updated_hessian - hessian, probe))
+      error = MAX(ABS(DOT_PRODUCT(step, MATMUL(updated_hessian, step)) - measured_curvature), &
+                  MAXVAL(ABS(updated_hessian - TRANSPOSE(updated_hessian))))
+
+      CALL qs_scf_kp_directional_curvature_update( &
+         hessian, step, 0.5_dp*model_curvature, no_op_hessian, no_op_ready, no_op_model, &
+         no_op_correction, no_op_norm)
+      error = MAX(error, MAXVAL(ABS(no_op_hessian - hessian)))
+      IF (.NOT. ready .OR. no_op_ready .OR. correction_curvature <= 0.0_dp .OR. &
+          correction_norm <= 0.0_dp .OR. psd_curvature < -tol .OR. &
+          no_op_correction /= 0.0_dp .OR. no_op_norm /= 0.0_dp .OR. error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,5(1X,ES16.8),2(1X,L1))') &
+            TRIM(label)//" FAILED with error/model/correction/norm/psd/ready/no-op", &
+            error, model_curvature, correction_curvature, correction_norm, psd_curvature, &
+            ready, no_op_ready
+      ELSE
+         WRITE (*, '(A,5(1X,ES16.8))') &
+            TRIM(label)//" OK with error/model/correction/norm/psd", &
+            error, model_curvature, correction_curvature, correction_norm, psd_curvature
+      END IF
+
+   END SUBROUTINE check_kpoint_directional_curvature_update
 
 ! **************************************************************************************************
 !> \brief check the symmetric least-change response update

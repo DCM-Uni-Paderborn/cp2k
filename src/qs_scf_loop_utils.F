@@ -321,6 +321,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_raw_exit_floor, &
              qs_scf_kp_raw_exit_floor_ratio, &
              qs_scf_kp_residual_split, &
+             qs_scf_kp_directional_curvature_update, &
              qs_scf_kp_symmetric_multisecant_update, &
              qs_scf_kp_symmetric_secant_update, &
              qs_scf_kp_added_mos_basis_bootstrap_ready, &
@@ -2270,6 +2271,80 @@ CONTAINS
       DEALLOCATE (residual, updated_residual)
 
    END SUBROUTINE qs_scf_kp_symmetric_secant_update
+
+! **************************************************************************************************
+!> \brief Add the missing positive curvature measured along one accepted direction.
+!>
+!>        The rank-one correction is positive semidefinite and changes no curvature orthogonal
+!>        to the accepted step.  It is therefore suitable for completing a reduced fixed-N Schur
+!>        response without fitting unresolved orthogonal components of the gradient secant.
+!> \param hessian symmetric reference Hessian
+!> \param step accepted step s
+!> \param measured_curvature measured s^T y curvature
+!> \param updated_hessian curvature-completed Hessian
+!> \param ready whether a finite positive correction was applied
+!> \param model_curvature original s^T H s curvature
+!> \param correction_curvature applied directional curvature
+!> \param correction_norm Frobenius norm of the rank-one correction
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_directional_curvature_update(hessian, step, measured_curvature, &
+                                                     updated_hessian, ready, model_curvature, &
+                                                     correction_curvature, correction_norm)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: step
+      REAL(KIND=dp), INTENT(IN)                          :: measured_curvature
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: updated_hessian
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT)                         :: model_curvature, correction_curvature, &
+                                                            correction_norm
+
+      INTEGER                                            :: i, j, n
+      REAL(KIND=dp)                                      :: coefficient, curvature_scale, &
+                                                            step_norm_sq
+
+      n = SIZE(step)
+      CPASSERT(ALL(SHAPE(hessian) == [n, n]))
+      CPASSERT(ALL(SHAPE(updated_hessian) == [n, n]))
+
+      updated_hessian(:, :) = hessian(:, :)
+      ready = .FALSE.
+      model_curvature = 0.0_dp
+      correction_curvature = 0.0_dp
+      correction_norm = 0.0_dp
+      IF (n <= 0) RETURN
+
+      step_norm_sq = DOT_PRODUCT(step, step)
+      IF (step_norm_sq <= SQRT(TINY(1.0_dp))) RETURN
+      model_curvature = DOT_PRODUCT(step, MATMUL(hessian, step))
+      IF (model_curvature /= model_curvature .OR. measured_curvature /= measured_curvature) RETURN
+      IF (ABS(model_curvature) >= HUGE(1.0_dp) .OR. ABS(measured_curvature) >= HUGE(1.0_dp)) RETURN
+
+      correction_curvature = measured_curvature - model_curvature
+      curvature_scale = MAX(ABS(measured_curvature), ABS(model_curvature), TINY(1.0_dp))
+      IF (measured_curvature <= 0.0_dp .OR. &
+          correction_curvature <= 64.0_dp*EPSILON(1.0_dp)*curvature_scale) THEN
+         correction_curvature = 0.0_dp
+         RETURN
+      END IF
+
+      coefficient = correction_curvature/(step_norm_sq*step_norm_sq)
+      DO j = 1, n
+         DO i = 1, n
+            updated_hessian(i, j) = updated_hessian(i, j) + &
+                                    coefficient*step(i)*step(j)
+         END DO
+      END DO
+      correction_norm = correction_curvature/step_norm_sq
+      ready = ALL(updated_hessian == updated_hessian) .AND. &
+              ALL(ABS(updated_hessian) < HUGE(1.0_dp)) .AND. &
+              correction_norm < HUGE(1.0_dp)
+      IF (.NOT. ready) THEN
+         updated_hessian(:, :) = hessian(:, :)
+         correction_curvature = 0.0_dp
+         correction_norm = 0.0_dp
+      END IF
+
+   END SUBROUTINE qs_scf_kp_directional_curvature_update
 
 ! **************************************************************************************************
 !> \brief Apply a symmetric least-change update for two accepted vector secants.
@@ -32391,12 +32466,13 @@ CONTAINS
       LOGICAL :: closure_anchor_valid, closure_previous_valid, closure_secant_valid, &
          coupled_multisecant_finite, coupled_multisecant_ready, coupled_prediction_finite, &
          coupled_prediction_reverse_finite, coupled_schur_eligible, coupled_schur_finite, &
-         coupled_subspace_eligible, coupled_subspace_finite, frozen_candidate_eligible, &
-         frozen_endpoint_multisecant_finite, frozen_prediction_consistent, multisecant_finite, &
+         coupled_subspace_eligible, coupled_subspace_finite, directional_update_finite, &
+         directional_update_ready, frozen_candidate_eligible, frozen_endpoint_multisecant_finite, &
+         frozen_prediction_consistent, full_update_ready, multisecant_finite, &
          previous_frozen_reduced_valid, previous_valid, reduced_multisecant_eligible, &
-         reduced_multisecant_finite, reduced_prediction_consistent, reduced_prediction_finite
-      LOGICAL :: reduced_prediction_reverse_finite, rotation_multisecant_ready, update_finite, &
-         valid
+         reduced_multisecant_finite
+      LOGICAL :: reduced_prediction_consistent, reduced_prediction_finite, &
+         reduced_prediction_reverse_finite, rotation_multisecant_ready, update_finite, valid
       LOGICAL, DIMENSION(2)                              :: frozen_prediction_finite
       REAL(KIND=dp) :: alignment, base_hessian_norm, closure_model_alignment, &
          closure_reduced_curvature, closure_reduced_norm, component_cross_curvature, &
@@ -32429,40 +32505,40 @@ CONTAINS
          coupled_subspace_residual_norm, coupled_subspace_response_capture, &
          coupled_subspace_rotation_correction_ratio, coupled_subspace_updated_residual_norm, &
          current_response_coverage, current_step_coverage, curvature_ratio, decomposition_error, &
-         energy_mean
-      REAL(KIND=dp) :: frozen_endpoint_multisecant_compatibility, &
+         directional_correction_curvature
+      REAL(KIND=dp) :: directional_correction_norm, directional_correction_ratio, &
+         directional_model_curvature, energy_mean, frozen_endpoint_multisecant_compatibility, &
          frozen_endpoint_multisecant_correction_norm, &
          frozen_endpoint_multisecant_correction_ratio, frozen_endpoint_multisecant_independence, &
          frozen_endpoint_multisecant_residual_norm, &
          frozen_endpoint_multisecant_updated_residual_norm, frozen_model_alignment, &
          frozen_model_residual_norm, frozen_reduced_curvature, frozen_reduced_norm, &
          frozen_total_prediction_alignment, frozen_total_prediction_curvature, &
-         frozen_total_prediction_curvature_ratio, frozen_total_prediction_quality, &
-         frozen_total_prediction_residual_norm, full_secant_rotation_norm
-      REAL(KIND=dp) :: full_step_rotation_norm, model_alignment, model_norm, &
+         frozen_total_prediction_curvature_ratio
+      REAL(KIND=dp) :: frozen_total_prediction_quality, frozen_total_prediction_residual_norm, &
+         full_secant_rotation_norm, full_step_rotation_norm, model_alignment, model_norm, &
          multisecant_compatibility, multisecant_correction_norm, multisecant_correction_ratio, &
          multisecant_independence, multisecant_residual_norm, multisecant_updated_residual_norm, &
          orthogonal_fraction, previous_full_secant_rotation_norm, &
          previous_full_step_rotation_norm, previous_response_coverage, previous_step_coverage, &
-         reduced_model_curvature, reduced_model_norm, reduced_multisecant_compatibility, &
-         reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio, &
-         reduced_multisecant_independence
-      REAL(KIND=dp) :: reduced_multisecant_residual_norm, &
+         reduced_model_curvature, reduced_model_norm, reduced_multisecant_compatibility
+      REAL(KIND=dp) :: reduced_multisecant_correction_norm, reduced_multisecant_correction_ratio, &
+         reduced_multisecant_independence, reduced_multisecant_residual_norm, &
          reduced_multisecant_updated_residual_norm, reduced_prediction_alignment, &
          reduced_prediction_capture, reduced_prediction_curvature, &
          reduced_prediction_curvature_ratio, reduced_prediction_overlap, &
          reduced_prediction_predicted_residual_norm, reduced_prediction_quality, &
          reduced_prediction_residual_norm, reduced_prediction_reverse_alignment, &
-         reduced_prediction_reverse_capture, reduced_prediction_reverse_curvature, &
-         reduced_prediction_reverse_curvature_ratio, reduced_prediction_reverse_overlap, &
-         reduced_prediction_reverse_predicted_residual_norm
-      REAL(KIND=dp) :: reduced_prediction_reverse_quality, &
-         reduced_prediction_reverse_residual_norm, residual_energy_norm, residual_norm, &
-         residual_rotation_norm, rotation_curvature_ratio, rotation_model_alignment, &
-         rotation_model_norm, rotation_residual_norm, rotation_stbs, rotation_sty, &
-         rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, total_model_alignment, &
-         total_reduced_curvature, total_reduced_norm, total_reduced_residual_norm, &
-         updated_rotation_residual_norm, y_norm, ynorm
+         reduced_prediction_reverse_capture, reduced_prediction_reverse_curvature
+      REAL(KIND=dp) :: reduced_prediction_reverse_curvature_ratio, &
+         reduced_prediction_reverse_overlap, reduced_prediction_reverse_predicted_residual_norm, &
+         reduced_prediction_reverse_quality, reduced_prediction_reverse_residual_norm, &
+         residual_energy_norm, residual_norm, residual_rotation_norm, rotation_curvature_ratio, &
+         rotation_model_alignment, rotation_model_norm, rotation_residual_norm, rotation_stbs, &
+         rotation_sty, rotation_y_norm, snorm, step_norm, sths, stored_sty, sty, &
+         total_model_alignment, total_reduced_curvature, total_reduced_norm, &
+         total_reduced_residual_norm
+      REAL(KIND=dp) :: updated_rotation_residual_norm, y_norm, ynorm
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: anchor_closure_reduced_target, &
          anchor_closure_secant_energy, anchor_closure_secant_rotation, anchor_step_energy, &
          anchor_step_rotation, closure_reduced_target, closure_secant_energy, &
@@ -32482,7 +32558,8 @@ CONTAINS
          coupled_prediction_energy_hessian, coupled_prediction_rotation_hessian, &
          coupled_rotation_hessian, coupled_rotation_targets, coupled_schur_rotation_hessian, &
          coupled_subspace_energy_cross, coupled_subspace_energy_hessian, &
-         coupled_subspace_rotation_hessian, dense_im, dense_re, frozen_endpoint_multisecant_hessian
+         coupled_subspace_rotation_hessian, dense_im, dense_re, directional_rotation_hessian, &
+         frozen_endpoint_multisecant_hessian
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: frozen_endpoint_multisecant_steps, &
          frozen_endpoint_multisecant_targets, frozen_endpoint_reference_hessian, &
          frozen_prediction_current_hessian, frozen_prediction_forward_hessian, &
@@ -33356,24 +33433,48 @@ CONTAINS
          IF (rotation_model_norm > TINY(1.0_dp) .AND. rotation_y_norm > TINY(1.0_dp)) &
             rotation_model_alignment = DOT_PRODUCT(secant_rotation, model_rotation)/ &
                                        (SQRT(rotation_model_norm)*SQRT(rotation_y_norm))
-         ALLOCATE (target_rotation(nrot), updated_rotation_hessian(nrot, nrot))
+         ALLOCATE (target_rotation(nrot), updated_rotation_hessian(nrot, nrot), &
+                   directional_rotation_hessian(nrot, nrot))
          target_rotation(:) = secant_rotation(:) + MATMUL(TRANSPOSE(energy_cross), step_energy)
          CALL qs_scf_kp_symmetric_secant_update(rotation_hessian, step_rotation, target_rotation, 1.0_dp, &
                                                 updated_rotation_hessian, update_finite, correction_norm, &
                                                 rotation_residual_norm, updated_rotation_residual_norm)
          base_hessian_norm = SQRT(MAX(0.0_dp, SUM(rotation_hessian**2)))
          correction_ratio = correction_norm/MAX(base_hessian_norm, EPSILON(1.0_dp))
-         update_ready = update_finite .AND. &
-                        active_subspace .AND. &
-                        residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
-                        rotation_sty > EPSILON(rotation_sty) .AND. &
-                        rotation_stbs > EPSILON(rotation_stbs) .AND. &
-                        rotation_curvature_ratio >= 0.15_dp .AND. rotation_curvature_ratio <= 1.25_dp .AND. &
-                        rotation_model_alignment >= 0.90_dp .AND. correction_ratio <= 0.35_dp .AND. &
-                        local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
-                        ot_kp_schur_calibration_min_samples .AND. &
-                        local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
-         IF (update_ready) rotation_hessian_secant(:, :) = updated_rotation_hessian(:, :)
+         full_update_ready = update_finite .AND. &
+                             active_subspace .AND. &
+                             residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                             rotation_sty > EPSILON(rotation_sty) .AND. &
+                             rotation_stbs > EPSILON(rotation_stbs) .AND. &
+                             rotation_curvature_ratio >= 0.15_dp .AND. &
+                             rotation_curvature_ratio <= 1.25_dp .AND. &
+                             rotation_model_alignment >= 0.90_dp .AND. &
+                             correction_ratio <= 0.35_dp .AND. &
+                             local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                             ot_kp_schur_calibration_min_samples .AND. &
+                             local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
+
+         ! Complete only the accepted reduced Schur curvature when the full vector secant is
+         ! dominated by unresolved response orthogonal to the accepted rotation direction.
+         CALL qs_scf_kp_directional_curvature_update( &
+            rotation_hessian - response_metric, step_rotation, total_reduced_curvature, &
+            directional_rotation_hessian, directional_update_finite, &
+            directional_model_curvature, directional_correction_curvature, &
+            directional_correction_norm)
+         directional_correction_ratio = directional_correction_norm/ &
+                                        MAX(base_hessian_norm, EPSILON(1.0_dp))
+         directional_update_ready = directional_update_finite .AND. &
+                                    active_subspace .AND. &
+                                    residual_delta <= ot_kp_schur_projector_coupled_tail_delta .AND. &
+                                    local_ot_env(1)%mermin_ls_accepted_quality_samples >= &
+                                    ot_kp_schur_calibration_min_samples .AND. &
+                                    local_ot_env(1)%mermin_ls_accepted_quality_ema >= 0.8_dp
+         update_ready = full_update_ready .OR. directional_update_ready
+         IF (full_update_ready) THEN
+            rotation_hessian_secant(:, :) = updated_rotation_hessian(:, :)
+         ELSE IF (directional_update_ready) THEN
+            rotation_hessian_secant(:, :) = directional_rotation_hessian(:, :) + response_metric(:, :)
+         END IF
 
          multisecant_finite = .FALSE.
          multisecant_independence = 0.0_dp
@@ -33793,6 +33894,12 @@ CONTAINS
             target_group, update_finite, update_ready, rotation_sty, rotation_stbs, rotation_curvature_ratio, &
             SQRT(MAX(0.0_dp, rotation_y_norm)), SQRT(MAX(0.0_dp, rotation_model_norm)), &
             rotation_model_alignment, rotation_residual_norm, updated_rotation_residual_norm, correction_ratio
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,3(1X,L1),5(1X,ES16.8))') &
+            " OT Schur accepted directional curvature group finite eligible full model measured correction norm cratio:", &
+            target_group, directional_update_finite, directional_update_ready, full_update_ready, &
+            directional_model_curvature, total_reduced_curvature, directional_correction_curvature, &
+            directional_correction_norm, directional_correction_ratio
          IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) &
             WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,I3,1X,ES16.8)') &
             " OT Schur accepted rotation secant correction group Frobenius:", &

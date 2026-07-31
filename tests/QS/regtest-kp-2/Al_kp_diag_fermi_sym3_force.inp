@@ -1,14 +1,12 @@
-! Slow/manual force companion for the converged symmetry-reduced metallic
-! k-point OT path. Run Al_kp_ot_added_auto_sym3_converge.inp first so that its
-! project restart is available. This input is intentionally not listed in
-! TEST_FILES.toml and therefore does not make the default regtest expensive.
-!
-! The 2026-07 MPI-2 reference converges in 91 steps at EPS_SCF 1E-8 to Mermin
-! F = -8.15998707994348 Ha. The largest force-component difference from
-! Al_kp_diag_fermi_sym3_force.inp is 5.644E-7 Ha/bohr.
+! Slow/manual diagonalization reference for the symmetry-reduced metallic
+! k-point OT force companion. This input is intentionally not listed in
+! TEST_FILES.toml so that the default regtest remains cheap.
+! Local 2026-07 MPI-2 reference: converged in 35 steps at
+! -8.15998707765426 Ha. The matching OT restart differs by 2.29E-9 Ha and
+! its largest force-component difference is 5.644E-7 Ha/bohr.
 &GLOBAL
   PRINT_LEVEL MEDIUM
-  PROJECT Al_kp_ot_added_auto_sym3_converge
+  PROJECT Al_kp_diag_fermi_sym3_force
   RUN_TYPE ENERGY_FORCE
 &END GLOBAL
 
@@ -25,10 +23,6 @@
     &MGRID
       CUTOFF 40
     &END MGRID
-    &PRINT
-      &KPOINTS ON
-      &END KPOINTS
-    &END PRINT
     &QS
       EPS_DEFAULT 1.0E-8
     &END QS
@@ -36,16 +30,16 @@
       ADDED_MOS 16
       EPS_SCF 1.0E-8
       MAX_SCF 240
-      SCF_GUESS RESTART
-      &OT
-        ALGORITHM IRAC
-        ENERGIES
-        LINESEARCH 2PNT
-        MINIMIZER CG
-        OCCUPATION_PRECONDITIONER
-        PRECONDITIONER FULL_SINGLE_INVERSE
-        ROTATION
-      &END OT
+      SCF_GUESS ATOMIC
+      &DIAGONALIZATION
+        ALGORITHM STANDARD
+      &END DIAGONALIZATION
+      &MIXING
+        ALPHA 0.2
+        BETA 1.5
+        METHOD BROYDEN_MIXING
+        NBUFFER 8
+      &END MIXING
       &SMEAR
         ELECTRONIC_TEMPERATURE 300
         METHOD FERMI_DIRAC

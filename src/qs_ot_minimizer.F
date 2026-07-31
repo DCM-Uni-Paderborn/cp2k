@@ -48,6 +48,7 @@ MODULE qs_ot_minimizer
               ot_kpoint_fermi_window_energy_coordinate, &
               ot_kpoint_fermi_window_direction_scale, &
               ot_kpoint_mermin_closure_response_quality, &
+              ot_kpoint_mermin_full_direction_model, &
               ot_kpoint_mermin_current_guard_delta, &
               ot_kpoint_mermin_secant_consistent, &
               ot_kpoint_multiplicity_direction_scale, &
@@ -124,6 +125,54 @@ MODULE qs_ot_minimizer
    END TYPE ot_cg_history_snapshot_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Complete a rotation/energy Schur model for the actual nonlinear-CG direction.
+!>
+!>        The Schur solve models the fresh rotation/energy preconditioned direction.  The line
+!>        search also carries the independently preconditioned orbital part and, for nonlinear CG,
+!>        beta times the previous direction.  Use the exact final directional slope, add the
+!>        missing fresh-direction metric, and retain the measured previous-direction curvature.
+!>        The latter is the conjugate-direction approximation to the history quadratic; an unknown
+!>        Hessian cross term is deliberately not invented.
+!> \param partial_slope Schur rotation/energy slope before CG mixing
+!> \param partial_quadratic Schur rotation/energy curvature before CG mixing
+!> \param fresh_slope complete fresh preconditioned-gradient slope before CG mixing
+!> \param final_slope exact descent slope of the final CG direction
+!> \param beta nonlinear-CG history coefficient
+!> \param previous_curvature measured curvature of the previous accepted complete direction
+!> \param previous_valid whether previous_curvature is available and consistent
+!> \param full_slope exact completed model slope
+!> \param full_quadratic completed conjugate-direction curvature
+!> \param full_drop completed unit-step quadratic decrease
+!> \param optimum_position unconstrained positive quadratic minimum
+! **************************************************************************************************
+   PURE SUBROUTINE ot_kpoint_mermin_full_direction_model( &
+      partial_slope, partial_quadratic, fresh_slope, final_slope, beta, previous_curvature, &
+      previous_valid, full_slope, full_quadratic, full_drop, optimum_position)
+      REAL(KIND=dp), INTENT(IN)                          :: partial_slope, partial_quadratic, &
+                                                            fresh_slope, final_slope, beta, &
+                                                            previous_curvature
+      LOGICAL, INTENT(IN)                                :: previous_valid
+      REAL(KIND=dp), INTENT(OUT)                         :: full_slope, full_quadratic, full_drop, &
+                                                            optimum_position
+
+      REAL(KIND=dp)                                      :: missing_fresh_quadratic
+
+      full_slope = MAX(0.0_dp, final_slope)
+      missing_fresh_quadratic = MAX(0.0_dp, fresh_slope - MAX(0.0_dp, partial_slope))
+      full_quadratic = MAX(0.0_dp, partial_quadratic) + missing_fresh_quadratic
+      IF (previous_valid .AND. beta > 0.0_dp .AND. previous_curvature > 0.0_dp) then
+        full_quadratic = full_quadratic + beta*beta*previous_curvature
+      end if
+      full_drop = full_slope - 0.5_dp*full_quadratic
+      optimum_position = 0.0_dp
+      IF (full_slope > EPSILON(MAX(1.0_dp, full_slope)) .AND. &
+          full_quadratic > EPSILON(MAX(1.0_dp, full_quadratic))) then
+        optimum_position = full_slope/full_quadratic
+      end if
+
+   END SUBROUTINE ot_kpoint_mermin_full_direction_model
 
 ! **************************************************************************************************
 !> \brief save nonlinear-CG gradient history before a residual-only line-search audit
@@ -1824,6 +1873,11 @@ CONTAINS
          qs_ot_env(ichannel)%mermin_closure_secant_ready = closure_valid
          qs_ot_env(ichannel)%mermin_frozen_h_valid = .FALSE.
          qs_ot_env(ichannel)%mermin_frozen_endpoint_valid = .FALSE.
+         qs_ot_env(ichannel)%mermin_direction_curvature_valid = vector_valid .AND. &
+                                                                total_curvature > EPSILON(MAX(1.0_dp, ABS(total_curvature)))
+         qs_ot_env(ichannel)%mermin_direction_curvature = &
+            MERGE(total_curvature, 0.0_dp, &
+                  qs_ot_env(ichannel)%mermin_direction_curvature_valid)
          IF (.NOT. vector_valid) CYCLE
          qs_ot_env(ichannel)%mermin_secant_sty = secant_sty
          qs_ot_env(ichannel)%mermin_secant_snorm = secant_snorm
@@ -3807,15 +3861,17 @@ CONTAINS
          residual_spike_history_reset, residual_tail_spike_reset, schur_calibration_change, &
          schur_history_change, schur_history_mixed, schur_projector_jump_reset, &
          schur_projector_tail_reset
-      REAL(KIND=dp) :: beta_pr, beta_raw, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
+      REAL(KIND=dp) :: beta_pr, beta_raw, full_direction_drop, full_direction_optimum, &
+         full_direction_quadratic, full_direction_slope, gnorm_cross, gnorm_ener, gnorm_matrix_im, &
          gnorm_matrix_re, gnorm_metric, gnorm_ratio, gnorm_rot_im, gnorm_rot_re, &
          matrix_gnorm_metric, matrix_nvar, mermin_residual_growth_quality, mermin_tail_min, &
-         norm_weight, nvar, occ_scale_avg, occ_scale_max, occ_scale_min, physical_control_delta, &
+         norm_weight, nvar, occ_scale_avg, occ_scale_max, occ_scale_min, &
+         partial_direction_quadratic, partial_direction_slope, physical_control_delta, &
          physical_delta, physical_gnorm_metric, physical_tail_delta, previous_delta, &
-         raw_channel_rms, raw_delta, raw_guard_delta, raw_matrix_gnorm_im, &
-         raw_matrix_gnorm_metric_im, raw_matrix_gnorm_metric_re, raw_matrix_gnorm_re, &
-         rayleigh_model_quadratic_factor
-      REAL(KIND=dp) :: rayleigh_model_slope_factor, residual_growth_delta, residual_spike_quality, &
+         raw_channel_rms, raw_delta, raw_guard_delta
+      REAL(KIND=dp) :: raw_matrix_gnorm_im, raw_matrix_gnorm_metric_im, &
+         raw_matrix_gnorm_metric_re, raw_matrix_gnorm_re, rayleigh_model_quadratic_factor, &
+         rayleigh_model_slope_factor, residual_growth_delta, residual_spike_quality, &
          residual_tail_min, residual_trust_quality, residual_trust_scale, sample_accepted_drop, &
          sample_gap, sample_guard_drop, sample_quality, sample_residual_growth_ratio, &
          search_channel_rms, search_direction_rms, test_down, tmp
@@ -4628,6 +4684,21 @@ CONTAINS
          IF (qs_ot_env(1)%schur_closure_shadow_pending) THEN
             qs_ot_env(1)%schur_closure_shadow_quadratic = rayleigh_model_quadratic_factor* &
                                                           qs_ot_env(1)%schur_closure_shadow_quadratic
+         END IF
+         partial_direction_slope = qs_ot_env(1)%schur_model_slope
+         partial_direction_quadratic = qs_ot_env(1)%schur_model_quadratic
+         CALL ot_kpoint_mermin_full_direction_model( &
+            partial_direction_slope, partial_direction_quadratic, qs_ot_env(1)%gnorm, &
+            -test_down, beta_pr, qs_ot_env(1)%mermin_direction_curvature, &
+            qs_ot_env(1)%mermin_direction_curvature_valid, full_direction_slope, &
+            full_direction_quadratic, full_direction_drop, full_direction_optimum)
+         IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
+            WRITE (cp_logger_get_default_unit_nr(logger), '(A,1X,L1,8(1X,ES16.8))') &
+               " OT Mermin full-direction model history base_s base_q final_s final_q drop opt beta prev_q:", &
+               qs_ot_env(1)%mermin_direction_curvature_valid, partial_direction_slope, &
+               partial_direction_quadratic, full_direction_slope, full_direction_quadratic, &
+               full_direction_drop, full_direction_optimum, beta_pr, &
+               qs_ot_env(1)%mermin_direction_curvature
          END IF
       END IF
       schur_history_mixed = schur_history_change .AND. beta_pr > 0.0_dp
