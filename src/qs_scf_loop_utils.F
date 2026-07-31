@@ -296,6 +296,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_occ_metric_continuation, &
              qs_scf_kp_occ_preconditioner_transition, &
              qs_scf_kp_quadratic_position_drop, &
+             qs_scf_kp_quadratic_descent_scale, &
              qs_scf_kp_candidate_position_drop, &
              qs_scf_kp_affine_rebased_drop, &
              qs_scf_kp_canonical_density_residual, &
@@ -616,6 +617,36 @@ CONTAINS
       model_drop = MAX(0.0_dp, model_drop)
 
    END FUNCTION qs_scf_kp_quadratic_position_drop
+
+! **************************************************************************************************
+!> \brief Bounded minimizer position of a one-dimensional quadratic Mermin model.
+!> \param slope directional Mermin slope g^T p
+!> \param quadratic directional curvature p^T H p
+!> \param max_scale largest admissible position
+!> \return descent position, or zero when the model has no finite positive descent
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_quadratic_descent_scale(slope, quadratic, max_scale) RESULT(scale)
+      REAL(KIND=dp), INTENT(IN)                          :: slope, quadratic, max_scale
+      REAL(KIND=dp)                                      :: scale
+
+      scale = 0.0_dp
+      IF (.NOT. (slope == slope .AND. quadratic == quadratic .AND. max_scale == max_scale)) RETURN
+      IF (ABS(slope) >= HUGE(slope) .OR. ABS(quadratic) >= HUGE(quadratic) .OR. &
+          ABS(max_scale) >= HUGE(max_scale)) RETURN
+      IF (slope <= EPSILON(MAX(1.0_dp, ABS(slope))) .OR. &
+          max_scale <= EPSILON(MAX(1.0_dp, ABS(max_scale)))) RETURN
+
+      scale = max_scale
+      IF (quadratic > EPSILON(MAX(1.0_dp, ABS(quadratic)))) &
+         scale = MIN(scale, slope/quadratic)
+      IF (scale <= EPSILON(MAX(1.0_dp, ABS(scale)))) THEN
+         scale = 0.0_dp
+         RETURN
+      END IF
+      IF (qs_scf_kp_quadratic_position_drop(slope, quadratic, scale) <= &
+          EPSILON(MAX(1.0_dp, ABS(slope)))) scale = 0.0_dp
+
+   END FUNCTION qs_scf_kp_quadratic_descent_scale
 
 ! **************************************************************************************************
 !> \brief Candidate-specific Mermin decrease at the accepted line-search position.
@@ -27847,7 +27878,8 @@ CONTAINS
                   closure_candidate_predicted_residual_start_sq, &
                   closure_candidate_predicted_residual_delta_dot, &
                   closure_candidate_predicted_residual_delta_sq, &
-                  closure_candidate_measured_response, closure_candidate_ready)
+                  closure_candidate_measured_response, closure_candidate_ready, &
+                  contract_complete_step=.TRUE.)
                closure_candidate_response_weighted_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   closure_candidate_response_weighted_trust_ratio = &
@@ -31068,6 +31100,7 @@ CONTAINS
 !> \param full_rotation_index full-pair index of every active rotation coordinate
 !> \param replace_base_subspace replace rather than increment the reference component in the
 !>        measured rotation span
+!> \param contract_complete_step contract the complete candidate to its quadratic descent minimum
 ! **************************************************************************************************
       SUBROUTINE build_kpoint_ot_reduced_secant_candidate( &
          rotation_hessian, rotation_residual_hessian, response_metric, rotation_modes, &
@@ -31082,7 +31115,8 @@ CONTAINS
          predicted_residual_ratio, reference_residual_ratio, predicted_residual_start_sq, &
          predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
          use_measured_response, full_rotation_gradient, full_rotation_targets, &
-         full_rotation_residual_weight, full_rotation_index, replace_base_subspace)
+         full_rotation_residual_weight, full_rotation_index, replace_base_subspace, &
+         contract_complete_step)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, &
                                                             rotation_residual_hessian, &
                                                             response_metric, rotation_modes, &
@@ -31113,21 +31147,23 @@ CONTAINS
          OPTIONAL                                        :: full_rotation_targets
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_residual_weight
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: full_rotation_index
-      LOGICAL, INTENT(IN), OPTIONAL                      :: replace_base_subspace
+      LOGICAL, INTENT(IN), OPTIONAL                      :: replace_base_subspace, &
+                                                            contract_complete_step
 
       INTEGER                                            :: modal_rank, nener, nfull, nrot, r
-      LOGICAL :: base_ready, base_residual_minimum_ready, correction_ready, &
-         current_residual_ready, full_response_requested, measured_response_requested, &
-         model_ready, replacement_requested, residual_minimum_ready, residual_step_ready, &
-         subspace_ready, trial_ready
+      LOGICAL :: base_ready, base_residual_minimum_ready, complete_contraction_requested, &
+         correction_ready, current_residual_ready, full_response_requested, &
+         measured_response_requested, model_ready, replacement_requested, residual_minimum_ready, &
+         residual_step_ready, subspace_ready, trial_ready
       REAL(KIND=dp) :: base_drop, base_quadratic, base_residual_delta_dot, base_residual_delta_sq, &
-         base_residual_minimum_position, base_residual_start_sq, base_slope, correction_cross, &
-         correction_drop, correction_quadratic, correction_slope, current_residual_alpha, &
-         current_residual_ratio, current_residual_scale, floor_quadratic, increment_slope, &
-         modal_shift, replacement_reference_residual_ratio, residual_direction_scale, &
-         residual_minimum_position, response_abs_unit, response_cross, response_weighted_unit, &
-         rotation_residual_alpha, rotation_residual_ratio, schur_gradient_fraction
-      REAL(KIND=dp) :: schur_model_residual, trial_drop, trial_quadratic, trial_slope
+         base_residual_minimum_position, base_residual_start_sq, base_slope, complete_step_scale, &
+         correction_cross, correction_direction_scale, correction_drop, correction_quadratic, &
+         correction_slope, current_residual_alpha, current_residual_ratio, current_residual_scale, &
+         floor_quadratic, increment_slope, modal_shift, replacement_reference_residual_ratio, &
+         residual_direction_scale, residual_minimum_position, response_abs_unit, response_cross, &
+         response_weighted_unit, rotation_residual_alpha
+      REAL(KIND=dp) :: rotation_residual_ratio, schur_gradient_fraction, schur_model_residual, &
+         trial_drop, trial_quadratic, trial_slope
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: base_response, base_rotation_residual, &
          correction_energy, correction_rotation, correction_rotation_residual, model_response, &
          raw_response, rhs_local, total_response
@@ -31171,6 +31207,9 @@ CONTAINS
          ready = .FALSE.
          replacement_requested = .FALSE.
          IF (PRESENT(replace_base_subspace)) replacement_requested = replace_base_subspace
+         complete_contraction_requested = .FALSE.
+         IF (PRESENT(contract_complete_step)) &
+            complete_contraction_requested = contract_complete_step
          measured_response_requested = .FALSE.
          IF (PRESENT(use_measured_response)) measured_response_requested = use_measured_response
          measured_response_requested = measured_response_requested .AND. .NOT. replacement_requested
@@ -31631,13 +31670,34 @@ CONTAINS
                                                            response_curv, direction_scale)
          response_abs_step = direction_scale*response_abs_unit
          response_weighted_step = direction_scale*response_weighted_unit
-         rotation_step(:) = rotation_base_step + direction_scale*correction_rotation
-         energy_step(:) = energy_base_step + direction_scale*correction_energy
-         total_response(:) = base_response + direction_scale*model_response
+         correction_direction_scale = direction_scale
+         rotation_step(:) = rotation_base_step + correction_direction_scale*correction_rotation
+         energy_step(:) = energy_base_step + correction_direction_scale*correction_energy
+         total_response(:) = base_response + correction_direction_scale*model_response
          CALL evaluate_kpoint_ot_projected_coupled_step_model( &
             rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
             total_response, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
             model_slope, model_quadratic, model_drop, model_ready)
+         complete_step_scale = 1.0_dp
+         IF (complete_contraction_requested .AND. model_ready) &
+            complete_step_scale = qs_scf_kp_quadratic_descent_scale( &
+                                  model_slope, model_quadratic, 1.0_dp)
+         IF (complete_contraction_requested .AND. &
+             complete_step_scale <= EPSILON(complete_step_scale)) model_ready = .FALSE.
+         IF (model_ready .AND. complete_step_scale < 1.0_dp) THEN
+            rotation_step(:) = complete_step_scale*rotation_step
+            energy_step(:) = complete_step_scale*energy_step
+            total_response(:) = complete_step_scale*total_response
+            model_gap = complete_step_scale*model_gap
+            model_gap_drop = complete_step_scale*complete_step_scale*model_gap_drop
+            response_abs_step = complete_step_scale*response_abs_step
+            response_weighted_step = complete_step_scale*response_weighted_step
+            CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+               rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
+               total_response, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+               model_slope, model_quadratic, model_drop, model_ready)
+         END IF
+         direction_scale = correction_direction_scale*complete_step_scale
          model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
          IF (model_gap_factor*response_trust > EPSILON(response_trust)) &
             model_gap_ratio = model_gap/(model_gap_factor*response_trust)
@@ -31652,7 +31712,10 @@ CONTAINS
             energy_step(:) = 0.0_dp
          ELSE
             rhs_local(:) = base_rotation_residual + &
-                           direction_scale*correction_rotation_residual
+                           correction_direction_scale*correction_rotation_residual
+            IF (complete_step_scale < 1.0_dp) &
+               rhs_local(:) = rotation_gradient + &
+                              complete_step_scale*(rhs_local - rotation_gradient)
             IF (full_response_requested) THEN
                CALL qs_scf_kp_active_residual_affine( &
                   full_rotation_gradient, rotation_gradient, rhs_local, full_rotation_index, &

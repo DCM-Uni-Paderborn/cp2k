@@ -102,15 +102,16 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
         qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
         qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
-        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
+        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -8039,7 +8040,11 @@ CONTAINS
               ABS(position_drop - 0.46875_dp) + &
               ABS(candidate_position_drop - 1.25_dp) + ABS(zero_position_drop) + &
               ABS(invalid_position_drop) + &
-              ABS(qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, -0.25_dp))
+              ABS(qs_scf_kp_quadratic_position_drop(2.0_dp, 1.0_dp, -0.25_dp)) + &
+              ABS(qs_scf_kp_quadratic_descent_scale(1.0_dp, 2.0_dp, 1.0_dp) - 0.5_dp) + &
+              ABS(qs_scf_kp_quadratic_descent_scale(1.0_dp, 2.0_dp, 0.25_dp) - 0.25_dp) + &
+              ABS(qs_scf_kp_quadratic_descent_scale(-1.0_dp, 2.0_dp, 1.0_dp)) + &
+              ABS(qs_scf_kp_quadratic_descent_scale(1.0_dp, -2.0_dp, 1.0_dp) - 1.0_dp)
       IF (.NOT. ready .OR. .NOT. scaled_ready .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,2(1X,L1),4(1X,ES16.8))') TRIM(label)// &
