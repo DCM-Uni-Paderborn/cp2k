@@ -267,6 +267,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_indefinite_residual_balanced_step, &
              qs_scf_kp_add_measured_response_complement, &
              qs_scf_kp_measured_residual_subspace_step, &
+             qs_scf_kp_mermin_residual_pareto_blend, &
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
              qs_scf_kp_reduced_subspace_replacement_step, &
@@ -4276,6 +4277,69 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_scf_kp_mermin_residual_pareto_scale
+
+! **************************************************************************************************
+!> \brief Minimize an affine residual while retaining a prescribed Mermin-model decrease.
+!>
+!>        The admissible interval is obtained from qs_scf_kp_mermin_residual_pareto_scale.
+!>        Within that interval this routine minimizes
+!>          ||r_base+alpha*dr||^2
+!>        exactly. It therefore selects a genuine Pareto point between an established candidate
+!>        and a finite-response candidate instead of comparing only their endpoints.
+!> \param base_drop established candidate Mermin-model decrease
+!> \param increment_slope affine correction slope
+!> \param correction_quadratic affine correction curvature
+!> \param residual_start_sq squared physical residual norm at the established candidate
+!> \param residual_delta_dot physical residual cross term <r_base,dr>
+!> \param residual_delta_sq squared physical residual change ||dr||^2
+!> \param max_scale largest scale allowed by response trust
+!> \param retained_fraction minimum retained fraction of base_drop
+!> \param scale residual-minimizing admissible correction scale
+!> \param retained_drop Mermin-model decrease at scale
+!> \param residual_ratio residual norm at scale relative to the established candidate
+!> \param ready whether a finite positive residual-reducing Pareto point exists
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_mermin_residual_pareto_blend( &
+      base_drop, increment_slope, correction_quadratic, residual_start_sq, residual_delta_dot, &
+      residual_delta_sq, max_scale, retained_fraction, scale, retained_drop, residual_ratio, ready)
+      REAL(KIND=dp), INTENT(IN) :: base_drop, increment_slope, correction_quadratic, &
+         residual_start_sq, residual_delta_dot, residual_delta_sq, max_scale, retained_fraction
+      REAL(KIND=dp), INTENT(OUT)                         :: scale, retained_drop, residual_ratio
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      LOGICAL                                            :: energy_ready, residual_ready
+      REAL(KIND=dp)                                      :: energy_scale, residual_position, &
+                                                            tolerance
+
+      scale = 0.0_dp
+      retained_drop = MAX(0.0_dp, base_drop)
+      residual_ratio = 1.0_dp
+      ready = .FALSE.
+      CALL qs_scf_kp_mermin_residual_pareto_scale( &
+         base_drop, increment_slope, correction_quadratic, max_scale, retained_fraction, &
+         energy_scale, retained_drop, energy_ready)
+      IF (.NOT. energy_ready) RETURN
+      CALL qs_scf_kp_affine_residual_minimum( &
+         residual_start_sq, residual_delta_dot, residual_delta_sq, energy_scale, &
+         residual_position, residual_ratio, residual_ready)
+      IF (.NOT. residual_ready) THEN
+         retained_drop = MAX(0.0_dp, base_drop)
+         RETURN
+      END IF
+
+      scale = residual_position
+      retained_drop = base_drop + scale*increment_slope - &
+                      0.5_dp*scale**2*correction_quadratic
+      tolerance = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(base_drop), ABS(retained_drop))
+      ready = retained_drop + tolerance >= retained_fraction*base_drop .AND. &
+              retained_drop == retained_drop .AND. ABS(retained_drop) < HUGE(retained_drop)
+      IF (.NOT. ready) THEN
+         scale = 0.0_dp
+         retained_drop = MAX(0.0_dp, base_drop)
+         residual_ratio = 1.0_dp
+      END IF
+
+   END SUBROUTINE qs_scf_kp_mermin_residual_pareto_blend
 
 ! **************************************************************************************************
 !> \brief Embed an active-space affine residual prediction in a stable full-pair ordering.
@@ -14868,66 +14932,68 @@ CONTAINS
          canonical_density_tangent_gain, canonical_density_tangent_gdot, &
          canonical_density_tangent_norm, canonical_density_tangent_raw_norm, &
          canonical_density_tangent_scalar_gain, canonical_mu_channel, channel_occ_curv_max
-      REAL(KIND=dp) :: channel_projector_weight, closure_candidate_direction_scale, &
-         closure_candidate_expected_drop, closure_candidate_history_quality, &
-         closure_candidate_model_calibrated_drop, closure_candidate_model_drop, &
-         closure_candidate_model_gap, closure_candidate_model_gap_drop, &
-         closure_candidate_model_gap_ratio, closure_candidate_model_quadratic, &
-         closure_candidate_model_slope, closure_candidate_predicted_residual_delta_dot, &
-         closure_candidate_predicted_residual_delta_sq, &
-         closure_candidate_predicted_residual_ratio, closure_candidate_predicted_residual_start_sq
-      REAL(KIND=dp) :: closure_candidate_reference_drop, &
-         closure_candidate_reference_residual_ratio, closure_candidate_response_abs_step, &
-         closure_candidate_response_abs_trust_ratio, closure_candidate_response_weighted_step, &
+      REAL(KIND=dp) :: channel_projector_weight, closure_candidate_base_blend_scale, &
+         closure_candidate_direction_scale, closure_candidate_expected_drop, &
+         closure_candidate_history_quality, closure_candidate_model_calibrated_drop, &
+         closure_candidate_model_drop, closure_candidate_model_gap, &
+         closure_candidate_model_gap_drop, closure_candidate_model_gap_ratio, &
+         closure_candidate_model_quadratic, closure_candidate_model_slope, &
+         closure_candidate_predicted_residual_delta_dot, &
+         closure_candidate_predicted_residual_delta_sq, closure_candidate_predicted_residual_ratio
+      REAL(KIND=dp) :: closure_candidate_predicted_residual_start_sq, &
+         closure_candidate_reference_drop, closure_candidate_reference_residual_ratio, &
+         closure_candidate_response_abs_step, closure_candidate_response_abs_trust_ratio, &
+         closure_candidate_response_weighted_step, &
          closure_candidate_response_weighted_trust_ratio, closure_candidate_trust_quality, &
          closure_response_accepted_drop, closure_response_accepted_quad, &
          closure_response_compatibility, closure_response_fitted_residual_ratio, &
          closure_response_independence, closure_response_mode_fullrank_curvature, &
-         closure_response_mode_norm, closure_response_mode_pair_curvature
-      REAL(KIND=dp) :: closure_response_mode_prior_curvature, &
-         closure_response_pair_fitted_residual_ratio, closure_response_residual_ratio, &
-         constrained_diag_shift_avg, constrained_direction_scale, constrained_expected_drop, &
-         constrained_expected_drop_ratio, constrained_gdot_energy, constrained_gdot_rotation, &
-         constrained_gdotp, constrained_model_calibrated_drop, constrained_model_drop, &
-         constrained_model_gap, constrained_model_gap_drop, constrained_model_gap_ratio, &
-         constrained_model_gap_trust, constrained_norm_energy, constrained_norm_ratio, &
-         constrained_norm_rotation, constrained_normp
-      REAL(KIND=dp) :: constrained_occ_response_diag_avg, constrained_occgap_shadow_drop, &
+         closure_response_mode_norm
+      REAL(KIND=dp) :: closure_response_mode_pair_curvature, &
+         closure_response_mode_prior_curvature, closure_response_pair_fitted_residual_ratio, &
+         closure_response_residual_ratio, constrained_diag_shift_avg, constrained_direction_scale, &
+         constrained_expected_drop, constrained_expected_drop_ratio, constrained_gdot_energy, &
+         constrained_gdot_rotation, constrained_gdotp, constrained_model_calibrated_drop, &
+         constrained_model_drop, constrained_model_gap, constrained_model_gap_drop, &
+         constrained_model_gap_ratio, constrained_model_gap_trust, constrained_norm_energy, &
+         constrained_norm_ratio
+      REAL(KIND=dp) :: constrained_norm_rotation, constrained_normp, &
+         constrained_occ_response_diag_avg, constrained_occgap_shadow_drop, &
          constrained_occgap_shadow_gap_ratio, constrained_quality_for_selection, &
          constrained_response_abs_step, constrained_response_abs_trust_ratio, &
          constrained_response_penalty_diag_avg, constrained_response_step, &
          constrained_response_trust_ratio, constrained_response_weighted_step, &
          constrained_response_weighted_trust_ratio, constrained_rot_diag_avg, &
          constrained_scale_quality, constrained_tether_response_diag_avg, &
-         constrained_trust_quality, coupled_diag_shift_avg, coupled_direction_scale, &
-         coupled_gdot_energy
-      REAL(KIND=dp) :: coupled_gdot_rotation, coupled_model_calibrated_drop, coupled_model_drop, &
-         coupled_model_gap, coupled_model_gap_drop, coupled_model_gap_ratio, &
-         coupled_model_gap_trust, coupled_norm_energy, coupled_norm_ratio, coupled_norm_rotation, &
+         constrained_trust_quality, coupled_diag_shift_avg
+      REAL(KIND=dp) :: coupled_direction_scale, coupled_gdot_energy, coupled_gdot_rotation, &
+         coupled_model_calibrated_drop, coupled_model_drop, coupled_model_gap, &
+         coupled_model_gap_drop, coupled_model_gap_ratio, coupled_model_gap_trust, &
+         coupled_norm_energy, coupled_norm_ratio, coupled_norm_rotation, &
          coupled_occ_response_diag_avg, coupled_response_abs_step, &
          coupled_response_abs_trust_ratio, coupled_response_step, coupled_response_trust_ratio, &
          coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
-         coupled_rot_diag_avg, coupled_scale_quality, coupled_tether_response_diag_avg, &
-         curv_projection_sum, dense_branch_expected_drop
-      REAL(KIND=dp) :: dense_coupled_gate_quality, dense_coupled_gate_quality_ema, &
-         dense_direction_scale, dense_expected_drop, dense_gdot_energy, dense_gdot_rotation, &
-         dense_metric_bridge_drop, dense_metric_bridge_floor_drop, dense_metric_bridge_gap, &
-         dense_metric_bridge_gap_drop, dense_metric_bridge_gap_drop_ratio, &
-         dense_metric_bridge_gap_ratio, dense_metric_bridge_gap_trust, dense_metric_bridge_scale, &
-         dense_metric_norm_energy, dense_metric_norm_rotation, dense_metric_normp, &
-         dense_metric_scale_ratio, dense_metric_shadow_bridge_drop, &
-         dense_metric_shadow_candidate_drop
-      REAL(KIND=dp) :: dense_metric_shadow_floor_drop, dense_metric_shadow_gap_drop, &
-         dense_metric_shadow_gap_drop_ratio, dense_metric_shadow_norm_energy, &
-         dense_metric_shadow_normp, dense_metric_shadow_scale, dense_metric_shadow_scale_ratio, &
-         dense_metric_shadow_weight, dense_metric_trust_scale, dense_metric_unit_abs_step, &
-         dense_metric_unit_weighted_step, dense_model_gap, dense_model_gap_drop, &
-         dense_model_gap_ratio, dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, &
-         dense_print_model_gap, dense_print_model_gap_drop, dense_print_model_gap_ratio, &
-         dense_print_model_gap_trust
-      REAL(KIND=dp) :: dense_projector_coupled_weight, dense_quality_for_selection, &
-         dense_residual_quality, dense_residual_quality_strict, dense_scale_quality, dense_term, &
-         dense_trust_quality, density_basis_curvfloor_history_abs_step, &
+         coupled_rot_diag_avg, coupled_scale_quality, coupled_tether_response_diag_avg
+      REAL(KIND=dp) :: curv_projection_sum, dense_branch_expected_drop, &
+         dense_coupled_gate_quality, dense_coupled_gate_quality_ema, dense_direction_scale, &
+         dense_expected_drop, dense_gdot_energy, dense_gdot_rotation, dense_metric_bridge_drop, &
+         dense_metric_bridge_floor_drop, dense_metric_bridge_gap, dense_metric_bridge_gap_drop, &
+         dense_metric_bridge_gap_drop_ratio, dense_metric_bridge_gap_ratio, &
+         dense_metric_bridge_gap_trust, dense_metric_bridge_scale, dense_metric_norm_energy, &
+         dense_metric_norm_rotation, dense_metric_normp, dense_metric_scale_ratio, &
+         dense_metric_shadow_bridge_drop
+      REAL(KIND=dp) :: dense_metric_shadow_candidate_drop, dense_metric_shadow_floor_drop, &
+         dense_metric_shadow_gap_drop, dense_metric_shadow_gap_drop_ratio, &
+         dense_metric_shadow_norm_energy, dense_metric_shadow_normp, dense_metric_shadow_scale, &
+         dense_metric_shadow_scale_ratio, dense_metric_shadow_weight, dense_metric_trust_scale, &
+         dense_metric_unit_abs_step, dense_metric_unit_weighted_step, dense_model_gap, &
+         dense_model_gap_drop, dense_model_gap_ratio, dense_model_gap_trust, dense_norm_energy, &
+         dense_norm_rotation, dense_print_model_gap, dense_print_model_gap_drop, &
+         dense_print_model_gap_ratio
+      REAL(KIND=dp) :: dense_print_model_gap_trust, dense_projector_coupled_weight, &
+         dense_quality_for_selection, dense_residual_quality, dense_residual_quality_strict, &
+         dense_scale_quality, dense_term, dense_trust_quality, &
+         density_basis_curvfloor_history_abs_step, &
          density_basis_curvfloor_history_abs_trust_ratio, density_basis_curvfloor_history_drop, &
          density_basis_curvfloor_history_gap_drop, density_basis_curvfloor_history_quality, &
          density_basis_curvfloor_history_trust_quality, &
@@ -16632,6 +16698,7 @@ CONTAINS
          reduced_secant_response_weighted_trust_ratio = 0.0_dp
          reduced_secant_trust_quality = 1.0_dp
          closure_candidate_direction_scale = 0.0_dp
+         closure_candidate_base_blend_scale = 0.0_dp
          closure_candidate_expected_drop = 0.0_dp
          closure_candidate_history_quality = 1.0_dp
          closure_candidate_model_calibrated_drop = 0.0_dp
@@ -27879,7 +27946,11 @@ CONTAINS
                   closure_candidate_predicted_residual_delta_dot, &
                   closure_candidate_predicted_residual_delta_sq, &
                   closure_candidate_measured_response, closure_candidate_ready, &
-                  contract_complete_step=.TRUE.)
+                  pareto_blend_with_base=.TRUE., &
+                  base_blend_scale=closure_candidate_base_blend_scale, &
+                  rebase_established_model=.TRUE., full_rotation_gradient=full_grad_rot, &
+                  full_rotation_residual_weight=full_var_physical_grad_metric_weight, &
+                  full_rotation_index=var_full_index)
                closure_candidate_response_weighted_trust_ratio = 0.0_dp
                IF (response_trust > EPSILON(response_trust)) &
                   closure_candidate_response_weighted_trust_ratio = &
@@ -27907,12 +27978,13 @@ CONTAINS
             IF (schur_attempt == 3 .AND. logger%iter_info%print_level >= high_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
-                      '(A,1X,I3,3(1X,L1),13(1X,ES16.8))') &
-               " OT Schur closure affine candidate group enabled subspace ready slope quad scale "// &
+                      '(A,1X,I3,3(1X,L1),14(1X,ES16.8))') &
+               " OT Schur closure affine candidate group enabled subspace ready slope quad scale blend "// &
                "drop cdrop expected hq tq wtrust atrust gapratio residual reference_residual:", &
                target_group, closure_candidate_enabled, closure_response_subspace_ready, &
                closure_candidate_ready, closure_candidate_model_slope, &
                closure_candidate_model_quadratic, closure_candidate_direction_scale, &
+               closure_candidate_base_blend_scale, &
                closure_candidate_model_drop, closure_candidate_model_calibrated_drop, &
                closure_candidate_expected_drop, closure_candidate_history_quality, &
                closure_candidate_trust_quality, closure_candidate_response_weighted_trust_ratio, &
@@ -31101,6 +31173,11 @@ CONTAINS
 !> \param replace_base_subspace replace rather than increment the reference component in the
 !>        measured rotation span
 !> \param contract_complete_step contract the complete candidate to its quadratic descent minimum
+!> \param pareto_blend_with_base minimize the physical residual between the established candidate
+!>        and the finite-position candidate while retaining the established Mermin decrease
+!> \param base_blend_scale finite-response fraction in the resulting Pareto candidate
+!> \param rebase_established_model preserve the accepted base curvature and add only the
+!>        finite-response correction and cross terms
 ! **************************************************************************************************
       SUBROUTINE build_kpoint_ot_reduced_secant_candidate( &
          rotation_hessian, rotation_residual_hessian, response_metric, rotation_modes, &
@@ -31116,7 +31193,8 @@ CONTAINS
          predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
          use_measured_response, full_rotation_gradient, full_rotation_targets, &
          full_rotation_residual_weight, full_rotation_index, replace_base_subspace, &
-         contract_complete_step)
+         contract_complete_step, pareto_blend_with_base, base_blend_scale, &
+         rebase_established_model)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, &
                                                             rotation_residual_hessian, &
                                                             response_metric, rotation_modes, &
@@ -31148,22 +31226,28 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_residual_weight
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: full_rotation_index
       LOGICAL, INTENT(IN), OPTIONAL                      :: replace_base_subspace, &
-                                                            contract_complete_step
+                                                            contract_complete_step, &
+                                                            pareto_blend_with_base
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: base_blend_scale
+      LOGICAL, INTENT(IN), OPTIONAL                      :: rebase_established_model
 
       INTEGER                                            :: modal_rank, nener, nfull, nrot, r
       LOGICAL :: base_ready, base_residual_minimum_ready, complete_contraction_requested, &
-         correction_ready, current_residual_ready, full_response_requested, &
-         measured_response_requested, model_ready, replacement_requested, residual_minimum_ready, &
-         residual_step_ready, subspace_ready, trial_ready
+         correction_ready, current_residual_ready, full_residual_requested, &
+         full_response_requested, measured_response_requested, model_ready, &
+         pareto_blend_requested, pareto_ready, rebase_established_requested, &
+         replacement_requested, residual_minimum_ready, residual_step_ready, subspace_ready, &
+         trial_ready
       REAL(KIND=dp) :: base_drop, base_quadratic, base_residual_delta_dot, base_residual_delta_sq, &
          base_residual_minimum_position, base_residual_start_sq, base_slope, complete_step_scale, &
          correction_cross, correction_direction_scale, correction_drop, correction_quadratic, &
          correction_slope, current_residual_alpha, current_residual_ratio, current_residual_scale, &
-         floor_quadratic, increment_slope, modal_shift, replacement_reference_residual_ratio, &
-         residual_direction_scale, residual_minimum_position, response_abs_unit, response_cross, &
-         response_weighted_unit, rotation_residual_alpha
-      REAL(KIND=dp) :: rotation_residual_ratio, schur_gradient_fraction, schur_model_residual, &
-         trial_drop, trial_quadratic, trial_slope
+         floor_quadratic, increment_slope, modal_shift, model_increment, pareto_delta_dot, &
+         pareto_delta_sq, pareto_drop, pareto_residual_ratio, pareto_scale, pareto_start_sq, &
+         replacement_reference_residual_ratio, residual_direction_scale
+      REAL(KIND=dp) :: residual_minimum_position, response_abs_unit, response_cross, &
+         response_weighted_unit, rotation_residual_alpha, rotation_residual_ratio, &
+         schur_gradient_fraction, schur_model_residual, trial_drop, trial_quadratic, trial_slope
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: base_response, base_rotation_residual, &
          correction_energy, correction_rotation, correction_rotation_residual, model_response, &
          raw_response, rhs_local, total_response
@@ -31205,26 +31289,37 @@ CONTAINS
          predicted_residual_delta_sq = 0.0_dp
          measured_response_used = .FALSE.
          ready = .FALSE.
+         IF (PRESENT(base_blend_scale)) base_blend_scale = 0.0_dp
          replacement_requested = .FALSE.
          IF (PRESENT(replace_base_subspace)) replacement_requested = replace_base_subspace
          complete_contraction_requested = .FALSE.
          IF (PRESENT(contract_complete_step)) &
             complete_contraction_requested = contract_complete_step
+         pareto_blend_requested = .FALSE.
+         IF (PRESENT(pareto_blend_with_base)) &
+            pareto_blend_requested = pareto_blend_with_base
+         rebase_established_requested = .FALSE.
+         IF (PRESENT(rebase_established_model)) &
+            rebase_established_requested = rebase_established_model
+         CPASSERT(.NOT. (complete_contraction_requested .AND. rebase_established_requested))
          measured_response_requested = .FALSE.
          IF (PRESENT(use_measured_response)) measured_response_requested = use_measured_response
          measured_response_requested = measured_response_requested .AND. .NOT. replacement_requested
-         full_response_requested = PRESENT(full_rotation_gradient)
-         CPASSERT(PRESENT(full_rotation_targets) .EQV. full_response_requested)
-         CPASSERT(PRESENT(full_rotation_residual_weight) .EQV. full_response_requested)
-         CPASSERT(PRESENT(full_rotation_index) .EQV. full_response_requested)
+         full_residual_requested = PRESENT(full_rotation_gradient)
+         CPASSERT(PRESENT(full_rotation_residual_weight) .EQV. full_residual_requested)
+         CPASSERT(PRESENT(full_rotation_index) .EQV. full_residual_requested)
+         full_response_requested = PRESENT(full_rotation_targets)
+         CPASSERT(.NOT. full_response_requested .OR. full_residual_requested)
          nfull = nrot
-         IF (full_response_requested) THEN
+         IF (full_residual_requested) THEN
             nfull = SIZE(full_rotation_gradient)
-            CPASSERT(ALL(SHAPE(full_rotation_targets) == [nfull, SIZE(rotation_modes, 2)]))
             CPASSERT(SIZE(full_rotation_residual_weight) == nfull)
             CPASSERT(ALL(full_rotation_residual_weight >= 0.0_dp))
             CPASSERT(SIZE(full_rotation_index) == nrot)
             CPASSERT(ALL(full_rotation_index > 0 .AND. full_rotation_index <= nfull))
+         END IF
+         IF (full_response_requested) THEN
+            CPASSERT(ALL(SHAPE(full_rotation_targets) == [nfull, SIZE(rotation_modes, 2)]))
          END IF
          IF (nrot <= 0 .OR. nener <= 0) RETURN
 
@@ -31290,7 +31385,7 @@ CONTAINS
                channel_nmo, e_offset, response_cross)
             correction_rotation_residual(r) = correction_rotation_residual(r) + response_cross
          END DO
-         IF (full_response_requested) THEN
+         IF (full_residual_requested) THEN
             CALL qs_scf_kp_active_residual_affine( &
                full_rotation_gradient, rotation_gradient, base_rotation_residual, &
                full_rotation_index, full_rotation_residual_weight, base_residual_start_sq, &
@@ -31674,10 +31769,17 @@ CONTAINS
          rotation_step(:) = rotation_base_step + correction_direction_scale*correction_rotation
          energy_step(:) = energy_base_step + correction_direction_scale*correction_energy
          total_response(:) = base_response + correction_direction_scale*model_response
-         CALL evaluate_kpoint_ot_projected_coupled_step_model( &
-            rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
-            total_response, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
-            model_slope, model_quadratic, model_drop, model_ready)
+         IF (rebase_established_requested) THEN
+            CALL qs_scf_kp_affine_correction_model( &
+               base_slope, established_model_quadratic, correction_slope, correction_quadratic, &
+               correction_cross, correction_direction_scale, model_slope, model_quadratic, &
+               model_drop, model_increment, model_ready)
+         ELSE
+            CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+               rotation_gradient, energy_gradient, rotation_hessian, rotation_step, energy_step, &
+               total_response, occ_curv, tether_curv, occ_curv_sum, channel_nmo, e_offset, &
+               model_slope, model_quadratic, model_drop, model_ready)
+         END IF
          complete_step_scale = 1.0_dp
          IF (complete_contraction_requested .AND. model_ready) &
             complete_step_scale = qs_scf_kp_quadratic_descent_scale( &
@@ -31698,11 +31800,24 @@ CONTAINS
                model_slope, model_quadratic, model_drop, model_ready)
          END IF
          direction_scale = correction_direction_scale*complete_step_scale
-         model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+         IF (rebase_established_requested) THEN
+            model_calibrated_drop = qs_scf_kp_affine_rebased_drop( &
+                                    established_model_slope, base_slope, &
+                                    established_model_calibrated_drop, model_increment, &
+                                    model_gap_drop)
+         ELSE
+            model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+         END IF
          IF (model_gap_factor*response_trust > EPSILON(response_trust)) &
             model_gap_ratio = model_gap/(model_gap_factor*response_trust)
-         ready = model_ready .AND. model_calibrated_drop > &
-                 base_drop + EPSILON(MAX(model_drop, base_drop))
+         IF (rebase_established_requested) THEN
+            ready = model_ready .AND. model_calibrated_drop > &
+                    established_model_calibrated_drop + &
+                    EPSILON(MAX(model_drop, established_model_calibrated_drop))
+         ELSE
+            ready = model_ready .AND. model_calibrated_drop > &
+                    base_drop + EPSILON(MAX(model_drop, base_drop))
+         END IF
          IF (response_trust > EPSILON(response_trust)) &
             ready = ready .AND. response_weighted_step <= response_trust
          IF (response_abs_trust > EPSILON(response_abs_trust)) &
@@ -31716,7 +31831,100 @@ CONTAINS
             IF (complete_step_scale < 1.0_dp) &
                rhs_local(:) = rotation_gradient + &
                               complete_step_scale*(rhs_local - rotation_gradient)
-            IF (full_response_requested) THEN
+            IF (pareto_blend_requested) THEN
+               correction_rotation(:) = rotation_step - rotation_base_step
+               correction_energy(:) = energy_step - energy_base_step
+               model_response(:) = total_response - base_response
+               correction_rotation_residual(:) = rhs_local - base_rotation_residual
+               CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+                  rotation_gradient, energy_gradient, rotation_hessian, correction_rotation, &
+                  correction_energy, model_response, occ_curv, tether_curv, occ_curv_sum, &
+                  channel_nmo, e_offset, correction_slope, correction_quadratic, correction_drop, &
+                  correction_ready)
+               IF (rebase_established_requested) THEN
+                  correction_cross = 0.5_dp* &
+                                     (model_quadratic - established_model_quadratic - &
+                                      correction_quadratic)
+               ELSE
+                  correction_cross = 0.5_dp* &
+                                     (model_quadratic - base_quadratic - correction_quadratic)
+               END IF
+               increment_slope = correction_slope - correction_cross
+               IF (full_residual_requested) THEN
+                  pareto_start_sq = DOT_PRODUCT(full_rotation_residual_weight, &
+                                                full_rotation_gradient**2)
+                  pareto_delta_dot = 0.0_dp
+                  pareto_delta_sq = 0.0_dp
+                  DO r = 1, nrot
+                     pareto_start_sq = pareto_start_sq + &
+                                       full_rotation_residual_weight(full_rotation_index(r))* &
+                                       (base_rotation_residual(r)**2 - &
+                                        full_rotation_gradient(full_rotation_index(r))**2)
+                     pareto_delta_dot = pareto_delta_dot + &
+                                        full_rotation_residual_weight(full_rotation_index(r))* &
+                                        base_rotation_residual(r)* &
+                                        correction_rotation_residual(r)
+                     pareto_delta_sq = pareto_delta_sq + &
+                                       full_rotation_residual_weight(full_rotation_index(r))* &
+                                       correction_rotation_residual(r)**2
+                  END DO
+               ELSE
+                  pareto_start_sq = DOT_PRODUCT(rotation_residual_weight, &
+                                                base_rotation_residual**2)
+                  pareto_delta_dot = DOT_PRODUCT(rotation_residual_weight, &
+                                                 base_rotation_residual* &
+                                                 correction_rotation_residual)
+                  pareto_delta_sq = DOT_PRODUCT(rotation_residual_weight, &
+                                                correction_rotation_residual**2)
+               END IF
+               pareto_drop = base_drop
+               IF (rebase_established_requested) pareto_drop = established_model_calibrated_drop
+               CALL qs_scf_kp_mermin_residual_pareto_blend( &
+                  pareto_drop, increment_slope, correction_quadratic, pareto_start_sq, &
+                  pareto_delta_dot, pareto_delta_sq, 1.0_dp, 1.0_dp, pareto_scale, pareto_drop, &
+                  pareto_residual_ratio, pareto_ready)
+               IF (PRESENT(base_blend_scale) .AND. pareto_ready) &
+                  base_blend_scale = pareto_scale
+               IF (pareto_ready .AND. pareto_scale < 1.0_dp) THEN
+                  rotation_step(:) = rotation_base_step + pareto_scale*correction_rotation
+                  energy_step(:) = energy_base_step + pareto_scale*correction_energy
+                  total_response(:) = base_response + pareto_scale*model_response
+                  rhs_local(:) = base_rotation_residual + &
+                                 pareto_scale*correction_rotation_residual
+                  model_gap = pareto_scale*model_gap
+                  model_gap_drop = pareto_scale*pareto_scale*model_gap_drop
+                  response_abs_step = pareto_scale*response_abs_step
+                  response_weighted_step = pareto_scale*response_weighted_step
+                  direction_scale = pareto_scale*direction_scale
+                  IF (rebase_established_requested) THEN
+                     CALL qs_scf_kp_affine_correction_model( &
+                        base_slope, established_model_quadratic, correction_slope, &
+                        correction_quadratic, correction_cross, pareto_scale, model_slope, &
+                        model_quadratic, model_drop, model_increment, model_ready)
+                     model_calibrated_drop = qs_scf_kp_affine_rebased_drop( &
+                                             established_model_slope, base_slope, &
+                                             established_model_calibrated_drop, model_increment, &
+                                             model_gap_drop)
+                  ELSE
+                     CALL evaluate_kpoint_ot_projected_coupled_step_model( &
+                        rotation_gradient, energy_gradient, rotation_hessian, rotation_step, &
+                        energy_step, total_response, occ_curv, tether_curv, occ_curv_sum, &
+                        channel_nmo, e_offset, model_slope, model_quadratic, model_drop, model_ready)
+                     model_calibrated_drop = MAX(0.0_dp, model_drop - model_gap_drop)
+                  END IF
+                  IF (model_gap_factor*response_trust > EPSILON(response_trust)) &
+                     model_gap_ratio = model_gap/(model_gap_factor*response_trust)
+                  IF (rebase_established_requested) THEN
+                     ready = model_ready .AND. model_calibrated_drop > &
+                             established_model_calibrated_drop + &
+                             EPSILON(MAX(model_drop, established_model_calibrated_drop))
+                  ELSE
+                     ready = model_ready .AND. model_calibrated_drop > &
+                             base_drop + EPSILON(MAX(model_drop, base_drop))
+                  END IF
+               END IF
+            END IF
+            IF (full_residual_requested) THEN
                CALL qs_scf_kp_active_residual_affine( &
                   full_rotation_gradient, rotation_gradient, rhs_local, full_rotation_index, &
                   full_rotation_residual_weight, predicted_residual_start_sq, &

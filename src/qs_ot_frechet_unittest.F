@@ -100,18 +100,18 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
         qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
-        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
-        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
-        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
-        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
-        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_density_response
+        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
+        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
+        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_descent_scale, &
+        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
+        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
+        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -7934,26 +7934,38 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: tol
       INTEGER, INTENT(INOUT)                             :: nfail
 
-      LOGICAL                                            :: capped_ready, ready
-      REAL(KIND=dp)                                      :: capped_drop, capped_scale, drop, error, &
-                                                            expected_scale, scale
+      LOGICAL                                            :: blend_ready, capped_ready, ready, &
+                                                            rejected_ready
+      REAL(KIND=dp) :: blend_drop, blend_ratio, blend_scale, capped_drop, capped_scale, drop, &
+         error, expected_scale, rejected_drop, rejected_ratio, rejected_scale, scale
 
       expected_scale = (0.2_dp + SQRT(0.44_dp))/2.0_dp
       CALL qs_scf_kp_mermin_residual_pareto_scale( &
          1.0_dp, 0.2_dp, 2.0_dp, 1.0_dp, 0.9_dp, scale, drop, ready)
       CALL qs_scf_kp_mermin_residual_pareto_scale( &
          1.0_dp, 0.2_dp, 2.0_dp, 0.1_dp, 0.9_dp, capped_scale, capped_drop, capped_ready)
+      CALL qs_scf_kp_mermin_residual_pareto_blend( &
+         1.0_dp, 0.2_dp, 2.0_dp, 1.0_dp, -1.0_dp, 4.0_dp, 1.0_dp, 0.9_dp, &
+         blend_scale, blend_drop, blend_ratio, blend_ready)
+      CALL qs_scf_kp_mermin_residual_pareto_blend( &
+         1.0_dp, 0.2_dp, 2.0_dp, 1.0_dp, 1.0_dp, 4.0_dp, 1.0_dp, 0.9_dp, &
+         rejected_scale, rejected_drop, rejected_ratio, rejected_ready)
       error = ABS(scale - expected_scale) + ABS(drop - 0.9_dp) + &
-              ABS(capped_scale - 0.1_dp) + ABS(capped_drop - 1.01_dp)
-      IF (.NOT. ready .OR. .NOT. capped_ready .OR. error > tol) THEN
+              ABS(capped_scale - 0.1_dp) + ABS(capped_drop - 1.01_dp) + &
+              ABS(blend_scale - 0.25_dp) + ABS(blend_drop - 0.9875_dp) + &
+              ABS(blend_ratio - SQRT(0.75_dp)) + ABS(rejected_scale) + &
+              ABS(rejected_drop - 1.0_dp) + ABS(rejected_ratio - 1.0_dp)
+      IF (.NOT. ready .OR. .NOT. capped_ready .OR. .NOT. blend_ready .OR. &
+          rejected_ready .OR. error > tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,2(1X,L1),5(1X,ES16.8))') TRIM(label)// &
-            " FAILED with ready/capped/error/scale/drop/cscale/cdrop", &
-            ready, capped_ready, error, scale, drop, capped_scale, capped_drop
+         WRITE (*, '(A,4(1X,L1),8(1X,ES16.8))') TRIM(label)// &
+            " FAILED with ready/capped/blend/rejected/error/scale/drop/cscale/cdrop/bscale/bdrop/bratio", &
+            ready, capped_ready, blend_ready, rejected_ready, error, scale, drop, capped_scale, &
+            capped_drop, blend_scale, blend_drop, blend_ratio
       ELSE
-         WRITE (*, '(A,5(1X,ES16.8))') TRIM(label)// &
-            " OK with error/scale/drop/cscale/cdrop", &
-            error, scale, drop, capped_scale, capped_drop
+         WRITE (*, '(A,8(1X,ES16.8))') TRIM(label)// &
+            " OK with error/scale/drop/cscale/cdrop/bscale/bdrop/bratio", &
+            error, scale, drop, capped_scale, capped_drop, blend_scale, blend_drop, blend_ratio
       END IF
 
    END SUBROUTINE check_kpoint_mermin_residual_pareto_scale
