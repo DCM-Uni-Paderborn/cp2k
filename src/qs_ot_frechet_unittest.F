@@ -6904,32 +6904,36 @@ CONTAINS
 
       INTEGER, PARAMETER                                 :: nmode = 3, nrot = 5
 
-      INTEGER :: base_negative_modes, base_positive_modes, base_unsupported_modes, &
-         history_negative_modes, history_positive_modes, history_unsupported_modes, &
-         incompatible_negative_modes, incompatible_positive_modes, incompatible_unsupported_modes, &
-         negative_modes, positive_modes, prior_negative_modes, prior_positive_modes, &
-         prior_unsupported_modes, rank_deficient_negative_modes, rank_deficient_positive_modes, &
+      INTEGER :: averaged_negative_modes, averaged_positive_modes, averaged_unsupported_modes, &
+         base_negative_modes, base_positive_modes, base_unsupported_modes, history_negative_modes, &
+         history_positive_modes, history_unsupported_modes, incompatible_negative_modes, &
+         incompatible_positive_modes, incompatible_unsupported_modes, negative_modes, &
+         positive_modes, prior_negative_modes, prior_positive_modes, prior_unsupported_modes, &
+         rank_deficient_negative_modes, rank_deficient_positive_modes, &
          rank_deficient_unsupported_modes, scaled_negative_modes, scaled_positive_modes, &
-         scaled_unsupported_modes, transverse_negative_modes, transverse_positive_modes, &
-         transverse_unsupported_modes
-      INTEGER :: unsupported_modes
-      LOGICAL                                            :: history_ready, incompatible_ready, &
-                                                            prior_ready, rank_deficient_ready, &
-                                                            ready, scaled_ready, transverse_ready
-      REAL(KIND=dp) :: compatibility, error, history_compatibility, history_independence, &
+         scaled_unsupported_modes
+      INTEGER :: transverse_negative_modes, transverse_positive_modes, &
+         transverse_unsupported_modes, unsupported_modes
+      LOGICAL :: averaged_ready, history_ready, incompatible_ready, prior_ready, &
+         rank_deficient_ready, ready, scaled_ready, transverse_ready
+      REAL(KIND=dp) :: averaged_compatibility, averaged_fitted_residual_ratio, &
+         averaged_independence, averaged_pair_fitted_residual_ratio, averaged_residual_ratio, &
+         compatibility, error, history_compatibility, history_independence, &
          history_residual_ratio, incompatible_compatibility, incompatible_independence, &
          incompatible_residual_ratio, independence, prior_compatibility, prior_independence, &
          prior_residual_ratio, rank_deficient_compatibility, rank_deficient_independence, &
          rank_deficient_residual_ratio, residual_ratio, scaled_compatibility, scaled_independence, &
-         scaled_residual_ratio, transverse_compatibility, transverse_independence, &
-         transverse_residual_ratio
+         scaled_residual_ratio
+      REAL(KIND=dp) :: transverse_compatibility, transverse_independence, transverse_residual_ratio
       REAL(KIND=dp), DIMENSION(nrot, 2) :: incompatible_targets, rank_deficient_steps, &
          rank_deficient_targets, response_steps, response_targets, transverse_targets
-      REAL(KIND=dp), DIMENSION(nrot, 3)                  :: history_steps, history_targets
+      REAL(KIND=dp), DIMENSION(nrot, 3)                  :: averaged_steps, averaged_targets, &
+                                                            history_steps, history_targets
       REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
-      REAL(KIND=dp), DIMENSION(nrot, nrot) :: correction, expected, history_correction, &
-         incompatible_correction, prior, prior_correction, prior_expected_correction, &
-         rank_deficient_correction, scaled_correction, transverse_correction
+      REAL(KIND=dp), DIMENSION(nrot, nrot) :: averaged_correction, correction, expected, &
+         history_correction, incompatible_correction, prior, prior_correction, &
+         prior_expected_correction, rank_deficient_correction, scaled_correction, &
+         transverse_correction
 
       tangent_modes(:, :) = 0.0_dp
       tangent_modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
@@ -6985,6 +6989,32 @@ CONTAINS
           prior_positive_modes /= 1 .OR. prior_negative_modes /= 1 .OR. &
           prior_unsupported_modes /= 1 .OR. prior_independence <= tol .OR. &
           prior_compatibility > tol .OR. prior_residual_ratio > tol) &
+         error = HUGE(1.0_dp)
+
+      ! Three equal-scale accepted directions overdetermine a two-mode symmetric response.
+      ! The full-rank least-squares shadow fit must improve over the active pair response,
+      ! while the returned correction remains the independently validated pair model.
+      averaged_steps(:, :) = 0.0_dp
+      averaged_steps(1, 1) = 1.0_dp
+      averaged_steps(3, 2) = 1.0_dp
+      averaged_steps(1, 3) = 1.0_dp/SQRT(2.0_dp)
+      averaged_steps(3, 3) = 1.0_dp/SQRT(2.0_dp)
+      averaged_targets(:, :) = MATMUL(expected, averaged_steps)
+      averaged_targets(1, 3) = averaged_targets(1, 3) + 0.15_dp
+      averaged_targets(3, 3) = averaged_targets(3, 3) - 0.05_dp
+      CALL qs_scf_kp_validated_density_response( &
+         tangent_modes, averaged_steps, averaged_targets, averaged_correction, averaged_ready, &
+         averaged_positive_modes, averaged_negative_modes, averaged_unsupported_modes, &
+         averaged_independence, averaged_compatibility, averaged_residual_ratio, &
+         response_prior=prior, fitted_residual_ratio=averaged_fitted_residual_ratio, &
+         pair_fitted_residual_ratio=averaged_pair_fitted_residual_ratio)
+      IF (.NOT. averaged_ready .OR. averaged_positive_modes /= 1 .OR. &
+          averaged_negative_modes /= 1 .OR. averaged_unsupported_modes /= 1 .OR. &
+          averaged_fitted_residual_ratio >= averaged_pair_fitted_residual_ratio .OR. &
+          averaged_residual_ratio <= tol .OR. &
+          MAXVAL(ABS(averaged_correction - TRANSPOSE(averaged_correction))) > tol .OR. &
+          MAXVAL(ABS(averaged_correction(2:2, :))) > tol .OR. &
+          MAXVAL(ABS(averaged_correction(4:5, :))) > tol) &
          error = HUGE(1.0_dp)
 
       ! Scaling and permutation of the supplied channel tangents must leave the response invariant.
