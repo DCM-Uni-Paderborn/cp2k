@@ -34,6 +34,7 @@ MODULE qs_ot_minimizer
                                               qs_ot_get_derivative_ref_complex,&
                                               qs_ot_transport_ref_rotation_pair
    USE qs_ot_types,                     ONLY: qs_ot_occupation_preconditioner_active,&
+                                              qs_ot_reset_accepted_model_calibration,&
                                               qs_ot_type
 #include "./base/base_uses.f90"
 
@@ -3298,6 +3299,11 @@ CONTAINS
                qs_ot_env(1)%mermin_ls_closure_rejected = .TRUE.
                qs_ot_env(1)%schur_residual_history_reset_pending = .TRUE.
                qs_ot_env(1)%schur_residual_history_quality = 0.0_dp
+               ! The accepted candidate model has exhausted its residual trust
+               ! region even after repeated affine backtracking.  Retain the
+               ! physical secants and coordinates, but relearn the candidate
+               ! calibration together with the fresh steepest-descent history.
+               CALL qs_ot_reset_accepted_model_calibration(qs_ot_env(1))
             ELSE
                qs_ot_env(1)%OT_pos(count + 1) = &
                   ot_cg_kp_mermin_closure_backtrack*qs_ot_env(1)%OT_pos(count)

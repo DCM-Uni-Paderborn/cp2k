@@ -271,6 +271,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_mermin_residual_pareto_scale, &
              qs_scf_kp_reduced_subspace_step, &
              qs_scf_kp_reduced_subspace_replacement_step, &
+             qs_scf_kp_full_residual_completion, &
              qs_scf_kp_active_residual_affine, &
              qs_scf_kp_affine_residual_minimum, &
              qs_scf_kp_residual_compatible_scale, &
@@ -4340,6 +4341,40 @@ CONTAINS
       END IF
 
    END SUBROUTINE qs_scf_kp_mermin_residual_pareto_blend
+
+! **************************************************************************************************
+!> \brief Complete an active Schur residual with a measured full-pair response.
+!>
+!>        The measured response supplies raw complex-rotation components outside the selected
+!>        Schur subspace.  Active entries are replaced by the fixed-N reduced residual, which
+!>        already contains the coupled energy response and must therefore not be counted twice.
+!> \param full_residual current raw residual in the stable full-pair ordering
+!> \param active_trial_residual fixed-N reduced residual after the candidate
+!> \param active_full_index full-pair index of every active coordinate
+!> \param measured_full_response measured raw full-pair response caused by the candidate
+!> \param full_trial_residual completed candidate residual
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_full_residual_completion( &
+      full_residual, active_trial_residual, active_full_index, measured_full_response, &
+      full_trial_residual)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: full_residual, active_trial_residual
+      INTEGER, DIMENSION(:), INTENT(IN)                  :: active_full_index
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: measured_full_response
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: full_trial_residual
+
+      INTEGER                                            :: r
+
+      CPASSERT(SIZE(measured_full_response) == SIZE(full_residual))
+      CPASSERT(SIZE(full_trial_residual) == SIZE(full_residual))
+      CPASSERT(SIZE(active_full_index) == SIZE(active_trial_residual))
+      CPASSERT(ALL(active_full_index > 0 .AND. active_full_index <= SIZE(full_residual)))
+
+      full_trial_residual(:) = full_residual - measured_full_response
+      DO r = 1, SIZE(active_trial_residual)
+         full_trial_residual(active_full_index(r)) = active_trial_residual(r)
+      END DO
+
+   END SUBROUTINE qs_scf_kp_full_residual_completion
 
 ! **************************************************************************************************
 !> \brief Embed an active-space affine residual prediction in a stable full-pair ordering.
@@ -27949,6 +27984,8 @@ CONTAINS
                   pareto_blend_with_base=.TRUE., &
                   base_blend_scale=closure_candidate_base_blend_scale, &
                   rebase_established_model=.TRUE., full_rotation_gradient=full_grad_rot, &
+                  full_rotation_targets=reduced_secant_full_targets, &
+                  full_rotation_modes=reduced_secant_modes, &
                   full_rotation_residual_weight=full_var_physical_grad_metric_weight, &
                   full_rotation_index=var_full_index)
                closure_candidate_response_weighted_trust_ratio = 0.0_dp
@@ -30866,7 +30903,8 @@ CONTAINS
                      projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
                      projector_physical_direct_curv_vec, &
                      projector_physical_direct_delta, &
-                     closure_response_steps, closure_response_targets, closure_response_metric, &
+                     closure_response_steps, closure_response_targets, &
+                     closure_response_metric, &
                      rot_hessian_closure_candidate, rot_hessian_closure_fullrank_response, &
                      rot_hessian_closure_prior, rot_hessian_closure_response, rot_hessian_coupled, &
                      rot_hessian_multisecant, rot_hessian_prediction, &
@@ -31168,6 +31206,8 @@ CONTAINS
 !> \param use_measured_response ...
 !> \param full_rotation_gradient stable full-pair physical gradient for residual prediction
 !> \param full_rotation_targets accepted full-pair gradient changes for the active secant modes
+!> \param full_rotation_modes rotation modes associated with full_rotation_targets when they differ
+!>        from the modes used to construct the reduced correction
 !> \param full_rotation_residual_weight physical metric in the stable full-pair ordering
 !> \param full_rotation_index full-pair index of every active rotation coordinate
 !> \param replace_base_subspace replace rather than increment the reference component in the
@@ -31191,14 +31231,15 @@ CONTAINS
          model_gap, model_gap_drop, model_gap_ratio, response_weighted_step, response_abs_step, &
          predicted_residual_ratio, reference_residual_ratio, predicted_residual_start_sq, &
          predicted_residual_delta_dot, predicted_residual_delta_sq, measured_response_used, ready, &
-         use_measured_response, full_rotation_gradient, full_rotation_targets, &
+         use_measured_response, full_rotation_gradient, full_rotation_targets, full_rotation_modes, &
          full_rotation_residual_weight, full_rotation_index, replace_base_subspace, &
          contract_complete_step, pareto_blend_with_base, base_blend_scale, &
          rebase_established_model)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, &
                                                             rotation_residual_hessian, &
-                                                            response_metric, rotation_modes, &
-                                                            rotation_targets
+                                                            response_metric
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), TARGET :: rotation_modes
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_targets
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: rotation_residual_weight, &
                                                             rotation_step_weight
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: response, response_raw
@@ -31223,6 +31264,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_gradient
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
          OPTIONAL                                        :: full_rotation_targets
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN), &
+         OPTIONAL, TARGET                                :: full_rotation_modes
       REAL(KIND=dp), DIMENSION(:), INTENT(IN), OPTIONAL  :: full_rotation_residual_weight
       INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: full_rotation_index
       LOGICAL, INTENT(IN), OPTIONAL                      :: replace_base_subspace, &
@@ -31231,7 +31274,8 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: base_blend_scale
       LOGICAL, INTENT(IN), OPTIONAL                      :: rebase_established_model
 
-      INTEGER                                            :: modal_rank, nener, nfull, nrot, r
+      INTEGER                                            :: modal_rank, nener, nfull, nfull_modes, &
+                                                            nrot, r
       LOGICAL :: base_ready, base_residual_minimum_ready, complete_contraction_requested, &
          correction_ready, current_residual_ready, full_residual_requested, &
          full_response_requested, measured_response_requested, model_ready, &
@@ -31252,6 +31296,7 @@ CONTAINS
          correction_energy, correction_rotation, correction_rotation_residual, model_response, &
          raw_response, rhs_local, total_response
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: residual_hessian, schur_reference
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: full_rotation_response_modes
 
          nrot = SIZE(rotation_gradient)
          nener = SIZE(energy_gradient)
@@ -31310,6 +31355,7 @@ CONTAINS
          CPASSERT(PRESENT(full_rotation_index) .EQV. full_residual_requested)
          full_response_requested = PRESENT(full_rotation_targets)
          CPASSERT(.NOT. full_response_requested .OR. full_residual_requested)
+         CPASSERT(.NOT. PRESENT(full_rotation_modes) .OR. full_response_requested)
          nfull = nrot
          IF (full_residual_requested) THEN
             nfull = SIZE(full_rotation_gradient)
@@ -31319,7 +31365,12 @@ CONTAINS
             CPASSERT(ALL(full_rotation_index > 0 .AND. full_rotation_index <= nfull))
          END IF
          IF (full_response_requested) THEN
-            CPASSERT(ALL(SHAPE(full_rotation_targets) == [nfull, SIZE(rotation_modes, 2)]))
+            full_rotation_response_modes => rotation_modes
+            IF (PRESENT(full_rotation_modes)) full_rotation_response_modes => full_rotation_modes
+            CPASSERT(SIZE(full_rotation_response_modes, 1) == nrot)
+            nfull_modes = SIZE(full_rotation_response_modes, 2)
+            CPASSERT(SIZE(full_rotation_targets, 1) == nfull)
+            CPASSERT(SIZE(full_rotation_targets, 2) == nfull_modes)
          END IF
          IF (nrot <= 0 .OR. nener <= 0) RETURN
 
@@ -31497,12 +31548,14 @@ CONTAINS
                   measured_rank, measured_residual_ratio, measured_capture)
                IF (full_response_requested .AND. measured_subspace_ready) THEN
                   CALL qs_scf_kp_measured_residual_subspace_step( &
-                     rotation_base_step, full_rotation_targets, rotation_modes, rotation_step_weight, &
+                     rotation_base_step, full_rotation_targets, full_rotation_response_modes, &
+                     rotation_step_weight, &
                      measured_full_base_response, measured_full_base_projection, &
                      measured_full_base_ready, measured_full_base_rank, measured_full_base_ratio, &
                      measured_full_base_capture)
                   CALL qs_scf_kp_measured_residual_subspace_step( &
-                     measured_correction_rotation, full_rotation_targets, rotation_modes, &
+                     measured_correction_rotation, full_rotation_targets, &
+                     full_rotation_response_modes, &
                      rotation_step_weight, measured_full_correction_response, &
                      measured_full_correction_projection, measured_full_correction_ready, &
                      measured_full_correction_rank, measured_full_correction_ratio, &
@@ -31851,23 +31904,66 @@ CONTAINS
                END IF
                increment_slope = correction_slope - correction_cross
                IF (full_residual_requested) THEN
-                  pareto_start_sq = DOT_PRODUCT(full_rotation_residual_weight, &
-                                                full_rotation_gradient**2)
-                  pareto_delta_dot = 0.0_dp
-                  pareto_delta_sq = 0.0_dp
-                  DO r = 1, nrot
-                     pareto_start_sq = pareto_start_sq + &
-                                       full_rotation_residual_weight(full_rotation_index(r))* &
-                                       (base_rotation_residual(r)**2 - &
-                                        full_rotation_gradient(full_rotation_index(r))**2)
-                     pareto_delta_dot = pareto_delta_dot + &
-                                        full_rotation_residual_weight(full_rotation_index(r))* &
-                                        base_rotation_residual(r)* &
-                                        correction_rotation_residual(r)
-                     pareto_delta_sq = pareto_delta_sq + &
-                                       full_rotation_residual_weight(full_rotation_index(r))* &
-                                       correction_rotation_residual(r)**2
-                  END DO
+                  IF (full_response_requested .AND. .NOT. measured_response_requested) THEN
+                     BLOCK
+                        INTEGER :: full_base_rank, full_correction_rank
+                        LOGICAL :: full_base_ready, full_correction_ready
+                        REAL(KIND=dp) :: full_base_capture, full_base_ratio, &
+                                         full_correction_capture, full_correction_ratio
+                        REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: full_base_projection, &
+                                                                    full_base_response, full_base_residual, full_correction_delta, &
+                                                                    full_correction_projection, full_correction_response
+
+                        ALLOCATE (full_base_projection(nrot), full_base_response(nfull), &
+                                  full_base_residual(nfull), full_correction_delta(nfull), &
+                                  full_correction_projection(nrot), &
+                                  full_correction_response(nfull))
+                        CALL qs_scf_kp_measured_residual_subspace_step( &
+                           rotation_base_step, full_rotation_targets, full_rotation_response_modes, &
+                           rotation_step_weight, full_base_response, full_base_projection, &
+                           full_base_ready, full_base_rank, full_base_ratio, full_base_capture)
+                        CALL qs_scf_kp_measured_residual_subspace_step( &
+                           correction_rotation, full_rotation_targets, full_rotation_response_modes, &
+                           rotation_step_weight, full_correction_response, &
+                           full_correction_projection, full_correction_ready, &
+                           full_correction_rank, full_correction_ratio, full_correction_capture)
+                        CALL qs_scf_kp_full_residual_completion( &
+                           full_rotation_gradient, base_rotation_residual, full_rotation_index, &
+                           full_base_response, full_base_residual)
+                        full_correction_delta(:) = -full_correction_response
+                        DO r = 1, nrot
+                           full_correction_delta(full_rotation_index(r)) = &
+                              correction_rotation_residual(r)
+                        END DO
+                        pareto_start_sq = DOT_PRODUCT(full_rotation_residual_weight, &
+                                                      full_base_residual**2)
+                        pareto_delta_dot = DOT_PRODUCT(full_rotation_residual_weight, &
+                                                       full_base_residual*full_correction_delta)
+                        pareto_delta_sq = DOT_PRODUCT(full_rotation_residual_weight, &
+                                                      full_correction_delta**2)
+                        DEALLOCATE (full_base_projection, full_base_response, full_base_residual, &
+                                    full_correction_delta, full_correction_projection, &
+                                    full_correction_response)
+                     END BLOCK
+                  ELSE
+                     pareto_start_sq = DOT_PRODUCT(full_rotation_residual_weight, &
+                                                   full_rotation_gradient**2)
+                     pareto_delta_dot = 0.0_dp
+                     pareto_delta_sq = 0.0_dp
+                     DO r = 1, nrot
+                        pareto_start_sq = pareto_start_sq + &
+                                          full_rotation_residual_weight(full_rotation_index(r))* &
+                                          (base_rotation_residual(r)**2 - &
+                                           full_rotation_gradient(full_rotation_index(r))**2)
+                        pareto_delta_dot = pareto_delta_dot + &
+                                           full_rotation_residual_weight(full_rotation_index(r))* &
+                                           base_rotation_residual(r)* &
+                                           correction_rotation_residual(r)
+                        pareto_delta_sq = pareto_delta_sq + &
+                                          full_rotation_residual_weight(full_rotation_index(r))* &
+                                          correction_rotation_residual(r)**2
+                     END DO
+                  END IF
                ELSE
                   pareto_start_sq = DOT_PRODUCT(rotation_residual_weight, &
                                                 base_rotation_residual**2)
@@ -31925,11 +32021,47 @@ CONTAINS
                END IF
             END IF
             IF (full_residual_requested) THEN
-               CALL qs_scf_kp_active_residual_affine( &
-                  full_rotation_gradient, rotation_gradient, rhs_local, full_rotation_index, &
-                  full_rotation_residual_weight, predicted_residual_start_sq, &
-                  predicted_residual_delta_dot, predicted_residual_delta_sq, &
-                  predicted_residual_ratio)
+               IF (full_response_requested .AND. .NOT. measured_response_requested) THEN
+                  BLOCK
+                     INTEGER :: full_response_rank
+                     LOGICAL :: full_response_ready
+                     REAL(KIND=dp) :: full_response_capture, full_response_ratio
+                     REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: full_response, &
+                                                                 full_response_projection, full_trial_residual
+
+                     ALLOCATE (full_response(nfull), full_response_projection(nrot), &
+                               full_trial_residual(nfull))
+                     CALL qs_scf_kp_measured_residual_subspace_step( &
+                        rotation_step, full_rotation_targets, full_rotation_response_modes, &
+                        rotation_step_weight, &
+                        full_response, full_response_projection, full_response_ready, &
+                        full_response_rank, full_response_ratio, full_response_capture)
+                     CALL qs_scf_kp_full_residual_completion( &
+                        full_rotation_gradient, rhs_local, full_rotation_index, full_response, &
+                        full_trial_residual)
+                     predicted_residual_start_sq = &
+                        DOT_PRODUCT(full_rotation_residual_weight, full_rotation_gradient**2)
+                     predicted_residual_delta_dot = &
+                        DOT_PRODUCT(full_rotation_residual_weight, full_rotation_gradient* &
+                                    (full_trial_residual - full_rotation_gradient))
+                     predicted_residual_delta_sq = &
+                        DOT_PRODUCT(full_rotation_residual_weight, &
+                                    (full_trial_residual - full_rotation_gradient)**2)
+                     predicted_residual_ratio = 1.0_dp
+                     IF (predicted_residual_start_sq > EPSILON(predicted_residual_start_sq)) &
+                        predicted_residual_ratio = SQRT(MAX(0.0_dp, &
+                                                            DOT_PRODUCT(full_rotation_residual_weight, &
+                                                                        full_trial_residual**2))/ &
+                                                        predicted_residual_start_sq)
+                     DEALLOCATE (full_response, full_response_projection, full_trial_residual)
+                  END BLOCK
+               ELSE
+                  CALL qs_scf_kp_active_residual_affine( &
+                     full_rotation_gradient, rotation_gradient, rhs_local, full_rotation_index, &
+                     full_rotation_residual_weight, predicted_residual_start_sq, &
+                     predicted_residual_delta_dot, predicted_residual_delta_sq, &
+                     predicted_residual_ratio)
+               END IF
             ELSE
                predicted_residual_start_sq = &
                   DOT_PRODUCT(rotation_residual_weight, rotation_gradient**2)
@@ -32107,10 +32239,8 @@ CONTAINS
                                                             closure_response_targets
       LOGICAL, INTENT(OUT)                               :: closure_response_pair_ready
 
-      INTEGER                                            :: active_energy_count, global_channel, &
-                                                            global_spin, group, ie, ifull, imo, &
-                                                            jmo, local_channel, nener, nmo, nrot, &
-                                                            r, valid_i
+      INTEGER :: active_energy_count, global_channel, global_spin, group, ie, ifull, imo, jmo, &
+         local_channel, nener, nmo, nrot, nrot_full, r, valid_i
       LOGICAL :: closure_anchor_valid, closure_previous_valid, closure_secant_valid, &
          coupled_multisecant_finite, coupled_multisecant_ready, coupled_prediction_finite, &
          coupled_prediction_reverse_finite, coupled_schur_eligible, coupled_schur_finite, &
@@ -32219,6 +32349,7 @@ CONTAINS
          frozen_prediction_quality, frozen_prediction_residual_norm
 
          nrot = SIZE(var_channel)
+         nrot_full = SIZE(reduced_secant_full_targets, 1)
          nener = SIZE(occ_curv)
          CPASSERT(ALL(SHAPE(rotation_hessian_secant) == SHAPE(rotation_hessian)))
          CPASSERT(ALL(SHAPE(rotation_hessian_multisecant) == SHAPE(rotation_hessian)))

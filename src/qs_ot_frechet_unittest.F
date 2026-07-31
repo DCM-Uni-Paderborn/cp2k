@@ -99,19 +99,20 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
-        qs_scf_kp_indefinite_residual_balanced_step, qs_scf_kp_measured_residual_subspace_step, &
-        qs_scf_kp_mermin_residual_pareto_blend, qs_scf_kp_mermin_residual_pareto_scale, &
-        qs_scf_kp_occ_metric_continuation, qs_scf_kp_occ_preconditioner_transition, &
-        qs_scf_kp_orbital_schur_correction, qs_scf_kp_quadratic_descent_scale, &
-        qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
-        qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
-        qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
-        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
-        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response
+        qs_scf_kp_full_residual_completion, qs_scf_kp_indefinite_residual_balanced_step, &
+        qs_scf_kp_measured_residual_subspace_step, qs_scf_kp_mermin_residual_pareto_blend, &
+        qs_scf_kp_mermin_residual_pareto_scale, qs_scf_kp_occ_metric_continuation, &
+        qs_scf_kp_occ_preconditioner_transition, qs_scf_kp_orbital_schur_correction, &
+        qs_scf_kp_quadratic_descent_scale, qs_scf_kp_quadratic_position_drop, &
+        qs_scf_kp_raw_exit_floor, qs_scf_kp_raw_exit_floor_ratio, &
+        qs_scf_kp_reduced_secant_prediction, qs_scf_kp_reduced_subspace_replacement_step, &
+        qs_scf_kp_reduced_subspace_step, qs_scf_kp_residual_advantage_resolved, &
+        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
+        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
+        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -294,6 +295,8 @@ PROGRAM qs_ot_frechet_unittest
                                                5.0E-14_dp, nfail)
    CALL check_kpoint_active_residual_affine("k-point OT active/full affine residual", &
                                             5.0E-14_dp, nfail)
+   CALL check_kpoint_full_residual_completion("k-point OT measured full residual completion", &
+                                              5.0E-14_dp, nfail)
    CALL check_kpoint_affine_residual_minimum("k-point OT affine residual ray minimum", &
                                              5.0E-14_dp, nfail)
    CALL check_kpoint_affine_correction_model("k-point OT affine correction model", &
@@ -7583,6 +7586,42 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_active_residual_affine
+
+! **************************************************************************************************
+!> \brief check measured full-pair response completion outside an active Schur subspace
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_full_residual_completion(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, DIMENSION(2)                              :: active_full_index
+      REAL(KIND=dp)                                      :: error
+      REAL(KIND=dp), DIMENSION(2)                        :: active_trial_residual
+      REAL(KIND=dp), DIMENSION(4)                        :: expected, full_residual, full_response, &
+                                                            full_trial_residual
+
+      full_residual(:) = [3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp]
+      active_trial_residual(:) = [1.0_dp, 2.0_dp]
+      active_full_index(:) = [2, 4]
+      full_response(:) = [0.5_dp, 10.0_dp, 1.5_dp, 20.0_dp]
+      expected(:) = [2.5_dp, 1.0_dp, 3.5_dp, 2.0_dp]
+      CALL qs_scf_kp_full_residual_completion( &
+         full_residual, active_trial_residual, active_full_index, full_response, &
+         full_trial_residual)
+
+      error = MAXVAL(ABS(full_trial_residual - expected))
+      IF (error > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
+      ELSE
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_full_residual_completion
 
 ! **************************************************************************************************
 !> \brief check the residual minimum represented by an affine candidate ray
