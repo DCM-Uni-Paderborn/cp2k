@@ -330,6 +330,8 @@ MODULE qs_ot_types
       LOGICAL :: schur_prediction_candidate_enabled = .FALSE.
       LOGICAL :: schur_reduced_secant_pending = .FALSE.
       LOGICAL :: schur_reduced_secant_shadow_validated = .FALSE.
+      LOGICAL :: schur_closure_candidate_pending = .FALSE.
+      LOGICAL :: schur_closure_candidate_validated = .FALSE.
       LOGICAL :: schur_projector_mode_pending = .FALSE.
       LOGICAL :: schur_projector_offdiag_pending = .FALSE.
       LOGICAL :: schur_projector_inactive_offdiag_pending = .FALSE.
@@ -367,6 +369,9 @@ MODULE qs_ot_types
       INTEGER :: schur_reduced_secant_quality_samples = 0
       INTEGER :: schur_reduced_secant_model_groups = 0
       INTEGER :: schur_reduced_secant_selected_groups = 0
+      INTEGER :: schur_closure_candidate_quality_samples = 0
+      INTEGER :: schur_closure_candidate_model_groups = 0
+      INTEGER :: schur_closure_candidate_selected_groups = 0
       INTEGER :: schur_projector_mode_quality_samples = 0
       INTEGER :: schur_projector_offdiag_quality_samples = 0
       INTEGER :: schur_projector_offdiag_selected_quality_samples = 0
@@ -518,6 +523,20 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_reduced_secant_rot_residual_start_sq = 0.0_dp
       REAL(KIND=dp) :: schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
       REAL(KIND=dp) :: schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_drop = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_residual_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_residual_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_residual_gain = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_residual_gain_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_residual_coverage = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_residual_coverage_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_drop_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_measured_sum = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_rot_residual_start_sq = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_rot_residual_delta_dot = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_candidate_rot_residual_delta_sq = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_drop = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality = 0.0_dp
       REAL(KIND=dp) :: schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -1163,6 +1182,8 @@ CONTAINS
       qs_ot_env%schur_prediction_candidate_enabled = .FALSE.
       qs_ot_env%schur_reduced_secant_pending = .FALSE.
       qs_ot_env%schur_reduced_secant_shadow_validated = .FALSE.
+      qs_ot_env%schur_closure_candidate_pending = .FALSE.
+      qs_ot_env%schur_closure_candidate_validated = .FALSE.
       qs_ot_env%schur_projector_mode_pending = .FALSE.
       qs_ot_env%schur_projector_offdiag_pending = .FALSE.
       qs_ot_env%schur_projector_inactive_offdiag_pending = .FALSE.
@@ -1205,6 +1226,9 @@ CONTAINS
       qs_ot_env%schur_reduced_secant_quality_samples = 0
       qs_ot_env%schur_reduced_secant_model_groups = 0
       qs_ot_env%schur_reduced_secant_selected_groups = 0
+      qs_ot_env%schur_closure_candidate_quality_samples = 0
+      qs_ot_env%schur_closure_candidate_model_groups = 0
+      qs_ot_env%schur_closure_candidate_selected_groups = 0
       qs_ot_env%schur_occgap_shadow_quality_samples = 0
       qs_ot_env%schur_projector_mode_quality_samples = 0
       qs_ot_env%schur_projector_offdiag_quality_samples = 0
@@ -1383,6 +1407,20 @@ CONTAINS
       qs_ot_env%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
       qs_ot_env%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
       qs_ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
+      qs_ot_env%schur_closure_candidate_drop = 0.0_dp
+      qs_ot_env%schur_closure_candidate_quality = 0.0_dp
+      qs_ot_env%schur_closure_candidate_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_quality = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_gain = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_gain_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_coverage = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_coverage_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_drop_sum = 0.0_dp
+      qs_ot_env%schur_closure_candidate_measured_sum = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_start_sq = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_delta_dot = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_delta_sq = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_drop = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality = 0.0_dp
       qs_ot_env%schur_dense_metric_shadow_quality_ema = 0.0_dp
@@ -1833,6 +1871,13 @@ CONTAINS
       qs_ot_env%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
       qs_ot_env%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
       qs_ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
+      qs_ot_env%schur_closure_candidate_pending = .FALSE.
+      qs_ot_env%schur_closure_candidate_drop = 0.0_dp
+      qs_ot_env%schur_closure_candidate_model_groups = 0
+      qs_ot_env%schur_closure_candidate_selected_groups = 0
+      qs_ot_env%schur_closure_candidate_rot_residual_start_sq = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_delta_dot = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_delta_sq = 0.0_dp
       qs_ot_env%schur_closure_response_pending = .FALSE.
       qs_ot_env%schur_closure_response_samples = 0
       qs_ot_env%schur_closure_response_model_delta = 0.0_dp
@@ -1921,6 +1966,23 @@ CONTAINS
       qs_ot_env%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
       qs_ot_env%schur_reduced_secant_rot_residual_delta_dot = 0.0_dp
       qs_ot_env%schur_reduced_secant_rot_residual_delta_sq = 0.0_dp
+      qs_ot_env%schur_closure_candidate_validated = .FALSE.
+      qs_ot_env%schur_closure_candidate_quality_samples = 0
+      qs_ot_env%schur_closure_candidate_model_groups = 0
+      qs_ot_env%schur_closure_candidate_selected_groups = 0
+      qs_ot_env%schur_closure_candidate_quality = 0.0_dp
+      qs_ot_env%schur_closure_candidate_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_quality = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_gain = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_gain_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_coverage = 0.0_dp
+      qs_ot_env%schur_closure_candidate_residual_coverage_ema = 0.0_dp
+      qs_ot_env%schur_closure_candidate_drop_sum = 0.0_dp
+      qs_ot_env%schur_closure_candidate_measured_sum = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_start_sq = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_delta_dot = 0.0_dp
+      qs_ot_env%schur_closure_candidate_rot_residual_delta_sq = 0.0_dp
 
       CALL reset_selected_calibration( &
          qs_ot_env%schur_projector_offdiag_selected_quality_samples, &

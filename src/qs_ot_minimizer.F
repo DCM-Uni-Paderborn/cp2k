@@ -3895,12 +3895,14 @@ CONTAINS
                                 schur_flavor == 44 .OR. schur_last_flavor == 44 .OR. &
                                 schur_flavor == 45 .OR. schur_last_flavor == 45 .OR. &
                                 schur_flavor == 46 .OR. schur_last_flavor == 46 .OR. &
-                                schur_flavor == 47 .OR. schur_last_flavor == 47)))
+                                schur_flavor == 47 .OR. schur_last_flavor == 47 .OR. &
+                                schur_flavor == 48 .OR. schur_last_flavor == 48)))
       schur_calibration_change = schur_history_change .AND. &
                                  (schur_flavor == 43 .OR. schur_last_flavor == 43 .OR. &
                                   schur_flavor == 44 .OR. schur_last_flavor == 44 .OR. &
                                   schur_flavor == 46 .OR. schur_last_flavor == 46 .OR. &
-                                  schur_flavor == 47 .OR. schur_last_flavor == 47)
+                                  schur_flavor == 47 .OR. schur_last_flavor == 47 .OR. &
+                                  schur_flavor == 48 .OR. schur_last_flavor == 48)
       schur_history_mixed = .FALSE.
 
       gnorm_matrix_re = 0.0_dp

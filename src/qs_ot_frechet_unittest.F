@@ -78,23 +78,24 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_added_mos_basis_bootstrap_ready, qs_scf_kp_added_mos_fractional_density_ready, &
         qs_scf_kp_added_mos_fractional_tail_ready, qs_scf_kp_added_mos_integer_density_ready, &
         qs_scf_kp_affine_correction_model, qs_scf_kp_affine_rebased_drop, &
-        qs_scf_kp_affine_residual_minimum, qs_scf_kp_affine_residual_quality, &
-        qs_scf_kp_candidate_position_drop, qs_scf_kp_canonical_density_blend, &
-        qs_scf_kp_canonical_density_candidate, qs_scf_kp_canonical_density_multimode_blend, &
-        qs_scf_kp_canonical_density_probe_drop, qs_scf_kp_canonical_density_residual, &
-        qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_tether_tail_scale, &
-        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
-        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_control_delta, &
-        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
-        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_affine_residual_calibration, qs_scf_kp_affine_residual_minimum, &
+        qs_scf_kp_affine_residual_quality, qs_scf_kp_candidate_position_drop, &
+        qs_scf_kp_canonical_density_blend, qs_scf_kp_canonical_density_candidate, &
+        qs_scf_kp_canonical_density_multimode_blend, qs_scf_kp_canonical_density_probe_drop, &
+        qs_scf_kp_canonical_density_residual, qs_scf_kp_canonical_density_tangent, &
+        qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_coupled_multisecant_update, &
+        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
+        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_curvature_floor, &
+        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
+        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -104,12 +105,12 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_quadratic_position_drop, qs_scf_kp_raw_exit_floor, &
         qs_scf_kp_raw_exit_floor_ratio, qs_scf_kp_reduced_secant_prediction, &
         qs_scf_kp_reduced_subspace_replacement_step, qs_scf_kp_reduced_subspace_step, &
-        qs_scf_kp_residual_compatible_scale, qs_scf_kp_residual_split, &
-        qs_scf_kp_response_corrected_step, qs_scf_kp_secant_bootstrap_probe, &
-        qs_scf_kp_secant_calibration_probe, qs_scf_kp_secant_candidate_promoted, &
-        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
-        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
-        qs_scf_kp_validated_density_response
+        qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
+        qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
+        qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
+        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
+        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -298,6 +299,8 @@ PROGRAM qs_ot_frechet_unittest
                                              5.0E-15_dp, nfail)
    CALL check_kpoint_affine_residual_quality("k-point OT accepted affine residual quality", &
                                              5.0E-15_dp, nfail)
+   CALL check_kpoint_residual_advantage_resolution( &
+      "k-point OT response-fit residual advantage", nfail)
    CALL check_kpoint_measured_residual_subspace_step( &
       "k-point OT measured residual subspace step", 5.0E-14_dp, nfail)
    CALL check_kpoint_measured_response_complement( &
@@ -5029,25 +5032,28 @@ CONTAINS
 
       failed = .NOT. qs_scf_kp_added_mos_fractional_density_ready( &
                search_delta, density_delta, eps_scf, search_limit, density_limit, &
-               .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
+               .TRUE., .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
                qs_scf_kp_added_mos_fractional_density_ready( &
                4.1552265738E-2_dp, density_delta, eps_scf, search_limit, density_limit, &
-               .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
+               .TRUE., .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
                qs_scf_kp_added_mos_fractional_density_ready( &
                search_delta, 3.9126229863E-8_dp, eps_scf, search_limit, density_limit, &
-               .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
+               .TRUE., .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
                qs_scf_kp_added_mos_fractional_density_ready( &
                search_delta, density_delta, eps_scf, search_limit, density_limit, &
-               .FALSE., .TRUE., .TRUE., .TRUE.) .OR. &
+               .FALSE., .TRUE., .TRUE., .TRUE., .TRUE.) .OR. &
                qs_scf_kp_added_mos_fractional_density_ready( &
                search_delta, density_delta, eps_scf, search_limit, density_limit, &
-               .TRUE., .FALSE., .TRUE., .TRUE.) .OR. &
+               .TRUE., .FALSE., .TRUE., .TRUE., .TRUE.) .OR. &
                qs_scf_kp_added_mos_fractional_density_ready( &
                search_delta, density_delta, eps_scf, search_limit, density_limit, &
-               .TRUE., .TRUE., .FALSE., .TRUE.) .OR. &
+               .TRUE., .TRUE., .FALSE., .TRUE., .TRUE.) .OR. &
                qs_scf_kp_added_mos_fractional_density_ready( &
                search_delta, density_delta, eps_scf, search_limit, density_limit, &
-               .TRUE., .TRUE., .TRUE., .FALSE.)
+               .TRUE., .TRUE., .TRUE., .FALSE., .TRUE.) .OR. &
+               qs_scf_kp_added_mos_fractional_density_ready( &
+               search_delta, density_delta, eps_scf, search_limit, density_limit, &
+               .TRUE., .TRUE., .TRUE., .TRUE., .FALSE.)
       IF (failed) THEN
          nfail = nfail + 1
          WRITE (*, '(A,1X,A)') TRIM(label), "failed"
@@ -7610,11 +7616,12 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       LOGICAL                                            :: exact_ready, partial_ready, &
-                                                            rejected_increase, rejected_zero
-      REAL(KIND=dp) :: actual_ratio, error, expected_ratio, partial_actual_norm, &
+                                                            rejected_increase, rejected_zero, &
+                                                            split_ready
+      REAL(KIND=dp) :: actual_ratio, error, expected_ratio, fidelity, gain, partial_actual_norm, &
          partial_actual_ratio, partial_predicted_ratio, partial_quality, predicted_ratio, quality, &
-         rejected_actual_ratio, rejected_predicted_ratio, rejected_quality, zero_actual_ratio, &
-         zero_predicted_ratio, zero_quality
+         rejected_actual_ratio, rejected_predicted_ratio, rejected_quality, split_actual_ratio, &
+         split_predicted_ratio, zero_actual_ratio, zero_predicted_ratio, zero_quality
 
       expected_ratio = SQRT(15.25_dp)/5.0_dp
       CALL qs_scf_kp_affine_residual_quality( &
@@ -7630,17 +7637,23 @@ CONTAINS
       CALL qs_scf_kp_affine_residual_quality( &
          25.0_dp, -11.0_dp, 5.0_dp, 0.0_dp, 25.0_dp, zero_predicted_ratio, zero_actual_ratio, &
          zero_quality, rejected_zero)
+      CALL qs_scf_kp_affine_residual_calibration( &
+         25.0_dp, -11.0_dp, 5.0_dp, 0.5_dp, partial_actual_norm**2, split_predicted_ratio, &
+         split_actual_ratio, fidelity, gain, split_ready)
       error = ABS(predicted_ratio - expected_ratio) + ABS(actual_ratio - expected_ratio) + &
               ABS(quality - (1.0_dp - expected_ratio)) + &
               ABS(partial_predicted_ratio - expected_ratio) + &
               ABS(partial_actual_ratio - partial_actual_norm/5.0_dp) + &
               ABS(partial_quality - 0.5_dp*(1.0_dp - partial_actual_norm/5.0_dp)) + &
+              ABS(split_predicted_ratio - expected_ratio) + &
+              ABS(split_actual_ratio - partial_actual_norm/5.0_dp) + &
+              ABS(fidelity - 0.5_dp) + ABS(gain - (1.0_dp - partial_actual_norm/5.0_dp)) + &
               ABS(rejected_predicted_ratio - 1.0_dp) + &
               ABS(rejected_actual_ratio - 1.0_dp) + ABS(rejected_quality) + &
               ABS(zero_predicted_ratio - 1.0_dp) + ABS(zero_actual_ratio - 1.0_dp) + &
               ABS(zero_quality)
-      IF (.NOT. exact_ready .OR. .NOT. partial_ready .OR. rejected_increase .OR. rejected_zero .OR. &
-          error > tol) THEN
+      IF (.NOT. exact_ready .OR. .NOT. partial_ready .OR. .NOT. split_ready .OR. &
+          rejected_increase .OR. rejected_zero .OR. error > tol) THEN
          nfail = nfail + 1
          WRITE (*, '(A,4(1X,L1),5(1X,ES16.8))') TRIM(label)// &
             " FAILED with exact/partial/increase/zero/error/pred/actual/q/pq", &
@@ -7653,6 +7666,31 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_kpoint_affine_residual_quality
+
+! **************************************************************************************************
+!> \brief check that finite-response candidates beat the measured response-fit uncertainty
+!> \param label ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_residual_advantage_resolution(label, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: invalid, resolved, unresolved
+
+      unresolved = qs_scf_kp_residual_advantage_resolved(0.5268_dp, 0.5321_dp, 0.0200_dp)
+      resolved = qs_scf_kp_residual_advantage_resolved(0.5000_dp, 0.5321_dp, 0.0200_dp)
+      invalid = qs_scf_kp_residual_advantage_resolved(0.5000_dp, 0.5321_dp, -0.0200_dp)
+      IF (unresolved .OR. .NOT. resolved .OR. invalid) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,3(1X,L1))') TRIM(label)// &
+            " FAILED with unresolved/resolved/invalid", unresolved, resolved, invalid
+      ELSE
+         WRITE (*, '(A,3(1X,L1))') TRIM(label)// &
+            " OK with unresolved/resolved/invalid", unresolved, resolved, invalid
+      END IF
+
+   END SUBROUTINE check_kpoint_residual_advantage_resolution
 
 ! **************************************************************************************************
 !> \brief check that measured response targets define the residual-minimizing coordinate step
