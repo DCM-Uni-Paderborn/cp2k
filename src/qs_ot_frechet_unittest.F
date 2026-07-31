@@ -6930,10 +6930,10 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(nrot, 3)                  :: averaged_steps, averaged_targets, &
                                                             history_steps, history_targets
       REAL(KIND=dp), DIMENSION(nrot, nmode)              :: scaled_tangent_modes, tangent_modes
-      REAL(KIND=dp), DIMENSION(nrot, nrot) :: averaged_correction, correction, expected, &
-         history_correction, incompatible_correction, prior, prior_correction, &
-         prior_expected_correction, rank_deficient_correction, scaled_correction, &
-         transverse_correction
+      REAL(KIND=dp), DIMENSION(nrot, nrot) :: averaged_correction, averaged_fullrank_correction, &
+         correction, expected, history_correction, incompatible_correction, prior, &
+         prior_correction, prior_expected_correction, rank_deficient_correction, &
+         scaled_correction, transverse_correction
 
       tangent_modes(:, :) = 0.0_dp
       tangent_modes(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp]
@@ -7007,14 +7007,20 @@ CONTAINS
          averaged_positive_modes, averaged_negative_modes, averaged_unsupported_modes, &
          averaged_independence, averaged_compatibility, averaged_residual_ratio, &
          response_prior=prior, fitted_residual_ratio=averaged_fitted_residual_ratio, &
-         pair_fitted_residual_ratio=averaged_pair_fitted_residual_ratio)
+         pair_fitted_residual_ratio=averaged_pair_fitted_residual_ratio, &
+         fullrank_response_correction=averaged_fullrank_correction)
       IF (.NOT. averaged_ready .OR. averaged_positive_modes /= 1 .OR. &
           averaged_negative_modes /= 1 .OR. averaged_unsupported_modes /= 1 .OR. &
           averaged_fitted_residual_ratio >= averaged_pair_fitted_residual_ratio .OR. &
           averaged_residual_ratio <= tol .OR. &
           MAXVAL(ABS(averaged_correction - TRANSPOSE(averaged_correction))) > tol .OR. &
+          MAXVAL(ABS(averaged_fullrank_correction - &
+                     TRANSPOSE(averaged_fullrank_correction))) > tol .OR. &
+          MAXVAL(ABS(averaged_fullrank_correction - averaged_correction)) <= tol .OR. &
           MAXVAL(ABS(averaged_correction(2:2, :))) > tol .OR. &
-          MAXVAL(ABS(averaged_correction(4:5, :))) > tol) &
+          MAXVAL(ABS(averaged_correction(4:5, :))) > tol .OR. &
+          MAXVAL(ABS(averaged_fullrank_correction(2:2, :))) > tol .OR. &
+          MAXVAL(ABS(averaged_fullrank_correction(4:5, :))) > tol) &
          error = HUGE(1.0_dp)
 
       ! Scaling and permutation of the supplied channel tangents must leave the response invariant.
