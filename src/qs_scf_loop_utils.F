@@ -277,10 +277,12 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_affine_residual_minimum, &
              qs_scf_kp_residual_compatible_scale, &
              qs_scf_kp_coupled_closure_response, &
+             qs_scf_kp_coupled_closure_prediction, &
              qs_scf_kp_coupled_response_quadratic, &
              qs_scf_kp_closure_response_model_adjustments, &
              qs_scf_kp_full_closure_response_model_adjustments, &
              qs_scf_kp_closure_response_history_ready, &
+             qs_scf_kp_shadow_prediction_quality, &
              qs_scf_kp_closure_response_preferred, &
              qs_scf_kp_coupled_schur_transport, &
              qs_scf_kp_coupled_secant_model, &
@@ -2195,6 +2197,56 @@ CONTAINS
               advantage_ema > 64.0_dp*EPSILON(1.0_dp)
 
    END FUNCTION qs_scf_kp_closure_response_history_ready
+
+! **************************************************************************************************
+!> \brief Compare a signed shadow-model prediction with an accepted Mermin decrease.
+!>
+!>        A nonpositive candidate prediction is a resolved model failure, not a missing sample.
+!>        Recording it with zero quality prevents an over-curved response mode from being promoted
+!>        merely because the positive-prediction subset happened to agree with line search.
+!> \param baseline_drop predicted decrease without the shadow response
+!> \param candidate_drop signed predicted decrease with the shadow response
+!> \param measured_drop accepted line-search decrease
+!> \param quality measured/candidate ratio, or zero for a nonpositive candidate
+!> \param baseline_error symmetric relative baseline error
+!> \param candidate_error symmetric relative shadow-candidate error
+!> \param advantage baseline_error-candidate_error
+!> \param ready whether the comparison is finite and has a positive baseline and measurement
+! **************************************************************************************************
+   PURE SUBROUTINE qs_scf_kp_shadow_prediction_quality( &
+      baseline_drop, candidate_drop, measured_drop, quality, baseline_error, candidate_error, &
+      advantage, ready)
+      REAL(KIND=dp), INTENT(IN)                          :: baseline_drop, candidate_drop, &
+                                                            measured_drop
+      REAL(KIND=dp), INTENT(OUT)                         :: quality, baseline_error, &
+                                                            candidate_error, advantage
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      REAL(KIND=dp)                                      :: scale
+
+      quality = 0.0_dp
+      baseline_error = 1.0_dp
+      candidate_error = 1.0_dp
+      advantage = 0.0_dp
+      ready = .FALSE.
+      IF (.NOT. (baseline_drop == baseline_drop .AND. candidate_drop == candidate_drop .AND. &
+                 measured_drop == measured_drop)) RETURN
+      IF (ABS(baseline_drop) >= HUGE(baseline_drop) .OR. &
+          ABS(candidate_drop) >= HUGE(candidate_drop) .OR. &
+          ABS(measured_drop) >= HUGE(measured_drop)) RETURN
+      IF (baseline_drop <= EPSILON(baseline_drop) .OR. measured_drop <= 0.0_dp) RETURN
+
+      scale = MAX(measured_drop, ABS(baseline_drop), TINY(1.0_dp))
+      baseline_error = ABS(measured_drop - baseline_drop)/scale
+      scale = MAX(measured_drop, ABS(candidate_drop), TINY(1.0_dp))
+      candidate_error = ABS(measured_drop - candidate_drop)/scale
+      IF (candidate_drop > EPSILON(candidate_drop)) quality = measured_drop/candidate_drop
+      advantage = baseline_error - candidate_error
+      ready = quality == quality .AND. baseline_error == baseline_error .AND. &
+              candidate_error == candidate_error .AND. advantage == advantage .AND. &
+              ABS(quality) < HUGE(quality) .AND. ABS(advantage) < HUGE(advantage)
+
+   END SUBROUTINE qs_scf_kp_shadow_prediction_quality
 
 ! **************************************************************************************************
 !> \brief Express reduced-baseline and coupled-candidate curvatures relative to the active model.
@@ -5256,6 +5308,669 @@ CONTAINS
    END SUBROUTINE qs_scf_kp_coupled_closure_response
 
 ! **************************************************************************************************
+!> \brief Predict one closure response from a normalized symmetric response-vector secant.
+!>
+!>        The exact yy^T/(s^Ty) secant is used for bidirectional response identification.  Its
+!>        candidate correction is multiplied by |s^Ty|/(||s||||y||), yielding the bounded signed
+!>        mode sign(s^Ty) yy^T/(||s||||y||).  This retains the observed response direction and block
+!>        structure without turning a nearly orthogonal, nonconservative endpoint response into an
+!>        unbounded Hessian curvature.
+!> \param rotation_hessian ...
+!> \param energy_hessian ...
+!> \param training_rotation_step ...
+!> \param training_energy_step ...
+!> \param training_rotation_response ...
+!> \param training_energy_response ...
+!> \param validation_rotation_step ...
+!> \param validation_energy_step ...
+!> \param validation_rotation_response ...
+!> \param validation_energy_response ...
+!> \param rotation_correction ...
+!> \param energy_correction ...
+!> \param cross_correction ...
+!> \param ready ...
+!> \param step_overlap ...
+!> \param training_capture ...
+!> \param validation_quality ...
+!> \param validation_rotation_quality ...
+!> \param validation_energy_quality ...
+!> \param validation_alignment ...
+!> \param validation_curvature_ratio ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_response_secant_prediction( &
+      rotation_hessian, energy_hessian, training_rotation_step, training_energy_step, &
+      training_rotation_response, training_energy_response, validation_rotation_step, &
+      validation_energy_step, validation_rotation_response, validation_energy_response, &
+      rotation_correction, energy_correction, cross_correction, ready, step_overlap, &
+      training_capture, validation_quality, validation_rotation_quality, &
+      validation_energy_quality, validation_alignment, validation_curvature_ratio)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN) :: training_rotation_step, training_energy_step, &
+         training_rotation_response, training_energy_response, validation_rotation_step, &
+         validation_energy_step, validation_rotation_response, validation_energy_response
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_correction, energy_correction, &
+                                                            cross_correction
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT) :: step_overlap, training_capture, validation_quality, &
+         validation_rotation_quality, validation_energy_quality, validation_alignment, &
+         validation_curvature_ratio
+
+      INTEGER                                            :: i, j, nener, nfull, nrot
+      REAL(KIND=dp) :: block_floor, block_max, component_floor, predicted_curvature, &
+         predicted_energy_residual_sq, predicted_norm, predicted_residual_sq, &
+         predicted_rotation_residual_sq, response_norm, rotation_residual_sq, secant_curvature, &
+         step_norm, validation_curvature, validation_energy_residual_sq, validation_norm, &
+         validation_residual_sq
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coordinate_scale, predicted_residual, &
+         predicted_response, training_response, training_step, validation_response, validation_step
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: response_hessian
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      nfull = nrot + nener
+      CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_hessian) == [nener, nener]))
+      CPASSERT(SIZE(training_rotation_step) == nrot)
+      CPASSERT(SIZE(training_energy_step) == nener)
+      CPASSERT(SIZE(training_rotation_response) == nrot)
+      CPASSERT(SIZE(training_energy_response) == nener)
+      CPASSERT(SIZE(validation_rotation_step) == nrot)
+      CPASSERT(SIZE(validation_energy_step) == nener)
+      CPASSERT(SIZE(validation_rotation_response) == nrot)
+      CPASSERT(SIZE(validation_energy_response) == nener)
+      CPASSERT(ALL(SHAPE(rotation_correction) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_correction) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(cross_correction) == [nener, nrot]))
+
+      rotation_correction(:, :) = 0.0_dp
+      energy_correction(:, :) = 0.0_dp
+      cross_correction(:, :) = 0.0_dp
+      ready = .FALSE.
+      step_overlap = 0.0_dp
+      training_capture = 0.0_dp
+      validation_quality = 0.0_dp
+      validation_rotation_quality = 0.0_dp
+      validation_energy_quality = 0.0_dp
+      validation_alignment = 0.0_dp
+      validation_curvature_ratio = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0) RETURN
+
+      ALLOCATE (coordinate_scale(nfull), predicted_response(nfull), predicted_residual(nfull), &
+                response_hessian(nfull, nfull), training_response(nfull), training_step(nfull), &
+                validation_response(nfull), validation_step(nfull))
+      block_max = MAXVAL(ABS([(rotation_hessian(i, i), i=1, nrot)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nrot
+            coordinate_scale(i) = SQRT(MAX(ABS(rotation_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         coordinate_scale(1:nrot) = 1.0_dp
+      END IF
+      block_max = MAXVAL(ABS([(energy_hessian(i, i), i=1, nener)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nener
+            coordinate_scale(nrot + i) = SQRT(MAX(ABS(energy_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         coordinate_scale(nrot + 1:nfull) = 1.0_dp
+      END IF
+
+      training_step(1:nrot) = training_rotation_step
+      training_step(nrot + 1:nfull) = training_energy_step
+      training_response(1:nrot) = training_rotation_response
+      training_response(nrot + 1:nfull) = training_energy_response
+      validation_step(1:nrot) = validation_rotation_step
+      validation_step(nrot + 1:nfull) = validation_energy_step
+      validation_response(1:nrot) = validation_rotation_response
+      validation_response(nrot + 1:nfull) = validation_energy_response
+      training_step(:) = coordinate_scale*training_step
+      validation_step(:) = coordinate_scale*validation_step
+      training_response(:) = training_response/coordinate_scale
+      validation_response(:) = validation_response/coordinate_scale
+
+      step_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_step, training_step)))
+      validation_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))
+      response_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_response, training_response)))
+      secant_curvature = DOT_PRODUCT(training_step, training_response)
+      IF (step_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
+          validation_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
+          response_norm <= SQRT(EPSILON(1.0_dp)) .OR. &
+          ABS(secant_curvature) <= SQRT(EPSILON(1.0_dp))*step_norm*response_norm) THEN
+         DEALLOCATE (coordinate_scale, predicted_response, predicted_residual, response_hessian, &
+                     training_response, training_step, validation_response, validation_step)
+         RETURN
+      END IF
+
+      step_overlap = ABS(DOT_PRODUCT(training_step, validation_step))/(step_norm*validation_norm)
+      training_capture = ABS(secant_curvature)/(step_norm*response_norm)
+      DO j = 1, nfull
+         DO i = 1, nfull
+            response_hessian(i, j) = training_response(i)*training_response(j)/secant_curvature
+         END DO
+      END DO
+      predicted_response(:) = MATMUL(response_hessian, validation_step)
+      predicted_residual(:) = validation_response - predicted_response
+      validation_residual_sq = MAX(0.0_dp, DOT_PRODUCT(validation_response, validation_response))
+      predicted_residual_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_residual, predicted_residual))
+      IF (validation_residual_sq > EPSILON(validation_residual_sq)) &
+         validation_quality = 1.0_dp - predicted_residual_sq/validation_residual_sq
+      rotation_residual_sq = MAX(0.0_dp, &
+                                 DOT_PRODUCT(validation_response(1:nrot), &
+                                             validation_response(1:nrot)))
+      predicted_rotation_residual_sq = MAX(0.0_dp, &
+                                           DOT_PRODUCT(predicted_residual(1:nrot), &
+                                                       predicted_residual(1:nrot)))
+      IF (rotation_residual_sq > EPSILON(rotation_residual_sq)) &
+         validation_rotation_quality = 1.0_dp - &
+                                       predicted_rotation_residual_sq/rotation_residual_sq
+      validation_energy_residual_sq = MAX(0.0_dp, &
+                                          DOT_PRODUCT(validation_response(nrot + 1:nfull), &
+                                                      validation_response(nrot + 1:nfull)))
+      predicted_energy_residual_sq = MAX(0.0_dp, &
+                                         DOT_PRODUCT(predicted_residual(nrot + 1:nfull), &
+                                                     predicted_residual(nrot + 1:nfull)))
+      component_floor = 64.0_dp*EPSILON(1.0_dp)* &
+                        MAX(validation_residual_sq, TINY(1.0_dp))
+      IF (validation_energy_residual_sq > component_floor) THEN
+         validation_energy_quality = 1.0_dp - &
+                                     predicted_energy_residual_sq/validation_energy_residual_sq
+      ELSE IF (predicted_energy_residual_sq <= component_floor) THEN
+         ! A physically absent energy response is a successful prediction only if the fitted
+         ! response-vector mode does not manufacture one from the accepted ener_x displacement.
+         validation_energy_quality = 1.0_dp
+      ELSE
+         validation_energy_quality = 1.0_dp - &
+                                     predicted_energy_residual_sq/MAX(component_floor, TINY(1.0_dp))
+      END IF
+      predicted_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
+      IF (validation_residual_sq > EPSILON(validation_residual_sq) .AND. &
+          predicted_norm > EPSILON(predicted_norm)) &
+         validation_alignment = DOT_PRODUCT(validation_response, predicted_response)/ &
+                                (SQRT(validation_residual_sq)*predicted_norm)
+      predicted_curvature = DOT_PRODUCT(validation_step, predicted_response)
+      validation_curvature = DOT_PRODUCT(validation_step, validation_response)
+      IF (ABS(predicted_curvature) > SQRT(EPSILON(1.0_dp))* &
+          validation_norm*MAX(predicted_norm, EPSILON(1.0_dp))) &
+         validation_curvature_ratio = validation_curvature/predicted_curvature
+
+      ready = ALL(response_hessian == response_hessian) .AND. &
+              step_overlap == step_overlap .AND. training_capture == training_capture .AND. &
+              validation_quality == validation_quality .AND. &
+              validation_rotation_quality == validation_rotation_quality .AND. &
+              validation_energy_quality == validation_energy_quality .AND. &
+              validation_alignment == validation_alignment .AND. &
+              validation_curvature_ratio == validation_curvature_ratio
+      IF (ready) THEN
+         DO j = 1, nfull
+            DO i = 1, nfull
+               response_hessian(i, j) = training_capture*response_hessian(i, j)* &
+                                        coordinate_scale(i)*coordinate_scale(j)
+            END DO
+         END DO
+         rotation_correction(:, :) = response_hessian(1:nrot, 1:nrot)
+         energy_correction(:, :) = response_hessian(nrot + 1:nfull, nrot + 1:nfull)
+         cross_correction(:, :) = -response_hessian(nrot + 1:nfull, 1:nrot)
+      END IF
+      DEALLOCATE (coordinate_scale, predicted_response, predicted_residual, response_hessian, &
+                  training_response, training_step, validation_response, validation_step)
+
+   END SUBROUTINE qs_scf_kp_coupled_response_secant_prediction
+
+! **************************************************************************************************
+!> \brief Predict closure work with a symmetric two-secant observable-subspace model.
+!>
+!>        In the dimensionally scaled joint rotation/auxiliary-energy space, only
+!>        sym(S^T*Y) is observable as Hessian work.  The fitted low-rank operator
+!>
+!>          H = S (S^T S)^-1 sym(S^T Y) (S^T S)^-1 S^T
+!>
+!>        reproduces that work exactly while discarding response normal to the accepted-step
+!>        subspace.  A response block below numerical resolution is removed from S as well, so an
+!>        absent auxiliary-energy response cannot manufacture energy/cross curvature merely because
+!>        the accepted step contained an ener_x displacement.  A third secant is used only for
+!>        out-of-sample validation.
+!> \param rotation_hessian ...
+!> \param energy_hessian ...
+!> \param training_rotation_steps ...
+!> \param training_energy_steps ...
+!> \param training_rotation_responses ...
+!> \param training_energy_responses ...
+!> \param validation_rotation_step ...
+!> \param validation_energy_step ...
+!> \param validation_rotation_response ...
+!> \param validation_energy_response ...
+!> \param rotation_correction ...
+!> \param energy_correction ...
+!> \param cross_correction ...
+!> \param ready ...
+!> \param independence ...
+!> \param training_quality ...
+!> \param validation_quality ...
+!> \param validation_rotation_quality ...
+!> \param validation_energy_quality ...
+!> \param validation_alignment ...
+!> \param validation_curvature_ratio ...
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_response_multisecant_prediction( &
+      rotation_hessian, energy_hessian, training_rotation_steps, training_energy_steps, &
+      training_rotation_responses, training_energy_responses, validation_rotation_step, &
+      validation_energy_step, validation_rotation_response, validation_energy_response, &
+      rotation_correction, energy_correction, cross_correction, ready, independence, &
+      training_quality, validation_quality, validation_rotation_quality, &
+      validation_energy_quality, validation_alignment, validation_curvature_ratio)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
+         training_rotation_steps, training_energy_steps, training_rotation_responses, &
+         training_energy_responses
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN) :: validation_rotation_step, validation_energy_step, &
+         validation_rotation_response, validation_energy_response
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_correction, energy_correction, &
+                                                            cross_correction
+      LOGICAL, INTENT(OUT)                               :: ready
+      REAL(KIND=dp), INTENT(OUT) :: independence, training_quality, validation_quality, &
+         validation_rotation_quality, validation_energy_quality, validation_alignment, &
+         validation_curvature_ratio
+
+      INTEGER                                            :: i, j, nener, nfull, nrot
+      LOGICAL                                            :: fit_ready
+      REAL(KIND=dp) :: block_floor, block_max, component_floor, determinant, gram_scale, &
+         predicted_curvature, predicted_energy_residual_sq, predicted_norm, predicted_residual_sq, &
+         predicted_rotation_residual_sq, response_norm_sq, rotation_response_norm_sq, &
+         training_energy_response_sq, training_residual_sq, training_response_norm_sq, &
+         training_rotation_response_sq, validation_curvature, validation_norm_sq
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coordinate_scale, predicted_residual, &
+                                                            predicted_response, &
+                                                            validation_response, validation_step
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: response_hessian, training_residual, &
+                                                            training_responses, training_steps, &
+                                                            work_steps
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: gram, gram_inverse, work_matrix, &
+                                                            work_operator
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      nfull = nrot + nener
+      CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(training_rotation_steps) == [nrot, 2]))
+      CPASSERT(ALL(SHAPE(training_energy_steps) == [nener, 2]))
+      CPASSERT(ALL(SHAPE(training_rotation_responses) == [nrot, 2]))
+      CPASSERT(ALL(SHAPE(training_energy_responses) == [nener, 2]))
+      CPASSERT(SIZE(validation_rotation_step) == nrot)
+      CPASSERT(SIZE(validation_energy_step) == nener)
+      CPASSERT(SIZE(validation_rotation_response) == nrot)
+      CPASSERT(SIZE(validation_energy_response) == nener)
+      CPASSERT(ALL(SHAPE(rotation_correction) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_correction) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(cross_correction) == [nener, nrot]))
+
+      rotation_correction(:, :) = 0.0_dp
+      energy_correction(:, :) = 0.0_dp
+      cross_correction(:, :) = 0.0_dp
+      ready = .FALSE.
+      independence = 0.0_dp
+      training_quality = 0.0_dp
+      validation_quality = 0.0_dp
+      validation_rotation_quality = 0.0_dp
+      validation_energy_quality = 0.0_dp
+      validation_alignment = 0.0_dp
+      validation_curvature_ratio = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0) RETURN
+
+      ALLOCATE (coordinate_scale(nfull), predicted_residual(nfull), predicted_response(nfull), &
+                response_hessian(nfull, nfull), training_residual(nfull, 2), &
+                training_responses(nfull, 2), training_steps(nfull, 2), &
+                validation_response(nfull), validation_step(nfull), work_steps(nfull, 2))
+      block_max = MAXVAL(ABS([(rotation_hessian(i, i), i=1, nrot)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nrot
+            coordinate_scale(i) = SQRT(MAX(ABS(rotation_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         coordinate_scale(1:nrot) = 1.0_dp
+      END IF
+      block_max = MAXVAL(ABS([(energy_hessian(i, i), i=1, nener)]))
+      IF (block_max > TINY(1.0_dp)) THEN
+         block_floor = SQRT(EPSILON(1.0_dp))*block_max
+         DO i = 1, nener
+            coordinate_scale(nrot + i) = SQRT(MAX(ABS(energy_hessian(i, i)), block_floor))
+         END DO
+      ELSE
+         coordinate_scale(nrot + 1:nfull) = 1.0_dp
+      END IF
+
+      training_steps(1:nrot, :) = training_rotation_steps
+      training_steps(nrot + 1:nfull, :) = training_energy_steps
+      training_responses(1:nrot, :) = training_rotation_responses
+      training_responses(nrot + 1:nfull, :) = training_energy_responses
+      validation_step(1:nrot) = validation_rotation_step
+      validation_step(nrot + 1:nfull) = validation_energy_step
+      validation_response(1:nrot) = validation_rotation_response
+      validation_response(nrot + 1:nfull) = validation_energy_response
+      DO i = 1, nfull
+         training_steps(i, :) = coordinate_scale(i)*training_steps(i, :)
+         training_responses(i, :) = training_responses(i, :)/coordinate_scale(i)
+         validation_step(i) = coordinate_scale(i)*validation_step(i)
+         validation_response(i) = validation_response(i)/coordinate_scale(i)
+      END DO
+
+      work_steps(:, :) = training_steps
+      training_response_norm_sq = MAX(0.0_dp, SUM(training_responses**2))
+      training_rotation_response_sq = MAX(0.0_dp, SUM(training_responses(1:nrot, :)**2))
+      training_energy_response_sq = MAX(0.0_dp, &
+                                        SUM(training_responses(nrot + 1:nfull, :)**2))
+      component_floor = 64.0_dp*EPSILON(1.0_dp)* &
+                        MAX(training_response_norm_sq, TINY(1.0_dp))
+      IF (training_rotation_response_sq <= component_floor) work_steps(1:nrot, :) = 0.0_dp
+      IF (training_energy_response_sq <= component_floor) work_steps(nrot + 1:nfull, :) = 0.0_dp
+
+      gram(:, :) = MATMUL(TRANSPOSE(work_steps), work_steps)
+      determinant = gram(1, 1)*gram(2, 2) - gram(1, 2)*gram(2, 1)
+      gram_scale = MAX(gram(1, 1)*gram(2, 2), TINY(1.0_dp))
+      independence = SQRT(MAX(0.0_dp, determinant/gram_scale))
+      fit_ready = determinant > SQRT(EPSILON(1.0_dp))*gram_scale
+      IF (fit_ready) THEN
+         gram_inverse(1, 1) = gram(2, 2)/determinant
+         gram_inverse(1, 2) = -gram(1, 2)/determinant
+         gram_inverse(2, 1) = -gram(2, 1)/determinant
+         gram_inverse(2, 2) = gram(1, 1)/determinant
+         work_matrix(:, :) = MATMUL(TRANSPOSE(work_steps), training_responses)
+         work_matrix(:, :) = 0.5_dp*(work_matrix + TRANSPOSE(work_matrix))
+         work_operator(:, :) = MATMUL(gram_inverse, MATMUL(work_matrix, gram_inverse))
+         response_hessian(:, :) = MATMUL(work_steps, &
+                                         MATMUL(work_operator, TRANSPOSE(work_steps)))
+         fit_ready = ALL(response_hessian == response_hessian)
+      END IF
+      IF (.NOT. fit_ready) THEN
+         DEALLOCATE (coordinate_scale, predicted_residual, predicted_response, response_hessian, &
+                     training_residual, training_responses, training_steps, validation_response, &
+                     validation_step, work_steps)
+         RETURN
+      END IF
+
+      training_residual(:, :) = training_responses - MATMUL(response_hessian, training_steps)
+      training_residual_sq = MAX(0.0_dp, SUM(training_residual**2))
+      IF (training_response_norm_sq > EPSILON(training_response_norm_sq)) &
+         training_quality = 1.0_dp - training_residual_sq/training_response_norm_sq
+      predicted_response(:) = MATMUL(response_hessian, validation_step)
+      predicted_residual(:) = validation_response - predicted_response
+      validation_norm_sq = MAX(0.0_dp, DOT_PRODUCT(validation_response, validation_response))
+      predicted_residual_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_residual, predicted_residual))
+      IF (validation_norm_sq > EPSILON(validation_norm_sq)) &
+         validation_quality = 1.0_dp - predicted_residual_sq/validation_norm_sq
+      rotation_response_norm_sq = MAX(0.0_dp, &
+                                      DOT_PRODUCT(validation_response(1:nrot), &
+                                                  validation_response(1:nrot)))
+      predicted_rotation_residual_sq = MAX(0.0_dp, &
+                                           DOT_PRODUCT(predicted_residual(1:nrot), &
+                                                       predicted_residual(1:nrot)))
+      IF (rotation_response_norm_sq > EPSILON(rotation_response_norm_sq)) &
+         validation_rotation_quality = 1.0_dp - &
+                                       predicted_rotation_residual_sq/rotation_response_norm_sq
+      response_norm_sq = MAX(0.0_dp, &
+                             DOT_PRODUCT(validation_response(nrot + 1:nfull), &
+                                         validation_response(nrot + 1:nfull)))
+      predicted_energy_residual_sq = MAX(0.0_dp, &
+                                         DOT_PRODUCT(predicted_residual(nrot + 1:nfull), &
+                                                     predicted_residual(nrot + 1:nfull)))
+      component_floor = 64.0_dp*EPSILON(1.0_dp)*MAX(validation_norm_sq, TINY(1.0_dp))
+      IF (response_norm_sq > component_floor) THEN
+         validation_energy_quality = 1.0_dp - predicted_energy_residual_sq/response_norm_sq
+      ELSE IF (predicted_energy_residual_sq <= component_floor) THEN
+         validation_energy_quality = 1.0_dp
+      ELSE
+         validation_energy_quality = 1.0_dp - &
+                                     predicted_energy_residual_sq/MAX(component_floor, TINY(1.0_dp))
+      END IF
+      predicted_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
+      IF (validation_norm_sq > EPSILON(validation_norm_sq) .AND. &
+          predicted_norm > EPSILON(predicted_norm)) &
+         validation_alignment = DOT_PRODUCT(validation_response, predicted_response)/ &
+                                (SQRT(validation_norm_sq)*predicted_norm)
+      predicted_curvature = DOT_PRODUCT(validation_step, predicted_response)
+      validation_curvature = DOT_PRODUCT(validation_step, validation_response)
+      IF (ABS(predicted_curvature) > SQRT(EPSILON(1.0_dp))* &
+          SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))* &
+          MAX(predicted_norm, EPSILON(1.0_dp))) &
+         validation_curvature_ratio = validation_curvature/predicted_curvature
+
+      ready = ALL(response_hessian == response_hessian) .AND. &
+              independence == independence .AND. training_quality == training_quality .AND. &
+              validation_quality == validation_quality .AND. &
+              validation_rotation_quality == validation_rotation_quality .AND. &
+              validation_energy_quality == validation_energy_quality .AND. &
+              validation_alignment == validation_alignment .AND. &
+              validation_curvature_ratio == validation_curvature_ratio
+      IF (ready) THEN
+         DO j = 1, nfull
+            DO i = 1, nfull
+               response_hessian(i, j) = response_hessian(i, j)* &
+                                        coordinate_scale(i)*coordinate_scale(j)
+            END DO
+         END DO
+         rotation_correction(:, :) = response_hessian(1:nrot, 1:nrot)
+         energy_correction(:, :) = response_hessian(nrot + 1:nfull, nrot + 1:nfull)
+         cross_correction(:, :) = -response_hessian(nrot + 1:nfull, 1:nrot)
+      END IF
+      DEALLOCATE (coordinate_scale, predicted_residual, predicted_response, response_hessian, &
+                  training_residual, training_responses, training_steps, validation_response, &
+                  validation_step, work_steps)
+
+   END SUBROUTINE qs_scf_kp_coupled_response_multisecant_prediction
+
+! **************************************************************************************************
+!> \brief Cross-validate a local full-space self-consistent closure response.
+!>
+!>        Three accepted secants use a symmetric two-secant observable-work fit with leave-one-out
+!>        validation.  With only two secants the bounded response-vector model remains the bootstrap
+!>        fallback.  All fits use the dimensionally scaled fixed-N rotation/auxiliary-energy space.
+!> \param rotation_hessian analytic complex-rotation block
+!> \param energy_hessian analytic fixed-N auxiliary-energy block
+!> \param energy_cross analytic signed cross block
+!> \param rotation_steps accepted complex-rotation steps, newest pair first
+!> \param energy_steps corresponding fixed-N auxiliary-energy steps
+!> \param closure_rotation_targets measured self-consistent rotation-gradient response
+!> \param closure_energy_targets measured self-consistent auxiliary-energy-gradient response
+!> \param rotation_correction newest-trained rotation-block correction
+!> \param energy_correction newest-trained auxiliary-energy-block correction
+!> \param cross_correction newest-trained signed cross-block correction
+!> \param finite whether all available prediction audits are finite
+!> \param consistent whether all predictions pass the coupled physical-response gate
+!> \param overlap minimum scaled step overlap or two-step independence
+!> \param capture minimum training-response quality
+!> \param quality minimum full-residual prediction quality
+!> \param rotation_quality minimum rotation-residual prediction quality
+!> \param energy_quality minimum auxiliary-energy-residual prediction quality
+!> \param alignment minimum response alignment
+!> \param curvature_ratio_min minimum bidirectional response-curvature ratio
+!> \param curvature_ratio_max maximum bidirectional response-curvature ratio
+! **************************************************************************************************
+   SUBROUTINE qs_scf_kp_coupled_closure_prediction( &
+      rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
+      closure_rotation_targets, closure_energy_targets, rotation_correction, &
+      energy_correction, cross_correction, finite, consistent, overlap, capture, quality, &
+      rotation_quality, energy_quality, alignment, curvature_ratio_min, curvature_ratio_max)
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
+         energy_cross, rotation_steps, energy_steps, closure_rotation_targets, &
+         closure_energy_targets
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: rotation_correction, energy_correction, &
+                                                            cross_correction
+      LOGICAL, INTENT(OUT)                               :: finite, consistent
+      REAL(KIND=dp), INTENT(OUT) :: overlap, capture, quality, rotation_quality, energy_quality, &
+         alignment, curvature_ratio_min, curvature_ratio_max
+
+      INTEGER                                            :: nener, nobs, nrot
+      LOGICAL                                            :: forward_finite, reverse_finite, &
+                                                            third_finite
+      REAL(KIND=dp) :: forward_alignment, forward_capture, forward_curvature_ratio, &
+         forward_energy_quality, forward_overlap, forward_quality, forward_rotation_quality, &
+         reverse_alignment, reverse_capture, reverse_curvature_ratio, reverse_energy_quality, &
+         reverse_overlap, reverse_quality, reverse_rotation_quality, third_alignment, &
+         third_capture, third_curvature_ratio, third_energy_quality, third_overlap, third_quality, &
+         third_rotation_quality
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: fold_energy_responses, fold_energy_steps, &
+         fold_rotation_responses, fold_rotation_steps, forward_energy_cross, &
+         forward_energy_hessian, forward_rotation_hessian, reverse_energy_cross, &
+         reverse_energy_hessian, reverse_rotation_hessian, third_energy_cross, &
+         third_energy_hessian, third_rotation_hessian
+
+      nrot = SIZE(rotation_hessian, 1)
+      nener = SIZE(energy_hessian, 1)
+      nobs = SIZE(rotation_steps, 2)
+      CPASSERT(ALL(SHAPE(rotation_hessian) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_hessian) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(energy_cross) == [nener, nrot]))
+      CPASSERT(nobs == 2 .OR. nobs == 3)
+      CPASSERT(ALL(SHAPE(rotation_steps) == [nrot, nobs]))
+      CPASSERT(ALL(SHAPE(energy_steps) == [nener, nobs]))
+      CPASSERT(ALL(SHAPE(closure_rotation_targets) == [nrot, nobs]))
+      CPASSERT(ALL(SHAPE(closure_energy_targets) == [nener, nobs]))
+      CPASSERT(ALL(SHAPE(rotation_correction) == [nrot, nrot]))
+      CPASSERT(ALL(SHAPE(energy_correction) == [nener, nener]))
+      CPASSERT(ALL(SHAPE(cross_correction) == [nener, nrot]))
+
+      rotation_correction(:, :) = 0.0_dp
+      energy_correction(:, :) = 0.0_dp
+      cross_correction(:, :) = 0.0_dp
+      finite = .FALSE.
+      consistent = .FALSE.
+      overlap = 0.0_dp
+      capture = 0.0_dp
+      quality = 0.0_dp
+      rotation_quality = 0.0_dp
+      energy_quality = 0.0_dp
+      alignment = 0.0_dp
+      curvature_ratio_min = 0.0_dp
+      curvature_ratio_max = 0.0_dp
+      IF (nrot <= 0 .OR. nener <= 0) RETURN
+
+      ALLOCATE (forward_energy_cross(nener, nrot), forward_energy_hessian(nener, nener), &
+                forward_rotation_hessian(nrot, nrot), reverse_energy_cross(nener, nrot), &
+                reverse_energy_hessian(nener, nener), reverse_rotation_hessian(nrot, nrot))
+
+      IF (nobs == 3) THEN
+         ALLOCATE (fold_energy_responses(nener, 2), fold_energy_steps(nener, 2), &
+                   fold_rotation_responses(nrot, 2), fold_rotation_steps(nrot, 2), &
+                   third_energy_cross(nener, nrot), third_energy_hessian(nener, nener), &
+                   third_rotation_hessian(nrot, nrot))
+         CALL qs_scf_kp_coupled_response_multisecant_prediction( &
+            rotation_hessian, energy_hessian, rotation_steps(:, 1:2), energy_steps(:, 1:2), &
+            closure_rotation_targets(:, 1:2), closure_energy_targets(:, 1:2), &
+            rotation_steps(:, 3), energy_steps(:, 3), closure_rotation_targets(:, 3), &
+            closure_energy_targets(:, 3), forward_rotation_hessian, forward_energy_hessian, &
+            forward_energy_cross, forward_finite, forward_overlap, forward_capture, &
+            forward_quality, forward_rotation_quality, forward_energy_quality, forward_alignment, &
+            forward_curvature_ratio)
+         fold_rotation_steps(:, :) = rotation_steps(:, 2:3)
+         fold_energy_steps(:, :) = energy_steps(:, 2:3)
+         fold_rotation_responses(:, :) = closure_rotation_targets(:, 2:3)
+         fold_energy_responses(:, :) = closure_energy_targets(:, 2:3)
+         CALL qs_scf_kp_coupled_response_multisecant_prediction( &
+            rotation_hessian, energy_hessian, fold_rotation_steps, fold_energy_steps, &
+            fold_rotation_responses, fold_energy_responses, rotation_steps(:, 1), &
+            energy_steps(:, 1), closure_rotation_targets(:, 1), closure_energy_targets(:, 1), &
+            reverse_rotation_hessian, reverse_energy_hessian, reverse_energy_cross, reverse_finite, &
+            reverse_overlap, reverse_capture, reverse_quality, reverse_rotation_quality, &
+            reverse_energy_quality, reverse_alignment, reverse_curvature_ratio)
+         fold_rotation_steps(:, 1) = rotation_steps(:, 3)
+         fold_rotation_steps(:, 2) = rotation_steps(:, 1)
+         fold_energy_steps(:, 1) = energy_steps(:, 3)
+         fold_energy_steps(:, 2) = energy_steps(:, 1)
+         fold_rotation_responses(:, 1) = closure_rotation_targets(:, 3)
+         fold_rotation_responses(:, 2) = closure_rotation_targets(:, 1)
+         fold_energy_responses(:, 1) = closure_energy_targets(:, 3)
+         fold_energy_responses(:, 2) = closure_energy_targets(:, 1)
+         CALL qs_scf_kp_coupled_response_multisecant_prediction( &
+            rotation_hessian, energy_hessian, fold_rotation_steps, fold_energy_steps, &
+            fold_rotation_responses, fold_energy_responses, rotation_steps(:, 2), &
+            energy_steps(:, 2), closure_rotation_targets(:, 2), closure_energy_targets(:, 2), &
+            third_rotation_hessian, third_energy_hessian, third_energy_cross, third_finite, &
+            third_overlap, third_capture, third_quality, third_rotation_quality, &
+            third_energy_quality, third_alignment, third_curvature_ratio)
+         finite = forward_finite .AND. reverse_finite .AND. third_finite
+         IF (finite) THEN
+            overlap = MIN(forward_overlap, reverse_overlap, third_overlap)
+            capture = MIN(forward_capture, reverse_capture, third_capture)
+            quality = MIN(forward_quality, reverse_quality, third_quality)
+            rotation_quality = MIN(forward_rotation_quality, reverse_rotation_quality, &
+                                   third_rotation_quality)
+            energy_quality = MIN(forward_energy_quality, reverse_energy_quality, third_energy_quality)
+            alignment = MIN(forward_alignment, reverse_alignment, third_alignment)
+            curvature_ratio_min = MIN(forward_curvature_ratio, reverse_curvature_ratio, &
+                                      third_curvature_ratio)
+            curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio, &
+                                      third_curvature_ratio)
+            consistent = quality >= ot_kp_schur_prediction_quality_min .AND. &
+                         rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                         energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
+                         alignment >= ot_kp_schur_prediction_alignment_min .AND. &
+                         curvature_ratio_min >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                         curvature_ratio_max <= ot_kp_schur_prediction_curvature_ratio_max
+            rotation_correction(:, :) = forward_rotation_hessian
+            energy_correction(:, :) = forward_energy_hessian
+            cross_correction(:, :) = forward_energy_cross
+         END IF
+         DEALLOCATE (fold_energy_responses, fold_energy_steps, fold_rotation_responses, &
+                     fold_rotation_steps, third_energy_cross, third_energy_hessian, &
+                     third_rotation_hessian)
+         DEALLOCATE (forward_energy_cross, forward_energy_hessian, forward_rotation_hessian, &
+                     reverse_energy_cross, reverse_energy_hessian, reverse_rotation_hessian)
+         RETURN
+      END IF
+
+      CALL qs_scf_kp_coupled_response_secant_prediction( &
+         rotation_hessian, energy_hessian, rotation_steps(:, 1), energy_steps(:, 1), &
+         closure_rotation_targets(:, 1), closure_energy_targets(:, 1), rotation_steps(:, 2), &
+         energy_steps(:, 2), closure_rotation_targets(:, 2), closure_energy_targets(:, 2), &
+         forward_rotation_hessian, forward_energy_hessian, forward_energy_cross, forward_finite, &
+         forward_overlap, forward_capture, forward_quality, forward_rotation_quality, &
+         forward_energy_quality, forward_alignment, forward_curvature_ratio)
+      CALL qs_scf_kp_coupled_response_secant_prediction( &
+         rotation_hessian, energy_hessian, rotation_steps(:, 2), energy_steps(:, 2), &
+         closure_rotation_targets(:, 2), closure_energy_targets(:, 2), rotation_steps(:, 1), &
+         energy_steps(:, 1), closure_rotation_targets(:, 1), closure_energy_targets(:, 1), &
+         reverse_rotation_hessian, reverse_energy_hessian, reverse_energy_cross, reverse_finite, &
+         reverse_overlap, reverse_capture, reverse_quality, reverse_rotation_quality, &
+         reverse_energy_quality, reverse_alignment, reverse_curvature_ratio)
+
+      finite = forward_finite .AND. reverse_finite
+      IF (finite) THEN
+         overlap = MIN(forward_overlap, reverse_overlap)
+         capture = MIN(forward_capture, reverse_capture)
+         quality = MIN(forward_quality, reverse_quality)
+         rotation_quality = MIN(forward_rotation_quality, reverse_rotation_quality)
+         energy_quality = MIN(forward_energy_quality, reverse_energy_quality)
+         alignment = MIN(forward_alignment, reverse_alignment)
+         curvature_ratio_min = MIN(forward_curvature_ratio, reverse_curvature_ratio)
+         curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio)
+         ! The response-vector secant is identified by its measured y directions.  Unlike the
+         ! older step-direction update it does not require nearly parallel accepted steps or a
+         ! large projection of y onto s: exact out-of-sample response, component quality and
+         ! curvature consistency are the relevant observability tests.
+         consistent = forward_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      reverse_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      forward_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      reverse_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      forward_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
+                      reverse_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
+                      forward_alignment >= ot_kp_schur_prediction_alignment_min .AND. &
+                      reverse_alignment >= ot_kp_schur_prediction_alignment_min .AND. &
+                      forward_curvature_ratio >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                      reverse_curvature_ratio >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                      forward_curvature_ratio <= ot_kp_schur_prediction_curvature_ratio_max .AND. &
+                      reverse_curvature_ratio <= ot_kp_schur_prediction_curvature_ratio_max
+         rotation_correction(:, :) = reverse_rotation_hessian
+         energy_correction(:, :) = reverse_energy_hessian
+         cross_correction(:, :) = reverse_energy_cross
+      END IF
+      DEALLOCATE (forward_energy_cross, forward_energy_hessian, forward_rotation_hessian, &
+                  reverse_energy_cross, reverse_energy_hessian, reverse_rotation_hessian)
+
+   END SUBROUTINE qs_scf_kp_coupled_closure_prediction
+
+! **************************************************************************************************
 !> \brief Evaluate a coupled rotation/energy Hessian on one fixed-N Mermin step.
 !> \param rotation_gradient rotation gradient in descent-vector convention
 !> \param energy_gradient auxiliary-energy gradient in descent-vector convention
@@ -7470,6 +8185,10 @@ CONTAINS
       local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
       local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
       local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
+      local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
+      local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+      local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
+      local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
       local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
       local_ot_env(1)%schur_residual_history_quality = 1.0_dp
       local_ot_env(1)%gnorm = 0.0_dp
@@ -11597,8 +12316,9 @@ CONTAINS
       SUBROUTINE update_kpoint_ot_schur_line_search_quality()
 
       INTEGER                                            :: local_channel, samples
-      LOGICAL :: density_stationarity_quality_ready, mermin_search, spectral_selected_ema_ok, &
-         spectral_selected_recent_ok, spectral_shadow_probe_quality_ready
+      LOGICAL :: closure_vector_shadow_quality_ready, density_stationarity_quality_ready, &
+         mermin_search, spectral_selected_ema_ok, spectral_selected_recent_ok, &
+         spectral_shadow_probe_quality_ready
       REAL(KIND=dp) :: calibrated_predicted_drop, calibrated_quality_ratio, &
          closure_candidate_predicted_drop, closure_candidate_quality_ratio, &
          closure_full_shadow_advantage, closure_full_shadow_baseline_error, &
@@ -11607,99 +12327,99 @@ CONTAINS
          closure_shadow_advantage, closure_shadow_baseline_error, &
          closure_shadow_baseline_predicted_drop, closure_shadow_predicted_drop, &
          closure_shadow_quality_ratio, closure_shadow_relative_error, &
-         constrained_calibrated_predicted_drop
-      REAL(KIND=dp) :: constrained_calibrated_quality_ratio, constrained_predicted_drop, &
-         constrained_quality_ratio, dense_metric_shadow_predicted_drop, &
-         dense_metric_shadow_quality_ratio, density_candidate_residual_quality_ratio, &
-         density_stationarity_quality_ratio, gauge_residual_quality_ratio, line_search_model_drop, &
-         line_search_model_position, line_search_model_scale, measured_drop, &
-         metric_residual_quality, multisecant_predicted_drop, multisecant_quality_ratio, &
-         occgap_shadow_predicted_drop, occgap_shadow_quality_ratio, predicted_drop, &
-         prediction_predicted_drop, prediction_quality_ratio
-      REAL(KIND=dp) :: projector_density_audit_amplification_quality, &
+         closure_vector_shadow_advantage
+      REAL(KIND=dp) :: closure_vector_shadow_baseline_error, &
+         closure_vector_shadow_baseline_predicted_drop, closure_vector_shadow_candidate_error, &
+         closure_vector_shadow_predicted_drop, closure_vector_shadow_quality_ratio, &
+         constrained_calibrated_predicted_drop, constrained_calibrated_quality_ratio, &
+         constrained_predicted_drop, constrained_quality_ratio, &
+         dense_metric_shadow_predicted_drop, dense_metric_shadow_quality_ratio, &
+         density_candidate_residual_quality_ratio, density_stationarity_quality_ratio, &
+         gauge_residual_quality_ratio, line_search_model_drop, line_search_model_position
+      REAL(KIND=dp) :: line_search_model_scale, measured_drop, metric_residual_quality, &
+         multisecant_predicted_drop, multisecant_quality_ratio, occgap_shadow_predicted_drop, &
+         occgap_shadow_quality_ratio, predicted_drop, prediction_predicted_drop, &
+         prediction_quality_ratio, projector_density_audit_amplification_quality, &
          projector_density_audit_lowcurv_quality, projector_density_audit_quality_ratio, &
          projector_density_descent_base_predicted_drop, &
          projector_density_descent_incremental_measured_drop, &
-         projector_density_descent_incremental_predicted_drop, &
-         projector_density_descent_incremental_quality_ratio, &
+         projector_density_descent_incremental_predicted_drop
+      REAL(KIND=dp) :: projector_density_descent_incremental_quality_ratio, &
          projector_density_descent_predicted_drop, projector_density_descent_quality_ratio, &
          projector_density_descent_selected_predicted_drop, &
-         projector_density_descent_selected_quality_ratio, projector_density_descent_support
-      REAL(KIND=dp) :: projector_density_full_direct_predicted_drop, &
+         projector_density_descent_selected_quality_ratio, projector_density_descent_support, &
+         projector_density_full_direct_predicted_drop, &
          projector_density_full_direct_quality_ratio, &
          projector_density_full_direct_selected_predicted_drop, &
          projector_density_full_direct_selected_quality_ratio, &
-         projector_density_full_global_predicted_drop, &
-         projector_density_full_global_quality_ratio, &
-         projector_density_full_global_selected_predicted_drop, &
+         projector_density_full_global_predicted_drop, projector_density_full_global_quality_ratio
+      REAL(KIND=dp) :: projector_density_full_global_selected_predicted_drop, &
          projector_density_full_global_selected_quality_ratio, projector_density_full_min_drop, &
          projector_density_full_predicted_drop, projector_density_full_quality_ratio, &
-         projector_density_full_selected_predicted_drop
-      REAL(KIND=dp) :: projector_density_full_selected_quality_ratio, &
-         projector_density_lowcurv_quality, projector_density_lowcurv_ratio, &
-         projector_density_predicted_drop, projector_density_quality_ratio, &
-         projector_diagref_correction_ratio, projector_diagref_predicted_drop, &
-         projector_diagref_quality_ratio, projector_inactive_offdiag_abs_ratio, &
-         projector_inactive_offdiag_negative, projector_inactive_offdiag_predicted_drop, &
-         projector_inactive_offdiag_quality_ratio, &
+         projector_density_full_selected_predicted_drop, &
+         projector_density_full_selected_quality_ratio, projector_density_lowcurv_quality, &
+         projector_density_lowcurv_ratio, projector_density_predicted_drop, &
+         projector_density_quality_ratio, projector_diagref_correction_ratio, &
+         projector_diagref_predicted_drop, projector_diagref_quality_ratio
+      REAL(KIND=dp) :: projector_inactive_offdiag_abs_ratio, projector_inactive_offdiag_negative, &
+         projector_inactive_offdiag_predicted_drop, projector_inactive_offdiag_quality_ratio, &
          projector_inactive_offdiag_selected_predicted_drop, &
-         projector_inactive_offdiag_selected_quality_ratio
-      REAL(KIND=dp) :: projector_inactive_offdiag_signed_ratio, &
-         projector_inactive_offdiag_step_negative, projector_mixed_direct_predicted_drop, &
-         projector_mixed_direct_quality_ratio, projector_mode_predicted_drop, &
-         projector_mode_quality_ratio, projector_mode_response_drop_ratio, &
-         projector_mode_response_negative, projector_mode_step_negative, projector_mode_trust, &
+         projector_inactive_offdiag_selected_quality_ratio, &
+         projector_inactive_offdiag_signed_ratio, projector_inactive_offdiag_step_negative, &
+         projector_mixed_direct_predicted_drop, projector_mixed_direct_quality_ratio, &
+         projector_mode_predicted_drop, projector_mode_quality_ratio, &
+         projector_mode_response_drop_ratio, projector_mode_response_negative
+      REAL(KIND=dp) :: projector_mode_step_negative, projector_mode_trust, &
          projector_offdiag_abs_ratio, projector_offdiag_negative, &
          projector_offdiag_predicted_drop, projector_offdiag_quality_ratio, &
-         projector_offdiag_selected_predicted_drop, projector_offdiag_selected_quality_ratio
-      REAL(KIND=dp) :: projector_offdiag_signed_ratio, projector_offdiag_step_negative, &
+         projector_offdiag_selected_predicted_drop, projector_offdiag_selected_quality_ratio, &
+         projector_offdiag_signed_ratio, projector_offdiag_step_negative, &
          projector_physical_compensation_quality, projector_physical_compensation_ratio, &
          projector_physical_correction_quality, projector_physical_correction_ratio, &
-         projector_physical_direct_density_cshadow_coverage, &
-         projector_physical_direct_density_cshadow_predicted_drop, &
+         projector_physical_direct_density_cshadow_coverage
+      REAL(KIND=dp) :: projector_physical_direct_density_cshadow_predicted_drop, &
          projector_physical_direct_density_cshadow_quality_ratio, &
          projector_physical_direct_density_fshadow_coverage, &
          projector_physical_direct_density_fshadow_predicted_drop, &
-         projector_physical_direct_density_fshadow_quality_ratio
-      REAL(KIND=dp) :: projector_physical_direct_density_selected_predicted_drop, &
+         projector_physical_direct_density_fshadow_quality_ratio, &
+         projector_physical_direct_density_selected_predicted_drop, &
          projector_physical_direct_density_selected_quality_ratio, &
          projector_physical_direct_predicted_drop, projector_physical_direct_quality, &
-         projector_physical_direct_quality_ratio, projector_physical_direct_ratio, &
-         projector_physical_direct_selected_predicted_drop, &
+         projector_physical_direct_quality_ratio, projector_physical_direct_ratio
+      REAL(KIND=dp) :: projector_physical_direct_selected_predicted_drop, &
          projector_physical_direct_selected_quality_ratio, projector_physical_metric_quality, &
          projector_physical_metric_ratio, projector_physical_negative_quality, &
-         projector_physical_predicted_drop, projector_physical_quality_ratio
-      REAL(KIND=dp) :: projector_physical_selected_predicted_drop, &
-         projector_physical_selected_quality, projector_physical_selected_quality_ratio, &
-         projector_physical_selected_ratio, projector_physical_shift_quality, &
-         projector_physical_shift_ratio, projector_physical_trace_active_avg, &
-         projector_physical_trace_active_diag_avg, projector_physical_trace_active_diag_quality, &
+         projector_physical_predicted_drop, projector_physical_quality_ratio, &
+         projector_physical_selected_predicted_drop, projector_physical_selected_quality, &
+         projector_physical_selected_quality_ratio, projector_physical_selected_ratio, &
+         projector_physical_shift_quality, projector_physical_shift_ratio, &
+         projector_physical_trace_active_avg, projector_physical_trace_active_diag_avg
+      REAL(KIND=dp) :: projector_physical_trace_active_diag_quality, &
          projector_physical_trace_active_free_avg, projector_physical_trace_active_free_quality, &
          projector_physical_trace_active_quality, projector_physical_trace_actual_avg, &
-         projector_physical_trace_actual_diag_avg
-      REAL(KIND=dp) :: projector_physical_trace_actual_diag_quality, &
+         projector_physical_trace_actual_diag_avg, projector_physical_trace_actual_diag_quality, &
          projector_physical_trace_actual_free_avg, projector_physical_trace_actual_free_quality, &
          projector_physical_trace_actual_quality, projector_physical_trace_invariant_avg, &
          projector_physical_trace_invariant_diag_avg, &
-         projector_physical_trace_invariant_diag_quality, &
-         projector_physical_trace_invariant_free_avg, &
+         projector_physical_trace_invariant_diag_quality
+      REAL(KIND=dp) :: projector_physical_trace_invariant_free_avg, &
          projector_physical_trace_invariant_free_quality, &
          projector_physical_trace_invariant_quality, projector_physical_trace_raw_avg, &
-         projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality
-      REAL(KIND=dp) :: projector_physical_trace_raw_free_avg, &
-         projector_physical_trace_raw_free_quality, projector_physical_trace_raw_quality, &
-         projector_physical_weight_quality, projector_plateau_gap_predicted_drop, &
-         projector_plateau_gap_quality_ratio, projector_response_predicted_drop, &
-         projector_response_quality_ratio, projector_response_selected_predicted_drop, &
+         projector_physical_trace_raw_diag_avg, projector_physical_trace_raw_diag_quality, &
+         projector_physical_trace_raw_free_avg, projector_physical_trace_raw_free_quality, &
+         projector_physical_trace_raw_quality, projector_physical_weight_quality, &
+         projector_plateau_gap_predicted_drop, projector_plateau_gap_quality_ratio, &
+         projector_response_predicted_drop, projector_response_quality_ratio
+      REAL(KIND=dp) :: projector_response_selected_predicted_drop, &
          projector_response_selected_quality_ratio, projector_spectral_predicted_drop, &
          projector_spectral_quality_ratio, projector_spectral_selected_predicted_drop, &
-         projector_spectral_selected_quality_ratio, quality_ratio
-      REAL(KIND=dp) :: raw_residual_quality_ratio, reduced_secant_predicted_drop, &
-         reduced_secant_quality_ratio, residual_current_delta, residual_drop, &
-         residual_quality_ratio, sample_accepted_drop, sample_gap, sample_gap_ratio, &
-         sample_quality, sample_reference_drop, split_shadow_calibrated_predicted_drop, &
-         split_shadow_calibrated_quality_ratio, split_shadow_predicted_drop, &
-         split_shadow_quality_ratio, vector_secant_predicted_drop, vector_secant_quality_ratio
+         projector_spectral_selected_quality_ratio, quality_ratio, raw_residual_quality_ratio, &
+         reduced_secant_predicted_drop, reduced_secant_quality_ratio, residual_current_delta, &
+         residual_drop, residual_quality_ratio, sample_accepted_drop, sample_gap, &
+         sample_gap_ratio, sample_quality, sample_reference_drop, &
+         split_shadow_calibrated_predicted_drop, split_shadow_calibrated_quality_ratio
+      REAL(KIND=dp) :: split_shadow_predicted_drop, split_shadow_quality_ratio, &
+         vector_secant_predicted_drop, vector_secant_quality_ratio
       TYPE(cp_logger_type), POINTER                      :: logger
 
          IF (.NOT. local_ot_env(1)%schur_model_pending) RETURN
@@ -11984,6 +12704,74 @@ CONTAINS
                closure_full_shadow_advantage, &
                local_ot_env(1)%schur_closure_full_shadow_advantage_ema
          END IF
+         closure_vector_shadow_baseline_predicted_drop = 0.0_dp
+         closure_vector_shadow_predicted_drop = 0.0_dp
+         closure_vector_shadow_quality_ratio = 0.0_dp
+         closure_vector_shadow_advantage = 0.0_dp
+         closure_vector_shadow_baseline_error = 1.0_dp
+         closure_vector_shadow_candidate_error = 1.0_dp
+         closure_vector_shadow_quality_ready = .FALSE.
+         IF (mermin_search .AND. local_ot_env(1)%schur_closure_vector_shadow_pending) THEN
+            closure_vector_shadow_baseline_predicted_drop = qs_scf_kp_quadratic_position_drop( &
+                                                            local_ot_env(1)%schur_model_slope, &
+                                                            local_ot_env(1)%schur_model_quadratic + &
+                                                            local_ot_env(1)% &
+                                                            schur_closure_vector_shadow_baseline_quadratic, &
+                                                            line_search_model_position)
+            closure_vector_shadow_predicted_drop = qs_scf_kp_quadratic_position_drop( &
+                                                   local_ot_env(1)%schur_model_slope, &
+                                                   local_ot_env(1)%schur_model_quadratic + &
+                                                   local_ot_env(1)% &
+                                                   schur_closure_vector_shadow_quadratic, &
+                                                   line_search_model_position)
+            CALL qs_scf_kp_shadow_prediction_quality( &
+               closure_vector_shadow_baseline_predicted_drop, &
+               closure_vector_shadow_predicted_drop, measured_drop, &
+               closure_vector_shadow_quality_ratio, closure_vector_shadow_baseline_error, &
+               closure_vector_shadow_candidate_error, closure_vector_shadow_advantage, &
+               closure_vector_shadow_quality_ready)
+            IF (closure_vector_shadow_quality_ready) THEN
+               samples = MIN(local_ot_env(1)%schur_closure_vector_shadow_quality_samples + 1, &
+                             HUGE(samples) - 1)
+               local_ot_env(1)%schur_closure_vector_shadow_quality_samples = samples
+               local_ot_env(1)%schur_closure_vector_shadow_quality = &
+                  closure_vector_shadow_quality_ratio
+               local_ot_env(1)%schur_closure_vector_shadow_advantage = &
+                  closure_vector_shadow_advantage
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_closure_vector_shadow_quality_ema = &
+                     closure_vector_shadow_quality_ratio
+                  local_ot_env(1)%schur_closure_vector_shadow_advantage_ema = &
+                     closure_vector_shadow_advantage
+               ELSE
+                  local_ot_env(1)%schur_closure_vector_shadow_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_closure_vector_shadow_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*closure_vector_shadow_quality_ratio
+                  local_ot_env(1)%schur_closure_vector_shadow_advantage_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_closure_vector_shadow_advantage_ema + &
+                     ot_kp_schur_quality_ema_alpha*closure_vector_shadow_advantage
+               END IF
+            END IF
+            logger => cp_get_default_logger()
+            IF (logger%iter_info%print_level >= high_print_level .AND. &
+                logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), &
+                      '(A,1X,I6,2(1X,L1),9(1X,ES16.8))') &
+               " OT Schur response-vector shadow history n eligible ready base candidate measured q qema "// &
+               "berr cerr adv aema:", &
+               local_ot_env(1)%schur_closure_vector_shadow_quality_samples, &
+               local_ot_env(1)%schur_closure_vector_shadow_consistent, &
+               closure_vector_shadow_quality_ready, &
+               closure_vector_shadow_baseline_predicted_drop, &
+               closure_vector_shadow_predicted_drop, measured_drop, &
+               closure_vector_shadow_quality_ratio, &
+               local_ot_env(1)%schur_closure_vector_shadow_quality_ema, &
+               closure_vector_shadow_baseline_error, closure_vector_shadow_candidate_error, &
+               closure_vector_shadow_advantage, &
+               local_ot_env(1)%schur_closure_vector_shadow_advantage_ema
+         END IF
          IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
              residual_quality_ratio <= EPSILON(1.0_dp) .AND. &
              local_ot_env(1)%schur_model_delta > EPSILON(local_ot_env(1)%schur_model_delta) .AND. &
@@ -12040,6 +12828,10 @@ CONTAINS
             local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
+            local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+            local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
+            local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
             local_ot_env(1)%schur_reduced_secant_model_groups = 0
             local_ot_env(1)%schur_reduced_secant_selected_groups = 0
             local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
@@ -13377,6 +14169,9 @@ CONTAINS
              EPSILON(projector_density_descent_predicted_drop) .AND. measured_drop > 0.0_dp) THEN
             projector_density_descent_quality_ratio = &
                measured_drop/projector_density_descent_predicted_drop
+            projector_density_descent_quality_ratio = &
+               MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                   projector_density_descent_quality_ratio)
             projector_density_descent_support = &
                MIN(1.0_dp, MAX(0.0_dp, projector_density_descent_quality_ratio))
             local_ot_env(1)%schur_projector_density_descent_quality = &
@@ -13467,6 +14262,9 @@ CONTAINS
              measured_drop > 0.0_dp) THEN
             projector_density_descent_selected_quality_ratio = &
                measured_drop/projector_density_descent_selected_predicted_drop
+            projector_density_descent_selected_quality_ratio = &
+               MIN(ot_kp_schur_projector_response_quality_max_ratio, &
+                   projector_density_descent_selected_quality_ratio)
             local_ot_env(1)%schur_projector_density_descent_selected_quality = &
                projector_density_descent_selected_quality_ratio
             samples = MIN( &
@@ -14410,6 +15208,10 @@ CONTAINS
          local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
          local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
          local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
+         local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
+         local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+         local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
+         local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
          local_ot_env(1)%schur_reduced_secant_model_groups = 0
          local_ot_env(1)%schur_reduced_secant_selected_groups = 0
          local_ot_env(1)%schur_reduced_secant_rot_residual_start_sq = 0.0_dp
@@ -15546,6 +16348,10 @@ CONTAINS
             local_ot_env(1)%schur_closure_full_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_full_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
+            local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
+            local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+            local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
+            local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
             local_ot_env(1)%kpoint_physical_delta_ready = .TRUE.
             local_ot_env(1)%kpoint_physical_delta_groups = 0
             local_ot_env(1)%kpoint_raw_delta = -1.0_dp
@@ -15739,78 +16545,79 @@ CONTAINS
          channel_canonical_cauchy_used, closure_candidate_enabled, &
          closure_candidate_measured_response, closure_candidate_probe_selected, &
          closure_candidate_ready, closure_candidate_residual_advantage_resolved, &
-         closure_candidate_selected, closure_coupled_response_history_ready, &
+         closure_candidate_selected, closure_coupled_predictive_consistent, &
+         closure_coupled_predictive_finite, closure_coupled_response_history_ready, &
          closure_coupled_response_ready, closure_coupled_response_selected, &
          closure_coupled_subspace_ready, closure_reduced_response_ready, &
-         closure_response_pair_ready, closure_response_shadow_ready, &
-         closure_response_subspace_ready
-      LOGICAL :: constrained_candidate_enabled, constrained_candidate_ready, &
+         closure_response_pair_ready
+      LOGICAL :: closure_response_shadow_ready, closure_response_subspace_ready, &
+         constrained_candidate_enabled, constrained_candidate_ready, &
          constrained_candidate_selected, dense_exact_scale_ready, density_descent_bootstrap_ready, &
          density_descent_candidate_ready, density_descent_candidate_selected, &
          density_descent_tail_probe_ready, density_full_candidate_ready, &
          density_full_candidate_selected, density_full_direct_candidate_ready, &
          density_full_direct_candidate_selected, density_full_direct_closure_ready, &
-         density_full_direct_coupled_model_ready, density_full_direct_tail_probe_ready, &
-         density_full_global_bootstrap_ready, density_full_global_candidate_ready
-      LOGICAL :: density_full_global_candidate_selected, density_full_global_history_ready, &
+         density_full_direct_coupled_model_ready, density_full_direct_tail_probe_ready
+      LOGICAL :: density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
+         density_full_global_candidate_selected, density_full_global_history_ready, &
          density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
          density_full_tail_probe_ready, density_pair_activation_ready, density_pair_shape_ok, &
          energy_closure_candidate_selected, energy_closure_competing_ready, &
          energy_closure_tail_ready, exact_active_response_ready, exact_attempt_response, &
          exact_density_basis_audit_ready, exact_density_basis_curvfloor_audit_ready, &
-         exact_density_basis_damped_audit_ready, exact_density_basis_filtered_audit_ready, &
-         exact_density_basis_selective_audit_ready
-      LOGICAL :: exact_density_direct_response_ready, exact_density_floor_audit_ready, &
-         exact_density_floor_safe_audit_ready, exact_density_full_audit_ready, &
-         exact_density_full_response_ready, exact_density_plateau_response_ready, &
-         exact_density_response_ready, exact_energy_model_ready, exact_physical_response_ready, &
-         failed, fermi_active_pair, inactive_gauge_projection_used, metric_attempt_current_bridge, &
-         metric_attempt_response, metric_attempt_selectable, metric_attempt_tail_bridge, &
-         multisecant_response_ready, multisecant_update_eligible, multisecant_update_ready, &
-         multisecant_update_used
-      LOGICAL :: new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
+         exact_density_basis_damped_audit_ready
+      LOGICAL :: exact_density_basis_filtered_audit_ready, &
+         exact_density_basis_selective_audit_ready, exact_density_direct_response_ready, &
+         exact_density_floor_audit_ready, exact_density_floor_safe_audit_ready, &
+         exact_density_full_audit_ready, exact_density_full_response_ready, &
+         exact_density_plateau_response_ready, exact_density_response_ready, &
+         exact_energy_model_ready, exact_physical_response_ready, failed, fermi_active_pair, &
+         inactive_gauge_projection_used, metric_attempt_current_bridge, metric_attempt_response, &
+         metric_attempt_selectable, metric_attempt_tail_bridge, multisecant_response_ready
+      LOGICAL :: multisecant_update_eligible, multisecant_update_ready, multisecant_update_used, &
+         new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
          physical_delta_plateau_ready, physical_delta_raw_tail_ready, prediction_candidate_ready, &
          prediction_candidate_selected, prediction_probe_selected, prediction_transport_ready, &
          prediction_update_eligible, prediction_update_ready, prediction_update_used, &
          projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, &
-         projector_inactive_offdiag_tail_refresh_probe, &
-         projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive
-      LOGICAL :: projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
-         projector_physical_candidate_ready, projector_physical_candidate_selected, &
-         projector_physical_coupled_model_ready, projector_physical_direct_basis_tail_limited, &
-         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
-         projector_physical_direct_candidate_used, &
+         projector_inactive_offdiag_candidate_ready, projector_inactive_offdiag_tail_refresh_probe
+      LOGICAL :: projector_inactive_offdiag_tail_refresh_ready, &
+         projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
+         projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
+         projector_physical_candidate_selected, projector_physical_coupled_model_ready, &
+         projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
+         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
          projector_physical_direct_density_candidate_ready, &
-         projector_physical_direct_density_candidate_selected, &
-         projector_physical_direct_density_fshadow_ready, &
-         projector_physical_direct_density_override_protected
-      LOGICAL :: projector_physical_direct_density_quality_ready, &
+         projector_physical_direct_density_candidate_selected
+      LOGICAL :: projector_physical_direct_density_fshadow_ready, &
+         projector_physical_direct_density_override_protected, &
+         projector_physical_direct_density_quality_ready, &
          projector_physical_direct_density_residual_bad, &
          projector_physical_direct_density_selected_probe_ready, &
          projector_physical_direct_density_tail_probe_ready, &
          projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_effective_response_ready, &
          projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
-         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted, &
-         projector_physical_direct_shadow_enabled, &
-         projector_physical_direct_spectral_candidate_ready
-      LOGICAL :: projector_physical_direct_spectral_candidate_selected, &
+         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted
+      LOGICAL :: projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_spectral_candidate_ready, &
+         projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
          projector_physical_direct_spectral_probe_quality_ready, &
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
          projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
-         projector_plateau_gap_model_enabled, projector_response_candidate_ready, &
-         projector_response_candidate_selected, reduced_secant_candidate_enabled
-      LOGICAL :: reduced_secant_candidate_ready, reduced_secant_candidate_selected, &
-         reduced_secant_measured_response, reduced_secant_probe_selected, &
-         reduced_secant_replacement_eligible, reduced_secant_update_eligible, &
-         relative_energy_metric_ready, response_model_available, schur_active_subspace, solved, &
-         split_candidate_diagnostic, split_candidate_enabled, split_candidate_ready, &
-         split_candidate_selected, split_residual_competitive, trust_rejected, &
-         vector_secant_update_eligible, vector_secant_update_ready, vector_secant_update_used
+         projector_plateau_gap_model_enabled
+      LOGICAL :: projector_response_candidate_ready, projector_response_candidate_selected, &
+         reduced_secant_candidate_enabled, reduced_secant_candidate_ready, &
+         reduced_secant_candidate_selected, reduced_secant_measured_response, &
+         reduced_secant_probe_selected, reduced_secant_replacement_eligible, &
+         reduced_secant_update_eligible, relative_energy_metric_ready, response_model_available, &
+         schur_active_subspace, solved, split_candidate_diagnostic, split_candidate_enabled, &
+         split_candidate_ready, split_candidate_selected, split_residual_competitive, &
+         trust_rejected, vector_secant_update_eligible
+      LOGICAL :: vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
                                                             channel_density_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
@@ -15868,98 +16675,104 @@ CONTAINS
          closure_full_response_candidate_quad, closure_full_response_coupled_quad, &
          closure_full_response_cross_quad, closure_full_response_delta_quad, &
          closure_full_response_energy_quad, closure_full_response_existing_quad, &
-         closure_full_response_rotation_quad, closure_response_accepted_drop, &
-         closure_response_accepted_quad, closure_response_baseline_quad, &
-         closure_response_candidate_quad
-      REAL(KIND=dp) :: closure_response_compatibility, closure_response_coupled_quad, &
-         closure_response_fitted_residual_ratio, closure_response_independence, &
-         closure_response_mode_fullrank_curvature, closure_response_mode_norm, &
-         closure_response_mode_pair_curvature, closure_response_mode_prior_curvature, &
-         closure_response_pair_fitted_residual_ratio, closure_response_reduced_quad, &
-         closure_response_residual_ratio, constrained_diag_shift_avg, constrained_direction_scale, &
-         constrained_expected_drop, constrained_expected_drop_ratio, constrained_gdot_energy, &
-         constrained_gdot_rotation, constrained_gdotp
-      REAL(KIND=dp) :: constrained_model_calibrated_drop, constrained_model_drop, &
-         constrained_model_gap, constrained_model_gap_drop, constrained_model_gap_ratio, &
-         constrained_model_gap_trust, constrained_norm_energy, constrained_norm_ratio, &
-         constrained_norm_rotation, constrained_normp, constrained_occ_response_diag_avg, &
-         constrained_occgap_shadow_drop, constrained_occgap_shadow_gap_ratio, &
-         constrained_quality_for_selection, constrained_response_abs_step, &
-         constrained_response_abs_trust_ratio, constrained_response_penalty_diag_avg, &
-         constrained_response_step, constrained_response_trust_ratio
-      REAL(KIND=dp) :: constrained_response_weighted_step, &
-         constrained_response_weighted_trust_ratio, constrained_rot_diag_avg, &
-         constrained_scale_quality, constrained_tether_response_diag_avg, &
-         constrained_trust_quality, coupled_diag_shift_avg, coupled_direction_scale, &
-         coupled_gdot_energy, coupled_gdot_rotation, coupled_model_calibrated_drop, &
-         coupled_model_drop, coupled_model_gap, coupled_model_gap_drop, coupled_model_gap_ratio, &
-         coupled_model_gap_trust, coupled_norm_energy, coupled_norm_ratio, coupled_norm_rotation, &
-         coupled_occ_response_diag_avg, coupled_response_abs_step
-      REAL(KIND=dp) :: coupled_response_abs_trust_ratio, coupled_response_step, &
-         coupled_response_trust_ratio, coupled_response_weighted_step, &
-         coupled_response_weighted_trust_ratio, coupled_rot_diag_avg, coupled_scale_quality, &
-         coupled_tether_response_diag_avg, curv_projection_sum, dense_branch_expected_drop, &
-         dense_coupled_gate_quality, dense_coupled_gate_quality_ema, dense_direction_scale, &
-         dense_expected_drop, dense_gdot_energy, dense_gdot_rotation, dense_metric_bridge_drop, &
-         dense_metric_bridge_floor_drop, dense_metric_bridge_gap, dense_metric_bridge_gap_drop, &
-         dense_metric_bridge_gap_drop_ratio
-      REAL(KIND=dp) :: dense_metric_bridge_gap_ratio, dense_metric_bridge_gap_trust, &
-         dense_metric_bridge_scale, dense_metric_norm_energy, dense_metric_norm_rotation, &
-         dense_metric_normp, dense_metric_scale_ratio, dense_metric_shadow_bridge_drop, &
+         closure_full_response_rotation_quad, closure_predictive_alignment, &
+         closure_predictive_capture, closure_predictive_curvature_max, &
+         closure_predictive_curvature_min
+      REAL(KIND=dp) :: closure_predictive_energy_quality, closure_predictive_overlap, &
+         closure_predictive_quality, closure_predictive_response_accepted_drop, &
+         closure_predictive_response_active_quad, closure_predictive_response_adjustment, &
+         closure_predictive_response_baseline_adjustment, closure_predictive_response_cross_quad, &
+         closure_predictive_response_energy_quad, closure_predictive_response_quad, &
+         closure_predictive_response_rotation_quad, closure_predictive_rotation_quality, &
+         closure_response_accepted_drop, closure_response_accepted_quad, &
+         closure_response_baseline_quad
+      REAL(KIND=dp) :: closure_response_candidate_quad, closure_response_compatibility, &
+         closure_response_coupled_quad, closure_response_fitted_residual_ratio, &
+         closure_response_independence, closure_response_mode_fullrank_curvature, &
+         closure_response_mode_norm, closure_response_mode_pair_curvature, &
+         closure_response_mode_prior_curvature, closure_response_pair_fitted_residual_ratio, &
+         closure_response_reduced_quad, closure_response_residual_ratio, &
+         constrained_diag_shift_avg, constrained_direction_scale, constrained_expected_drop, &
+         constrained_expected_drop_ratio, constrained_gdot_energy
+      REAL(KIND=dp) :: constrained_gdot_rotation, constrained_gdotp, &
+         constrained_model_calibrated_drop, constrained_model_drop, constrained_model_gap, &
+         constrained_model_gap_drop, constrained_model_gap_ratio, constrained_model_gap_trust, &
+         constrained_norm_energy, constrained_norm_ratio, constrained_norm_rotation, &
+         constrained_normp, constrained_occ_response_diag_avg, constrained_occgap_shadow_drop, &
+         constrained_occgap_shadow_gap_ratio, constrained_quality_for_selection, &
+         constrained_response_abs_step, constrained_response_abs_trust_ratio, &
+         constrained_response_penalty_diag_avg
+      REAL(KIND=dp) :: constrained_response_step, constrained_response_trust_ratio, &
+         constrained_response_weighted_step, constrained_response_weighted_trust_ratio, &
+         constrained_rot_diag_avg, constrained_scale_quality, &
+         constrained_tether_response_diag_avg, constrained_trust_quality, coupled_diag_shift_avg, &
+         coupled_direction_scale, coupled_gdot_energy, coupled_gdot_rotation, &
+         coupled_model_calibrated_drop, coupled_model_drop, coupled_model_gap, &
+         coupled_model_gap_drop, coupled_model_gap_ratio, coupled_model_gap_trust, &
+         coupled_norm_energy, coupled_norm_ratio, coupled_norm_rotation
+      REAL(KIND=dp) :: coupled_occ_response_diag_avg, coupled_response_abs_step, &
+         coupled_response_abs_trust_ratio, coupled_response_step, coupled_response_trust_ratio, &
+         coupled_response_weighted_step, coupled_response_weighted_trust_ratio, &
+         coupled_rot_diag_avg, coupled_scale_quality, coupled_tether_response_diag_avg, &
+         curv_projection_sum, dense_branch_expected_drop, dense_coupled_gate_quality, &
+         dense_coupled_gate_quality_ema, dense_direction_scale, dense_expected_drop, &
+         dense_gdot_energy, dense_gdot_rotation, dense_metric_bridge_drop, &
+         dense_metric_bridge_floor_drop, dense_metric_bridge_gap
+      REAL(KIND=dp) :: dense_metric_bridge_gap_drop, dense_metric_bridge_gap_drop_ratio, &
+         dense_metric_bridge_gap_ratio, dense_metric_bridge_gap_trust, dense_metric_bridge_scale, &
+         dense_metric_norm_energy, dense_metric_norm_rotation, dense_metric_normp, &
+         dense_metric_scale_ratio, dense_metric_shadow_bridge_drop, &
          dense_metric_shadow_candidate_drop, dense_metric_shadow_floor_drop, &
          dense_metric_shadow_gap_drop, dense_metric_shadow_gap_drop_ratio, &
          dense_metric_shadow_norm_energy, dense_metric_shadow_normp, dense_metric_shadow_scale, &
-         dense_metric_shadow_scale_ratio, dense_metric_shadow_weight, dense_metric_trust_scale, &
-         dense_metric_unit_abs_step
-      REAL(KIND=dp) :: dense_metric_unit_weighted_step, dense_model_gap, dense_model_gap_drop, &
+         dense_metric_shadow_scale_ratio, dense_metric_shadow_weight
+      REAL(KIND=dp) :: dense_metric_trust_scale, dense_metric_unit_abs_step, &
+         dense_metric_unit_weighted_step, dense_model_gap, dense_model_gap_drop, &
          dense_model_gap_ratio, dense_model_gap_trust, dense_norm_energy, dense_norm_rotation, &
          dense_print_model_gap, dense_print_model_gap_drop, dense_print_model_gap_ratio, &
          dense_print_model_gap_trust, dense_projector_coupled_weight, dense_quality_for_selection, &
          dense_residual_quality, dense_residual_quality_strict, dense_scale_quality, dense_term, &
-         dense_trust_quality, density_basis_curvfloor_history_abs_step, &
-         density_basis_curvfloor_history_abs_trust_ratio, density_basis_curvfloor_history_drop
-      REAL(KIND=dp) :: density_basis_curvfloor_history_gap_drop, &
+         dense_trust_quality, density_basis_curvfloor_history_abs_step
+      REAL(KIND=dp) :: density_basis_curvfloor_history_abs_trust_ratio, &
+         density_basis_curvfloor_history_drop, density_basis_curvfloor_history_gap_drop, &
          density_basis_curvfloor_history_quality, density_basis_curvfloor_history_trust_quality, &
          density_basis_curvfloor_history_weighted_step, &
          density_basis_curvfloor_history_weighted_trust_ratio, density_basis_damp, &
          density_basis_damped_history_abs_step, density_basis_damped_history_abs_trust_ratio, &
          density_basis_damped_history_drop, density_basis_damped_history_gap_drop, &
-         density_basis_damped_history_quality, density_basis_damped_history_trust_quality, &
-         density_basis_damped_history_weighted_step
-      REAL(KIND=dp) :: density_basis_damped_history_weighted_trust_ratio, &
-         density_basis_damping_threshold, density_basis_filtered_history_abs_step, &
-         density_basis_filtered_history_abs_trust_ratio, density_basis_filtered_history_drop, &
-         density_basis_filtered_history_gap_drop, density_basis_filtered_history_quality, &
-         density_basis_filtered_history_trust_quality, &
+         density_basis_damped_history_quality, density_basis_damped_history_trust_quality
+      REAL(KIND=dp) :: density_basis_damped_history_weighted_step, &
+         density_basis_damped_history_weighted_trust_ratio, density_basis_damping_threshold, &
+         density_basis_filtered_history_abs_step, density_basis_filtered_history_abs_trust_ratio, &
+         density_basis_filtered_history_drop, density_basis_filtered_history_gap_drop, &
+         density_basis_filtered_history_quality, density_basis_filtered_history_trust_quality, &
          density_basis_filtered_history_weighted_step, &
          density_basis_filtered_history_weighted_trust_ratio, density_basis_floor_weight, &
-         density_basis_history_abs_step, density_basis_history_abs_trust_ratio, &
-         density_basis_history_drop
-      REAL(KIND=dp) :: density_basis_history_gap_drop, density_basis_history_quality, &
-         density_basis_history_trust_quality, density_basis_history_weighted_step, &
-         density_basis_history_weighted_trust_ratio, density_basis_lowcurv_weight, &
-         density_basis_physical_support, density_basis_row_basis_abs, &
-         density_basis_row_basis_norm, density_basis_row_dot, density_basis_row_physical_abs, &
-         density_basis_row_physical_norm, density_basis_selective_history_abs_step, &
-         density_basis_selective_history_abs_trust_ratio, density_basis_selective_history_drop, &
-         density_basis_selective_history_gap_drop
-      REAL(KIND=dp) :: density_basis_selective_history_quality, &
-         density_basis_selective_history_trust_quality, &
+         density_basis_history_abs_step, density_basis_history_abs_trust_ratio
+      REAL(KIND=dp) :: density_basis_history_drop, density_basis_history_gap_drop, &
+         density_basis_history_quality, density_basis_history_trust_quality, &
+         density_basis_history_weighted_step, density_basis_history_weighted_trust_ratio, &
+         density_basis_lowcurv_weight, density_basis_physical_support, &
+         density_basis_row_basis_abs, density_basis_row_basis_norm, density_basis_row_dot, &
+         density_basis_row_physical_abs, density_basis_row_physical_norm, &
+         density_basis_selective_history_abs_step, &
+         density_basis_selective_history_abs_trust_ratio, density_basis_selective_history_drop
+      REAL(KIND=dp) :: density_basis_selective_history_gap_drop, &
+         density_basis_selective_history_quality, density_basis_selective_history_trust_quality, &
          density_basis_selective_history_weighted_step, &
          density_basis_selective_history_weighted_trust_ratio, density_basis_source_abs_sum, &
          density_basis_unsupported_abs_sum, density_descent_base_expected_drop, &
          density_descent_base_model_drop, density_descent_base_quality_for_selection, &
          density_descent_bootstrap_maturity, density_descent_bootstrap_quality, &
-         density_descent_direction_scale, density_descent_expected_drop, &
-         density_descent_gap_coeff, density_descent_gap_denom
-      REAL(KIND=dp) :: density_descent_gap_projected_abs, density_descent_gap_projected_weighted, &
-         density_descent_gap_recoverable_fraction, density_descent_gap_trial_abs, &
-         density_descent_gap_trial_coeff, density_descent_gap_trial_denom, &
-         density_descent_gap_trial_gdot, density_descent_gap_trial_recoverable, &
-         density_descent_gap_trial_weighted, density_descent_gdot_energy, &
-         density_descent_gdot_rotation, density_descent_gdotp, density_descent_growth_scale, &
-         density_descent_history_scale, density_descent_incremental_expected_drop, &
-         density_descent_incremental_history_quality
+         density_descent_direction_scale, density_descent_expected_drop, density_descent_gap_coeff
+      REAL(KIND=dp) :: density_descent_gap_denom, density_descent_gap_projected_abs, &
+         density_descent_gap_projected_weighted, density_descent_gap_recoverable_fraction, &
+         density_descent_gap_trial_abs, density_descent_gap_trial_coeff, &
+         density_descent_gap_trial_denom, density_descent_gap_trial_gdot, &
+         density_descent_gap_trial_recoverable, density_descent_gap_trial_weighted, &
+         density_descent_gdot_energy, density_descent_gdot_rotation, density_descent_gdotp, &
+         density_descent_growth_scale, density_descent_history_scale, &
+         density_descent_incremental_expected_drop, density_descent_incremental_history_quality
       REAL(KIND=dp) :: density_descent_incremental_history_weight, &
          density_descent_incremental_model_drop, &
          density_descent_incremental_quality_for_selection, density_descent_model_calibrated_drop, &
@@ -16616,50 +17429,53 @@ CONTAINS
          z_exact_physical_trial, z_exact_raw_trial, z_exact_trial, z_multisecant, z_trial
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: canonical_density_tangent_modes, &
          closure_coupled_full_cross_correction, closure_coupled_full_energy_correction, &
-         closure_coupled_full_rotation_correction, closure_coupled_response_metric, &
+         closure_coupled_full_rotation_correction, closure_coupled_predictive_cross_correction, &
+         closure_coupled_predictive_energy_correction, &
+         closure_coupled_predictive_rotation_correction, closure_coupled_response_metric, &
          closure_response_metric, closure_response_steps, closure_response_targets, energy_cross, &
          energy_cross_active, energy_cross_canonical, energy_cross_density, &
-         energy_cross_density_basis_audit, energy_cross_density_basis_curvfloor_audit, &
+         energy_cross_density_basis_audit
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross_density_basis_curvfloor_audit, &
          energy_cross_density_basis_damped_audit, energy_cross_density_basis_filtered_audit, &
-         energy_cross_density_basis_selective_audit
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_cross_density_direct, &
+         energy_cross_density_basis_selective_audit, energy_cross_density_direct, &
          energy_cross_density_floor_audit, energy_cross_density_floor_safe_audit, &
          energy_cross_density_full, energy_cross_density_full_audit, &
          energy_cross_density_full_global, energy_cross_density_plateau, energy_cross_multisecant, &
          energy_cross_physical_model, energy_cross_prediction, energy_cross_raw, energy_hessian, &
-         energy_hessian_multisecant, energy_hessian_prediction, energy_hessian_reference, &
-         full_rot_hessian_coupled, grad_im, grad_re, h_im, h_re, &
-         projector_physical_direct_base_delta
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: projector_physical_direct_curv_evec, &
+         energy_hessian_multisecant
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: energy_hessian_prediction, &
+         energy_hessian_reference, full_rot_hessian_coupled, grad_im, grad_re, h_im, h_re, &
+         projector_physical_direct_base_delta, projector_physical_direct_curv_evec, &
          projector_physical_direct_curv_vec, projector_physical_direct_delta, &
          projector_physical_direct_schur_evec, projector_physical_direct_schur_mat, &
          projector_physical_direct_schur_vec, reduced_response_metric, &
          reduced_secant_full_targets, reduced_secant_modes, reduced_secant_targets, response, &
-         response_coupled, response_density_basis_audit, response_density_basis_audit_exact, &
+         response_coupled, response_density_basis_audit
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_basis_audit_exact, &
          response_density_basis_curvfloor_audit_exact, response_density_basis_damped_audit, &
-         response_density_basis_damped_audit_exact
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_basis_filtered_audit, &
+         response_density_basis_damped_audit_exact, response_density_basis_filtered_audit, &
          response_density_basis_filtered_audit_exact, &
          response_density_basis_selective_audit_exact, response_density_direct_exact, &
          response_density_exact, response_density_floor_audit, response_density_floor_audit_exact, &
          response_density_floor_safe_audit, response_density_floor_safe_audit_exact, &
-         response_density_full, response_density_full_audit, response_density_full_audit_exact, &
+         response_density_full, response_density_full_audit
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_full_audit_exact, &
          response_density_full_exact, response_density_full_global, &
-         response_density_full_global_exact, response_density_physical
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: response_density_plateau, &
+         response_density_full_global_exact, response_density_physical, response_density_plateau, &
          response_density_plateau_exact, response_exact, response_exact_active, &
          response_exact_physical, response_exact_raw, response_multisecant, response_occ, &
          response_occ_canonical, response_occ_physical, response_physical_model, &
          response_prediction, response_split, rot_hessian, rot_hessian_closure_candidate, &
-         rot_hessian_closure_coupled_fullrank_response, rot_hessian_closure_coupled_response, &
+         rot_hessian_closure_coupled_fullrank_response
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_closure_coupled_response, &
          rot_hessian_closure_fullrank_response, rot_hessian_closure_prior, &
-         rot_hessian_closure_reduced_response, rot_hessian_closure_response
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: rot_hessian_coupled, rot_hessian_multisecant, &
-         rot_hessian_orbital_schur, rot_hessian_prediction, rot_hessian_projector, &
-         rot_hessian_projector_physical, rot_hessian_projector_physical_active, &
-         rot_hessian_projector_physical_diagref, rot_hessian_projector_physical_offdiag, &
-         rot_hessian_projector_physical_offdiag_active, &
-         rot_hessian_projector_physical_offdiag_plateau, &
+         rot_hessian_closure_reduced_response, rot_hessian_closure_response, rot_hessian_coupled, &
+         rot_hessian_multisecant, rot_hessian_orbital_schur, rot_hessian_prediction, &
+         rot_hessian_projector, rot_hessian_projector_physical, &
+         rot_hessian_projector_physical_active, rot_hessian_projector_physical_diagref, &
+         rot_hessian_projector_physical_offdiag, rot_hessian_projector_physical_offdiag_active, &
+         rot_hessian_projector_physical_offdiag_plateau
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: &
          rot_hessian_projector_physical_offdiag_plateau_active, rot_hessian_reduced_secant, &
          rot_hessian_secant, schur, schur_metric
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: channel_density_pair_residual
@@ -17078,6 +17894,9 @@ CONTAINS
                    closure_coupled_full_cross_correction(ne, nrot), &
                    closure_coupled_full_energy_correction(ne, ne), &
                    closure_coupled_full_rotation_correction(nrot, nrot), &
+                   closure_coupled_predictive_cross_correction(ne, nrot), &
+                   closure_coupled_predictive_energy_correction(ne, ne), &
+                   closure_coupled_predictive_rotation_correction(nrot, nrot), &
                    closure_coupled_response_metric(nrot, nrot), &
                    closure_response_metric(nrot, nrot), &
                    rot_hessian_closure_candidate(nrot, nrot), &
@@ -17284,6 +18103,9 @@ CONTAINS
          closure_coupled_full_cross_correction(:, :) = 0.0_dp
          closure_coupled_full_energy_correction(:, :) = 0.0_dp
          closure_coupled_full_rotation_correction(:, :) = 0.0_dp
+         closure_coupled_predictive_cross_correction(:, :) = 0.0_dp
+         closure_coupled_predictive_energy_correction(:, :) = 0.0_dp
+         closure_coupled_predictive_rotation_correction(:, :) = 0.0_dp
          closure_coupled_response_metric(:, :) = 0.0_dp
          closure_response_metric(:, :) = 0.0_dp
          rot_hessian_closure_candidate(:, :) = 0.0_dp
@@ -17811,6 +18633,8 @@ CONTAINS
          closure_candidate_ready = .FALSE.
          closure_candidate_residual_advantage_resolved = .FALSE.
          closure_candidate_selected = .FALSE.
+         closure_coupled_predictive_consistent = .FALSE.
+         closure_coupled_predictive_finite = .FALSE.
          closure_coupled_response_ready = .FALSE.
          closure_coupled_independence = 0.0_dp
          closure_coupled_compatibility = 0.0_dp
@@ -17828,6 +18652,22 @@ CONTAINS
          closure_coupled_validation_independence = 0.0_dp
          closure_coupled_validation_pair_residual = 0.0_dp
          closure_coupled_validation_residual = 0.0_dp
+         closure_predictive_alignment = 0.0_dp
+         closure_predictive_capture = 0.0_dp
+         closure_predictive_curvature_max = 0.0_dp
+         closure_predictive_curvature_min = 0.0_dp
+         closure_predictive_energy_quality = 0.0_dp
+         closure_predictive_overlap = 0.0_dp
+         closure_predictive_quality = 0.0_dp
+         closure_predictive_rotation_quality = 0.0_dp
+         closure_predictive_response_accepted_drop = 0.0_dp
+         closure_predictive_response_active_quad = 0.0_dp
+         closure_predictive_response_adjustment = 0.0_dp
+         closure_predictive_response_baseline_adjustment = 0.0_dp
+         closure_predictive_response_cross_quad = 0.0_dp
+         closure_predictive_response_energy_quad = 0.0_dp
+         closure_predictive_response_quad = 0.0_dp
+         closure_predictive_response_rotation_quad = 0.0_dp
          closure_full_response_accepted_drop = 0.0_dp
          closure_full_response_baseline_quad = 0.0_dp
          closure_full_response_candidate_quad = 0.0_dp
@@ -20695,6 +21535,19 @@ CONTAINS
                                                      closure_coupled_full_rotation_correction, &
                                                      closure_coupled_full_energy_correction, &
                                                      closure_coupled_full_cross_correction, &
+                                                     closure_coupled_predictive_rotation_correction, &
+                                                     closure_coupled_predictive_energy_correction, &
+                                                     closure_coupled_predictive_cross_correction, &
+                                                     closure_coupled_predictive_finite, &
+                                                     closure_coupled_predictive_consistent, &
+                                                     closure_predictive_overlap, &
+                                                     closure_predictive_capture, &
+                                                     closure_predictive_quality, &
+                                                     closure_predictive_rotation_quality, &
+                                                     closure_predictive_energy_quality, &
+                                                     closure_predictive_alignment, &
+                                                     closure_predictive_curvature_min, &
+                                                     closure_predictive_curvature_max, &
                                                      closure_coupled_response_metric, &
                                                      closure_coupled_response_ready, &
                                                      closure_coupled_independence, &
@@ -29410,6 +30263,47 @@ CONTAINS
                   target_group, closure_full_response_rotation_quad, &
                   closure_full_response_energy_quad, closure_full_response_cross_quad, &
                   closure_full_response_coupled_quad, closure_full_response_existing_quad
+               closure_predictive_response_active_quad = 0.0_dp
+               closure_predictive_response_adjustment = 0.0_dp
+               closure_predictive_response_baseline_adjustment = 0.0_dp
+               closure_predictive_response_rotation_quad = 0.0_dp
+               closure_predictive_response_energy_quad = 0.0_dp
+               closure_predictive_response_cross_quad = 0.0_dp
+               closure_predictive_response_quad = 0.0_dp
+               closure_predictive_response_accepted_drop = accepted_model_drop
+               IF (closure_coupled_predictive_finite) THEN
+                  IF (closure_candidate_selected .AND. closure_response_subspace_ready) &
+                     closure_predictive_response_active_quad = &
+                     kpoint_ot_symmetric_quad(rot_hessian_closure_response, accepted_sol)
+                  closure_predictive_response_quad = qs_scf_kp_coupled_response_quadratic( &
+                                                     accepted_sol, accepted_z_e, &
+                                                     closure_coupled_predictive_rotation_correction, &
+                                                     closure_coupled_predictive_energy_correction, &
+                                                     closure_coupled_predictive_cross_correction, &
+                                                     closure_predictive_response_rotation_quad, &
+                                                     closure_predictive_response_energy_quad, &
+                                                     closure_predictive_response_cross_quad)
+                  CALL qs_scf_kp_full_closure_response_model_adjustments( &
+                     closure_predictive_response_active_quad, closure_predictive_response_quad, &
+                     closure_candidate_selected, closure_predictive_response_baseline_adjustment, &
+                     closure_predictive_response_adjustment)
+                  closure_predictive_response_accepted_drop = MAX( &
+                                                        0.0_dp, accepted_model_drop - 0.5_dp*closure_predictive_response_adjustment)
+               END IF
+               IF (logger%iter_info%print_level >= high_print_level .AND. &
+                   logger%para_env%is_source()) &
+                  WRITE (cp_logger_get_default_unit_nr(logger), &
+                         '(A,1X,I3,2(1X,L1),9(1X,ES16.8))') &
+                  " OT Schur predictive closure accepted-step group finite consistent base_drop "// &
+                  "rotation energy cross sum active adjustment candidate_drop ratio:", &
+                  target_group, closure_coupled_predictive_finite, &
+                  closure_coupled_predictive_consistent, accepted_model_drop, &
+                  closure_predictive_response_rotation_quad, &
+                  closure_predictive_response_energy_quad, closure_predictive_response_cross_quad, &
+                  closure_predictive_response_quad, closure_predictive_response_active_quad, &
+                  closure_predictive_response_adjustment, closure_predictive_response_accepted_drop, &
+                  closure_predictive_response_accepted_drop/ &
+                  MAX(accepted_model_drop, EPSILON(1.0_dp))
                IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source()) THEN
                   accepted_pair_var = 0
                   accepted_pair_re_var = 0
@@ -29635,6 +30529,22 @@ CONTAINS
                local_ot_env(1)%schur_closure_full_shadow_quadratic = &
                   local_ot_env(1)%schur_closure_full_shadow_quadratic + &
                   closure_full_response_candidate_quad
+            END IF
+            IF (closure_coupled_predictive_finite .AND. &
+                ABS(closure_predictive_response_adjustment - &
+                    closure_predictive_response_baseline_adjustment) > TINY(1.0_dp)) THEN
+               IF (.NOT. local_ot_env(1)%schur_closure_vector_shadow_pending) &
+                  local_ot_env(1)%schur_closure_vector_shadow_consistent = .TRUE.
+               local_ot_env(1)%schur_closure_vector_shadow_pending = .TRUE.
+               local_ot_env(1)%schur_closure_vector_shadow_consistent = &
+                  local_ot_env(1)%schur_closure_vector_shadow_consistent .AND. &
+                  closure_coupled_predictive_consistent
+               local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = &
+                  local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic + &
+                  closure_predictive_response_baseline_adjustment
+               local_ot_env(1)%schur_closure_vector_shadow_quadratic = &
+                  local_ot_env(1)%schur_closure_vector_shadow_quadratic + &
+                  closure_predictive_response_adjustment
             END IF
             local_ot_env(1)%schur_model_gap_ratio = MAX(local_ot_env(1)%schur_model_gap_ratio, &
                                                         accepted_model_gap_ratio)
@@ -32040,6 +32950,9 @@ CONTAINS
                      closure_coupled_full_cross_correction, &
                      closure_coupled_full_energy_correction, &
                      closure_coupled_full_rotation_correction, &
+                     closure_coupled_predictive_cross_correction, &
+                     closure_coupled_predictive_energy_correction, &
+                     closure_coupled_predictive_rotation_correction, &
                      closure_coupled_response_metric, &
                      closure_response_metric, &
                      rot_hessian_closure_candidate, &
@@ -33369,6 +34282,19 @@ CONTAINS
 !> \param closure_coupled_full_rotation full-space fitted rotation-block correction
 !> \param closure_coupled_full_energy full-space fitted auxiliary-energy-block correction
 !> \param closure_coupled_full_cross full-space fitted signed cross-block correction
+!> \param closure_predictive_rotation newest-trained rank-one rotation-block correction
+!> \param closure_predictive_energy newest-trained rank-one auxiliary-energy-block correction
+!> \param closure_predictive_cross newest-trained rank-one signed cross-block correction
+!> \param closure_predictive_finite whether both directional prediction audits are finite
+!> \param closure_predictive_consistent whether both predictions pass the physical-response gate
+!> \param closure_predictive_overlap minimum scaled step overlap
+!> \param closure_predictive_capture minimum training-response capture
+!> \param closure_predictive_quality minimum full-residual prediction quality
+!> \param closure_predictive_rotation_quality minimum rotation-residual prediction quality
+!> \param closure_predictive_energy_quality minimum auxiliary-energy-residual prediction quality
+!> \param closure_predictive_alignment minimum response alignment
+!> \param closure_predictive_curvature_min minimum bidirectional curvature ratio
+!> \param closure_predictive_curvature_max maximum bidirectional curvature ratio
 !> \param closure_coupled_response reduced response from the full rotation/energy closure fit
 !> \param closure_coupled_ready whether the full-space fit and Schur transport succeeded
 !> \param closure_coupled_independence independence of the scaled coupled steps
@@ -33401,6 +34327,19 @@ CONTAINS
                                                      closure_coupled_full_rotation, &
                                                      closure_coupled_full_energy, &
                                                      closure_coupled_full_cross, &
+                                                     closure_predictive_rotation, &
+                                                     closure_predictive_energy, &
+                                                     closure_predictive_cross, &
+                                                     closure_predictive_finite, &
+                                                     closure_predictive_consistent, &
+                                                     closure_predictive_overlap, &
+                                                     closure_predictive_capture, &
+                                                     closure_predictive_quality, &
+                                                     closure_predictive_rotation_quality, &
+                                                     closure_predictive_energy_quality, &
+                                                     closure_predictive_alignment, &
+                                                     closure_predictive_curvature_min, &
+                                                     closure_predictive_curvature_max, &
                                                      closure_coupled_response, &
                                                      closure_coupled_ready, &
                                                      closure_coupled_independence, &
@@ -33430,14 +34369,22 @@ CONTAINS
                                                             closure_response_targets
       LOGICAL, INTENT(OUT)                               :: closure_response_pair_ready
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT) :: closure_coupled_full_rotation, &
-         closure_coupled_full_energy, closure_coupled_full_cross, closure_coupled_response
+         closure_coupled_full_energy, closure_coupled_full_cross, closure_predictive_rotation, &
+         closure_predictive_energy, closure_predictive_cross
+      LOGICAL, INTENT(OUT)                               :: closure_predictive_finite, &
+                                                            closure_predictive_consistent
+      REAL(KIND=dp), INTENT(OUT) :: closure_predictive_overlap, closure_predictive_capture, &
+         closure_predictive_quality, closure_predictive_rotation_quality, &
+         closure_predictive_energy_quality, closure_predictive_alignment, &
+         closure_predictive_curvature_min, closure_predictive_curvature_max
+      REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: closure_coupled_response
       LOGICAL, INTENT(OUT)                               :: closure_coupled_ready
       REAL(KIND=dp), INTENT(OUT) :: closure_coupled_independence, closure_coupled_compatibility, &
          closure_coupled_capture, closure_coupled_residual_ratio, closure_coupled_transport_ratio
 
       INTEGER :: active_energy_count, directional_subspace_correction_rank, &
          directional_subspace_rank, global_channel, global_spin, group, ie, ifull, imo, jmo, &
-         local_channel, nener, nmo, nrot, nrot_full, r, valid_i
+         local_channel, nclosure_observations, nener, nmo, nrot, nrot_full, r, valid_i
       LOGICAL :: closure_anchor_valid, closure_coupled_fit_ready, closure_coupled_transport_ready, &
          closure_previous_valid, closure_secant_valid, coupled_multisecant_finite, &
          coupled_multisecant_ready, coupled_prediction_finite, coupled_prediction_reverse_finite, &
@@ -33567,6 +34514,9 @@ CONTAINS
          CPASSERT(ALL(SHAPE(closure_coupled_full_rotation) == [nrot, nrot]))
          CPASSERT(ALL(SHAPE(closure_coupled_full_energy) == [nener, nener]))
          CPASSERT(ALL(SHAPE(closure_coupled_full_cross) == [nener, nrot]))
+         CPASSERT(ALL(SHAPE(closure_predictive_rotation) == [nrot, nrot]))
+         CPASSERT(ALL(SHAPE(closure_predictive_energy) == [nener, nener]))
+         CPASSERT(ALL(SHAPE(closure_predictive_cross) == [nener, nrot]))
          CPASSERT(ALL(SHAPE(closure_coupled_response) == [nrot, nrot]))
          CPASSERT(ALL(SHAPE(energy_hessian_multisecant) == SHAPE(energy_hessian)))
          CPASSERT(ALL(SHAPE(energy_cross_multisecant) == SHAPE(energy_cross)))
@@ -33588,6 +34538,19 @@ CONTAINS
          closure_coupled_full_rotation(:, :) = 0.0_dp
          closure_coupled_full_energy(:, :) = 0.0_dp
          closure_coupled_full_cross(:, :) = 0.0_dp
+         closure_predictive_rotation(:, :) = 0.0_dp
+         closure_predictive_energy(:, :) = 0.0_dp
+         closure_predictive_cross(:, :) = 0.0_dp
+         closure_predictive_finite = .FALSE.
+         closure_predictive_consistent = .FALSE.
+         closure_predictive_overlap = 0.0_dp
+         closure_predictive_capture = 0.0_dp
+         closure_predictive_quality = 0.0_dp
+         closure_predictive_rotation_quality = 0.0_dp
+         closure_predictive_energy_quality = 0.0_dp
+         closure_predictive_alignment = 0.0_dp
+         closure_predictive_curvature_min = 0.0_dp
+         closure_predictive_curvature_max = 0.0_dp
          closure_coupled_response(:, :) = 0.0_dp
          closure_coupled_ready = .FALSE.
          closure_coupled_independence = 0.0_dp
@@ -34183,10 +35146,11 @@ CONTAINS
          ! fit keeps those cross and energy curvatures explicit before the
          ! exact fixed-N Schur transport returns to rotation coordinates.
          IF (closure_secant_valid .AND. closure_previous_valid) THEN
-            ALLOCATE (closure_coupled_rotation_steps(nrot, 2), &
-                      closure_coupled_energy_steps(nener, 2), &
-                      closure_coupled_rotation_targets(nrot, 2), &
-                      closure_coupled_energy_targets(nener, 2))
+            nclosure_observations = MERGE(3, 2, closure_anchor_valid)
+            ALLOCATE (closure_coupled_rotation_steps(nrot, nclosure_observations), &
+                      closure_coupled_energy_steps(nener, nclosure_observations), &
+                      closure_coupled_rotation_targets(nrot, nclosure_observations), &
+                      closure_coupled_energy_targets(nener, nclosure_observations))
             closure_coupled_rotation_steps(:, 1) = previous_step_rotation
             closure_coupled_rotation_steps(:, 2) = step_rotation
             closure_coupled_energy_steps(:, 1) = previous_step_energy
@@ -34195,10 +35159,16 @@ CONTAINS
             closure_coupled_rotation_targets(:, 2) = closure_secant_rotation
             closure_coupled_energy_targets(:, 1) = previous_closure_secant_energy
             closure_coupled_energy_targets(:, 2) = closure_secant_energy
+            IF (closure_anchor_valid) THEN
+               closure_coupled_rotation_steps(:, 3) = anchor_step_rotation
+               closure_coupled_energy_steps(:, 3) = anchor_step_energy
+               closure_coupled_rotation_targets(:, 3) = anchor_closure_secant_rotation
+               closure_coupled_energy_targets(:, 3) = anchor_closure_secant_energy
+            END IF
             CALL qs_scf_kp_coupled_closure_response( &
                rotation_hessian, energy_hessian, energy_cross, &
-               closure_coupled_rotation_steps, closure_coupled_energy_steps, &
-               closure_coupled_rotation_targets, closure_coupled_energy_targets, &
+               closure_coupled_rotation_steps(:, 1:2), closure_coupled_energy_steps(:, 1:2), &
+               closure_coupled_rotation_targets(:, 1:2), closure_coupled_energy_targets(:, 1:2), &
                closure_coupled_response, closure_coupled_ready, &
                closure_coupled_independence, closure_coupled_compatibility, &
                closure_coupled_capture, closure_coupled_residual_ratio, &
@@ -34207,8 +35177,30 @@ CONTAINS
                full_rotation_correction=closure_coupled_full_rotation, &
                full_energy_correction=closure_coupled_full_energy, &
                full_cross_correction=closure_coupled_full_cross)
+            CALL qs_scf_kp_coupled_closure_prediction( &
+               rotation_hessian, energy_hessian, energy_cross, &
+               closure_coupled_rotation_steps, closure_coupled_energy_steps, &
+               closure_coupled_rotation_targets, closure_coupled_energy_targets, &
+               closure_predictive_rotation, closure_predictive_energy, &
+               closure_predictive_cross, closure_predictive_finite, &
+               closure_predictive_consistent, closure_predictive_overlap, &
+               closure_predictive_capture, closure_predictive_quality, &
+               closure_predictive_rotation_quality, closure_predictive_energy_quality, &
+               closure_predictive_alignment, closure_predictive_curvature_min, &
+               closure_predictive_curvature_max)
             closure_coupled_fit_ready = closure_coupled_ready
             closure_coupled_transport_ready = closure_coupled_ready
+            IF (logger%iter_info%print_level >= high_print_level .AND. &
+                logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), &
+                      '(A,1X,I3,2(1X,L1),8(1X,ES16.8))') &
+               " OT Schur coupled closure prediction group finite consistent overlap capture quality "// &
+               "rquality equality alignment cratio_min cratio_max:", &
+               target_group, closure_predictive_finite, closure_predictive_consistent, &
+               closure_predictive_overlap, closure_predictive_capture, closure_predictive_quality, &
+               closure_predictive_rotation_quality, closure_predictive_energy_quality, &
+               closure_predictive_alignment, closure_predictive_curvature_min, &
+               closure_predictive_curvature_max
             DEALLOCATE (closure_coupled_rotation_steps, closure_coupled_energy_steps, &
                         closure_coupled_rotation_targets, closure_coupled_energy_targets)
          END IF
@@ -37716,6 +38708,8 @@ CONTAINS
                                   ot_kp_schur_calibrated_quality_min_ratio)
          stale_residual_probe = selected_samples >= ot_kp_schur_calibration_min_samples .AND. &
                                 history_samples >= ot_kp_schur_projector_response_min_samples .AND. &
+                                MOD(history_samples, &
+                                    MAX(1, 2*ot_kp_schur_calibration_min_samples)) == 0 .AND. &
                                 bootstrap_quality >= &
                                 ot_kp_schur_projector_response_quality_min_ratio .AND. &
                                 support_quality_ema >= &

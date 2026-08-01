@@ -44,6 +44,7 @@ MODULE qs_ot
    PRIVATE
 
    PUBLIC  :: qs_ot_get_p
+   PUBLIC  :: qs_ot_adjoint_rotate_pair
    PUBLIC  :: qs_ot_get_orbitals
    PUBLIC  :: qs_ot_get_derivative
    PUBLIC  :: qs_ot_get_orbitals_ref
@@ -845,6 +846,56 @@ CONTAINS
    END SUBROUTINE qs_ot_transport_ref_rotation_pair
 
 ! **************************************************************************************************
+!> \brief Move a complex body-frame matrix through a finite right rotation.
+!>
+!>        If the orbital frame changes from C to C*U, a body tangent, covector, or operator A
+!>        belongs to the new endpoint frame as U^H*A*U.  Unlike
+!>        qs_ot_transport_ref_rotation_pair this is an adjoint frame transport of an already
+!>        trivialized quantity; it does not apply another exponential Frechet map.
+!> \param unitary_re real part of U
+!> \param unitary_im imaginary part of U
+!> \param matrix_re real part of A, overwritten with U^H*A*U
+!> \param matrix_im imaginary part of A, overwritten with U^H*A*U
+! **************************************************************************************************
+   SUBROUTINE qs_ot_adjoint_rotate_pair(unitary_re, unitary_im, matrix_re, matrix_im)
+      TYPE(dbcsr_type), INTENT(IN)                       :: unitary_re, unitary_im
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: matrix_re, matrix_im
+
+      TYPE(dbcsr_type)                                   :: product_im, product_re, rotated_im, &
+                                                            rotated_re, tmp
+
+      CALL dbcsr_copy(product_re, matrix_re, name="adjoint_product_re")
+      CALL dbcsr_copy(product_im, matrix_re, name="adjoint_product_im")
+      CALL dbcsr_copy(rotated_re, matrix_re, name="adjoint_rotated_re")
+      CALL dbcsr_copy(rotated_im, matrix_re, name="adjoint_rotated_im")
+      CALL dbcsr_copy(tmp, matrix_re, name="adjoint_tmp")
+
+      ! product = A*U.
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_re, unitary_re, 0.0_dp, product_re)
+      CALL dbcsr_multiply('N', 'N', -1.0_dp, matrix_im, unitary_im, 1.0_dp, product_re)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_re, unitary_im, 0.0_dp, product_im)
+      CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_im, unitary_re, 1.0_dp, product_im)
+
+      ! rotated = U^H*product.
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, unitary_re, product_re, 0.0_dp, rotated_re)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, unitary_im, product_im, 0.0_dp, tmp)
+      CALL dbcsr_add(rotated_re, tmp, alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, unitary_re, product_im, 0.0_dp, rotated_im)
+      CALL dbcsr_multiply('T', 'N', 1.0_dp, unitary_im, product_re, 0.0_dp, tmp)
+      CALL dbcsr_add(rotated_im, tmp, alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+
+      CALL dbcsr_copy(matrix_re, rotated_re)
+      CALL dbcsr_copy(matrix_im, rotated_im)
+
+      CALL dbcsr_release(product_im)
+      CALL dbcsr_release(product_re)
+      CALL dbcsr_release(rotated_im)
+      CALL dbcsr_release(rotated_re)
+      CALL dbcsr_release(tmp)
+
+   END SUBROUTINE qs_ot_adjoint_rotate_pair
+
+! **************************************************************************************************
 !> \brief Move generator-coordinate CG history into the newly absorbed complex REF basis.
 !> \param qs_ot_env complex OT state containing the accepted unitary U
 ! **************************************************************************************************
@@ -870,9 +921,91 @@ CONTAINS
          CALL qs_ot_transport_ref_rotation_pair(qs_ot_env, qs_ot_env%rot_mat_dx, &
                                                 qs_ot_env%rot_mat_dx_im, gradient=.FALSE.)
       END IF
-      ! Mermin secants are captured after separately trivializing both endpoint
-      ! gradients and the accepted step. They already live in the body frame of
-      ! the accepted orbitals and remain unchanged when that frame is absorbed.
+      ! Already trivialized Mermin quantities need the adjoint frame map.  Keeping an older
+      ! body-frame secant numerically unchanged would compare different tangent spaces after the
+      ! next accepted finite rotation and makes a multisecant Hessian appear nonconservative.
+      IF (qs_ot_env%mermin_ls_vector_start_valid) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_g0) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_g0_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_g0, &
+                                           qs_ot_env%rot_mat_mermin_g0_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_frozen_h_valid) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_h0_ref) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_h0_ref_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_h0_ref, &
+                                           qs_ot_env%rot_mat_mermin_h0_ref_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_secant_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_s_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_s, &
+                                           qs_ot_env%rot_mat_mermin_s_im)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_y_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_y, &
+                                           qs_ot_env%rot_mat_mermin_y_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_closure_secant_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_closure_y, &
+                                           qs_ot_env%rot_mat_mermin_closure_y_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_secant_previous_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_s_previous_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_s_previous, &
+                                           qs_ot_env%rot_mat_mermin_s_previous_im)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_y_previous_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_y_previous, &
+                                           qs_ot_env%rot_mat_mermin_y_previous_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_closure_secant_previous_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_previous) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_previous_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_closure_y_previous, &
+                                           qs_ot_env%rot_mat_mermin_closure_y_previous_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_closure_secant_anchor_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_s_anchor) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_s_anchor_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_s_anchor, &
+                                           qs_ot_env%rot_mat_mermin_s_anchor_im)
+         END IF
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_closure_y_anchor_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_closure_y_anchor, &
+                                           qs_ot_env%rot_mat_mermin_closure_y_anchor_im)
+         END IF
+      END IF
+      IF (qs_ot_env%mermin_frozen_reduced_target_ready) THEN
+         IF (ASSOCIATED(qs_ot_env%rot_mat_mermin_frozen_reduced_y) .AND. &
+             ASSOCIATED(qs_ot_env%rot_mat_mermin_frozen_reduced_y_im)) THEN
+            CALL qs_ot_adjoint_rotate_pair(qs_ot_env%rot_mat_u, qs_ot_env%rot_mat_u_im, &
+                                           qs_ot_env%rot_mat_mermin_frozen_reduced_y, &
+                                           qs_ot_env%rot_mat_mermin_frozen_reduced_y_im)
+         END IF
+      END IF
 
    END SUBROUTINE qs_ot_transport_ref_rotation_history
 

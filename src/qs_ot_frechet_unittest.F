@@ -45,7 +45,8 @@ PROGRAM qs_ot_frechet_unittest
    USE machine,                         ONLY: default_output_unit
    USE mathlib,                         ONLY: diag_complex,&
                                               diamat_all
-   USE message_passing,                 ONLY: mp_comm_type,&
+   USE message_passing,                 ONLY: mp_comm_self,&
+                                              mp_comm_type,&
                                               mp_para_env_release,&
                                               mp_para_env_type,&
                                               mp_world_finalize,&
@@ -54,7 +55,8 @@ PROGRAM qs_ot_frechet_unittest
                                               full_all_response_metric_dense,&
                                               make_complex_full_all
    USE preconditioner_types,            ONLY: preconditioner_type
-   USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
+   USE qs_ot,                           ONLY: qs_ot_adjoint_rotate_pair,&
+                                              qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel,&
                                               qs_ot_ref_update_required
    USE qs_ot_minimizer,                 ONLY: &
@@ -86,23 +88,23 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_canonical_density_tangent, qs_scf_kp_canonical_projector_density_response, &
         qs_scf_kp_canonical_tether_tail_scale, qs_scf_kp_closure_response_history_ready, &
         qs_scf_kp_closure_response_model_adjustments, qs_scf_kp_closure_response_preferred, &
-        qs_scf_kp_coupled_closure_response, qs_scf_kp_coupled_multisecant_update, &
-        qs_scf_kp_coupled_prediction_consistent, qs_scf_kp_coupled_reduced_multisecant_update, &
-        qs_scf_kp_coupled_response_quadratic, qs_scf_kp_coupled_schur_transport, &
-        qs_scf_kp_coupled_secant_model, qs_scf_kp_coupled_secant_prediction, &
-        qs_scf_kp_coupled_step_model, qs_scf_kp_coupled_subspace_multisecant_update, &
-        qs_scf_kp_decouple_inactive_gauge, qs_scf_kp_density_candidate_history_scale, &
-        qs_scf_kp_density_candidate_residual_bad, qs_scf_kp_density_candidate_residual_quality, &
-        qs_scf_kp_density_closure_buffer_ready, qs_scf_kp_density_closure_history_refresh_ready, &
-        qs_scf_kp_density_closure_model_ready, qs_scf_kp_density_closure_refresh_ready, &
-        qs_scf_kp_density_control_delta, qs_scf_kp_density_descent_candidate, &
-        qs_scf_kp_density_mode_projected_floor, qs_scf_kp_density_pair_activation_ready, &
-        qs_scf_kp_density_replaced_response, qs_scf_kp_density_stationarity_quality, &
-        qs_scf_kp_directional_curvature_update, qs_scf_kp_directional_subspace_curvature_update, &
-        qs_scf_kp_energy_closure_preferred, qs_scf_kp_energy_closure_ready, &
-        qs_scf_kp_energy_closure_tail_ready, qs_scf_kp_energy_curvature_floor, &
-        qs_scf_kp_energy_relative_metric_ready, qs_scf_kp_exit_residual, &
-        qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
+        qs_scf_kp_coupled_closure_prediction, qs_scf_kp_coupled_closure_response, &
+        qs_scf_kp_coupled_multisecant_update, qs_scf_kp_coupled_prediction_consistent, &
+        qs_scf_kp_coupled_reduced_multisecant_update, qs_scf_kp_coupled_response_quadratic, &
+        qs_scf_kp_coupled_schur_transport, qs_scf_kp_coupled_secant_model, &
+        qs_scf_kp_coupled_secant_prediction, qs_scf_kp_coupled_step_model, &
+        qs_scf_kp_coupled_subspace_multisecant_update, qs_scf_kp_decouple_inactive_gauge, &
+        qs_scf_kp_density_candidate_history_scale, qs_scf_kp_density_candidate_residual_bad, &
+        qs_scf_kp_density_candidate_residual_quality, qs_scf_kp_density_closure_buffer_ready, &
+        qs_scf_kp_density_closure_history_refresh_ready, qs_scf_kp_density_closure_model_ready, &
+        qs_scf_kp_density_closure_refresh_ready, qs_scf_kp_density_control_delta, &
+        qs_scf_kp_density_descent_candidate, qs_scf_kp_density_mode_projected_floor, &
+        qs_scf_kp_density_pair_activation_ready, qs_scf_kp_density_replaced_response, &
+        qs_scf_kp_density_stationarity_quality, qs_scf_kp_directional_curvature_update, &
+        qs_scf_kp_directional_subspace_curvature_update, qs_scf_kp_energy_closure_preferred, &
+        qs_scf_kp_energy_closure_ready, qs_scf_kp_energy_closure_tail_ready, &
+        qs_scf_kp_energy_curvature_floor, qs_scf_kp_energy_relative_metric_ready, &
+        qs_scf_kp_exit_residual, qs_scf_kp_fermi_entropy_state, qs_scf_kp_fermi_frontier_armed, &
         qs_scf_kp_fermi_guard_control_delta, qs_scf_kp_fermi_guard_release_ready, &
         qs_scf_kp_fermi_guard_transition, qs_scf_kp_fixed_n_frozen_energy_gradient, &
         qs_scf_kp_fixed_n_response_mu_shift, qs_scf_kp_full_all_spin_normalization, &
@@ -117,9 +119,10 @@ PROGRAM qs_ot_frechet_unittest
         qs_scf_kp_residual_advantage_resolved, qs_scf_kp_residual_compatible_scale, &
         qs_scf_kp_residual_split, qs_scf_kp_response_corrected_step, &
         qs_scf_kp_secant_bootstrap_probe, qs_scf_kp_secant_calibration_probe, &
-        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_subspace_is_collapsed, &
-        qs_scf_kp_subspace_refresh_gate, qs_scf_kp_symmetric_multisecant_update, &
-        qs_scf_kp_symmetric_secant_update, qs_scf_kp_validated_density_response
+        qs_scf_kp_secant_candidate_promoted, qs_scf_kp_shadow_prediction_quality, &
+        qs_scf_kp_subspace_is_collapsed, qs_scf_kp_subspace_refresh_gate, &
+        qs_scf_kp_symmetric_multisecant_update, qs_scf_kp_symmetric_secant_update, &
+        qs_scf_kp_validated_density_response
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: SmearOcc,&
                                               SmearingDerivative
@@ -156,6 +159,8 @@ PROGRAM qs_ot_frechet_unittest
                    5.0E-8_dp, nfail)
    CALL check_sparse_dbcsr_pattern("sparse DBCSR-style block pattern", 5.0E-14_dp, nfail)
    CALL check_dbcsr_sparse_pattern("DBCSR sparse block pattern", 5.0E-14_dp, nfail, mp_comm)
+   CALL check_dbcsr_adjoint_frame_transport("DBCSR complex endpoint frame transport", &
+                                            5.0E-13_dp, nfail)
    CALL check_complex_covariant_secant_transport("complex endpoint-covariant secant transport", &
                                                  5.0E-13_dp, nfail)
    CALL check_fm_complex_operator_hermitization("FM complex operator Hermitian projection", &
@@ -255,6 +260,8 @@ PROGRAM qs_ot_frechet_unittest
    CALL check_kpoint_closure_response_preferred("k-point OT coupled closure response gate", nfail)
    CALL check_kpoint_closure_response_history_ready( &
       "k-point OT coupled closure accepted-history gate", nfail)
+   CALL check_kpoint_shadow_prediction_quality( &
+      "k-point OT signed response-shadow calibration", 5.0E-15_dp, nfail)
    CALL check_kpoint_closure_response_model_adjustments( &
       "k-point OT coupled closure active-model calibration", 5.0E-15_dp, nfail)
    CALL check_kpoint_density_closure_model_ready("k-point OT coupled density closure gate", nfail)
@@ -1179,6 +1186,121 @@ CONTAINS
       DEALLOCATE (pgrid, row_dist, col_dist, row_blk_size, col_blk_size)
 
    END SUBROUTINE check_dbcsr_sparse_pattern
+
+! **************************************************************************************************
+!> \brief Check U^H*A*U transport used to retain complex body-frame Mermin history.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_dbcsr_adjoint_frame_transport(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 4
+
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: expected, generator, transported, unitary
+      INTEGER                                            :: iblock, jblock
+      INTEGER, DIMENSION(:), POINTER                     :: col_blk_size, col_dist, row_blk_size, &
+                                                            row_dist
+      INTEGER, DIMENSION(:, :), POINTER                  :: pgrid
+      REAL(KIND=dp)                                      :: antihermitian_error, err, norm_after, &
+                                                            norm_before
+      REAL(KIND=dp), DIMENSION(2, 2)                     :: block
+      TYPE(dbcsr_distribution_type)                      :: dist
+      TYPE(dbcsr_type)                                   :: generator_im, generator_re, unitary_im, &
+                                                            unitary_re
+
+      unitary(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      unitary(1, 3) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(1, 4) = CMPLX(0.0_dp, 1.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(2, 3) = CMPLX(0.0_dp, 1.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(2, 4) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(3, 1) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(3, 2) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(4, 1) = CMPLX(-1.0_dp, 0.0_dp, KIND=dp)/SQRT(2.0_dp)
+      unitary(4, 2) = CMPLX(1.0_dp, 0.0_dp, KIND=dp)/SQRT(2.0_dp)
+      generator(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      generator(1, 1) = CMPLX(0.0_dp, 0.17_dp, KIND=dp)
+      generator(2, 2) = CMPLX(0.0_dp, -0.11_dp, KIND=dp)
+      generator(3, 3) = CMPLX(0.0_dp, 0.08_dp, KIND=dp)
+      generator(4, 4) = CMPLX(0.0_dp, -0.14_dp, KIND=dp)
+      generator(1, 2) = CMPLX(0.21_dp, -0.07_dp, KIND=dp)
+      generator(3, 4) = CMPLX(0.15_dp, 0.09_dp, KIND=dp)
+      DO jblock = 2, n
+         DO iblock = 1, jblock - 1
+            generator(jblock, iblock) = -CONJG(generator(iblock, jblock))
+         END DO
+      END DO
+      expected = MATMUL(CONJG(TRANSPOSE(unitary)), MATMUL(generator, unitary))
+
+      ALLOCATE (pgrid(0:0, 0:0), row_dist(2), col_dist(2), row_blk_size(2), col_blk_size(2))
+      pgrid(:, :) = 0
+      row_dist(:) = 0
+      col_dist(:) = 0
+      row_blk_size(:) = 2
+      col_blk_size(:) = 2
+      CALL dbcsr_distribution_new(dist, group=mp_comm_self%get_handle(), pgrid=pgrid, &
+                                  row_dist=row_dist, col_dist=col_dist)
+      CALL dbcsr_create(unitary_re, "frame_u_re", dist, dbcsr_type_no_symmetry, &
+                        row_blk_size, col_blk_size)
+      CALL dbcsr_create(unitary_im, "frame_u_im", dist, dbcsr_type_no_symmetry, &
+                        row_blk_size, col_blk_size)
+      CALL dbcsr_create(generator_re, "frame_a_re", dist, dbcsr_type_no_symmetry, &
+                        row_blk_size, col_blk_size)
+      CALL dbcsr_create(generator_im, "frame_a_im", dist, dbcsr_type_no_symmetry, &
+                        row_blk_size, col_blk_size)
+      CALL dbcsr_reserve_blocks(unitary_re, rows=[1, 2], cols=[2, 1])
+      CALL dbcsr_reserve_blocks(unitary_im, rows=[1, 2], cols=[2, 1])
+      CALL dbcsr_reserve_blocks(generator_re, rows=[1, 2], cols=[1, 2])
+      CALL dbcsr_reserve_blocks(generator_im, rows=[1, 2], cols=[1, 2])
+      CALL dbcsr_finalize(unitary_re)
+      CALL dbcsr_finalize(unitary_im)
+      CALL dbcsr_finalize(generator_re)
+      CALL dbcsr_finalize(generator_im)
+      block = REAL(unitary(1:2, 3:4), KIND=dp)
+      CALL dbcsr_put_block(unitary_re, 1, 2, block)
+      block = AIMAG(unitary(1:2, 3:4))
+      CALL dbcsr_put_block(unitary_im, 1, 2, block)
+      block = REAL(generator(1:2, 1:2), KIND=dp)
+      CALL dbcsr_put_block(generator_re, 1, 1, block)
+      block = AIMAG(generator(1:2, 1:2))
+      CALL dbcsr_put_block(generator_im, 1, 1, block)
+      block = REAL(unitary(3:4, 1:2), KIND=dp)
+      CALL dbcsr_put_block(unitary_re, 2, 1, block)
+      block = AIMAG(unitary(3:4, 1:2))
+      CALL dbcsr_put_block(unitary_im, 2, 1, block)
+      block = REAL(generator(3:4, 3:4), KIND=dp)
+      CALL dbcsr_put_block(generator_re, 2, 2, block)
+      block = AIMAG(generator(3:4, 3:4))
+      CALL dbcsr_put_block(generator_im, 2, 2, block)
+
+      norm_before = SQRT(SUM(ABS(generator)**2))
+      CALL qs_ot_adjoint_rotate_pair(unitary_re, unitary_im, generator_re, generator_im)
+      CALL sparse_pattern_pair_to_dense(generator_re, generator_im, transported)
+      err = MAXVAL(ABS(transported - expected))
+      antihermitian_error = MAXVAL(ABS(transported + CONJG(TRANSPOSE(transported))))
+      norm_after = SQRT(SUM(ABS(transported)**2))
+      err = MAX(err, antihermitian_error, ABS(norm_after - norm_before))
+
+      IF (err > tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "failed with errors", &
+            err, antihermitian_error, ABS(norm_after - norm_before)
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "OK with errors", &
+            err, antihermitian_error, ABS(norm_after - norm_before)
+      END IF
+
+      CALL dbcsr_release(generator_im)
+      CALL dbcsr_release(generator_re)
+      CALL dbcsr_release(unitary_im)
+      CALL dbcsr_release(unitary_re)
+      CALL dbcsr_distribution_release(dist)
+      DEALLOCATE (pgrid, row_dist, col_dist, row_blk_size, col_blk_size)
+
+   END SUBROUTINE check_dbcsr_adjoint_frame_transport
 
 ! **************************************************************************************************
 !> \brief Check that endpoint gradients are trivialized separately before forming a rotation secant.
@@ -5753,6 +5875,44 @@ CONTAINS
    END SUBROUTINE check_kpoint_closure_response_history_ready
 
 ! **************************************************************************************************
+!> \brief Check that nonpositive response-shadow predictions count as calibrated failures.
+!> \param label ...
+!> \param tolerance ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_kpoint_shadow_prediction_quality(label, tolerance, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tolerance
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      LOGICAL                                            :: ready
+      REAL(KIND=dp)                                      :: advantage, baseline_error, &
+                                                            candidate_error, error, quality
+
+      CALL qs_scf_kp_shadow_prediction_quality( &
+         1.0_dp, 0.8_dp, 0.75_dp, quality, baseline_error, candidate_error, advantage, ready)
+      error = ABS(quality - 0.9375_dp) + ABS(baseline_error - 0.25_dp) + &
+              ABS(candidate_error - 0.0625_dp) + ABS(advantage - 0.1875_dp)
+      IF (.NOT. ready) error = error + 1.0_dp
+      CALL qs_scf_kp_shadow_prediction_quality( &
+         1.0_dp, -0.4_dp, 0.75_dp, quality, baseline_error, candidate_error, advantage, ready)
+      error = error + ABS(quality) + ABS(baseline_error - 0.25_dp) + &
+              ABS(candidate_error - 23.0_dp/15.0_dp) + ABS(advantage + 77.0_dp/60.0_dp)
+      IF (.NOT. ready) error = error + 1.0_dp
+      CALL qs_scf_kp_shadow_prediction_quality( &
+         0.0_dp, 0.8_dp, 0.75_dp, quality, baseline_error, candidate_error, advantage, ready)
+      IF (ready) error = error + 1.0_dp
+
+      IF (error > tolerance) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" FAILED with error", error
+      ELSE
+         WRITE (*, '(A,1X,ES16.8)') TRIM(label)//" OK with error", error
+      END IF
+
+   END SUBROUTINE check_kpoint_shadow_prediction_quality
+
+! **************************************************************************************************
 !> \brief Check baseline/candidate calibration for inactive, reduced-active, and coupled-active models.
 !> \param label ...
 !> \param tolerance ...
@@ -7151,6 +7311,216 @@ CONTAINS
               ABS(scaled_closure_rotation_ratio - closure_rotation_ratio) + &
               ABS(scaled_closure_energy_ratio - closure_energy_ratio) + &
               ABS(scaled_closure_cross_ratio - closure_cross_ratio)
+
+      BLOCK
+         INTEGER :: i
+         LOGICAL :: prediction_consistent, prediction_finite
+         REAL(KIND=dp), PARAMETER                         :: response_curvature = 0.4_dp
+         REAL(KIND=dp) :: prediction_alignment, prediction_capture, &
+                          prediction_curvature_max, prediction_curvature_min, prediction_energy_quality, &
+                          prediction_overlap, prediction_quality, prediction_rotation_quality, step_norm
+         REAL(KIND=dp), DIMENSION(4)                     :: coordinate_scale, gauge_mode, mode, &
+                                                            step_full, vmode
+         REAL(KIND=dp), DIMENSION(3)                     :: gauge_coefficient
+         REAL(KIND=dp), DIMENSION(4, 3)                  :: scaled_multisecant_steps
+         REAL(KIND=dp), DIMENSION(4, 4)                  :: full_correction
+         REAL(KIND=dp), DIMENSION(2, 2) :: expected_cross_correction, &
+                                           expected_energy_correction, expected_rotation_correction, prediction_cross_correction, &
+                                           prediction_energy_correction, prediction_energy_steps, prediction_energy_targets, &
+                                           prediction_rotation_correction, prediction_rotation_steps, prediction_rotation_targets
+         REAL(KIND=dp), DIMENSION(2, 3) :: multisecant_energy_steps, &
+                                           multisecant_energy_targets, multisecant_rotation_steps, &
+                                           multisecant_rotation_targets
+
+         prediction_rotation_steps(:, 1) = [0.2_dp, -0.1_dp]
+         prediction_energy_steps(:, 1) = [0.04_dp, -0.04_dp]
+         prediction_rotation_steps(:, 2) = 1.4_dp*prediction_rotation_steps(:, 1)
+         prediction_energy_steps(:, 2) = 1.4_dp*prediction_energy_steps(:, 1)
+         coordinate_scale(1:2) = SQRT(ABS([rotation_hessian(1, 1), rotation_hessian(2, 2)]))
+         coordinate_scale(3:4) = SQRT(ABS([energy_hessian(1, 1), energy_hessian(2, 2)]))
+         step_full(1:2) = prediction_rotation_steps(:, 1)
+         step_full(3:4) = prediction_energy_steps(:, 1)
+         mode(:) = coordinate_scale*step_full
+         step_norm = SQRT(DOT_PRODUCT(mode, mode))
+         mode(:) = mode/step_norm
+         DO i = 1, 4
+            full_correction(i, :) = response_curvature*coordinate_scale(i)*mode(i)* &
+                                    coordinate_scale*mode
+         END DO
+         expected_rotation_correction(:, :) = full_correction(1:2, 1:2)
+         expected_energy_correction(:, :) = full_correction(3:4, 3:4)
+         expected_cross_correction(:, :) = -full_correction(3:4, 1:2)
+         prediction_rotation_targets(:, :) = &
+            MATMUL(expected_rotation_correction, prediction_rotation_steps) - &
+            MATMUL(TRANSPOSE(expected_cross_correction), prediction_energy_steps)
+         prediction_energy_targets(:, :) = &
+            MATMUL(expected_energy_correction, prediction_energy_steps) - &
+            MATMUL(expected_cross_correction, prediction_rotation_steps)
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, prediction_rotation_steps, &
+            prediction_energy_steps, prediction_rotation_targets, prediction_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction)) + &
+                 ABS(prediction_overlap - 1.0_dp) + ABS(prediction_capture - 1.0_dp) + &
+                 ABS(prediction_quality - 1.0_dp) + &
+                 ABS(prediction_rotation_quality - 1.0_dp) + &
+                 ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_alignment - 1.0_dp) + &
+                 ABS(prediction_curvature_min - 1.0_dp) + &
+                 ABS(prediction_curvature_max - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent) error = error + 1.0_dp
+
+         ! A nonzero auxiliary-energy displacement must not create energy or cross curvature when
+         ! the measured self-consistent closure response is purely orbital.
+         mode(:) = 0.0_dp
+         mode(1:2) = coordinate_scale(1:2)*prediction_rotation_steps(:, 1)
+         step_norm = SQRT(DOT_PRODUCT(mode, mode))
+         mode(:) = mode/step_norm
+         DO i = 1, 4
+            full_correction(i, :) = response_curvature*coordinate_scale(i)*mode(i)* &
+                                    coordinate_scale*mode
+         END DO
+         expected_rotation_correction(:, :) = full_correction(1:2, 1:2)
+         expected_energy_correction(:, :) = full_correction(3:4, 3:4)
+         expected_cross_correction(:, :) = -full_correction(3:4, 1:2)
+         prediction_rotation_targets(:, :) = &
+            MATMUL(expected_rotation_correction, prediction_rotation_steps)
+         prediction_energy_targets(:, :) = 0.0_dp
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, prediction_rotation_steps, &
+            prediction_energy_steps, prediction_rotation_targets, prediction_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    prediction_capture*expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction)) + &
+                 ABS(prediction_quality - 1.0_dp) + &
+                 ABS(prediction_rotation_quality - 1.0_dp) + &
+                 ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_alignment - 1.0_dp) + &
+                 ABS(prediction_curvature_min - 1.0_dp) + &
+                 ABS(prediction_curvature_max - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent) error = error + 1.0_dp
+
+         ! The response-vector model remains exactly observable for nonparallel accepted steps.
+         ! Legacy step-overlap/capture gates would reject this exact rank-one response.
+         prediction_rotation_steps(:, 2) = [0.1_dp, 0.2_dp]
+         prediction_energy_steps(:, 2) = [0.05_dp, -0.02_dp]
+         prediction_rotation_targets(:, :) = &
+            MATMUL(expected_rotation_correction, prediction_rotation_steps)
+         prediction_energy_targets(:, :) = 0.0_dp
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, prediction_rotation_steps, &
+            prediction_energy_steps, prediction_rotation_targets, prediction_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    prediction_capture*expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction)) + &
+                 ABS(prediction_quality - 1.0_dp) + &
+                 ABS(prediction_rotation_quality - 1.0_dp) + &
+                 ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_alignment - 1.0_dp) + &
+                 ABS(prediction_curvature_min - 1.0_dp) + &
+                 ABS(prediction_curvature_max - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
+             prediction_overlap >= 0.98_dp .OR. prediction_capture >= 0.65_dp) error = error + 1.0_dp
+
+         ! Two accepted secants determine the symmetric observable work in their plane; the third
+         ! secant is a true leave-one-out check.  All three folds recover this physical mixed
+         ! rotation/energy response without fitting an unobserved orthogonal component.
+         mode(:) = [0.6_dp, -0.2_dp, 0.5_dp, -0.3_dp]
+         mode(:) = mode/SQRT(DOT_PRODUCT(mode, mode))
+         vmode(:) = [-0.3_dp, 0.7_dp, 0.2_dp, 0.4_dp]
+         vmode(:) = vmode - DOT_PRODUCT(mode, vmode)*mode
+         vmode(:) = vmode/SQRT(DOT_PRODUCT(vmode, vmode))
+         scaled_multisecant_steps(:, 1) = mode + 0.4_dp*vmode
+         scaled_multisecant_steps(:, 2) = 0.8_dp*mode - 0.6_dp*vmode
+         scaled_multisecant_steps(:, 3) = 1.3_dp*mode + 0.2_dp*vmode
+         DO i = 1, 4
+            full_correction(i, :) = response_curvature*coordinate_scale(i)*mode(i)* &
+                                    coordinate_scale*mode
+         END DO
+         expected_rotation_correction(:, :) = full_correction(1:2, 1:2)
+         expected_energy_correction(:, :) = full_correction(3:4, 3:4)
+         expected_cross_correction(:, :) = -full_correction(3:4, 1:2)
+         DO i = 1, 3
+            multisecant_rotation_steps(:, i) = &
+               scaled_multisecant_steps(1:2, i)/coordinate_scale(1:2)
+            multisecant_energy_steps(:, i) = &
+               scaled_multisecant_steps(3:4, i)/coordinate_scale(3:4)
+         END DO
+         multisecant_rotation_targets(:, :) = &
+            MATMUL(expected_rotation_correction, multisecant_rotation_steps) - &
+            MATMUL(TRANSPOSE(expected_cross_correction), multisecant_energy_steps)
+         multisecant_energy_targets(:, :) = &
+            MATMUL(expected_energy_correction, multisecant_energy_steps) - &
+            MATMUL(expected_cross_correction, multisecant_rotation_steps)
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+            multisecant_energy_steps, multisecant_rotation_targets, multisecant_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction)) + &
+                 ABS(prediction_capture - 1.0_dp) + ABS(prediction_quality - 1.0_dp) + &
+                 ABS(prediction_rotation_quality - 1.0_dp) + &
+                 ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_alignment - 1.0_dp) + &
+                 ABS(prediction_curvature_min - 1.0_dp) + &
+                 ABS(prediction_curvature_max - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
+             prediction_overlap <= 0.0_dp) error = error + 1.0_dp
+
+         ! Endpoint closure can contain a nonconservative gauge component normal to every accepted
+         ! step.  It must lower the response-prediction quality, but it must not alter the symmetric
+         ! work operator inferred from S^T*Y.
+         gauge_mode(:) = [0.4_dp, 0.3_dp, -0.6_dp, 0.5_dp]
+         gauge_mode(:) = gauge_mode - DOT_PRODUCT(mode, gauge_mode)*mode
+         gauge_mode(:) = gauge_mode - DOT_PRODUCT(vmode, gauge_mode)*vmode
+         gauge_mode(:) = gauge_mode/SQRT(DOT_PRODUCT(gauge_mode, gauge_mode))
+         gauge_coefficient(:) = [0.8_dp, -0.6_dp, 0.7_dp]
+         DO i = 1, 3
+            multisecant_rotation_targets(:, i) = multisecant_rotation_targets(:, i) + &
+                                                 gauge_coefficient(i)*coordinate_scale(1:2)*gauge_mode(1:2)
+            multisecant_energy_targets(:, i) = multisecant_energy_targets(:, i) + &
+                                               gauge_coefficient(i)*coordinate_scale(3:4)*gauge_mode(3:4)
+         END DO
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, multisecant_rotation_steps, &
+            multisecant_energy_steps, multisecant_rotation_targets, multisecant_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max)
+         error = error + MAXVAL(ABS(prediction_rotation_correction - &
+                                    expected_rotation_correction)) + &
+                 MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction))
+         IF (.NOT. prediction_finite .OR. prediction_consistent .OR. &
+             prediction_quality >= 1.0_dp - tol) error = error + 1.0_dp
+      END BLOCK
 
       CALL qs_scf_kp_coupled_schur_transport( &
          rotation_hessian, energy_hessian, energy_cross, updated_rotation_hessian, &
@@ -17005,7 +17375,7 @@ CONTAINS
       stale_no_history = dense_density_descent_tail_probe(5.0E-5_dp, 8.5E-8_dp, 1.0E-7_dp, &
                                                           1.0E-8_dp, 0.80_dp, 1.0_dp, 1.0_dp, &
                                                           0.0_dp, 1.0E-8_dp, 4, 0.40_dp, &
-                                                          0.10_dp, 7, 1.0_dp, 1.0_dp)
+                                                          0.10_dp, 9, 1.0_dp, 1.0_dp)
       err = 0.0_dp
       IF (.NOT. ready .OR. tail_veto .OR. low_quality .OR. low_recovery .OR. low_drop .OR. &
           weak_drop .OR. trust_veto .OR. .NOT. selected_ok .OR. selected_bad .OR. &
@@ -21807,6 +22177,7 @@ CONTAINS
       IF (residual_delta > 1.0E-4_dp) RETURN
       residual_reference = MAX(dense_residual_quality, 2.5E-1_dp)
       stale_residual_probe = selected_samples >= 4 .AND. history_samples >= 8 .AND. &
+                             MOD(history_samples, 8) == 0 .AND. &
                              bootstrap_quality >= 1.0E-1_dp .AND. &
                              support_quality_ema >= 1.0E-1_dp .AND. &
                              support_quality >= 5.0E-2_dp .AND. &
@@ -27074,6 +27445,13 @@ CONTAINS
       ot_env%schur_closure_response_pending = .TRUE.
       ot_env%schur_closure_response_samples = 3
       ot_env%schur_closure_response_quality_ema = 0.4_dp
+      ot_env%schur_closure_vector_shadow_pending = .TRUE.
+      ot_env%schur_closure_vector_shadow_consistent = .TRUE.
+      ot_env%schur_closure_vector_shadow_quality_samples = 3
+      ot_env%schur_closure_vector_shadow_baseline_quadratic = 0.5_dp
+      ot_env%schur_closure_vector_shadow_quadratic = 0.7_dp
+      ot_env%schur_closure_vector_shadow_quality_ema = 0.4_dp
+      ot_env%schur_closure_vector_shadow_advantage_ema = 0.2_dp
       CALL qs_ot_reset_accepted_model_calibration(ot_env)
 
       error = ABS(ot_env%gnorm - 3.0_dp) + &
@@ -27095,7 +27473,14 @@ CONTAINS
               ABS(ot_env%schur_projector_physical_selected_measured_sum) + &
               ABS(ot_env%schur_projector_physical_selected_quality_line_ema) + &
               ABS(REAL(ot_env%schur_closure_response_samples, KIND=dp)) + &
-              ABS(ot_env%schur_closure_response_quality_ema)
+              ABS(ot_env%schur_closure_response_quality_ema) + &
+              ABS(REAL(ot_env%schur_closure_vector_shadow_quality_samples, KIND=dp)) + &
+              ABS(ot_env%schur_closure_vector_shadow_baseline_quadratic) + &
+              ABS(ot_env%schur_closure_vector_shadow_quadratic) + &
+              ABS(ot_env%schur_closure_vector_shadow_quality_ema) + &
+              ABS(ot_env%schur_closure_vector_shadow_advantage_ema)
+      IF (ot_env%schur_closure_vector_shadow_pending) error = error + 1.0_dp
+      IF (ot_env%schur_closure_vector_shadow_consistent) error = error + 1.0_dp
       IF (ot_env%schur_model_pending .OR. ot_env%schur_prediction_pending .OR. &
           ot_env%schur_closure_response_pending .OR. &
           ot_env%schur_reduced_secant_pending .OR. error > tol) THEN
