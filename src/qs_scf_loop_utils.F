@@ -153,6 +153,9 @@ MODULE qs_scf_loop_utils
                                   ot_kp_occ_preconditioner_bootstrap_samples = 2, &
                                   ot_kp_occ_metric_continuation_samples = 8, &
                                   ot_kp_schur_quality_min_samples = 3
+   REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_orbital_tail_rebase_density_eps_factor = 2.0_dp, &
+                                        ot_kp_orbital_tail_rebase_eps_factor = 5.0_dp, &
+                                        ot_kp_orbital_tail_rebase_quality_max = 1.0E-1_dp
    REAL(KIND=dp), PARAMETER, PRIVATE :: ot_kp_added_mos_auto_tail_eps_factor = 50.0_dp, &
                                         ot_kp_added_mos_auto_tail_probe_factor = 5.0E-1_dp, &
                                         ot_kp_added_mos_auto_edge_probe_factor = 5.0_dp, &
@@ -346,6 +349,7 @@ MODULE qs_scf_loop_utils
              qs_scf_kp_density_closure_buffer_ready, &
              qs_scf_kp_density_closure_history_refresh_ready, &
              qs_scf_kp_density_closure_refresh_ready, &
+             qs_scf_kp_orbital_tail_rebase_ready, &
              qs_scf_kp_subspace_refresh_gate, &
              qs_scf_kp_secant_bootstrap_probe, &
              qs_scf_kp_secant_calibration_probe, &
@@ -6724,6 +6728,45 @@ CONTAINS
    END FUNCTION qs_scf_kp_density_closure_history_refresh_ready
 
 ! **************************************************************************************************
+!> \brief Detect an asymptotic orbital tail after canonical density closure.
+!>
+!>        Once the canonical fixed-N density and physical residual are both within a few
+!>        EPS_SCF, a larger physical residual identifies the represented orbital subspace as the
+!>        limiting block.  If several accepted Mermin steps reduce that residual slowly,
+!>        rebuilding the canonical subspace and its spectral preconditioner is the in-memory
+!>        equivalent of the successful wavefunction restart.
+!> \param density_ready canonical fixed-N density audit is valid for the current orbitals
+!> \param density_delta canonical fixed-N density stationarity residual
+!> \param physical_delta complete physical OT residual
+!> \param eps_scf requested SCF threshold
+!> \param quality_samples accepted physical-residual quality samples
+!> \param quality_ema EMA of the accepted fractional physical-residual reduction
+!> \return true when a canonical orbital-subspace rebase is warranted
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_orbital_tail_rebase_ready( &
+      density_ready, density_delta, physical_delta, eps_scf, quality_samples, quality_ema) &
+      RESULT(ready)
+
+      LOGICAL, INTENT(IN)                                :: density_ready
+      REAL(KIND=dp), INTENT(IN)                          :: density_delta, physical_delta, eps_scf
+      INTEGER, INTENT(IN)                                :: quality_samples
+      REAL(KIND=dp), INTENT(IN)                          :: quality_ema
+      LOGICAL                                            :: ready
+
+      REAL(KIND=dp)                                      :: eps
+
+      eps = MAX(eps_scf, EPSILON(1.0_dp))
+      ready = density_ready .AND. density_delta >= 0.0_dp .AND. &
+              density_delta <= ot_kp_orbital_tail_rebase_density_eps_factor*eps .AND. &
+              physical_delta > eps .AND. &
+              physical_delta <= ot_kp_orbital_tail_rebase_eps_factor*eps .AND. &
+              physical_delta >= density_delta .AND. &
+              quality_samples >= ot_kp_schur_calibration_min_samples .AND. &
+              quality_ema <= ot_kp_orbital_tail_rebase_quality_max
+
+   END FUNCTION qs_scf_kp_orbital_tail_rebase_ready
+
+! **************************************************************************************************
 !> \brief scalar decision gate for a collapsed metallic k-point OT subspace refresh
 !> \param allow_refresh whether this SCF invocation may still refresh once
 !> \param fermi_window_guarded whether the current state is a projected Fermi-window sample
@@ -7010,11 +7053,12 @@ CONTAINS
 !> \param added_mos_auto_grow ...
 !> \param ot_kp_subspace_refresh ...
 !> \param allow_ot_kp_subspace_refresh ...
+!> \param allow_ot_kp_orbital_tail_rebase ...
 !> \param settle_ot_kp_subspace ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_new_mos_kp(qs_env, scf_env, scf_control, diis_step, probe, added_mos_auto_grow, &
                                 ot_kp_subspace_refresh, allow_ot_kp_subspace_refresh, &
-                                settle_ot_kp_subspace)
+                                allow_ot_kp_orbital_tail_rebase, settle_ot_kp_subspace)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
@@ -7023,15 +7067,15 @@ CONTAINS
          POINTER                                         :: probe
       LOGICAL, INTENT(OUT), OPTIONAL                     :: added_mos_auto_grow, &
                                                             ot_kp_subspace_refresh
-      LOGICAL, INTENT(IN), OPTIONAL                      :: allow_ot_kp_subspace_refresh, &
-                                                            settle_ot_kp_subspace
+      LOGICAL, INTENT(IN), OPTIONAL :: allow_ot_kp_subspace_refresh, &
+         allow_ot_kp_orbital_tail_rebase, settle_ot_kp_subspace
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_scf_new_mos_kp'
 
       INTEGER                                            :: canonical_mu_count, handle, ispin, &
                                                             ot_channel
-      LOGICAL :: allow_subspace_refresh, disable_diis, has_unit_metric, my_added_mos_auto_grow, &
-         my_ot_kp_subspace_refresh, settle_subspace
+      LOGICAL :: allow_orbital_tail_rebase, allow_subspace_refresh, disable_diis, has_unit_metric, &
+         my_added_mos_auto_grow, my_ot_kp_subspace_refresh, settle_subspace
       REAL(dp)                                           :: canonical_mu_sum, diis_error, old_kTS, &
                                                             saved_eps_diis
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
@@ -7049,6 +7093,9 @@ CONTAINS
       settle_subspace = .FALSE.
       IF (PRESENT(allow_ot_kp_subspace_refresh)) &
          allow_subspace_refresh = allow_ot_kp_subspace_refresh
+      allow_orbital_tail_rebase = allow_subspace_refresh
+      IF (PRESENT(allow_ot_kp_orbital_tail_rebase)) &
+         allow_orbital_tail_rebase = allow_ot_kp_orbital_tail_rebase
       IF (PRESENT(settle_ot_kp_subspace)) settle_subspace = settle_ot_kp_subspace
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
       IF (PRESENT(ot_kp_subspace_refresh)) ot_kp_subspace_refresh = .FALSE.
@@ -7122,6 +7169,7 @@ CONTAINS
                                    added_mos_auto_grow=my_added_mos_auto_grow, &
                                    ot_kp_subspace_refresh=my_ot_kp_subspace_refresh, &
                                    allow_ot_kp_subspace_refresh=allow_subspace_refresh, &
+                                   allow_ot_kp_orbital_tail_rebase=allow_orbital_tail_rebase, &
                                    settle_ot_kp_subspace=settle_subspace)
          IF (my_ot_kp_subspace_refresh) THEN
             IF (PRESENT(ot_kp_subspace_refresh)) ot_kp_subspace_refresh = .TRUE.
@@ -7196,11 +7244,13 @@ CONTAINS
 !> \param added_mos_auto_grow ...
 !> \param ot_kp_subspace_refresh ...
 !> \param allow_ot_kp_subspace_refresh ...
+!> \param allow_ot_kp_orbital_tail_rebase ...
 !> \param settle_ot_kp_subspace ...
 ! **************************************************************************************************
    SUBROUTINE qs_scf_loop_do_ot_kp(qs_env, scf_env, scf_control, matrix_ks, matrix_s, &
                                    added_mos_auto_grow, ot_kp_subspace_refresh, &
-                                   allow_ot_kp_subspace_refresh, settle_ot_kp_subspace)
+                                   allow_ot_kp_subspace_refresh, allow_ot_kp_orbital_tail_rebase, &
+                                   settle_ot_kp_subspace)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
@@ -7208,8 +7258,8 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       LOGICAL, INTENT(OUT)                               :: added_mos_auto_grow, &
                                                             ot_kp_subspace_refresh
-      LOGICAL, INTENT(IN)                                :: allow_ot_kp_subspace_refresh, &
-                                                            settle_ot_kp_subspace
+      LOGICAL, INTENT(IN) :: allow_ot_kp_subspace_refresh, allow_ot_kp_orbital_tail_rebase, &
+         settle_ot_kp_subspace
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_scf_loop_do_ot_kp'
 
@@ -7499,7 +7549,7 @@ CONTAINS
                                scf_control%added_mos_auto, scf_control%added_mos, &
                                trial_occupation, scf_env%iter_count, scf_env%iter_delta, scf_control%eps_scf, &
                                scf_env%qs_ot_restart%valid, protect_mermin_ls_sample, fermi_window_guarded, &
-                               allow_ot_kp_subspace_refresh)
+                               allow_ot_kp_subspace_refresh, allow_ot_kp_orbital_tail_rebase)
       IF (ot_kp_subspace_refresh) GOTO 900
       CALL qs_scf_loop_update_ot_kp_occ_preconditioner(local_ot_env)
       IF (logger%iter_info%print_level >= high_print_level) THEN
@@ -8586,13 +8636,14 @@ CONTAINS
 !> \param accepted_sample ...
 !> \param fermi_window_guarded ...
 !> \param allow_refresh ...
+!> \param allow_orbital_tail_rebase ...
 !> \return true when the current OT virtual subspace must be rebuilt by diagonalization
 ! **************************************************************************************************
    FUNCTION qs_scf_loop_ot_kp_subspace_refresh_needed( &
       kpoints, local_ot_env, nspin_ot, wkp, para_env_inter_kp, smear, &
       added_mos_auto, added_mos, trial_occupation, &
       scf_iteration, scf_residual, eps_scf, restart_valid, accepted_sample, &
-      fermi_window_guarded, allow_refresh) RESULT(refresh)
+      fermi_window_guarded, allow_refresh, allow_orbital_tail_rebase) RESULT(refresh)
 
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_ot_type), DIMENSION(:), POINTER            :: local_ot_env
@@ -8606,13 +8657,14 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: scf_iteration
       REAL(KIND=dp), INTENT(IN)                          :: scf_residual, eps_scf
       LOGICAL, INTENT(IN)                                :: restart_valid, accepted_sample, &
-                                                            fermi_window_guarded, allow_refresh
+                                                            fermi_window_guarded, allow_refresh, &
+                                                            allow_orbital_tail_rebase
       LOGICAL                                            :: refresh
 
       INTEGER                                            :: density_buffer_ready_i, ikpoint, imo, &
                                                             ispin, local_kpoint, nmo
       LOGICAL :: base_state, collapsed, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, high_residual_stagnant, step_ready
+         density_history_stagnant, high_residual_stagnant, orbital_tail_rebase, step_ready
       REAL(KIND=dp)                                      :: fractional_weight, max_partial_fraction, &
                                                             maxocc, occ_tail, residual_delta, &
                                                             weight
@@ -8620,7 +8672,8 @@ CONTAINS
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       refresh = .FALSE.
-      IF (.NOT. allow_refresh .OR. fermi_window_guarded) RETURN
+      IF ((.NOT. allow_refresh .AND. .NOT. allow_orbital_tail_rebase) .OR. &
+          fermi_window_guarded) RETURN
       IF (.NOT. smear%do_smear .OR. .NOT. kpoint_ot_monotone_smearing(smear%method)) RETURN
       IF (kpoint_ot_smearing_width(smear) <= 1.0E-14_dp) RETURN
       IF (.NOT. kpoint_ot_project_energy_subproblem(local_ot_env(1), smear)) RETURN
@@ -8674,18 +8727,29 @@ CONTAINS
                                  local_ot_env(1)%kpoint_raw_delta, eps_scf, &
                                  local_ot_env(1)%schur_density_stationarity_quality_samples, &
                                  local_ot_env(1)%schur_density_stationarity_quality_ema)
+      orbital_tail_rebase = density_buffer_ready .AND. &
+                            qs_scf_kp_orbital_tail_rebase_ready( &
+                            local_ot_env(1)%kpoint_density_stationarity_ready, &
+                            local_ot_env(1)%kpoint_density_stationarity_delta, &
+                            residual_delta, eps_scf, &
+                            local_ot_env(1)%schur_closure_response_samples, &
+                            local_ot_env(1)%schur_closure_response_quality_ema)
       density_closure_stagnant = density_closure_stagnant .OR. density_history_stagnant
       refresh = qs_scf_kp_subspace_refresh_gate(allow_refresh, fermi_window_guarded, collapsed, &
                                                 residual_delta, eps_scf, step_ready, base_state, &
                                                 high_residual_stagnant, density_closure_stagnant)
+      IF (.NOT. refresh .AND. allow_orbital_tail_rebase .AND. orbital_tail_rebase) &
+         refresh = qs_scf_kp_subspace_refresh_gate(.TRUE., fermi_window_guarded, .FALSE., &
+                                                   residual_delta, eps_scf, step_ready, base_state, &
+                                                   density_closure_stagnant=.TRUE.)
 
       logger => cp_get_default_logger()
       IF (logger%iter_info%print_level >= high_print_level .AND. logger%para_env%is_source() .AND. &
-          (collapsed .OR. density_closure_stagnant) .AND. step_ready) &
-         WRITE (cp_logger_get_default_unit_nr(logger), '(A,6(1X,L1),1X,I6,5(1X,ES16.8))') &
-         " OT k-point subspace refresh ready restart stagnant buffer closure history step residual density qema frac max:", &
+          (collapsed .OR. density_closure_stagnant .OR. orbital_tail_rebase) .AND. step_ready) &
+         WRITE (cp_logger_get_default_unit_nr(logger), '(A,7(1X,L1),1X,I6,5(1X,ES16.8))') &
+        " OT k-point subspace refresh ready restart stagnant buffer closure history orbital step residual density qema frac max:", &
          refresh, restart_valid, high_residual_stagnant, density_buffer_ready, density_closure_stagnant, &
-         density_history_stagnant, local_ot_env(1)%OT_count, residual_delta, &
+         density_history_stagnant, orbital_tail_rebase, local_ot_env(1)%OT_count, residual_delta, &
          local_ot_env(1)%kpoint_density_stationarity_delta, &
          local_ot_env(1)%schur_density_stationarity_quality_ema, fractional_weight, max_partial_fraction
 
