@@ -5334,6 +5334,9 @@ CONTAINS
 !> \param validation_quality ...
 !> \param validation_rotation_quality ...
 !> \param validation_energy_quality ...
+!> \param strict_validation_quality ...
+!> \param strict_validation_rotation_quality ...
+!> \param strict_validation_energy_quality ...
 !> \param validation_alignment ...
 !> \param validation_curvature_ratio ...
 ! **************************************************************************************************
@@ -5343,7 +5346,9 @@ CONTAINS
       validation_energy_step, validation_rotation_response, validation_energy_response, &
       rotation_correction, energy_correction, cross_correction, ready, step_overlap, &
       training_capture, validation_quality, validation_rotation_quality, &
-      validation_energy_quality, validation_alignment, validation_curvature_ratio)
+      validation_energy_quality, strict_validation_quality, &
+      strict_validation_rotation_quality, strict_validation_energy_quality, &
+      validation_alignment, validation_curvature_ratio)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: rotation_hessian, energy_hessian
       REAL(KIND=dp), DIMENSION(:), INTENT(IN) :: training_rotation_step, training_energy_step, &
          training_rotation_response, training_energy_response, validation_rotation_step, &
@@ -5352,15 +5357,17 @@ CONTAINS
                                                             cross_correction
       LOGICAL, INTENT(OUT)                               :: ready
       REAL(KIND=dp), INTENT(OUT) :: step_overlap, training_capture, validation_quality, &
-         validation_rotation_quality, validation_energy_quality, validation_alignment, &
-         validation_curvature_ratio
+         validation_rotation_quality, validation_energy_quality, strict_validation_quality, &
+         strict_validation_rotation_quality, strict_validation_energy_quality, &
+         validation_alignment, validation_curvature_ratio
 
       INTEGER                                            :: i, j, nener, nfull, nrot
       REAL(KIND=dp) :: block_floor, block_max, component_floor, predicted_curvature, &
-         predicted_energy_residual_sq, predicted_norm, predicted_residual_sq, &
-         predicted_rotation_residual_sq, response_norm, rotation_residual_sq, secant_curvature, &
-         step_norm, validation_curvature, validation_energy_residual_sq, validation_norm, &
-         validation_residual_sq
+         predicted_energy_residual_sq, predicted_energy_response_sq, predicted_norm, &
+         predicted_residual_sq, predicted_response_norm_sq, predicted_rotation_residual_sq, &
+         predicted_rotation_response_sq, response_norm, rotation_residual_sq, secant_curvature, &
+         step_norm, strict_component_floor, validation_curvature, validation_energy_residual_sq, &
+         validation_norm, validation_residual_sq
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:) :: coordinate_scale, predicted_residual, &
          predicted_response, training_response, training_step, validation_response, validation_step
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: response_hessian
@@ -5391,6 +5398,9 @@ CONTAINS
       validation_quality = 0.0_dp
       validation_rotation_quality = 0.0_dp
       validation_energy_quality = 0.0_dp
+      strict_validation_quality = 0.0_dp
+      strict_validation_rotation_quality = 0.0_dp
+      strict_validation_energy_quality = 0.0_dp
       validation_alignment = 0.0_dp
       validation_curvature_ratio = 0.0_dp
       IF (nrot <= 0 .OR. nener <= 0) RETURN
@@ -5430,6 +5440,14 @@ CONTAINS
       training_response(:) = training_response/coordinate_scale
       validation_response(:) = validation_response/coordinate_scale
 
+      validation_residual_sq = MAX(0.0_dp, DOT_PRODUCT(validation_response, validation_response))
+      rotation_residual_sq = MAX(0.0_dp, &
+                                 DOT_PRODUCT(validation_response(1:nrot), &
+                                             validation_response(1:nrot)))
+      validation_energy_residual_sq = MAX(0.0_dp, &
+                                          DOT_PRODUCT(validation_response(nrot + 1:nfull), &
+                                                      validation_response(nrot + 1:nfull)))
+
       step_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_step, training_step)))
       validation_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(validation_step, validation_step)))
       response_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(training_response, training_response)))
@@ -5452,39 +5470,58 @@ CONTAINS
       END DO
       predicted_response(:) = MATMUL(response_hessian, validation_step)
       predicted_residual(:) = validation_response - predicted_response
-      validation_residual_sq = MAX(0.0_dp, DOT_PRODUCT(validation_response, validation_response))
       predicted_residual_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_residual, predicted_residual))
+      predicted_response_norm_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response))
+      IF (MAX(validation_residual_sq, predicted_response_norm_sq) > &
+          EPSILON(MAX(validation_residual_sq, predicted_response_norm_sq))) &
+         validation_quality = 1.0_dp - predicted_residual_sq/ &
+                              MAX(validation_residual_sq, predicted_response_norm_sq)
       IF (validation_residual_sq > EPSILON(validation_residual_sq)) &
-         validation_quality = 1.0_dp - predicted_residual_sq/validation_residual_sq
-      rotation_residual_sq = MAX(0.0_dp, &
-                                 DOT_PRODUCT(validation_response(1:nrot), &
-                                             validation_response(1:nrot)))
+         strict_validation_quality = 1.0_dp - predicted_residual_sq/validation_residual_sq
       predicted_rotation_residual_sq = MAX(0.0_dp, &
                                            DOT_PRODUCT(predicted_residual(1:nrot), &
                                                        predicted_residual(1:nrot)))
-      IF (rotation_residual_sq > EPSILON(rotation_residual_sq)) &
+      predicted_rotation_response_sq = MAX(0.0_dp, &
+                                           DOT_PRODUCT(predicted_response(1:nrot), &
+                                                       predicted_response(1:nrot)))
+      component_floor = 64.0_dp*EPSILON(1.0_dp)* &
+                        MAX(validation_residual_sq, predicted_response_norm_sq, TINY(1.0_dp))
+      IF (MAX(rotation_residual_sq, predicted_rotation_response_sq) > component_floor) THEN
          validation_rotation_quality = 1.0_dp - &
-                                       predicted_rotation_residual_sq/rotation_residual_sq
-      validation_energy_residual_sq = MAX(0.0_dp, &
-                                          DOT_PRODUCT(validation_response(nrot + 1:nfull), &
-                                                      validation_response(nrot + 1:nfull)))
+                                       predicted_rotation_residual_sq/ &
+                                       MAX(rotation_residual_sq, predicted_rotation_response_sq)
+      ELSE
+         validation_rotation_quality = 1.0_dp
+      END IF
+      IF (rotation_residual_sq > EPSILON(rotation_residual_sq)) &
+         strict_validation_rotation_quality = 1.0_dp - &
+                                              predicted_rotation_residual_sq/rotation_residual_sq
       predicted_energy_residual_sq = MAX(0.0_dp, &
                                          DOT_PRODUCT(predicted_residual(nrot + 1:nfull), &
                                                      predicted_residual(nrot + 1:nfull)))
-      component_floor = 64.0_dp*EPSILON(1.0_dp)* &
-                        MAX(validation_residual_sq, TINY(1.0_dp))
-      IF (validation_energy_residual_sq > component_floor) THEN
+      predicted_energy_response_sq = MAX(0.0_dp, &
+                                         DOT_PRODUCT(predicted_response(nrot + 1:nfull), &
+                                                     predicted_response(nrot + 1:nfull)))
+      IF (MAX(validation_energy_residual_sq, predicted_energy_response_sq) > component_floor) THEN
          validation_energy_quality = 1.0_dp - &
-                                     predicted_energy_residual_sq/validation_energy_residual_sq
-      ELSE IF (predicted_energy_residual_sq <= component_floor) THEN
-         ! A physically absent energy response is a successful prediction only if the fitted
-         ! response-vector mode does not manufacture one from the accepted ener_x displacement.
-         validation_energy_quality = 1.0_dp
+                                     predicted_energy_residual_sq/ &
+                                     MAX(validation_energy_residual_sq, predicted_energy_response_sq)
       ELSE
-         validation_energy_quality = 1.0_dp - &
-                                     predicted_energy_residual_sq/MAX(component_floor, TINY(1.0_dp))
+         validation_energy_quality = 1.0_dp
       END IF
-      predicted_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
+      strict_component_floor = 64.0_dp*EPSILON(1.0_dp)* &
+                               MAX(validation_residual_sq, TINY(1.0_dp))
+      IF (validation_energy_residual_sq > strict_component_floor) THEN
+         strict_validation_energy_quality = 1.0_dp - &
+                                            predicted_energy_residual_sq/ &
+                                            validation_energy_residual_sq
+      ELSE IF (predicted_energy_residual_sq <= strict_component_floor) THEN
+         strict_validation_energy_quality = 1.0_dp
+      ELSE
+         strict_validation_energy_quality = 1.0_dp - &
+                                            predicted_energy_residual_sq/strict_component_floor
+      END IF
+      predicted_norm = SQRT(predicted_response_norm_sq)
       IF (validation_residual_sq > EPSILON(validation_residual_sq) .AND. &
           predicted_norm > EPSILON(predicted_norm)) &
          validation_alignment = DOT_PRODUCT(validation_response, predicted_response)/ &
@@ -5500,6 +5537,9 @@ CONTAINS
               validation_quality == validation_quality .AND. &
               validation_rotation_quality == validation_rotation_quality .AND. &
               validation_energy_quality == validation_energy_quality .AND. &
+              strict_validation_quality == strict_validation_quality .AND. &
+              strict_validation_rotation_quality == strict_validation_rotation_quality .AND. &
+              strict_validation_energy_quality == strict_validation_energy_quality .AND. &
               validation_alignment == validation_alignment .AND. &
               validation_curvature_ratio == validation_curvature_ratio
       IF (ready) THEN
@@ -5550,6 +5590,9 @@ CONTAINS
 !> \param validation_quality ...
 !> \param validation_rotation_quality ...
 !> \param validation_energy_quality ...
+!> \param strict_validation_quality ...
+!> \param strict_validation_rotation_quality ...
+!> \param strict_validation_energy_quality ...
 !> \param validation_alignment ...
 !> \param validation_curvature_ratio ...
 ! **************************************************************************************************
@@ -5559,7 +5602,9 @@ CONTAINS
       validation_energy_step, validation_rotation_response, validation_energy_response, &
       rotation_correction, energy_correction, cross_correction, ready, independence, &
       training_quality, validation_quality, validation_rotation_quality, &
-      validation_energy_quality, validation_alignment, validation_curvature_ratio)
+      validation_energy_quality, strict_validation_quality, &
+      strict_validation_rotation_quality, strict_validation_energy_quality, &
+      validation_alignment, validation_curvature_ratio)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
          training_rotation_steps, training_energy_steps, training_rotation_responses, &
          training_energy_responses
@@ -5569,16 +5614,20 @@ CONTAINS
                                                             cross_correction
       LOGICAL, INTENT(OUT)                               :: ready
       REAL(KIND=dp), INTENT(OUT) :: independence, training_quality, validation_quality, &
-         validation_rotation_quality, validation_energy_quality, validation_alignment, &
-         validation_curvature_ratio
+         validation_rotation_quality, validation_energy_quality, strict_validation_quality, &
+         strict_validation_rotation_quality, strict_validation_energy_quality, &
+         validation_alignment, validation_curvature_ratio
 
       INTEGER                                            :: i, j, nener, nfull, nrot
       LOGICAL                                            :: fit_ready
-      REAL(KIND=dp) :: block_floor, block_max, component_floor, determinant, gram_scale, &
-         predicted_curvature, predicted_energy_residual_sq, predicted_norm, predicted_residual_sq, &
-         predicted_rotation_residual_sq, response_norm_sq, rotation_response_norm_sq, &
-         training_energy_response_sq, training_residual_sq, training_response_norm_sq, &
-         training_rotation_response_sq, validation_curvature, validation_norm_sq
+      REAL(KIND=dp) :: block_floor, block_max, component_floor, determinant, &
+         energy_response_norm_sq, gram_scale, predicted_curvature, predicted_energy_residual_sq, &
+         predicted_energy_response_sq, predicted_norm, predicted_residual_sq, &
+         predicted_response_norm_sq, predicted_rotation_residual_sq, &
+         predicted_rotation_response_sq, rotation_response_norm_sq, strict_component_floor, &
+         training_energy_response_sq, training_predicted_norm_sq, training_residual_sq, &
+         training_response_norm_sq, training_rotation_response_sq, validation_curvature, &
+         validation_norm_sq
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: coordinate_scale, predicted_residual, &
                                                             predicted_response, &
                                                             validation_response, validation_step
@@ -5614,6 +5663,9 @@ CONTAINS
       validation_quality = 0.0_dp
       validation_rotation_quality = 0.0_dp
       validation_energy_quality = 0.0_dp
+      strict_validation_quality = 0.0_dp
+      strict_validation_rotation_quality = 0.0_dp
+      strict_validation_energy_quality = 0.0_dp
       validation_alignment = 0.0_dp
       validation_curvature_ratio = 0.0_dp
       IF (nrot <= 0 .OR. nener <= 0) RETURN
@@ -5692,39 +5744,70 @@ CONTAINS
 
       training_residual(:, :) = training_responses - MATMUL(response_hessian, training_steps)
       training_residual_sq = MAX(0.0_dp, SUM(training_residual**2))
-      IF (training_response_norm_sq > EPSILON(training_response_norm_sq)) &
-         training_quality = 1.0_dp - training_residual_sq/training_response_norm_sq
+      training_predicted_norm_sq = MAX(0.0_dp, SUM((training_responses - training_residual)**2))
+      IF (MAX(training_response_norm_sq, training_predicted_norm_sq) > &
+          EPSILON(MAX(training_response_norm_sq, training_predicted_norm_sq))) &
+         training_quality = 1.0_dp - training_residual_sq/ &
+                            MAX(training_response_norm_sq, training_predicted_norm_sq)
       predicted_response(:) = MATMUL(response_hessian, validation_step)
       predicted_residual(:) = validation_response - predicted_response
       validation_norm_sq = MAX(0.0_dp, DOT_PRODUCT(validation_response, validation_response))
       predicted_residual_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_residual, predicted_residual))
+      predicted_response_norm_sq = MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response))
+      IF (MAX(validation_norm_sq, predicted_response_norm_sq) > &
+          EPSILON(MAX(validation_norm_sq, predicted_response_norm_sq))) &
+         validation_quality = 1.0_dp - predicted_residual_sq/ &
+                              MAX(validation_norm_sq, predicted_response_norm_sq)
       IF (validation_norm_sq > EPSILON(validation_norm_sq)) &
-         validation_quality = 1.0_dp - predicted_residual_sq/validation_norm_sq
+         strict_validation_quality = 1.0_dp - predicted_residual_sq/validation_norm_sq
       rotation_response_norm_sq = MAX(0.0_dp, &
                                       DOT_PRODUCT(validation_response(1:nrot), &
                                                   validation_response(1:nrot)))
       predicted_rotation_residual_sq = MAX(0.0_dp, &
                                            DOT_PRODUCT(predicted_residual(1:nrot), &
                                                        predicted_residual(1:nrot)))
-      IF (rotation_response_norm_sq > EPSILON(rotation_response_norm_sq)) &
+      predicted_rotation_response_sq = MAX(0.0_dp, &
+                                           DOT_PRODUCT(predicted_response(1:nrot), &
+                                                       predicted_response(1:nrot)))
+      component_floor = 64.0_dp*EPSILON(1.0_dp)* &
+                        MAX(validation_norm_sq, predicted_response_norm_sq, TINY(1.0_dp))
+      IF (MAX(rotation_response_norm_sq, predicted_rotation_response_sq) > component_floor) THEN
          validation_rotation_quality = 1.0_dp - &
-                                       predicted_rotation_residual_sq/rotation_response_norm_sq
-      response_norm_sq = MAX(0.0_dp, &
-                             DOT_PRODUCT(validation_response(nrot + 1:nfull), &
-                                         validation_response(nrot + 1:nfull)))
+                                       predicted_rotation_residual_sq/ &
+                                       MAX(rotation_response_norm_sq, predicted_rotation_response_sq)
+      ELSE
+         validation_rotation_quality = 1.0_dp
+      END IF
+      IF (rotation_response_norm_sq > EPSILON(rotation_response_norm_sq)) &
+         strict_validation_rotation_quality = 1.0_dp - &
+                                              predicted_rotation_residual_sq/ &
+                                              rotation_response_norm_sq
+      energy_response_norm_sq = MAX(0.0_dp, &
+                                    DOT_PRODUCT(validation_response(nrot + 1:nfull), &
+                                                validation_response(nrot + 1:nfull)))
       predicted_energy_residual_sq = MAX(0.0_dp, &
                                          DOT_PRODUCT(predicted_residual(nrot + 1:nfull), &
                                                      predicted_residual(nrot + 1:nfull)))
-      component_floor = 64.0_dp*EPSILON(1.0_dp)*MAX(validation_norm_sq, TINY(1.0_dp))
-      IF (response_norm_sq > component_floor) THEN
-         validation_energy_quality = 1.0_dp - predicted_energy_residual_sq/response_norm_sq
-      ELSE IF (predicted_energy_residual_sq <= component_floor) THEN
-         validation_energy_quality = 1.0_dp
+      predicted_energy_response_sq = MAX(0.0_dp, &
+                                         DOT_PRODUCT(predicted_response(nrot + 1:nfull), &
+                                                     predicted_response(nrot + 1:nfull)))
+      IF (MAX(energy_response_norm_sq, predicted_energy_response_sq) > component_floor) THEN
+         validation_energy_quality = 1.0_dp - predicted_energy_residual_sq/ &
+                                     MAX(energy_response_norm_sq, predicted_energy_response_sq)
       ELSE
-         validation_energy_quality = 1.0_dp - &
-                                     predicted_energy_residual_sq/MAX(component_floor, TINY(1.0_dp))
+         validation_energy_quality = 1.0_dp
       END IF
-      predicted_norm = SQRT(MAX(0.0_dp, DOT_PRODUCT(predicted_response, predicted_response)))
+      strict_component_floor = 64.0_dp*EPSILON(1.0_dp)*MAX(validation_norm_sq, TINY(1.0_dp))
+      IF (energy_response_norm_sq > strict_component_floor) THEN
+         strict_validation_energy_quality = 1.0_dp - &
+                                            predicted_energy_residual_sq/energy_response_norm_sq
+      ELSE IF (predicted_energy_residual_sq <= strict_component_floor) THEN
+         strict_validation_energy_quality = 1.0_dp
+      ELSE
+         strict_validation_energy_quality = 1.0_dp - &
+                                            predicted_energy_residual_sq/strict_component_floor
+      END IF
+      predicted_norm = SQRT(predicted_response_norm_sq)
       IF (validation_norm_sq > EPSILON(validation_norm_sq) .AND. &
           predicted_norm > EPSILON(predicted_norm)) &
          validation_alignment = DOT_PRODUCT(validation_response, predicted_response)/ &
@@ -5741,6 +5824,9 @@ CONTAINS
               validation_quality == validation_quality .AND. &
               validation_rotation_quality == validation_rotation_quality .AND. &
               validation_energy_quality == validation_energy_quality .AND. &
+              strict_validation_quality == strict_validation_quality .AND. &
+              strict_validation_rotation_quality == strict_validation_rotation_quality .AND. &
+              strict_validation_energy_quality == strict_validation_energy_quality .AND. &
               validation_alignment == validation_alignment .AND. &
               validation_curvature_ratio == validation_curvature_ratio
       IF (ready) THEN
@@ -5777,21 +5863,25 @@ CONTAINS
 !> \param energy_correction newest-trained auxiliary-energy-block correction
 !> \param cross_correction newest-trained signed cross-block correction
 !> \param finite whether all available prediction audits are finite
-!> \param consistent whether all predictions pass the coupled physical-response gate
+!> \param consistent whether all predictions pass the strict measured-response gate
 !> \param overlap minimum scaled step overlap or two-step independence
 !> \param capture minimum training-response quality
-!> \param quality minimum full-residual prediction quality
-!> \param rotation_quality minimum rotation-residual prediction quality
-!> \param energy_quality minimum auxiliary-energy-residual prediction quality
+!> \param quality minimum bounded full-residual audit quality
+!> \param rotation_quality minimum bounded rotation-residual audit quality
+!> \param energy_quality minimum bounded auxiliary-energy-residual audit quality
 !> \param alignment minimum response alignment
 !> \param curvature_ratio_min minimum bidirectional response-curvature ratio
 !> \param curvature_ratio_max maximum bidirectional response-curvature ratio
+!> \param promotion_quality optional strict full-residual promotion quality
+!> \param promotion_rotation_quality optional strict rotation-residual promotion quality
+!> \param promotion_energy_quality optional strict auxiliary-energy-residual promotion quality
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_coupled_closure_prediction( &
       rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
       closure_rotation_targets, closure_energy_targets, rotation_correction, &
       energy_correction, cross_correction, finite, consistent, overlap, capture, quality, &
-      rotation_quality, energy_quality, alignment, curvature_ratio_min, curvature_ratio_max)
+      rotation_quality, energy_quality, alignment, curvature_ratio_min, curvature_ratio_max, &
+      promotion_quality, promotion_rotation_quality, promotion_energy_quality)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
          energy_cross, rotation_steps, energy_steps, closure_rotation_targets, &
          closure_energy_targets
@@ -5800,16 +5890,24 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: finite, consistent
       REAL(KIND=dp), INTENT(OUT) :: overlap, capture, quality, rotation_quality, energy_quality, &
          alignment, curvature_ratio_min, curvature_ratio_max
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: promotion_quality, &
+                                                            promotion_rotation_quality, &
+                                                            promotion_energy_quality
 
       INTEGER                                            :: nener, nobs, nrot
       LOGICAL                                            :: forward_finite, reverse_finite, &
                                                             third_finite
       REAL(KIND=dp) :: forward_alignment, forward_capture, forward_curvature_ratio, &
          forward_energy_quality, forward_overlap, forward_quality, forward_rotation_quality, &
+         forward_strict_energy_quality, forward_strict_quality, forward_strict_rotation_quality, &
          reverse_alignment, reverse_capture, reverse_curvature_ratio, reverse_energy_quality, &
-         reverse_overlap, reverse_quality, reverse_rotation_quality, third_alignment, &
-         third_capture, third_curvature_ratio, third_energy_quality, third_overlap, third_quality, &
-         third_rotation_quality
+         reverse_overlap, reverse_quality, reverse_rotation_quality, &
+         reverse_strict_energy_quality, reverse_strict_quality, reverse_strict_rotation_quality, &
+         strict_energy_quality, strict_quality, strict_rotation_quality, third_alignment, &
+         third_capture
+      REAL(KIND=dp) :: third_curvature_ratio, third_energy_quality, third_overlap, third_quality, &
+         third_rotation_quality, third_strict_energy_quality, third_strict_quality, &
+         third_strict_rotation_quality
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: fold_energy_responses, fold_energy_steps, &
          fold_rotation_responses, fold_rotation_steps, forward_energy_cross, &
          forward_energy_hessian, forward_rotation_hessian, reverse_energy_cross, &
@@ -5844,6 +5942,12 @@ CONTAINS
       alignment = 0.0_dp
       curvature_ratio_min = 0.0_dp
       curvature_ratio_max = 0.0_dp
+      strict_quality = 0.0_dp
+      strict_rotation_quality = 0.0_dp
+      strict_energy_quality = 0.0_dp
+      IF (PRESENT(promotion_quality)) promotion_quality = 0.0_dp
+      IF (PRESENT(promotion_rotation_quality)) promotion_rotation_quality = 0.0_dp
+      IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = 0.0_dp
       IF (nrot <= 0 .OR. nener <= 0) RETURN
 
       ALLOCATE (forward_energy_cross(nener, nrot), forward_energy_hessian(nener, nener), &
@@ -5861,8 +5965,9 @@ CONTAINS
             rotation_steps(:, 3), energy_steps(:, 3), closure_rotation_targets(:, 3), &
             closure_energy_targets(:, 3), forward_rotation_hessian, forward_energy_hessian, &
             forward_energy_cross, forward_finite, forward_overlap, forward_capture, &
-            forward_quality, forward_rotation_quality, forward_energy_quality, forward_alignment, &
-            forward_curvature_ratio)
+            forward_quality, forward_rotation_quality, forward_energy_quality, &
+            forward_strict_quality, forward_strict_rotation_quality, &
+            forward_strict_energy_quality, forward_alignment, forward_curvature_ratio)
          fold_rotation_steps(:, :) = rotation_steps(:, 2:3)
          fold_energy_steps(:, :) = energy_steps(:, 2:3)
          fold_rotation_responses(:, :) = closure_rotation_targets(:, 2:3)
@@ -5873,7 +5978,8 @@ CONTAINS
             energy_steps(:, 1), closure_rotation_targets(:, 1), closure_energy_targets(:, 1), &
             reverse_rotation_hessian, reverse_energy_hessian, reverse_energy_cross, reverse_finite, &
             reverse_overlap, reverse_capture, reverse_quality, reverse_rotation_quality, &
-            reverse_energy_quality, reverse_alignment, reverse_curvature_ratio)
+            reverse_energy_quality, reverse_strict_quality, reverse_strict_rotation_quality, &
+            reverse_strict_energy_quality, reverse_alignment, reverse_curvature_ratio)
          fold_rotation_steps(:, 1) = rotation_steps(:, 3)
          fold_rotation_steps(:, 2) = rotation_steps(:, 1)
          fold_energy_steps(:, 1) = energy_steps(:, 3)
@@ -5888,7 +5994,8 @@ CONTAINS
             energy_steps(:, 2), closure_rotation_targets(:, 2), closure_energy_targets(:, 2), &
             third_rotation_hessian, third_energy_hessian, third_energy_cross, third_finite, &
             third_overlap, third_capture, third_quality, third_rotation_quality, &
-            third_energy_quality, third_alignment, third_curvature_ratio)
+            third_energy_quality, third_strict_quality, third_strict_rotation_quality, &
+            third_strict_energy_quality, third_alignment, third_curvature_ratio)
          finite = forward_finite .AND. reverse_finite .AND. third_finite
          IF (finite) THEN
             overlap = MIN(forward_overlap, reverse_overlap, third_overlap)
@@ -5897,14 +6004,22 @@ CONTAINS
             rotation_quality = MIN(forward_rotation_quality, reverse_rotation_quality, &
                                    third_rotation_quality)
             energy_quality = MIN(forward_energy_quality, reverse_energy_quality, third_energy_quality)
+            strict_quality = MIN(forward_strict_quality, reverse_strict_quality, &
+                                 third_strict_quality)
+            strict_rotation_quality = MIN(forward_strict_rotation_quality, &
+                                          reverse_strict_rotation_quality, &
+                                          third_strict_rotation_quality)
+            strict_energy_quality = MIN(forward_strict_energy_quality, &
+                                        reverse_strict_energy_quality, &
+                                        third_strict_energy_quality)
             alignment = MIN(forward_alignment, reverse_alignment, third_alignment)
             curvature_ratio_min = MIN(forward_curvature_ratio, reverse_curvature_ratio, &
                                       third_curvature_ratio)
             curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio, &
                                       third_curvature_ratio)
-            consistent = quality >= ot_kp_schur_prediction_quality_min .AND. &
-                         rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
-                         energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
+            consistent = strict_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                         strict_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                         strict_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
                          alignment >= ot_kp_schur_prediction_alignment_min .AND. &
                          curvature_ratio_min >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
                          curvature_ratio_max <= ot_kp_schur_prediction_curvature_ratio_max
@@ -5912,6 +6027,10 @@ CONTAINS
             energy_correction(:, :) = forward_energy_hessian
             cross_correction(:, :) = forward_energy_cross
          END IF
+         IF (PRESENT(promotion_quality)) promotion_quality = strict_quality
+         IF (PRESENT(promotion_rotation_quality)) &
+            promotion_rotation_quality = strict_rotation_quality
+         IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = strict_energy_quality
          DEALLOCATE (fold_energy_responses, fold_energy_steps, fold_rotation_responses, &
                      fold_rotation_steps, third_energy_cross, third_energy_hessian, &
                      third_rotation_hessian)
@@ -5926,14 +6045,16 @@ CONTAINS
          energy_steps(:, 2), closure_rotation_targets(:, 2), closure_energy_targets(:, 2), &
          forward_rotation_hessian, forward_energy_hessian, forward_energy_cross, forward_finite, &
          forward_overlap, forward_capture, forward_quality, forward_rotation_quality, &
-         forward_energy_quality, forward_alignment, forward_curvature_ratio)
+         forward_energy_quality, forward_strict_quality, forward_strict_rotation_quality, &
+         forward_strict_energy_quality, forward_alignment, forward_curvature_ratio)
       CALL qs_scf_kp_coupled_response_secant_prediction( &
          rotation_hessian, energy_hessian, rotation_steps(:, 2), energy_steps(:, 2), &
          closure_rotation_targets(:, 2), closure_energy_targets(:, 2), rotation_steps(:, 1), &
          energy_steps(:, 1), closure_rotation_targets(:, 1), closure_energy_targets(:, 1), &
          reverse_rotation_hessian, reverse_energy_hessian, reverse_energy_cross, reverse_finite, &
          reverse_overlap, reverse_capture, reverse_quality, reverse_rotation_quality, &
-         reverse_energy_quality, reverse_alignment, reverse_curvature_ratio)
+         reverse_energy_quality, reverse_strict_quality, reverse_strict_rotation_quality, &
+         reverse_strict_energy_quality, reverse_alignment, reverse_curvature_ratio)
 
       finite = forward_finite .AND. reverse_finite
       IF (finite) THEN
@@ -5942,6 +6063,10 @@ CONTAINS
          quality = MIN(forward_quality, reverse_quality)
          rotation_quality = MIN(forward_rotation_quality, reverse_rotation_quality)
          energy_quality = MIN(forward_energy_quality, reverse_energy_quality)
+         strict_quality = MIN(forward_strict_quality, reverse_strict_quality)
+         strict_rotation_quality = MIN(forward_strict_rotation_quality, &
+                                       reverse_strict_rotation_quality)
+         strict_energy_quality = MIN(forward_strict_energy_quality, reverse_strict_energy_quality)
          alignment = MIN(forward_alignment, reverse_alignment)
          curvature_ratio_min = MIN(forward_curvature_ratio, reverse_curvature_ratio)
          curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio)
@@ -5949,12 +6074,14 @@ CONTAINS
          ! older step-direction update it does not require nearly parallel accepted steps or a
          ! large projection of y onto s: exact out-of-sample response, component quality and
          ! curvature consistency are the relevant observability tests.
-         consistent = forward_quality >= ot_kp_schur_prediction_quality_min .AND. &
-                      reverse_quality >= ot_kp_schur_prediction_quality_min .AND. &
-                      forward_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
-                      reverse_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
-                      forward_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
-                      reverse_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
+         consistent = forward_strict_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      reverse_strict_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      forward_strict_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      reverse_strict_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                      forward_strict_energy_quality >= &
+                      ot_kp_schur_prediction_energy_quality_min .AND. &
+                      reverse_strict_energy_quality >= &
+                      ot_kp_schur_prediction_energy_quality_min .AND. &
                       forward_alignment >= ot_kp_schur_prediction_alignment_min .AND. &
                       reverse_alignment >= ot_kp_schur_prediction_alignment_min .AND. &
                       forward_curvature_ratio >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
@@ -5965,6 +6092,9 @@ CONTAINS
          energy_correction(:, :) = reverse_energy_hessian
          cross_correction(:, :) = reverse_energy_cross
       END IF
+      IF (PRESENT(promotion_quality)) promotion_quality = strict_quality
+      IF (PRESENT(promotion_rotation_quality)) promotion_rotation_quality = strict_rotation_quality
+      IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = strict_energy_quality
       DEALLOCATE (forward_energy_cross, forward_energy_hessian, forward_rotation_hessian, &
                   reverse_energy_cross, reverse_energy_hessian, reverse_rotation_hessian)
 

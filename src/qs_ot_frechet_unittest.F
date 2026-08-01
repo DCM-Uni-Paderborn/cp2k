@@ -7318,7 +7318,9 @@ CONTAINS
          REAL(KIND=dp), PARAMETER                         :: response_curvature = 0.4_dp
          REAL(KIND=dp) :: prediction_alignment, prediction_capture, &
                           prediction_curvature_max, prediction_curvature_min, prediction_energy_quality, &
-                          prediction_overlap, prediction_quality, prediction_rotation_quality, step_norm
+                          prediction_overlap, prediction_promotion_energy_quality, &
+                          prediction_promotion_quality, prediction_promotion_rotation_quality, &
+                          prediction_quality, prediction_rotation_quality, step_norm
          REAL(KIND=dp), DIMENSION(4)                     :: coordinate_scale, gauge_mode, mode, &
                                                             step_full, vmode
          REAL(KIND=dp), DIMENSION(3)                     :: gauge_coefficient
@@ -7440,6 +7442,27 @@ CONTAINS
                  ABS(prediction_curvature_max - 1.0_dp)
          IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
              prediction_overlap >= 0.98_dp .OR. prediction_capture >= 0.65_dp) error = error + 1.0_dp
+
+         ! Bounded audit quality remains interpretable when a fitted response overpredicts the next
+         ! endpoint, but promotion retains the stricter measured-response normalization.  A factor
+         ! two overprediction therefore audits at 0.75 while its strict leave-one-out quality is 0.
+         prediction_rotation_targets(:, 2) = 0.5_dp*prediction_rotation_targets(:, 2)
+         CALL qs_scf_kp_coupled_closure_prediction( &
+            rotation_hessian, energy_hessian, energy_cross, prediction_rotation_steps, &
+            prediction_energy_steps, prediction_rotation_targets, prediction_energy_targets, &
+            prediction_rotation_correction, prediction_energy_correction, &
+            prediction_cross_correction, prediction_finite, prediction_consistent, &
+            prediction_overlap, prediction_capture, prediction_quality, &
+            prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
+            prediction_curvature_min, prediction_curvature_max, prediction_promotion_quality, &
+            prediction_promotion_rotation_quality, prediction_promotion_energy_quality)
+         error = error + ABS(prediction_quality - 0.75_dp) + &
+                 ABS(prediction_rotation_quality - 0.75_dp) + &
+                 ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_promotion_quality) + &
+                 ABS(prediction_promotion_rotation_quality) + &
+                 ABS(prediction_promotion_energy_quality - 1.0_dp)
+         IF (.NOT. prediction_finite .OR. prediction_consistent) error = error + 1.0_dp
 
          ! Two accepted secants determine the symmetric observable work in their plane; the third
          ! secant is a true leave-one-out check.  All three folds recover this physical mixed
