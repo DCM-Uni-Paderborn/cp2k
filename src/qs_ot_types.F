@@ -452,6 +452,7 @@ MODULE qs_ot_types
       ! eligibility stays separate so rejected models can be calibrated without becoming active.
       LOGICAL :: schur_closure_vector_shadow_pending = .FALSE.
       LOGICAL :: schur_closure_vector_shadow_consistent = .FALSE.
+      LOGICAL :: schur_closure_vector_shadow_work_consistent = .FALSE.
       INTEGER :: schur_closure_vector_shadow_quality_samples = 0
       REAL(KIND=dp) :: schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
       REAL(KIND=dp) :: schur_closure_vector_shadow_quadratic = 0.0_dp
@@ -459,6 +460,11 @@ MODULE qs_ot_types
       REAL(KIND=dp) :: schur_closure_vector_shadow_quality_ema = 0.0_dp
       REAL(KIND=dp) :: schur_closure_vector_shadow_advantage = 0.0_dp
       REAL(KIND=dp) :: schur_closure_vector_shadow_advantage_ema = 0.0_dp
+      INTEGER :: schur_closure_work_shadow_quality_samples = 0
+      REAL(KIND=dp) :: schur_closure_work_shadow_quality = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_work_shadow_quality_ema = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_work_shadow_advantage = 0.0_dp
+      REAL(KIND=dp) :: schur_closure_work_shadow_advantage_ema = 0.0_dp
       LOGICAL :: schur_residual_history_reset_pending = .FALSE.
       REAL(KIND=dp) :: schur_residual_history_quality = 1.0_dp
       INTEGER :: schur_step_gauge_quality_samples = 0
@@ -1335,6 +1341,7 @@ CONTAINS
       qs_ot_env%schur_closure_full_shadow_advantage_ema = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_pending = .FALSE.
       qs_ot_env%schur_closure_vector_shadow_consistent = .FALSE.
+      qs_ot_env%schur_closure_vector_shadow_work_consistent = .FALSE.
       qs_ot_env%schur_closure_vector_shadow_quality_samples = 0
       qs_ot_env%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_quadratic = 0.0_dp
@@ -1342,6 +1349,11 @@ CONTAINS
       qs_ot_env%schur_closure_vector_shadow_quality_ema = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_advantage = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_advantage_ema = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_quality_samples = 0
+      qs_ot_env%schur_closure_work_shadow_quality = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_advantage = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_advantage_ema = 0.0_dp
       qs_ot_env%schur_residual_history_reset_pending = .FALSE.
       qs_ot_env%schur_residual_history_quality = 1.0_dp
       qs_ot_env%schur_step_gauge_quality_samples = 0
@@ -1952,6 +1964,7 @@ CONTAINS
       qs_ot_env%schur_closure_full_shadow_advantage_ema = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_pending = .FALSE.
       qs_ot_env%schur_closure_vector_shadow_consistent = .FALSE.
+      qs_ot_env%schur_closure_vector_shadow_work_consistent = .FALSE.
       qs_ot_env%schur_closure_vector_shadow_quality_samples = 0
       qs_ot_env%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_quadratic = 0.0_dp
@@ -1959,6 +1972,11 @@ CONTAINS
       qs_ot_env%schur_closure_vector_shadow_quality_ema = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_advantage = 0.0_dp
       qs_ot_env%schur_closure_vector_shadow_advantage_ema = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_quality_samples = 0
+      qs_ot_env%schur_closure_work_shadow_quality = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_quality_ema = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_advantage = 0.0_dp
+      qs_ot_env%schur_closure_work_shadow_advantage_ema = 0.0_dp
 
       qs_ot_env%schur_constrained_candidate_enabled = .FALSE.
       qs_ot_env%schur_constrained_quality = 0.0_dp

@@ -8368,6 +8368,7 @@ CONTAINS
       local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
       local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
       local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+      local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
       local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
       local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
       local_ot_env(1)%schur_residual_history_reset_pending = .FALSE.
@@ -12935,15 +12936,42 @@ CONTAINS
                      ot_kp_schur_quality_ema_alpha*closure_vector_shadow_advantage
                END IF
             END IF
+            IF (closure_vector_shadow_quality_ready .AND. &
+                local_ot_env(1)%schur_closure_vector_shadow_work_consistent) THEN
+               samples = MIN(local_ot_env(1)%schur_closure_work_shadow_quality_samples + 1, &
+                             HUGE(samples) - 1)
+               local_ot_env(1)%schur_closure_work_shadow_quality_samples = samples
+               local_ot_env(1)%schur_closure_work_shadow_quality = &
+                  closure_vector_shadow_quality_ratio
+               local_ot_env(1)%schur_closure_work_shadow_advantage = &
+                  closure_vector_shadow_advantage
+               IF (samples == 1) THEN
+                  local_ot_env(1)%schur_closure_work_shadow_quality_ema = &
+                     closure_vector_shadow_quality_ratio
+                  local_ot_env(1)%schur_closure_work_shadow_advantage_ema = &
+                     closure_vector_shadow_advantage
+               ELSE
+                  local_ot_env(1)%schur_closure_work_shadow_quality_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_closure_work_shadow_quality_ema + &
+                     ot_kp_schur_quality_ema_alpha*closure_vector_shadow_quality_ratio
+                  local_ot_env(1)%schur_closure_work_shadow_advantage_ema = &
+                     (1.0_dp - ot_kp_schur_quality_ema_alpha)* &
+                     local_ot_env(1)%schur_closure_work_shadow_advantage_ema + &
+                     ot_kp_schur_quality_ema_alpha*closure_vector_shadow_advantage
+               END IF
+            END IF
             logger => cp_get_default_logger()
             IF (logger%iter_info%print_level >= high_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
-                      '(A,1X,I6,2(1X,L1),9(1X,ES16.8))') &
-               " OT Schur response-vector shadow history n eligible ready base candidate measured q qema "// &
+                      '(A,1X,I6,3(1X,L1),9(1X,ES16.8))') &
+               " OT Schur response-vector shadow history n eligible work_eligible ready "// &
+               "base candidate measured q qema "// &
                "berr cerr adv aema:", &
                local_ot_env(1)%schur_closure_vector_shadow_quality_samples, &
                local_ot_env(1)%schur_closure_vector_shadow_consistent, &
+               local_ot_env(1)%schur_closure_vector_shadow_work_consistent, &
                closure_vector_shadow_quality_ready, &
                closure_vector_shadow_baseline_predicted_drop, &
                closure_vector_shadow_predicted_drop, measured_drop, &
@@ -12952,6 +12980,17 @@ CONTAINS
                closure_vector_shadow_baseline_error, closure_vector_shadow_candidate_error, &
                closure_vector_shadow_advantage, &
                local_ot_env(1)%schur_closure_vector_shadow_advantage_ema
+            IF (logger%iter_info%print_level >= high_print_level .AND. &
+                logger%para_env%is_source()) &
+               WRITE (cp_logger_get_default_unit_nr(logger), &
+                      '(A,1X,I6,2(1X,L1),4(1X,ES16.8))') &
+               " OT Schur observable-work shadow history n eligible ready q qema adv aema:", &
+               local_ot_env(1)%schur_closure_work_shadow_quality_samples, &
+               local_ot_env(1)%schur_closure_vector_shadow_work_consistent, &
+               closure_vector_shadow_quality_ready, closure_vector_shadow_quality_ratio, &
+               local_ot_env(1)%schur_closure_work_shadow_quality_ema, &
+               closure_vector_shadow_advantage, &
+               local_ot_env(1)%schur_closure_work_shadow_advantage_ema
          END IF
          IF (mermin_search .AND. measured_drop > 0.0_dp .AND. &
              residual_quality_ratio <= EPSILON(1.0_dp) .AND. &
@@ -13011,6 +13050,7 @@ CONTAINS
             local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+            local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
             local_ot_env(1)%schur_reduced_secant_model_groups = 0
@@ -15391,6 +15431,7 @@ CONTAINS
          local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
          local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
          local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+         local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
          local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
          local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
          local_ot_env(1)%schur_reduced_secant_model_groups = 0
@@ -16531,6 +16572,7 @@ CONTAINS
             local_ot_env(1)%schur_closure_full_shadow_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_pending = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_consistent = .FALSE.
+            local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .FALSE.
             local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = 0.0_dp
             local_ot_env(1)%schur_closure_vector_shadow_quadratic = 0.0_dp
             local_ot_env(1)%kpoint_physical_delta_ready = .TRUE.
@@ -30720,12 +30762,17 @@ CONTAINS
             IF (closure_coupled_predictive_finite .AND. &
                 ABS(closure_predictive_response_adjustment - &
                     closure_predictive_response_baseline_adjustment) > TINY(1.0_dp)) THEN
-               IF (.NOT. local_ot_env(1)%schur_closure_vector_shadow_pending) &
+               IF (.NOT. local_ot_env(1)%schur_closure_vector_shadow_pending) THEN
                   local_ot_env(1)%schur_closure_vector_shadow_consistent = .TRUE.
+                  local_ot_env(1)%schur_closure_vector_shadow_work_consistent = .TRUE.
+               END IF
                local_ot_env(1)%schur_closure_vector_shadow_pending = .TRUE.
                local_ot_env(1)%schur_closure_vector_shadow_consistent = &
                   local_ot_env(1)%schur_closure_vector_shadow_consistent .AND. &
                   closure_coupled_predictive_consistent
+               local_ot_env(1)%schur_closure_vector_shadow_work_consistent = &
+                  local_ot_env(1)%schur_closure_vector_shadow_work_consistent .AND. &
+                  closure_coupled_predictive_work_consistent
                local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic = &
                   local_ot_env(1)%schur_closure_vector_shadow_baseline_quadratic + &
                   closure_predictive_response_baseline_adjustment
