@@ -5875,13 +5875,16 @@ CONTAINS
 !> \param promotion_quality optional strict full-residual promotion quality
 !> \param promotion_rotation_quality optional strict rotation-residual promotion quality
 !> \param promotion_energy_quality optional strict auxiliary-energy-residual promotion quality
+!> \param observable_work_quality optional minimum leave-one-out Hessian-work quality
+!> \param observable_consistent optional consistency of the observable Hessian work
 ! **************************************************************************************************
    SUBROUTINE qs_scf_kp_coupled_closure_prediction( &
       rotation_hessian, energy_hessian, energy_cross, rotation_steps, energy_steps, &
       closure_rotation_targets, closure_energy_targets, rotation_correction, &
       energy_correction, cross_correction, finite, consistent, overlap, capture, quality, &
       rotation_quality, energy_quality, alignment, curvature_ratio_min, curvature_ratio_max, &
-      promotion_quality, promotion_rotation_quality, promotion_energy_quality)
+      promotion_quality, promotion_rotation_quality, promotion_energy_quality, &
+      observable_work_quality, observable_consistent)
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN) :: rotation_hessian, energy_hessian, &
          energy_cross, rotation_steps, energy_steps, closure_rotation_targets, &
          closure_energy_targets
@@ -5892,7 +5895,9 @@ CONTAINS
          alignment, curvature_ratio_min, curvature_ratio_max
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: promotion_quality, &
                                                             promotion_rotation_quality, &
-                                                            promotion_energy_quality
+                                                            promotion_energy_quality, &
+                                                            observable_work_quality
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: observable_consistent
 
       INTEGER                                            :: nener, nobs, nrot
       LOGICAL                                            :: forward_finite, reverse_finite, &
@@ -5907,7 +5912,7 @@ CONTAINS
          third_capture
       REAL(KIND=dp) :: third_curvature_ratio, third_energy_quality, third_overlap, third_quality, &
          third_rotation_quality, third_strict_energy_quality, third_strict_quality, &
-         third_strict_rotation_quality
+         third_strict_rotation_quality, work_quality
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :) :: fold_energy_responses, fold_energy_steps, &
          fold_rotation_responses, fold_rotation_steps, forward_energy_cross, &
          forward_energy_hessian, forward_rotation_hessian, reverse_energy_cross, &
@@ -5945,9 +5950,12 @@ CONTAINS
       strict_quality = 0.0_dp
       strict_rotation_quality = 0.0_dp
       strict_energy_quality = 0.0_dp
+      work_quality = 0.0_dp
       IF (PRESENT(promotion_quality)) promotion_quality = 0.0_dp
       IF (PRESENT(promotion_rotation_quality)) promotion_rotation_quality = 0.0_dp
       IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = 0.0_dp
+      IF (PRESENT(observable_work_quality)) observable_work_quality = 0.0_dp
+      IF (PRESENT(observable_consistent)) observable_consistent = .FALSE.
       IF (nrot <= 0 .OR. nener <= 0) RETURN
 
       ALLOCATE (forward_energy_cross(nener, nrot), forward_energy_hessian(nener, nener), &
@@ -6017,12 +6025,21 @@ CONTAINS
                                       third_curvature_ratio)
             curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio, &
                                       third_curvature_ratio)
+            work_quality = MIN(qs_scf_kp_observable_work_quality(forward_curvature_ratio), &
+                               qs_scf_kp_observable_work_quality(reverse_curvature_ratio), &
+                               qs_scf_kp_observable_work_quality(third_curvature_ratio))
             consistent = strict_quality >= ot_kp_schur_prediction_quality_min .AND. &
                          strict_rotation_quality >= ot_kp_schur_prediction_quality_min .AND. &
                          strict_energy_quality >= ot_kp_schur_prediction_energy_quality_min .AND. &
                          alignment >= ot_kp_schur_prediction_alignment_min .AND. &
                          curvature_ratio_min >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
                          curvature_ratio_max <= ot_kp_schur_prediction_curvature_ratio_max
+            IF (PRESENT(observable_consistent)) &
+               observable_consistent = work_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                                       curvature_ratio_min >= &
+                                       ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                                       curvature_ratio_max <= &
+                                       ot_kp_schur_prediction_curvature_ratio_max
             rotation_correction(:, :) = forward_rotation_hessian
             energy_correction(:, :) = forward_energy_hessian
             cross_correction(:, :) = forward_energy_cross
@@ -6031,6 +6048,7 @@ CONTAINS
          IF (PRESENT(promotion_rotation_quality)) &
             promotion_rotation_quality = strict_rotation_quality
          IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = strict_energy_quality
+         IF (PRESENT(observable_work_quality)) observable_work_quality = work_quality
          DEALLOCATE (fold_energy_responses, fold_energy_steps, fold_rotation_responses, &
                      fold_rotation_steps, third_energy_cross, third_energy_hessian, &
                      third_rotation_hessian)
@@ -6070,6 +6088,8 @@ CONTAINS
          alignment = MIN(forward_alignment, reverse_alignment)
          curvature_ratio_min = MIN(forward_curvature_ratio, reverse_curvature_ratio)
          curvature_ratio_max = MAX(forward_curvature_ratio, reverse_curvature_ratio)
+         work_quality = MIN(qs_scf_kp_observable_work_quality(forward_curvature_ratio), &
+                            qs_scf_kp_observable_work_quality(reverse_curvature_ratio))
          ! The response-vector secant is identified by its measured y directions.  Unlike the
          ! older step-direction update it does not require nearly parallel accepted steps or a
          ! large projection of y onto s: exact out-of-sample response, component quality and
@@ -6088,6 +6108,12 @@ CONTAINS
                       reverse_curvature_ratio >= ot_kp_schur_prediction_curvature_ratio_min .AND. &
                       forward_curvature_ratio <= ot_kp_schur_prediction_curvature_ratio_max .AND. &
                       reverse_curvature_ratio <= ot_kp_schur_prediction_curvature_ratio_max
+         IF (PRESENT(observable_consistent)) &
+            observable_consistent = work_quality >= ot_kp_schur_prediction_quality_min .AND. &
+                                    curvature_ratio_min >= &
+                                    ot_kp_schur_prediction_curvature_ratio_min .AND. &
+                                    curvature_ratio_max <= &
+                                    ot_kp_schur_prediction_curvature_ratio_max
          rotation_correction(:, :) = reverse_rotation_hessian
          energy_correction(:, :) = reverse_energy_hessian
          cross_correction(:, :) = reverse_energy_cross
@@ -6095,10 +6121,35 @@ CONTAINS
       IF (PRESENT(promotion_quality)) promotion_quality = strict_quality
       IF (PRESENT(promotion_rotation_quality)) promotion_rotation_quality = strict_rotation_quality
       IF (PRESENT(promotion_energy_quality)) promotion_energy_quality = strict_energy_quality
+      IF (PRESENT(observable_work_quality)) observable_work_quality = work_quality
       DEALLOCATE (forward_energy_cross, forward_energy_hessian, forward_rotation_hessian, &
                   reverse_energy_cross, reverse_energy_hessian, reverse_rotation_hessian)
 
    END SUBROUTINE qs_scf_kp_coupled_closure_prediction
+
+! **************************************************************************************************
+!> \brief Return a scale-invariant quality for an observed/predicted scalar Hessian work ratio.
+!>
+!>        The response-vector audit can see endpoint gauge components perpendicular to the tested
+!>        step.  Those components do not contribute to the physically observable quadratic work
+!>        s^T*H*s.  This scalar audit is one for exact work, 0.75 for a factor-two mismatch, and
+!>        nonpositive for an opposite-sign prediction.  A zero ratio remains uninformative.
+!> \param curvature_ratio ...
+!> \return ...
+! **************************************************************************************************
+   PURE FUNCTION qs_scf_kp_observable_work_quality(curvature_ratio) RESULT(quality)
+      REAL(KIND=dp), INTENT(IN)                          :: curvature_ratio
+      REAL(KIND=dp)                                      :: quality
+
+      quality = 0.0_dp
+      IF (curvature_ratio /= curvature_ratio .OR. curvature_ratio == 0.0_dp) RETURN
+      IF (ABS(curvature_ratio) <= 1.0_dp) THEN
+         quality = 1.0_dp - (1.0_dp - curvature_ratio)**2
+      ELSE
+         quality = 1.0_dp - (1.0_dp - 1.0_dp/curvature_ratio)**2
+      END IF
+
+   END FUNCTION qs_scf_kp_observable_work_quality
 
 ! **************************************************************************************************
 !> \brief Evaluate a coupled rotation/energy Hessian on one fixed-N Mermin step.
@@ -16676,50 +16727,52 @@ CONTAINS
          closure_candidate_measured_response, closure_candidate_probe_selected, &
          closure_candidate_ready, closure_candidate_residual_advantage_resolved, &
          closure_candidate_selected, closure_coupled_predictive_consistent, &
-         closure_coupled_predictive_finite, closure_coupled_response_history_ready, &
-         closure_coupled_response_ready, closure_coupled_response_selected, &
-         closure_coupled_subspace_ready, closure_reduced_response_ready, &
-         closure_response_pair_ready
-      LOGICAL :: closure_response_shadow_ready, closure_response_subspace_ready, &
-         constrained_candidate_enabled, constrained_candidate_ready, &
-         constrained_candidate_selected, dense_exact_scale_ready, density_descent_bootstrap_ready, &
-         density_descent_candidate_ready, density_descent_candidate_selected, &
-         density_descent_tail_probe_ready, density_full_candidate_ready, &
-         density_full_candidate_selected, density_full_direct_candidate_ready, &
-         density_full_direct_candidate_selected, density_full_direct_closure_ready, &
-         density_full_direct_coupled_model_ready, density_full_direct_tail_probe_ready
-      LOGICAL :: density_full_global_bootstrap_ready, density_full_global_candidate_ready, &
-         density_full_global_candidate_selected, density_full_global_history_ready, &
-         density_full_global_tail_prefer, density_full_global_tail_probe_ready, &
-         density_full_tail_probe_ready, density_pair_activation_ready, density_pair_shape_ok, &
-         energy_closure_candidate_selected, energy_closure_competing_ready, &
-         energy_closure_tail_ready, exact_active_response_ready, exact_attempt_response, &
-         exact_density_basis_audit_ready, exact_density_basis_curvfloor_audit_ready, &
-         exact_density_basis_damped_audit_ready
-      LOGICAL :: exact_density_basis_filtered_audit_ready, &
+         closure_coupled_predictive_finite, closure_coupled_predictive_work_consistent, &
+         closure_coupled_response_history_ready, closure_coupled_response_ready, &
+         closure_coupled_response_selected, closure_coupled_subspace_ready, &
+         closure_reduced_response_ready
+      LOGICAL :: closure_response_pair_ready, closure_response_shadow_ready, &
+         closure_response_subspace_ready, constrained_candidate_enabled, &
+         constrained_candidate_ready, constrained_candidate_selected, dense_exact_scale_ready, &
+         density_descent_bootstrap_ready, density_descent_candidate_ready, &
+         density_descent_candidate_selected, density_descent_tail_probe_ready, &
+         density_full_candidate_ready, density_full_candidate_selected, &
+         density_full_direct_candidate_ready, density_full_direct_candidate_selected, &
+         density_full_direct_closure_ready, density_full_direct_coupled_model_ready
+      LOGICAL :: density_full_direct_tail_probe_ready, density_full_global_bootstrap_ready, &
+         density_full_global_candidate_ready, density_full_global_candidate_selected, &
+         density_full_global_history_ready, density_full_global_tail_prefer, &
+         density_full_global_tail_probe_ready, density_full_tail_probe_ready, &
+         density_pair_activation_ready, density_pair_shape_ok, energy_closure_candidate_selected, &
+         energy_closure_competing_ready, energy_closure_tail_ready, exact_active_response_ready, &
+         exact_attempt_response, exact_density_basis_audit_ready, &
+         exact_density_basis_curvfloor_audit_ready
+      LOGICAL :: exact_density_basis_damped_audit_ready, exact_density_basis_filtered_audit_ready, &
          exact_density_basis_selective_audit_ready, exact_density_direct_response_ready, &
          exact_density_floor_audit_ready, exact_density_floor_safe_audit_ready, &
          exact_density_full_audit_ready, exact_density_full_response_ready, &
          exact_density_plateau_response_ready, exact_density_response_ready, &
          exact_energy_model_ready, exact_physical_response_ready, failed, fermi_active_pair, &
          inactive_gauge_projection_used, metric_attempt_current_bridge, metric_attempt_response, &
-         metric_attempt_selectable, metric_attempt_tail_bridge, multisecant_response_ready
-      LOGICAL :: multisecant_update_eligible, multisecant_update_ready, multisecant_update_used, &
+         metric_attempt_selectable
+      LOGICAL :: metric_attempt_tail_bridge, multisecant_response_ready, &
+         multisecant_update_eligible, multisecant_update_ready, multisecant_update_used, &
          new_search_point, physical_delta_group_ready, physical_delta_norm_ready, &
          physical_delta_plateau_ready, physical_delta_raw_tail_ready, prediction_candidate_ready, &
          prediction_candidate_selected, prediction_probe_selected, prediction_transport_ready, &
          prediction_update_eligible, prediction_update_ready, prediction_update_used, &
          projector_density_full_audit_enabled, projector_density_full_history_enabled, &
-         projector_inactive_offdiag_candidate_ready, projector_inactive_offdiag_tail_refresh_probe
-      LOGICAL :: projector_inactive_offdiag_tail_refresh_ready, &
-         projector_offdiag_candidate_inactive, projector_offdiag_candidate_ready, &
-         projector_offdiag_candidate_selected, projector_physical_candidate_ready, &
-         projector_physical_candidate_selected, projector_physical_coupled_model_ready, &
-         projector_physical_direct_basis_tail_limited, projector_physical_direct_candidate_ready, &
-         projector_physical_direct_candidate_selected, projector_physical_direct_candidate_used, &
-         projector_physical_direct_density_candidate_ready, &
-         projector_physical_direct_density_candidate_selected
-      LOGICAL :: projector_physical_direct_density_fshadow_ready, &
+         projector_inactive_offdiag_candidate_ready
+      LOGICAL :: projector_inactive_offdiag_tail_refresh_probe, &
+         projector_inactive_offdiag_tail_refresh_ready, projector_offdiag_candidate_inactive, &
+         projector_offdiag_candidate_ready, projector_offdiag_candidate_selected, &
+         projector_physical_candidate_ready, projector_physical_candidate_selected, &
+         projector_physical_coupled_model_ready, projector_physical_direct_basis_tail_limited, &
+         projector_physical_direct_candidate_ready, projector_physical_direct_candidate_selected, &
+         projector_physical_direct_candidate_used, &
+         projector_physical_direct_density_candidate_ready
+      LOGICAL :: projector_physical_direct_density_candidate_selected, &
+         projector_physical_direct_density_fshadow_ready, &
          projector_physical_direct_density_override_protected, &
          projector_physical_direct_density_quality_ready, &
          projector_physical_direct_density_residual_bad, &
@@ -16727,9 +16780,9 @@ CONTAINS
          projector_physical_direct_density_tail_probe_ready, &
          projector_physical_direct_diagref_candidate_ready, &
          projector_physical_direct_effective_response_ready, &
-         projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted, &
-         projector_physical_direct_normcap_shadow_ready, projector_physical_direct_promoted
-      LOGICAL :: projector_physical_direct_shadow_enabled, &
+         projector_physical_direct_mixed_enabled, projector_physical_direct_mixed_promoted
+      LOGICAL :: projector_physical_direct_normcap_shadow_ready, &
+         projector_physical_direct_promoted, projector_physical_direct_shadow_enabled, &
          projector_physical_direct_spectral_candidate_ready, &
          projector_physical_direct_spectral_candidate_selected, &
          projector_physical_direct_spectral_enabled, &
@@ -16737,17 +16790,17 @@ CONTAINS
          projector_physical_direct_spectral_probe_ready, &
          projector_physical_direct_spectral_probe_selected, &
          projector_physical_direct_spectral_ready, projector_physical_direct_tail_probe_ready, &
-         projector_physical_direct_trace_tail_limited, projector_physical_shadow_enabled, &
-         projector_plateau_gap_model_enabled
-      LOGICAL :: projector_response_candidate_ready, projector_response_candidate_selected, &
+         projector_physical_direct_trace_tail_limited
+      LOGICAL :: projector_physical_shadow_enabled, projector_plateau_gap_model_enabled, &
+         projector_response_candidate_ready, projector_response_candidate_selected, &
          reduced_secant_candidate_enabled, reduced_secant_candidate_ready, &
          reduced_secant_candidate_selected, reduced_secant_measured_response, &
          reduced_secant_probe_selected, reduced_secant_replacement_eligible, &
          reduced_secant_update_eligible, relative_energy_metric_ready, response_model_available, &
          schur_active_subspace, solved, split_candidate_diagnostic, split_candidate_enabled, &
-         split_candidate_ready, split_candidate_selected, split_residual_competitive, &
-         trust_rejected, vector_secant_update_eligible
-      LOGICAL :: vector_secant_update_ready, vector_secant_update_used
+         split_candidate_ready, split_candidate_selected
+      LOGICAL :: split_residual_competitive, trust_rejected, vector_secant_update_eligible, &
+         vector_secant_update_ready, vector_secant_update_used
       LOGICAL, ALLOCATABLE, DIMENSION(:, :, :)           :: channel_density_pair_active, &
                                                             channel_density_pair_candidate
       REAL(KIND=dp) :: accepted_dense_metric_shadow_drop, accepted_model_calibrated_drop, &
@@ -16814,17 +16867,17 @@ CONTAINS
          closure_predictive_response_baseline_adjustment, closure_predictive_response_cross_quad, &
          closure_predictive_response_energy_quad, closure_predictive_response_quad, &
          closure_predictive_response_rotation_quad, closure_predictive_rotation_quality, &
-         closure_response_accepted_drop, closure_response_accepted_quad, &
-         closure_response_baseline_quad
-      REAL(KIND=dp) :: closure_response_candidate_quad, closure_response_compatibility, &
-         closure_response_coupled_quad, closure_response_fitted_residual_ratio, &
-         closure_response_independence, closure_response_mode_fullrank_curvature, &
-         closure_response_mode_norm, closure_response_mode_pair_curvature, &
-         closure_response_mode_prior_curvature, closure_response_pair_fitted_residual_ratio, &
-         closure_response_reduced_quad, closure_response_residual_ratio, &
-         constrained_diag_shift_avg, constrained_direction_scale, constrained_expected_drop, &
-         constrained_expected_drop_ratio, constrained_gdot_energy
-      REAL(KIND=dp) :: constrained_gdot_rotation, constrained_gdotp, &
+         closure_predictive_work_quality, closure_response_accepted_drop, &
+         closure_response_accepted_quad
+      REAL(KIND=dp) :: closure_response_baseline_quad, closure_response_candidate_quad, &
+         closure_response_compatibility, closure_response_coupled_quad, &
+         closure_response_fitted_residual_ratio, closure_response_independence, &
+         closure_response_mode_fullrank_curvature, closure_response_mode_norm, &
+         closure_response_mode_pair_curvature, closure_response_mode_prior_curvature, &
+         closure_response_pair_fitted_residual_ratio, closure_response_reduced_quad, &
+         closure_response_residual_ratio, constrained_diag_shift_avg, constrained_direction_scale, &
+         constrained_expected_drop, constrained_expected_drop_ratio
+      REAL(KIND=dp) :: constrained_gdot_energy, constrained_gdot_rotation, constrained_gdotp, &
          constrained_model_calibrated_drop, constrained_model_drop, constrained_model_gap, &
          constrained_model_gap_drop, constrained_model_gap_ratio, constrained_model_gap_trust, &
          constrained_norm_energy, constrained_norm_ratio, constrained_norm_rotation, &
@@ -18790,6 +18843,8 @@ CONTAINS
          closure_predictive_overlap = 0.0_dp
          closure_predictive_quality = 0.0_dp
          closure_predictive_rotation_quality = 0.0_dp
+         closure_predictive_work_quality = 0.0_dp
+         closure_coupled_predictive_work_consistent = .FALSE.
          closure_predictive_response_accepted_drop = 0.0_dp
          closure_predictive_response_active_quad = 0.0_dp
          closure_predictive_response_adjustment = 0.0_dp
@@ -21670,11 +21725,13 @@ CONTAINS
                                                      closure_coupled_predictive_cross_correction, &
                                                      closure_coupled_predictive_finite, &
                                                      closure_coupled_predictive_consistent, &
+                                                     closure_coupled_predictive_work_consistent, &
                                                      closure_predictive_overlap, &
                                                      closure_predictive_capture, &
                                                      closure_predictive_quality, &
                                                      closure_predictive_rotation_quality, &
                                                      closure_predictive_energy_quality, &
+                                                     closure_predictive_work_quality, &
                                                      closure_predictive_alignment, &
                                                      closure_predictive_curvature_min, &
                                                      closure_predictive_curvature_max, &
@@ -34417,11 +34474,13 @@ CONTAINS
 !> \param closure_predictive_cross newest-trained rank-one signed cross-block correction
 !> \param closure_predictive_finite whether both directional prediction audits are finite
 !> \param closure_predictive_consistent whether both predictions pass the physical-response gate
+!> \param closure_predictive_work_consistent whether observable Hessian work is reproducible
 !> \param closure_predictive_overlap minimum scaled step overlap
 !> \param closure_predictive_capture minimum training-response capture
 !> \param closure_predictive_quality minimum full-residual prediction quality
 !> \param closure_predictive_rotation_quality minimum rotation-residual prediction quality
 !> \param closure_predictive_energy_quality minimum auxiliary-energy-residual prediction quality
+!> \param closure_predictive_work_quality minimum observable Hessian-work prediction quality
 !> \param closure_predictive_alignment minimum response alignment
 !> \param closure_predictive_curvature_min minimum bidirectional curvature ratio
 !> \param closure_predictive_curvature_max maximum bidirectional curvature ratio
@@ -34462,11 +34521,13 @@ CONTAINS
                                                      closure_predictive_cross, &
                                                      closure_predictive_finite, &
                                                      closure_predictive_consistent, &
+                                                     closure_predictive_work_consistent, &
                                                      closure_predictive_overlap, &
                                                      closure_predictive_capture, &
                                                      closure_predictive_quality, &
                                                      closure_predictive_rotation_quality, &
                                                      closure_predictive_energy_quality, &
+                                                     closure_predictive_work_quality, &
                                                      closure_predictive_alignment, &
                                                      closure_predictive_curvature_min, &
                                                      closure_predictive_curvature_max, &
@@ -34501,12 +34562,13 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT) :: closure_coupled_full_rotation, &
          closure_coupled_full_energy, closure_coupled_full_cross, closure_predictive_rotation, &
          closure_predictive_energy, closure_predictive_cross
-      LOGICAL, INTENT(OUT)                               :: closure_predictive_finite, &
-                                                            closure_predictive_consistent
+      LOGICAL, INTENT(OUT) :: closure_predictive_finite, closure_predictive_consistent, &
+         closure_predictive_work_consistent
       REAL(KIND=dp), INTENT(OUT) :: closure_predictive_overlap, closure_predictive_capture, &
          closure_predictive_quality, closure_predictive_rotation_quality, &
-         closure_predictive_energy_quality, closure_predictive_alignment, &
-         closure_predictive_curvature_min, closure_predictive_curvature_max
+         closure_predictive_energy_quality, closure_predictive_work_quality, &
+         closure_predictive_alignment, closure_predictive_curvature_min, &
+         closure_predictive_curvature_max
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: closure_coupled_response
       LOGICAL, INTENT(OUT)                               :: closure_coupled_ready
       REAL(KIND=dp), INTENT(OUT) :: closure_coupled_independence, closure_coupled_compatibility, &
@@ -34673,11 +34735,13 @@ CONTAINS
          closure_predictive_cross(:, :) = 0.0_dp
          closure_predictive_finite = .FALSE.
          closure_predictive_consistent = .FALSE.
+         closure_predictive_work_consistent = .FALSE.
          closure_predictive_overlap = 0.0_dp
          closure_predictive_capture = 0.0_dp
          closure_predictive_quality = 0.0_dp
          closure_predictive_rotation_quality = 0.0_dp
          closure_predictive_energy_quality = 0.0_dp
+         closure_predictive_work_quality = 0.0_dp
          closure_predictive_alignment = 0.0_dp
          closure_predictive_curvature_min = 0.0_dp
          closure_predictive_curvature_max = 0.0_dp
@@ -35317,18 +35381,22 @@ CONTAINS
                closure_predictive_capture, closure_predictive_quality, &
                closure_predictive_rotation_quality, closure_predictive_energy_quality, &
                closure_predictive_alignment, closure_predictive_curvature_min, &
-               closure_predictive_curvature_max)
+               closure_predictive_curvature_max, &
+               observable_work_quality=closure_predictive_work_quality, &
+               observable_consistent=closure_predictive_work_consistent)
             closure_coupled_fit_ready = closure_coupled_ready
             closure_coupled_transport_ready = closure_coupled_ready
             IF (logger%iter_info%print_level >= high_print_level .AND. &
                 logger%para_env%is_source()) &
                WRITE (cp_logger_get_default_unit_nr(logger), &
-                      '(A,1X,I3,2(1X,L1),8(1X,ES16.8))') &
-               " OT Schur coupled closure prediction group finite consistent overlap capture quality "// &
-               "rquality equality alignment cratio_min cratio_max:", &
-               target_group, closure_predictive_finite, closure_predictive_consistent, &
+                      '(A,1X,I3,3(1X,L1),9(1X,ES16.8))') &
+               " OT Schur coupled closure prediction group finite consistent work_consistent "// &
+               "overlap capture quality rquality equality work_quality alignment "// &
+               "cratio_min cratio_max:", target_group, closure_predictive_finite, &
+               closure_predictive_consistent, closure_predictive_work_consistent, &
                closure_predictive_overlap, closure_predictive_capture, closure_predictive_quality, &
                closure_predictive_rotation_quality, closure_predictive_energy_quality, &
+               closure_predictive_work_quality, &
                closure_predictive_alignment, closure_predictive_curvature_min, &
                closure_predictive_curvature_max
             DEALLOCATE (closure_coupled_rotation_steps, closure_coupled_energy_steps, &

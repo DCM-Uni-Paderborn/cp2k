@@ -7314,13 +7314,14 @@ CONTAINS
 
       BLOCK
          INTEGER :: i
-         LOGICAL :: prediction_consistent, prediction_finite
+         LOGICAL :: prediction_consistent, prediction_finite, prediction_work_consistent
          REAL(KIND=dp), PARAMETER                         :: response_curvature = 0.4_dp
          REAL(KIND=dp) :: prediction_alignment, prediction_capture, &
                           prediction_curvature_max, prediction_curvature_min, prediction_energy_quality, &
                           prediction_overlap, prediction_promotion_energy_quality, &
                           prediction_promotion_quality, prediction_promotion_rotation_quality, &
-                          prediction_quality, prediction_rotation_quality, step_norm
+                          prediction_quality, prediction_rotation_quality, prediction_work_quality, &
+                          step_norm
          REAL(KIND=dp), DIMENSION(4)                     :: coordinate_scale, gauge_mode, mode, &
                                                             step_full, vmode
          REAL(KIND=dp), DIMENSION(3)                     :: gauge_coefficient
@@ -7455,14 +7456,17 @@ CONTAINS
             prediction_overlap, prediction_capture, prediction_quality, &
             prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
             prediction_curvature_min, prediction_curvature_max, prediction_promotion_quality, &
-            prediction_promotion_rotation_quality, prediction_promotion_energy_quality)
+            prediction_promotion_rotation_quality, prediction_promotion_energy_quality, &
+            prediction_work_quality, prediction_work_consistent)
          error = error + ABS(prediction_quality - 0.75_dp) + &
                  ABS(prediction_rotation_quality - 0.75_dp) + &
                  ABS(prediction_energy_quality - 1.0_dp) + &
                  ABS(prediction_promotion_quality) + &
                  ABS(prediction_promotion_rotation_quality) + &
-                 ABS(prediction_promotion_energy_quality - 1.0_dp)
-         IF (.NOT. prediction_finite .OR. prediction_consistent) error = error + 1.0_dp
+                 ABS(prediction_promotion_energy_quality - 1.0_dp) + &
+                 ABS(prediction_work_quality - 0.75_dp)
+         IF (.NOT. prediction_finite .OR. prediction_consistent .OR. &
+             prediction_work_consistent) error = error + 1.0_dp
 
          ! Two accepted secants determine the symmetric observable work in their plane; the third
          ! secant is a true leave-one-out check.  All three folds recover this physical mixed
@@ -7501,7 +7505,9 @@ CONTAINS
             prediction_cross_correction, prediction_finite, prediction_consistent, &
             prediction_overlap, prediction_capture, prediction_quality, &
             prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
-            prediction_curvature_min, prediction_curvature_max)
+            prediction_curvature_min, prediction_curvature_max, &
+            observable_work_quality=prediction_work_quality, &
+            observable_consistent=prediction_work_consistent)
          error = error + MAXVAL(ABS(prediction_rotation_correction - &
                                     expected_rotation_correction)) + &
                  MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
@@ -7509,10 +7515,12 @@ CONTAINS
                  ABS(prediction_capture - 1.0_dp) + ABS(prediction_quality - 1.0_dp) + &
                  ABS(prediction_rotation_quality - 1.0_dp) + &
                  ABS(prediction_energy_quality - 1.0_dp) + &
+                 ABS(prediction_work_quality - 1.0_dp) + &
                  ABS(prediction_alignment - 1.0_dp) + &
                  ABS(prediction_curvature_min - 1.0_dp) + &
                  ABS(prediction_curvature_max - 1.0_dp)
          IF (.NOT. prediction_finite .OR. .NOT. prediction_consistent .OR. &
+             .NOT. prediction_work_consistent .OR. &
              prediction_overlap <= 0.0_dp) error = error + 1.0_dp
 
          ! Endpoint closure can contain a nonconservative gauge component normal to every accepted
@@ -7536,12 +7544,16 @@ CONTAINS
             prediction_cross_correction, prediction_finite, prediction_consistent, &
             prediction_overlap, prediction_capture, prediction_quality, &
             prediction_rotation_quality, prediction_energy_quality, prediction_alignment, &
-            prediction_curvature_min, prediction_curvature_max)
+            prediction_curvature_min, prediction_curvature_max, &
+            observable_work_quality=prediction_work_quality, &
+            observable_consistent=prediction_work_consistent)
          error = error + MAXVAL(ABS(prediction_rotation_correction - &
                                     expected_rotation_correction)) + &
                  MAXVAL(ABS(prediction_energy_correction - expected_energy_correction)) + &
-                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction))
+                 MAXVAL(ABS(prediction_cross_correction - expected_cross_correction)) + &
+                 ABS(prediction_work_quality - 1.0_dp)
          IF (.NOT. prediction_finite .OR. prediction_consistent .OR. &
+             .NOT. prediction_work_consistent .OR. &
              prediction_quality >= 1.0_dp - tol) error = error + 1.0_dp
       END BLOCK
 
