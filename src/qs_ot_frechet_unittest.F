@@ -201,6 +201,8 @@ PROGRAM qs_ot_frechet_unittest
                                                      2.0E-7_dp, nfail)
    CALL check_complex_fixed_n_schur_hessian("complex fixed-N Schur Hessian", &
                                             2.0E-5_dp, nfail)
+   CALL check_complex_multik_fixed_n_schur_hessian("complex multi-k fixed-N Schur Hessian", &
+                                                   3.0E-5_dp, nfail)
    CALL check_complex_fixed_n_response_channel("complex fixed-N response channel", &
                                                2.0E-7_dp, nfail)
    CALL check_complex_projector_blended_response_channel("complex projector-blended response channel", &
@@ -3368,6 +3370,187 @@ CONTAINS
       END IF
 
    END SUBROUTINE check_complex_fixed_n_schur_hessian
+
+! **************************************************************************************************
+!> \brief Check the global fixed-N Schur Hessian for two complex k-point channels.
+!>        A rotation is local in k, but the common chemical potential gives the
+!>        reduced Hessian a finite cross-k block.
+!> \param label ...
+!> \param tol ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE check_complex_multik_fixed_n_schur_hessian(label, tol, nfail)
+      CHARACTER(LEN=*), INTENT(IN)                       :: label
+      REAL(KIND=dp), INTENT(IN)                          :: tol
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      INTEGER, PARAMETER                                 :: n = 3, nkp = 2, nrot_k = n*(n - 1), &
+                                                            nrot = nkp*nrot_k
+      REAL(KIND=dp), PARAMETER                           :: cross_tol = 1.0E-5_dp, &
+                                                            fd_step = 1.0E-5_dp, maxocc = 2.0_dp, &
+                                                            nel = 3.10_dp, sigma = 0.055_dp
+
+      COMPLEX(KIND=dp), DIMENSION(n, n, nkp)             :: base
+      INTEGER                                            :: i, ik, ivar, j, r, s
+      INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind, var_kpoint
+      REAL(KIND=dp)                                      :: cross_active, dense_term, err, kTS, &
+                                                            local_err, mu, projected_term, rtd_r, &
+                                                            rtd_s, value
+      REAL(KIND=dp), DIMENSION(n, n, nkp)                :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
+                                                            x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(n, nkp)                   :: curv, eps_base, eps_m, eps_p, grad_eps, &
+                                                            h_base, h_m, h_p, occ
+      REAL(KIND=dp), DIMENSION(n, nkp, nrot)             :: response
+      REAL(KIND=dp), DIMENSION(nkp)                      :: wk
+      REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfixed, hred, schur, schur_local
+
+      wk(:) = [0.37_dp, 0.63_dp]
+      base(:, :, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      base(1, 1, 1) = CMPLX(-0.24_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 1) = CMPLX(0.01_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 1) = CMPLX(0.19_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 1) = CMPLX(0.045_dp, -0.025_dp, KIND=dp)
+      base(1, 3, 1) = CMPLX(-0.025_dp, 0.030_dp, KIND=dp)
+      base(2, 3, 1) = CMPLX(0.035_dp, 0.020_dp, KIND=dp)
+      base(1, 1, 2) = CMPLX(-0.20_dp, 0.0_dp, KIND=dp)
+      base(2, 2, 2) = CMPLX(0.035_dp, 0.0_dp, KIND=dp)
+      base(3, 3, 2) = CMPLX(0.24_dp, 0.0_dp, KIND=dp)
+      base(1, 2, 2) = CMPLX(-0.032_dp, 0.041_dp, KIND=dp)
+      base(1, 3, 2) = CMPLX(0.028_dp, -0.022_dp, KIND=dp)
+      base(2, 3, 2) = CMPLX(0.026_dp, 0.037_dp, KIND=dp)
+      DO ik = 1, nkp
+         DO j = 2, n
+            DO i = 1, j - 1
+               base(j, i, ik) = CONJG(base(i, j, ik))
+            END DO
+         END DO
+      END DO
+
+      x_re(:, :, :) = 0.0_dp
+      x_re(1, 2, 1) = 0.050_dp
+      x_re(1, 3, 1) = -0.030_dp
+      x_re(2, 3, 1) = 0.025_dp
+      x_re(1, 2, 2) = -0.035_dp
+      x_re(1, 3, 2) = 0.022_dp
+      x_re(2, 3, 2) = 0.031_dp
+      x_im(:, :, :) = 0.0_dp
+      x_im(1, 1, 1) = 0.015_dp
+      x_im(2, 2, 1) = -0.025_dp
+      x_im(3, 3, 1) = 0.010_dp
+      x_im(1, 2, 1) = -0.020_dp
+      x_im(1, 3, 1) = 0.015_dp
+      x_im(2, 3, 1) = 0.018_dp
+      x_im(1, 1, 2) = -0.012_dp
+      x_im(2, 2, 2) = 0.019_dp
+      x_im(3, 3, 2) = -0.007_dp
+      x_im(1, 2, 2) = 0.016_dp
+      x_im(1, 3, 2) = -0.021_dp
+      x_im(2, 3, 2) = 0.014_dp
+      DO ik = 1, nkp
+         DO j = 2, n
+            DO i = 1, j - 1
+               x_re(j, i, ik) = -x_re(i, j, ik)
+               x_im(j, i, ik) = x_im(i, j, ik)
+            END DO
+         END DO
+      END DO
+
+      ivar = 0
+      DO ik = 1, nkp
+         DO j = 2, n
+            DO i = 1, j - 1
+               ivar = ivar + 1
+               var_i(ivar) = i
+               var_j(ivar) = j
+               var_kind(ivar) = 1
+               var_kpoint(ivar) = ik
+               ivar = ivar + 1
+               var_i(ivar) = i
+               var_j(ivar) = j
+               var_kind(ivar) = 2
+               var_kpoint(ivar) = ik
+            END DO
+         END DO
+      END DO
+
+      CALL dense_complex_kpoint_hdiag(x_re, x_im, base, h_base)
+      eps_base(:, :) = h_base(:, :)
+      CALL dense_fermi_kpoint(occ, mu, kTS, eps_base, nel, wk, sigma, maxocc)
+      DO ik = 1, nkp
+         DO i = 1, n
+            curv(i, ik) = wk(ik)*maxocc*(occ(i, ik)/maxocc)* &
+                          (1.0_dp - occ(i, ik)/maxocc)/sigma
+         END DO
+      END DO
+
+      DO s = 1, nrot
+         x_p_re(:, :, :) = x_re(:, :, :)
+         x_m_re(:, :, :) = x_re(:, :, :)
+         x_p_im(:, :, :) = x_im(:, :, :)
+         x_m_im(:, :, :) = x_im(:, :, :)
+         CALL perturb_complex_rotation_var(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), &
+                                           fd_step, var_kpoint(s))
+         CALL perturb_complex_rotation_var(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), &
+                                           -fd_step, var_kpoint(s))
+
+         CALL dense_complex_kpoint_mermin_gradient(x_p_re, x_p_im, base, eps_base, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, &
+                                               grad_p_vec, var_kpoint)
+         CALL dense_complex_kpoint_mermin_gradient(x_m_re, x_m_im, base, eps_base, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, &
+                                               grad_m_vec, var_kpoint)
+         hfixed(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_complex_kpoint_hdiag(x_p_re, x_p_im, base, h_p)
+         CALL dense_complex_kpoint_hdiag(x_m_re, x_m_im, base, h_m)
+         eps_p(:, :) = h_p(:, :)
+         eps_m(:, :) = h_m(:, :)
+         response(:, :, s) = (h_p(:, :) - h_m(:, :))/(2.0_dp*fd_step)
+
+         CALL dense_complex_kpoint_mermin_gradient(x_p_re, x_p_im, base, eps_p, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, &
+                                               grad_p_vec, var_kpoint)
+         CALL dense_complex_kpoint_mermin_gradient(x_m_re, x_m_im, base, eps_m, wk, nel, &
+                                                   sigma, maxocc, grad_re, grad_im, grad_eps, value)
+         CALL extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, &
+                                               grad_m_vec, var_kpoint)
+         hred(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+      END DO
+
+      DO s = 1, nrot
+         DO r = 1, nrot
+            dense_term = SUM(curv(:, :)*response(:, :, r)*response(:, :, s))
+            rtd_r = SUM(curv(:, :)*response(:, :, r))
+            rtd_s = SUM(curv(:, :)*response(:, :, s))
+            projected_term = dense_term - rtd_r*rtd_s/SUM(curv(:, :))
+            schur(r, s) = hfixed(r, s) - projected_term
+
+            dense_term = SUM(curv(:, var_kpoint(r))*response(:, var_kpoint(r), r)* &
+                             response(:, var_kpoint(r), s))
+            rtd_r = SUM(curv(:, var_kpoint(r))*response(:, var_kpoint(r), r))
+            rtd_s = SUM(curv(:, var_kpoint(r))*response(:, var_kpoint(r), s))
+            projected_term = dense_term - rtd_r*rtd_s/SUM(curv(:, var_kpoint(r)))
+            schur_local(r, s) = hfixed(r, s) - projected_term
+         END DO
+      END DO
+
+      err = MAXVAL(ABS(schur(:, :) - hred(:, :)))
+      local_err = MAXVAL(ABS(schur_local(:, :) - hred(:, :)))
+      cross_active = MAXVAL(ABS(schur(1:nrot_k, nrot_k + 1:nrot)))
+      IF (err > tol .OR. local_err < cross_tol .OR. cross_active < cross_tol) THEN
+         nfail = nfail + 1
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "failed with global/local/cross", err, local_err, cross_active
+      ELSE
+         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), &
+            "OK with global/local/cross", err, local_err, cross_active
+      END IF
+
+   END SUBROUTINE check_complex_multik_fixed_n_schur_hessian
 
 ! **************************************************************************************************
 !> \brief Check the Schur response channel against finite fixed-N Mermin occupation response.
@@ -9577,19 +9760,26 @@ CONTAINS
 !> \param j ...
 !> \param kind ...
 !> \param step ...
+!> \param ikpoint ...
 ! **************************************************************************************************
-   SUBROUTINE perturb_complex_rotation_var(x_re, x_im, i, j, kind, step)
+   SUBROUTINE perturb_complex_rotation_var(x_re, x_im, i, j, kind, step, ikpoint)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(INOUT)   :: x_re, x_im
       INTEGER, INTENT(IN)                                :: i, j, kind
       REAL(KIND=dp), INTENT(IN)                          :: step
+      INTEGER, INTENT(IN), OPTIONAL                      :: ikpoint
+
+      INTEGER                                            :: ik
+
+      ik = 1
+      IF (PRESENT(ikpoint)) ik = ikpoint
 
       SELECT CASE (kind)
       CASE (1)
-         x_re(i, j, 1) = x_re(i, j, 1) + step
-         x_re(j, i, 1) = x_re(j, i, 1) - step
+         x_re(i, j, ik) = x_re(i, j, ik) + step
+         x_re(j, i, ik) = x_re(j, i, ik) - step
       CASE (2)
-         x_im(i, j, 1) = x_im(i, j, 1) + step
-         x_im(j, i, 1) = x_im(j, i, 1) + step
+         x_im(i, j, ik) = x_im(i, j, ik) + step
+         x_im(j, i, ik) = x_im(j, i, ik) + step
       END SELECT
 
    END SUBROUTINE perturb_complex_rotation_var
@@ -9627,20 +9817,25 @@ CONTAINS
 !> \param var_j ...
 !> \param var_kind ...
 !> \param grad_vec ...
+!> \param var_kpoint ...
 ! **************************************************************************************************
-   SUBROUTINE extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_vec)
+   SUBROUTINE extract_rotation_gradient_vector(grad_re, grad_im, var_i, var_j, var_kind, grad_vec, &
+                                               var_kpoint)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: grad_re, grad_im
       INTEGER, DIMENSION(:), INTENT(IN)                  :: var_i, var_j, var_kind
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: grad_vec
+      INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: var_kpoint
 
-      INTEGER                                            :: r
+      INTEGER                                            :: ik, r
 
       DO r = 1, SIZE(var_i)
+         ik = 1
+         IF (PRESENT(var_kpoint)) ik = var_kpoint(r)
          SELECT CASE (var_kind(r))
          CASE (1)
-            grad_vec(r) = grad_re(var_i(r), var_j(r), 1)
+            grad_vec(r) = grad_re(var_i(r), var_j(r), ik)
          CASE (2)
-            grad_vec(r) = grad_im(var_i(r), var_j(r), 1)
+            grad_vec(r) = grad_im(var_i(r), var_j(r), ik)
          END SELECT
       END DO
 
@@ -10070,15 +10265,18 @@ CONTAINS
                                                             fd_step = 2.0E-5_dp, &
                                                             projector_weight = 0.30_dp
 
-      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, occ_mat
+      COMPLEX(KIND=dp), DIMENSION(n, n)                  :: base, docc_mat, occ_blend, occ_diag, &
+                                                            occ_m, occ_p
       INTEGER                                            :: i, j, r, s
       INTEGER, DIMENSION(nrot)                           :: var_i, var_j, var_kind
-      REAL(KIND=dp)                                      :: active, err, shift_err
+      REAL(KIND=dp)                                      :: active, exact_split_err, moving_err, &
+                                                            old_err
       REAL(KIND=dp), DIMENSION(n)                        :: eps_diag, occ_scale
-      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_im, grad_re, x_im, x_m_im, x_m_re, &
-                                                            x_p_im, x_p_re, x_re
+      REAL(KIND=dp), DIMENSION(n, n)                     :: grad_docc_im, grad_docc_re, grad_im, &
+                                                            grad_re, x_im, x_m_im, x_m_re, x_p_im, &
+                                                            x_p_re, x_re
       REAL(KIND=dp), DIMENSION(nrot)                     :: grad_m_vec, grad_p_vec
-      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hfrozen, hmoving
+      REAL(KIND=dp), DIMENSION(nrot, nrot)               :: hblend, hdiag, hdocc, hmoving
 
       base(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       base(1, 1) = CMPLX(-0.42_dp, 0.0_dp, KIND=dp)
@@ -10087,10 +10285,32 @@ CONTAINS
       occ_scale(:) = [1.62_dp, 0.78_dp, 0.19_dp]
 
       x_re(:, :) = 0.0_dp
+      x_re(1, 2) = 0.071_dp
+      x_re(1, 3) = -0.043_dp
+      x_re(2, 3) = 0.029_dp
       x_im(:, :) = 0.0_dp
-      occ_mat(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+      x_im(1, 1) = 0.018_dp
+      x_im(2, 2) = -0.026_dp
+      x_im(3, 3) = 0.009_dp
+      x_im(1, 2) = -0.032_dp
+      x_im(1, 3) = 0.021_dp
+      x_im(2, 3) = 0.027_dp
+      DO j = 2, n
+         DO i = 1, j - 1
+            x_re(j, i) = -x_re(i, j)
+            x_im(j, i) = x_im(i, j)
+         END DO
+      END DO
+
+      occ_diag(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO i = 1, n
-         occ_mat(i, i) = CMPLX(occ_scale(i), 0.0_dp, KIND=dp)
+         occ_diag(i, i) = CMPLX(occ_scale(i), 0.0_dp, KIND=dp)
+      END DO
+      CALL dense_spectral_occ_projector(x_re, x_im, base, occ_scale, occ_blend)
+      occ_blend(:, :) = projector_weight*occ_blend(:, :)
+      DO i = 1, n
+         occ_blend(i, i) = occ_blend(i, i) + &
+                           CMPLX((1.0_dp - projector_weight)*occ_scale(i), 0.0_dp, KIND=dp)
       END DO
 
       r = 0
@@ -10115,11 +10335,17 @@ CONTAINS
          CALL perturb_complex_rotation_var_2d(x_p_re, x_p_im, var_i(s), var_j(s), var_kind(s), fd_step)
          CALL perturb_complex_rotation_var_2d(x_m_re, x_m_im, var_i(s), var_j(s), var_kind(s), -fd_step)
 
-         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_mat, grad_re, grad_im, eps_diag)
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_diag, grad_re, grad_im, eps_diag)
          CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
-         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_mat, grad_re, grad_im, eps_diag)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_diag, grad_re, grad_im, eps_diag)
          CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
-         hfrozen(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+         hdiag(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_projector_rotation_gradient(x_p_re, x_p_im, base, occ_blend, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_p_vec)
+         CALL dense_projector_rotation_gradient(x_m_re, x_m_im, base, occ_blend, grad_re, grad_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
+         hblend(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
 
          CALL dense_blended_projector_rotation_gradient(x_p_re, x_p_im, base, occ_scale, &
                                                         projector_weight, grad_re, grad_im, eps_diag)
@@ -10128,19 +10354,28 @@ CONTAINS
                                                         projector_weight, grad_re, grad_im, eps_diag)
          CALL extract_rotation_gradient_vector_2d(grad_re, grad_im, var_i, var_j, var_kind, grad_m_vec)
          hmoving(:, s) = (grad_p_vec(:) - grad_m_vec(:))/(2.0_dp*fd_step)
+
+         CALL dense_spectral_occ_projector(x_p_re, x_p_im, base, occ_scale, occ_p)
+         CALL dense_spectral_occ_projector(x_m_re, x_m_im, base, occ_scale, occ_m)
+         docc_mat(:, :) = projector_weight*(occ_p(:, :) - occ_m(:, :))/(2.0_dp*fd_step)
+         CALL dense_projector_rotation_gradient(x_re, x_im, base, docc_mat, &
+                                                grad_docc_re, grad_docc_im, eps_diag)
+         CALL extract_rotation_gradient_vector_2d(grad_docc_re, grad_docc_im, var_i, var_j, var_kind, &
+                                                  hdocc(:, s))
       END DO
 
-      err = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hfrozen(:, :)))
-      shift_err = MAXVAL(ABS((hmoving(:, :) - hfrozen(:, :)) + projector_weight*hfrozen(:, :)))
-      active = MAXVAL(ABS(projector_weight*hfrozen(:, :)))
+      moving_err = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hdiag(:, :)))
+      exact_split_err = MAXVAL(ABS(hmoving(:, :) - hblend(:, :) - hdocc(:, :)))
+      old_err = MAXVAL(ABS(hmoving(:, :) - (1.0_dp - projector_weight)*hblend(:, :)))
+      active = MAXVAL(ABS(hdocc(:, :)))
 
-      IF (err > tol .OR. shift_err > tol .OR. active < active_tol) THEN
+      IF (moving_err > tol .OR. exact_split_err > tol .OR. old_err < active_tol .OR. active < active_tol) THEN
          nfail = nfail + 1
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "failed with error/shift/active", &
-            err, shift_err, active
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "failed with moving/split/old/active", &
+            moving_err, exact_split_err, old_err, active
       ELSE
-         WRITE (*, '(A,1X,A,3(1X,ES12.5))') TRIM(label), "OK with error/shift/active", &
-            err, shift_err, active
+         WRITE (*, '(A,1X,A,4(1X,ES12.5))') TRIM(label), "OK with moving/split/old/active", &
+            moving_err, exact_split_err, old_err, active
       END IF
 
    END SUBROUTINE check_complex_projector_covariant_curvature
